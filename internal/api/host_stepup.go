@@ -42,7 +42,9 @@ import (
 // of the exact answer. A browser answer, an MCP answer (attention_answer from
 // any machine) and an answer after a restart lost the pending decision are
 // refused, and the card stays open (or is withdrawn). The decision runs
-// once: it is taken out of the pending set before it runs.
+// once: it is taken out of the pending set before it runs. A card that is no
+// longer open (dismissed, withdrawn, expired) runs nothing: a later Confirm
+// drops its decision and is refused (hostDecisionForAnswer).
 //
 // 🔴 A REMOTE CALLER IS ALWAYS GATED (mirror_mcp.go, "A remote caller"): a
 // session mirrored to ANOTHER muster, calling this one's admin tools. Its host
@@ -414,6 +416,10 @@ var errHostDecisionNeedsPhone = fmt.Errorf("%w: this confirmation is answered on
 // errHostDecisionLost refuses a card whose pending decision is gone (a restart).
 var errHostDecisionLost = fmt.Errorf("%w: this confirmation's request was lost when muster restarted; the session must ask again", attention.ErrInvalid)
 
+// errHostDecisionClosed refuses an answer to a card that is no longer open
+// (dismissed, withdrawn or expired): its decision is dropped, nothing runs.
+var errHostDecisionClosed = fmt.Errorf("%w: this confirmation was closed, so its request was dropped and nothing ran", attention.ErrNotOpen)
+
 // hostDecisionForAnswer is answerAskFrom's hook for a confirmation card:
 // handled false for any other ask. For a card: a door that is not the
 // owner's paired phone is refused (the card stays open); an answer that is
@@ -445,6 +451,18 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 	}
 	if answer != hostDecisionConfirm && answer != hostDecisionRefuse {
 		return true, fmt.Errorf("%w: answer %q or %q", attention.ErrInvalid, hostDecisionConfirm, hostDecisionRefuse)
+	}
+	// 🔴 A CLOSED CARD RUNS NOTHING. Dismissing a card (the Asks dismiss, the
+	// phone's dismiss, a withdrawal) or its expiry closes the ask but cannot
+	// reach this in-memory set, so its decision was still pending and a phone
+	// Confirm signed afterwards RAN it, and only then failed to record the
+	// answer. The card's own state is read here, on every door: a card that
+	// is not open drops its decision and is refused as not open.
+	if s.ext.Attention != nil {
+		if card, err := s.ext.Attention.Get(ctx, id); err != nil || card.Status != attention.Open {
+			s.hostDecisions.take(id)
+			return true, errHostDecisionClosed
+		}
 	}
 	d, ok := s.hostDecisions.take(id)
 	if !ok {

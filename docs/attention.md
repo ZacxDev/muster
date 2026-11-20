@@ -93,7 +93,10 @@ taller than the screen still scrolls through).
   in place: the question and the why-it's-here line unclamp, and the card shows
   more — when it started waiting, a second line, a proposal's body, an
   officer's context. Tap it again (or its head) to collapse it. **View in
-  session** stays at the card's bottom either way.
+  session** stays at the card's bottom either way. A card with nothing more to
+  show (no second line, nothing its clamp cuts) draws no chevron and does not
+  expand: the browser measures the clamp, so a card can gain the chevron at a
+  narrower width.
 - **Swipe sideways** on the feed to move one tab, in the swipe's direction;
   the address follows. A swipe locks to one axis after a few pixels, so a
   vertical scroll never changes the tab, and a swipe that starts in the answer
@@ -503,7 +506,11 @@ same mic, and its card's **View in session** links the same session. The page
 posts to the same answer and dismiss routes as `/attention` and comes back to
 itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as
-answered (`internal/api/attention_ask_page.go`).
+answered (`internal/api/attention_ask_page.go`). Beside options, the answer box
+is folded behind a quiet **Other answer…**, which opens it with the caret in
+it (the options are the answer). An answer that cannot be posted (a server
+error, no network) is said in one line under the box; the page and the typed
+text stay, and the same tap sends it again.
 
 **The session's page counts the asker's open questions in its header.** An
 agent's page (the chief's included) and a window's rendered view draw a small
@@ -590,8 +597,12 @@ from the question and its options, grounded in them by the same filter:
   A **step-up confirmation card** is answered this way, and only this way:
   its **Confirm** and **Refuse** are notification buttons, and the phone's
   prompt shows the card's own text, which muster hands the phone with the
-  challenge (`confirms`). This page cannot answer a card
+  challenge (`confirms`). Neither this page nor the card on the Asks feed
+  can answer a card: both draw no Confirm, Refuse or answer box, only the
+  plain line *Confirm this on your phone.*, and **Dismiss**
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
+  A card that is dismissed (or expires) runs nothing: a Confirm signed on the
+  phone after that is refused as not open, and its request is dropped.
   It shows the card's title, why and preview (for a draft: the venue, the
   exact text and the media). The machine, the session, the call and its
   hash sit under a collapsed **Details**

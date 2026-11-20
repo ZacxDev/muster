@@ -865,6 +865,30 @@ test.describe('an ask’s answer boxes', () => {
     await mic.click();
     await expect(input, 'the recording landed in its box').toHaveValue(FAKE_TEXT);
   });
+  // AN ASK WITH OPTIONS (the asks audit, #14) draws its free-text row
+  // collapsed behind "Other answer…": opened, its mic records and the ↑ still
+  // answers, once, through Answer (aria-disabled while blank, never disabled).
+  test('with options, Other answer… opens the box and its ↑ answers once', async ({ page }) => {
+    const id = Number(fix('ask', '1', asker, 'Voice beside options?', 'Yes', 'No'));
+    await routeTranscribe(page);
+    const sent = answers(page, id);
+    await signIn(page, origin);
+    await page.goto(`${origin}/attention/asks/${id}`);
+    const mic = page.locator('#ask-dictate'), up = page.locator('#ask-dictate-send'), answer = page.locator('#ask-send');
+    await expect(mic, 'the collapsed row hides the mic').toBeHidden();
+    await page.locator('[data-ask-other]').click();
+    await expect(page.locator('#ask-input')).toBeFocused();
+    await expect(mic).toBeVisible();
+    await expect(answer).toHaveAttribute('aria-disabled', 'true');
+    await mic.click();
+    await expect(mic).toHaveAttribute('data-state', 'recording');
+    await expect(up).toBeVisible();
+    await page.waitForTimeout(1000);
+    await up.click();
+    await expect(page.locator('[data-ask-answer]')).toContainText(FAKE_TEXT);
+    expect(sent(), 'one answer post for one ↑').toBe(1);
+  });
+
   // 🔴 THE ↑ SENDS ONCE (operator decision 2026-11-12): a double tap on the ↑
   // arms it once (it is disabled from the first tap), and a REPEAT TAP on the
   // spot just after the send — where Answer is back by then — is swallowed

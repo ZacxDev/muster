@@ -1812,6 +1812,8 @@ and one tap decides it without opening muster:
    Cancelling the prompt sends nothing and leaves the card open.
 4. muster checks the signature against the key the phone paired with, spends
    the challenge, and runs the decision once (Confirm) or nothing (Refuse).
+   A card already dismissed, withdrawn or expired runs nothing: the answer is
+   refused as not open (`not_open`) and the request is dropped.
 
 🔴 **The tap does not weaken the gate.** It is the same signed ask action as
 any other ([design/android.md](design/android.md#the-signed-ask-actions-as-built)):

@@ -216,3 +216,63 @@ func TestAStepUpForOneDecisionCannotBeReplayedForAnother(t *testing.T) {
 	}
 	_ = devices.KeyBiometric
 }
+
+// TestADismissedStepUpCardRunsNothingOnALaterPhoneConfirm: a card dismissed
+// from the browser (the Asks dismiss route's one call, cancelAsk) or from the
+// paired phone's own dismiss action is closed, and the decision it held is
+// dropped: a phone Confirm signed after that is refused as not open (409),
+// and the call the card held never runs — the ask it would have answered
+// stays open.
+func TestADismissedStepUpCardRunsNothingOnALaterPhoneConfirm(t *testing.T) {
+	a := newActionRig(t)
+	hm := newHostOfficerMirrorFor(a.uid)
+	hm.list(hostOffHost, mirror.Window{ID: "@1", Session: "main", Claude: true, ClaudeSession: hostOffSess})
+	a.s.ext.Mirror = hm
+	a.s.ext.Agents = agents.NewPG(a.pool)
+	declareHostOfficerOn(t, a.s, a.uid, hostOffHost)
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: a.uid, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
+	c := toolCaller{asker: attention.Asker{MirrorHost: hostOffHost, MirrorSession: hostOffSess, Label: "main:1"}, mirrorWindow: "@1"}
+	gate := func(id int64) int64 {
+		out, ok := a.s.hostStepUpGate(ctx, hostOffHost, c, attentionAnswerTool, `{"id":`+strconv.FormatInt(id, 10)+`,"answer":"yes"}`)
+		if !ok {
+			t.Fatal("not gated")
+		}
+		return stepUpCardOf(t, out)
+	}
+	confirm := hostDecisionConfirm
+	phoneConfirm := func(card int64) (int, string) {
+		nonce, msg := a.challenge(t, a.tok, actionAskAnswer, card, &confirm)
+		return a.act(t, a.tok, "answer", card, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg), "answer": confirm})
+	}
+
+	for _, door := range []string{"browser", "phone"} {
+		t.Run(door, func(t *testing.T) {
+			x := a.askFor(t, a.uid, "Ship it from the "+door+"?")
+			card := gate(x)
+			switch door {
+			case "browser":
+				if _, err := a.s.cancelAsk(asUser(a.uid), card); err != nil {
+					t.Fatalf("dismiss the card: %v", err)
+				}
+			case "phone":
+				nonce, msg := a.challenge(t, a.tok, actionAskDismiss, card, nil)
+				if code, body := a.act(t, a.tok, "cancel", card, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg)}); code != http.StatusOK {
+					t.Fatalf("the phone's dismiss: %d %s", code, body)
+				}
+			}
+			if got := a.status(t, a.uid, card); got.Status != attention.Cancelled {
+				t.Fatalf("the card after its dismissal: %+v", got)
+			}
+			code, body := phoneConfirm(card)
+			if code != http.StatusConflict || !strings.Contains(body, actionCodeNotOpen) {
+				t.Fatalf("a phone confirm of a dismissed card: %d %s, want 409 %s", code, body, actionCodeNotOpen)
+			}
+			if got := a.status(t, a.uid, x); got.Status != attention.Open || got.Answer != "" {
+				t.Fatalf("the dismissed card's decision ran: the ask it held is %+v, want still open", got)
+			}
+			if _, ok := a.s.hostDecisions.peek(card); ok {
+				t.Fatal("the dismissed card's decision is still pending")
+			}
+		})
+	}
+}

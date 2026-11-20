@@ -310,6 +310,17 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	case it.Kind == attentionKindAsk && it.watchOnly != "":
 		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
 `)
+	case it.Kind == attentionKindAsk && it.stepUp != nil:
+		// 🔴 NO CONFIRM/REFUSE AND NO ANSWER BOX ON A STEP-UP CARD, as on its
+		// page (handleAskPage): only the paired phone answers it
+		// (errHostDecisionNeedsPhone refuses every other door). One status
+		// line in their place, never drawn as a control; Dismiss ends it, as
+		// it ends an answer row.
+		rowDismiss := ""
+		if inRow {
+			rowDismiss = dismiss
+		}
+		b.WriteString(`<div class="flex min-w-0 items-center gap-2" data-asks-stepup-row><div class="min-w-0 flex-1">` + askStepUpPhoneHTML("text-sm") + `</div>` + rowDismiss + "</div>\n")
 	case it.Kind == attentionKindAsk:
 		gate := asksCardFormAttrs(it.Key, attentionPath+`/asks/`+id+`/answer`)
 		if it.stepUpWhy != "" {

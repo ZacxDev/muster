@@ -104,6 +104,12 @@ async function ask(question: string): Promise<number> {
   return (JSON.parse(text) as { id: number }).id;
 }
 
+// askFree is an ask with no options: its answer box is the only way to answer.
+async function askFree(question: string): Promise<number> {
+  const text = await mcpCall('attention_ask', { question });
+  return (JSON.parse(text) as { id: number }).id;
+}
+
 // posts records every POST the page makes.
 function posts(page: Page): string[] {
   const seen: string[] = [];
@@ -183,6 +189,16 @@ for (const vp of [
       // Scrolling the content leaves the box where it is.
       await page.locator('#app-main').evaluate((e) => e.scrollTo(0, e.scrollHeight));
       expect((await page.locator('#app-compose').boundingBox())!.y).toBeCloseTo(compose.y, 0);
+
+      // With options, the free-text row is collapsed behind "Other answer…";
+      // opening it puts the caret in the box.
+      const other = page.locator('[data-ask-other]');
+      await expect(box, 'beside options the box is collapsed').toBeHidden();
+      await expect(other).toHaveText('Other answer…');
+      await other.tap();
+      await expect(box).toBeVisible();
+      await expect(box).toBeFocused();
+      await expect(other).toBeHidden();
 
       // Answer is DISABLED while the box is blank (a blank answer used to
       // round-trip to a server notice); a chip's fill enables it.
@@ -281,3 +297,92 @@ test.describe('desktop 1280×800', () => {
     await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
   });
 });
+
+// AN ANSWER THAT FAILS TO POST (the asks audit, #12): a server error or no
+// network is said in one line under the answer form; the page, the question
+// and the typed text stay, and the same tap sends it once the server is back.
+// An option's failed post is said the same way. RED before: the form was a
+// plain post, so a 500 replaced the whole page with the server's error.
+//
+// "OTHER ANSWER…" (the asks audit, #14): an ask with options draws its
+// free-text row collapsed; one without options draws it open.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`failed posts, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('an answer that fails to post says so under the form, keeps the text, and the same tap retries it', async ({ page }) => {
+      test.setTimeout(90_000);
+      hold = undefined;
+      await signIn(page, origin);
+      const q = `Which branch should the importer ship from? (${vp.name})`;
+      const id = await askFree(q);
+      let mode: 'error' | 'offline' | 'through' = 'error';
+      let tries = 0;
+      await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+        tries++;
+        if (mode === 'error') return r.fulfill({ status: 500, contentType: 'text/plain', body: 'internal error' });
+        if (mode === 'offline') return r.abort('internetdisconnected');
+        return r.continue();
+      });
+      await page.goto(origin + `/attention/asks/${id}`);
+      const box = page.locator('#ask-input'), send = page.locator('#ask-send'), err = page.locator('#ask-error');
+      await expect(page.locator('[data-ask-other]'), 'no options: the box is open').toHaveCount(0);
+      await expect(box).toBeVisible();
+      await expect(err).toBeHidden();
+      await box.fill('Cut it from main');
+      await send.click();
+      await expect(err).toBeVisible();
+      await expect(err).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
+      await expect(err).toHaveAttribute('role', 'alert');
+      expect(tries, 'the answer was posted once').toBe(1);
+      await expect(page).toHaveURL(origin + `/attention/asks/${id}`);
+      await expect(page.locator('[data-ask-question]'), 'the page is still the question').toHaveText(q);
+      await expect(box, 'the typed text is kept').toHaveValue('Cut it from main');
+      await expect(send).toBeEnabled();
+      // Under the form: below the box, inside the pinned answer area.
+      const eb = (await err.boundingBox())!, bb = (await box.boundingBox())!;
+      expect(eb.y, 'the error line is under the answer form').toBeGreaterThanOrEqual(bb.y + bb.height - 1);
+
+      mode = 'offline';
+      await send.click();
+      await expect(err).toHaveText("Your answer wasn't sent: muster couldn't be reached. Check your connection and try again.");
+      await expect(box).toHaveValue('Cut it from main');
+
+      // The server is back: the same tap answers.
+      mode = 'through';
+      await Promise.all([answered(page, id), send.click()]);
+      await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: Cut it from main');
+      await expect(err).toHaveCount(0);
+      expect(tries).toBe(3);
+    });
+
+    test('an option that fails to post says so too; the options keep the box behind Other answer…', async ({ page }) => {
+      test.setTimeout(90_000);
+      hold = undefined;
+      await signIn(page, origin);
+      const id = await ask(question('failed option ' + vp.name));
+      let fail = true;
+      await page.route(`**/attention/asks/${id}/answer`, (r) => (fail ? r.fulfill({ status: 502, body: 'bad gateway' }) : r.continue()));
+      await page.goto(origin + `/attention/asks/${id}`);
+      const other = page.locator('[data-ask-other]'), box = page.locator('#ask-input');
+      await expect(box).toBeHidden();
+      await expect(other).toBeVisible();
+      await expect(other).toHaveAttribute('aria-expanded', 'false');
+      expect((await other.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      await page.getByRole('button', { name: 'wait until Monday', exact: true }).click();
+      await expect(page.locator('#ask-error')).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
+      await expect(page.locator('[data-ask-option]')).toHaveCount(2);
+      // Other answer… opens the box, focused; typed text answers.
+      await other.click();
+      await expect(box).toBeVisible();
+      await expect(box).toBeFocused();
+      await expect(page.locator('#ask-answer')).toBeVisible();
+      fail = false;
+      await box.fill('Monday, after the backup');
+      await Promise.all([answered(page, id), page.locator('#ask-send').click()]);
+      await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: Monday, after the backup');
+    });
+  });
+}

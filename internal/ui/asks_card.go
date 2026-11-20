@@ -257,7 +257,9 @@ const AsksFeedNoticeHTML = `<p id="asks-feed-notice" role="alert" class="` + Ask
 //
 //   - EXPAND: a click on a card's head, or anywhere on the card outside its
 //     controls (and not ending a text selection), toggles data-expanded. Which
-//     cards are open outlives the live refresh (by id).
+//     cards are open outlives the live refresh (by id). A card with nothing
+//     more to show (no more region, nothing its clamp cuts: data-asks-nomore)
+//     draws no chevron and does not expand.
 //   - ANSWER AND DISMISS go by htmx (the card's forms carry hx-post to the
 //     queue's own routes, hx-swap none; internal/api asksCardRequest answers
 //     them 204 on success, or their status with a small error fragment,
@@ -301,7 +303,37 @@ var asksFeedJS = `(function () {
     var p = document.querySelector('[data-asks-tabs] [role="tabpanel"]:not([hidden])');
     return p ? (p.querySelector('[data-asks-feed]') || p) : document.querySelector('[data-asks-page-card]');
   }
+  // NOTHING MORE TO SHOW: a collapsed card with no more region whose clamped
+  // lines (the question, the context line) already fit shows nothing new when
+  // expanded, so its chevron is not drawn and a tap on it toggles nothing
+  // (data-asks-nomore; the CSS hides the chevron). Measured, not guessed: the
+  // clamp is the browser's, so only a rendered card can say whether it cuts.
+  // A card not on screen (a hidden tab's) or already open is left as it is.
+  function hasMore(card) {
+    if (card.querySelector('[data-asks-card-more]')) return true;
+    var cl = card.querySelectorAll('.asks-clamp, .asks-clamp-1');
+    for (var i = 0; i < cl.length; i++) if (cl[i].scrollHeight > cl[i].clientHeight + 1) return true;
+    return false;
+  }
+  function markMore(root) {
+    Array.prototype.forEach.call((root || document).querySelectorAll(CARD), function (c) {
+      if (c.hasAttribute('data-asks-fixed') || c.getAttribute('data-expanded') === 'true' || c.offsetParent === null) return;
+      var t = c.querySelector('[data-asks-toggle]');
+      if (hasMore(c)) {
+        c.removeAttribute('data-asks-nomore');
+        if (t) { t.removeAttribute('aria-disabled'); t.setAttribute('aria-expanded', 'false'); }
+      } else {
+        c.setAttribute('data-asks-nomore', '');
+        if (t) { t.setAttribute('aria-disabled', 'true'); t.removeAttribute('aria-expanded'); }
+      }
+    });
+  }
+  var markTimer = 0;
+  function markSoon() { clearTimeout(markTimer); markTimer = setTimeout(function () { markMore(document); }, 50); }
+  window.addEventListener('resize', markSoon);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(markSoon);
   function setExpanded(card, on) {
+    if (on && card.hasAttribute('data-asks-nomore')) return;
     card.setAttribute('data-expanded', on ? 'true' : 'false');
     var t = card.querySelector('[data-asks-toggle]');
     if (t) t.setAttribute('aria-expanded', on ? 'true' : 'false');
@@ -615,6 +647,7 @@ var asksFeedJS = `(function () {
     if (window.htmx) try { window.htmx.process(list); } catch (err) {}
     if (focusId) { var f = document.getElementById(focusId); if (f && list.contains(f)) focusCard(f); }
     if (open) count();
+    markMore(list);
   });
   // Which card had focus when a refresh replaced it (focusout fires first),
   // per feed.
@@ -643,13 +676,13 @@ var asksFeedJS = `(function () {
   }
   function watchTabs() { lastTab = selIndex(); }
   // A tab change recounts (the count is the Open feed's, whatever is shown).
-  document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(count, 0); });
+  document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) { setTimeout(count, 0); setTimeout(markSoon, 0); } });
   document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(slide, 0); });
   document.addEventListener('keydown', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(slide, 0); });
   function remember() { Array.prototype.forEach.call(document.querySelectorAll('[data-asks-feed][id]'), function (l) { known[l.id] = ids(l); }); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { watchTabs(); remember(); });
-  else { watchTabs(); remember(); }
-  document.addEventListener('htmx:load', function () { watchTabs(); remember(); });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { watchTabs(); remember(); markMore(document); });
+  else { watchTabs(); remember(); markMore(document); }
+  document.addEventListener('htmx:load', function () { watchTabs(); remember(); markSoon(); });
 
   // THE SWIPE is the shared tab swipe's (tab_swipe.go): the feed area is
   // its [data-tab-swipe] over #asks-tabs.

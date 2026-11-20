@@ -2262,6 +2262,10 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	// call it holds runs once — before the answer is recorded; any other door
 	// is refused and the card stays open.
 	if handled, err := s.hostDecisionForAnswer(ctx, id, answer); handled && err != nil {
+		if errors.Is(err, attention.ErrNotOpen) {
+			// A card closed meanwhile: its state, for the refusal's words.
+			a, _ = s.ext.Attention.Get(ctx, id)
+		}
 		return a, err
 	}
 	// A dispatch card whose hold lapsed (hold_lapse.go): nothing is recorded;

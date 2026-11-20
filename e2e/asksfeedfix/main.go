@@ -12,7 +12,8 @@
 //
 //   - a running agent <agent-name> (no credentials: nothing here calls /mcp);
 //   - its question WITH options ("Deploy the importer to staging now?"), linked
-//     to a task, with two suggested replies;
+//     to a task, with two suggested replies; four lines, more than a card's
+//     three-line clamp, so expanding its card shows more (its chevron drawn);
 //   - its FREE-TEXT question ("Which branch should the release be cut from?");
 //   - a second question with options ("Rotate the staging key?"), so answering
 //     one card leaves another to move focus to;
@@ -142,7 +143,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool, owner int64, name string) err
 	if _, err := mk("freetext", attention.New{Asker: agent, Question: "Which branch should the release be cut from?"}); err != nil {
 		return err
 	}
-	deploy, err := mk("deploy", attention.New{Asker: agent, Question: "Deploy the importer to staging now?\n\nThe tests pass; the last deploy was two days ago.",
+	deploy, err := mk("deploy", attention.New{Asker: agent, Question: "Deploy the importer to staging now?\n\nThe tests pass; the last deploy was two days ago.\nA rollback is one command.",
 		Options: []string{"Deploy now", "Wait until tomorrow"}})
 	if err != nil {
 		return err

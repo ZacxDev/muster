@@ -768,6 +768,11 @@ html:has([data-asks-feed]) {
 .asks-card[data-expanded="true"] .asks-chevron {
   transform: rotate(180deg);
 }
+/* A card with nothing more to show (the feed's script: data-asks-nomore)
+   draws no chevron: expanding it would reveal nothing. */
+.asks-card[data-asks-nomore] .asks-chevron {
+  display: none;
+}
 /* A <details> whose <summary> draws the chevron (a step-up card's Details):
    it turns with [open], whatever card it sits in. */
 details[data-stepup-details]:not([open]) > summary .asks-chevron {

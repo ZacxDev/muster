@@ -209,12 +209,30 @@ const (
 	// askStepUpPhoneLine replaces a step-up card's options and answer box:
 	// the browser can never answer one (errHostDecisionNeedsPhone).
 	askStepUpPhoneLine = "Confirm this on your phone."
+	// askOtherAnswerLabel opens the free-text answer row an ask with options
+	// draws collapsed (askComposerHTML).
+	askOtherAnswerLabel = "Other answer…"
+	// askOtherAnswerClass is that control: quiet, a text link's weight —
+	// the options above it are the page's primary action.
+	askOtherAnswerClass = "inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	// askErrorClass is the inline line under the answer form when an answer
+	// could not be posted (askPageScript).
+	askErrorClass = "px-1 pt-2 text-sm text-st-error-fg"
 	// askSendClass is Answer when it is the page's primary action (no options).
 	askSendClass = "press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90 " + ui.AsksSendDisabledClass
 	// askDismissLinkClass is Dismiss drawn as a text link, beside options
 	// that are the primary action.
 	askDismissLinkClass = "inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 )
+
+// askStepUpPhoneHTML is a step-up card's one line in place of its options and
+// answer box, on the ask page and the feed's card alike: plain text in the
+// card's secondary colour — no border, no fill, no button weight — since
+// nothing here can be tapped (only the paired phone answers the card).
+// size is its text size class.
+func askStepUpPhoneHTML(size string) string {
+	return `<p class="break-words ` + size + ` text-fg2" data-ask-stepup-phone>` + askStepUpPhoneLine + `</p>`
+}
 
 // askClosedState is a settled ask's state in words: the ask page's heading and
 // its live region's outcome line.
@@ -288,8 +306,9 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 	}
 	if a.StepUp != nil {
 		// A step-up card is answered only from the paired phone
-		// (errHostDecisionNeedsPhone): no options, no suggestions, one line.
-		return `<p class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-ask-stepup-phone>` + askStepUpPhoneLine + `</p>`
+		// (errHostDecisionNeedsPhone): no options, no suggestions, one line —
+		// a status line, never drawn as a control (askStepUpPhoneHTML).
+		return askStepUpPhoneHTML("text-base")
 	}
 	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
 		b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
@@ -339,11 +358,19 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 		}
 	}
 	send := askSendClass
+	// QUIET: the options are the answer, so the free-text row is drawn
+	// collapsed behind "Other answer…" (askPageScript opens it and moves focus
+	// into the box). The form stays in the document, hidden: the option
+	// buttons submit it (form="ask-answer").
+	other, formHidden := "", ""
 	if quiet {
 		send = ui.AsksCardSendQuietClass + " " + ui.AsksSendDisabledClass
+		other = `<button type="button" class="` + askOtherAnswerClass + `" aria-controls="ask-answer" aria-expanded="false" data-ask-other>` + askOtherAnswerLabel + `</button>
+`
+		formHidden = ` hidden`
 	}
 	return `<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
-` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer>
+` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + other + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer` + formHidden + `>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
 <label for="ask-input" class="sr-only">Your answer</label>
 <textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
@@ -351,35 +378,98 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 ` + ui.DictateWaveHTML(dictate, "ask-dictate") + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") +
 		ui.DictateSendHTML(dictate, "ask-dictate", "ask-send", ui.DictateSendPill) +
 		`<button type="submit" id="ask-send" class="` + send + `" aria-disabled="true" data-ask-send>Answer</button>
-</form>` + ui.DictateScriptHTML(dictate)
+</form>
+<p id="ask-error" role="alert" class="` + askErrorClass + `" hidden data-ask-error></p>` + ui.DictateScriptHTML(dictate)
 }
+
+// What the ask page says under its answer form when an answer could not be
+// posted (askPageScript): the server failed, or it could not be reached.
+const (
+	askPostFailedText  = "Your answer wasn't sent: muster couldn't record it. Try again."
+	askPostOfflineText = "Your answer wasn't sent: muster couldn't be reached. Check your connection and try again."
+)
 
 // askPageScript: a suggestion chip fills the answer box (and grows it to its
 // text); the box grows as it is typed in; Answer is enabled only while the box
 // holds text (it is drawn aria-disabled: the box starts empty), and a blank
-// answer is not posted. Nothing here sends.
+// answer is not posted. A chip never sends; the answer form's own submit (an
+// option, Answer, the mic's ↑ clicking Answer) is posted in place, so a post
+// that fails is said inline (#ask-error) with the typed text kept. "Other
+// answer…" opens the collapsed free-text row of an ask with options.
 const askPageScript = `<script>
 (function () {
   // The answer box is drawn AFTER this script (it is pinned below the
   // content), so it is looked up when used, never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
   function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
-  // A blank answer is not posted (Answer is aria-disabled, not disabled:
-  // ui.AsksSendDisabledClass says why): the box is focused instead.
-  document.addEventListener('submit', function (e) {
+  // OTHER ANSWER…: an ask with options draws its free-text row collapsed
+  // (askComposerHTML); opening it shows the row and puts the caret in the box.
+  function openOther(focus) {
+    var f = document.getElementById('ask-answer'), o = document.querySelector('[data-ask-other]');
+    if (!f || !f.hidden) return;
+    f.hidden = false;
+    if (o) { o.setAttribute('aria-expanded', 'true'); o.hidden = true; }
     var b = document.getElementById('ask-input');
-    if (!b || e.target.id !== 'ask-answer' || !e.submitter || e.submitter.id !== 'ask-send' || b.value.trim()) return;
+    if (b && focus) b.focus();
+  }
+  function errorLine(text) {
+    var el = document.getElementById('ask-error');
+    if (!el) return;
+    el.textContent = text || '';
+    el.hidden = !text;
+  }
+  // THE ANSWER IS POSTED IN PLACE: on success the page goes where the
+  // server's redirect says (the same page, settled, or with its notice), as
+  // the plain form post did; a post that FAILS (a server error, no network)
+  // says so in one line under the form and keeps the page — the typed text
+  // included — so the same tap retries it. Without fetch the form posts as
+  // before.
+  var posting = false;
+  document.addEventListener('submit', function (e) {
+    var f = e.target, b = document.getElementById('ask-input');
+    if (!b || !f || f.id !== 'ask-answer') return;
+    // A blank answer is not posted (Answer is aria-disabled, not disabled:
+    // ui.AsksSendDisabledClass says why): the box is focused instead.
+    if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim()) { e.preventDefault(); b.focus(); return; }
+    if (!window.fetch || !window.URLSearchParams || !window.FormData) return;
     e.preventDefault();
-    b.focus();
+    if (posting) return;
+    var data;
+    try { data = new FormData(f, e.submitter || undefined); } catch (err) {
+      data = new FormData(f);
+      if (e.submitter && e.submitter.name) data.append(e.submitter.name, e.submitter.value);
+    }
+    posting = true;
+    errorLine('');
+    f.setAttribute('aria-busy', 'true');
+    function failed(text) {
+      posting = false;
+      f.removeAttribute('aria-busy');
+      errorLine(text);
+    }
+    fetch(f.action, { method: 'POST', body: new URLSearchParams(data), credentials: 'same-origin', headers: { 'Accept': 'text/html' } }).then(function (r) {
+      if (r.ok) { window.location.assign(r.url || window.location.href); return; }
+      failed(` + "`" + askPostFailedText + "`" + `);
+    }, function () {
+      failed(` + "`" + askPostOfflineText + "`" + `);
+    });
   });
   document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') { grow(e.target); gate(e.target); } });
-  // A box the browser restored (back, a reload) holds text: Answer follows it.
-  window.addEventListener('pageshow', function () { var b = document.getElementById('ask-input'); if (b) gate(b); });
+  // A box the browser restored (back, a reload) holds text: Answer follows
+  // it, and a collapsed row holding text is shown.
+  window.addEventListener('pageshow', function () {
+    var b = document.getElementById('ask-input');
+    if (!b) return;
+    if (b.value.trim()) openOther(false);
+    gate(b);
+  });
   document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('[data-ask-other]')) { e.preventDefault(); openOther(true); return; }
     var chip = e.target.closest && e.target.closest('[data-ask-suggestion]');
     var b = document.getElementById('ask-input');
     if (!chip || !b) return;
     e.preventDefault();
+    openOther(false);
     var t = chip.getAttribute('data-text') || '';
     b.value = b.value.trim() ? b.value.replace(/\s+$/, '') + '\n' + t : t;
     grow(b);
