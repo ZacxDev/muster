@@ -20,11 +20,8 @@
 -- and each migration's ROLLBACK list to the previous migration's.
 --
 -- Must apply after 0165 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
--- another migration takes 0166 first (and db/rollback.go's
--- pluginTasksCapabilityMigrationVersion with it). Idempotent. 🔴 db.RLSOn
--- RE-APPLIES IT after 0141, whose body replaces plugins_capabilities_known
--- with a list lacking tasks — so a capability migration after this one must
--- be re-applied by RLSOn too, after this one.
+-- another migration takes 0166 first. Idempotent. 0141's body (which db.RLSOn
+-- re-applies) is guarded so that it no longer narrows the CHECK this sets.
 --
 -- ROLLBACK (roll the image back first; an older image does not know the
 -- capability):
@@ -48,11 +45,22 @@
 
 SET LOCAL lock_timeout = '3s';
 
-ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
-ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
-    CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension', 'tasks']::text[]);
-
-ALTER TABLE public.plugin_pair_requests DROP CONSTRAINT IF EXISTS plugin_pair_requests_capabilities_check;
-ALTER TABLE public.plugin_pair_requests ADD CONSTRAINT plugin_pair_requests_capabilities_check
-    CHECK (capabilities <@ ARRAY['messages', 'draft_checks', 'tasks']::text[]
-           AND ('messages' = ANY (capabilities) OR 'tasks' = ANY (capabilities)));
+-- Each CHECK is replaced only while the live one does not yet admit 'tasks',
+-- so a re-application (or a later, wider list) is left alone — as 0141 is
+-- guarded, and as a later capability migration must guard its own.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugins_capabilities_known'
+                   AND conrelid = 'public.plugins'::regclass AND pg_get_constraintdef(oid) LIKE '%''tasks''%') THEN
+    ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
+    ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
+        CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension', 'tasks']::text[]);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugin_pair_requests_capabilities_check'
+                   AND conrelid = 'public.plugin_pair_requests'::regclass AND pg_get_constraintdef(oid) LIKE '%''tasks''%') THEN
+    ALTER TABLE public.plugin_pair_requests DROP CONSTRAINT IF EXISTS plugin_pair_requests_capabilities_check;
+    ALTER TABLE public.plugin_pair_requests ADD CONSTRAINT plugin_pair_requests_capabilities_check
+        CHECK (capabilities <@ ARRAY['messages', 'draft_checks', 'tasks']::text[]
+               AND ('messages' = ANY (capabilities) OR 'tasks' = ANY (capabilities)));
+  END IF;
+END $$;

@@ -161,6 +161,13 @@ func TestPluginCapabilityChecksMatchGo(t *testing.T) {
 	}
 	pool := freshAt(ctx, t, "ms_plugin_cap_checks", latest)
 	checkLive(t, pool, "after the migrations")
+	// A live row holding the newest capability: an older body re-applied by
+	// RLSOn that re-adds a narrower CHECK fails on it, as well as narrowing.
+	newest := string(plugins.KnownCapabilities[len(plugins.KnownCapabilities)-1])
+	if _, err := pool.Exec(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities)
+		VALUES (1, 'example-newest', 'Example', 'hash-newest', 'none', ARRAY[$1]::text[])`, newest); err != nil {
+		t.Fatalf("a plugin with %s: %v", newest, err)
+	}
 	// db.RLSOff then db.RLSOn (a real rollback mode, and what api tests do to a
 	// shared database) re-applies older migration bodies, 0141's among them,
 	// which replaces plugins_capabilities_known: the lists must survive it.

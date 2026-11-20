@@ -56,9 +56,21 @@
 
 SET LOCAL lock_timeout = '3s';
 
-ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
-ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
-    CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension']::text[]);
+-- 🔴 GUARDED: db.RLSOn RE-APPLIES THIS BODY on every RLS cycle. Unguarded, it
+-- replaced plugins_capabilities_known with this list even after a later
+-- migration (0166) had widened it, refusing every newer capability — and
+-- failing outright once a row held one. It replaces the CHECK only while the
+-- live one does not yet admit chief_extension (a later list always does:
+-- internal/db TestPluginCapabilityChecksMatchGo).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugins_capabilities_known'
+                   AND conrelid = 'public.plugins'::regclass AND pg_get_constraintdef(oid) LIKE '%''chief_extension''%') THEN
+    ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
+    ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
+        CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension']::text[]);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS public.plugin_chief_instructions (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
