@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -190,9 +191,12 @@ func (s *Server) WaitForConnectorBlocks() {
 }
 
 // blockStatuses are the item statuses an approval reads to tell how each
-// blocked item stands: escalated (re-run), done (skipped: finished done or
-// no_action) and the live ones (skipped: still being worked).
-var blockStatuses = []string{officers.StatusEscalated, officers.StatusDone, officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting}
+// blocked item stands: the live ones (skipped: still being worked),
+// escalated (re-run) and done (skipped: finished done or no_action). Done is
+// LAST: it is HQ's whole history, and StatusesOf stops once every blocked
+// item is found, so an item still claimed (or escalated) is answered from
+// the short lists without reading done at all.
+var blockStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated, officers.StatusDone}
 
 // rerunBlocked asks HQ to re-run each item recorded as blocked on approved
 // grant g of officer o's instance that finished escalated, newest first,
@@ -202,7 +206,9 @@ var blockStatuses = []string{officers.StatusEscalated, officers.StatusDone, offi
 // 🔴 IT READS ONLY THE ITEMS THE GRANT BLOCKED, A SMALL PAGE AT A TIME. How
 // each recorded item stands is read with officers.StatusesOf: every status
 // list paged to its end at officers.StatusPageLimit (halved for a page still
-// over the answer cap), stopping once every recorded item is found. It used
+// over the answer cap, then grown back), the short lists first and done
+// last, stopping once every recorded item is found; a list that stops at
+// officers.MaxStatusPages is logged as such. It used
 // to read each status as up to five pages of 100 (AllItems), and one page of
 // 100 escalated items was over muster's 1 MiB cap: the whole re-run gave up,
 // and the approved grant's items were never re-run.
@@ -237,9 +243,14 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 		defer cancel()
 		return b0.Items(cctx, q)
 	}
-	status, err := officers.StatusesOf(octx, page, blockStatuses, want)
+	read, err := officers.StatusesOf(octx, page, blockStatuses, want)
 	if err != nil {
 		return fmt.Errorf("HQ's items: %w", err)
+	}
+	status := read.Of
+	for _, st := range read.Bounded {
+		s.logger.Printf("officers: grant %d approved: %s's %s list read stopped at the page bound (%d pages of up to %d) with items left; a blocked item beyond it is not known to be gone",
+			g.ID, o.ID, st, officers.MaxStatusPages, officers.StatusPageLimit)
 	}
 	req := officers.RerunRequest{Key: officers.GrantRerunKey(g.ID),
 		Reason: "connector " + g.Connector + " grant " + strconv.FormatInt(g.ID, 10) + " was approved; the item had escalated while refused it"}
@@ -253,6 +264,11 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 		switch status[b.Item] {
 		case officers.StatusEscalated:
 		case "":
+			if len(read.Bounded) > 0 {
+				s.logger.Printf("officers: grant %d approved: %s item %s not found before the page bound of the %s list(s); left unsettled (the grant's next approval or POST /ui/connector-grants/%d/rerun tries again)",
+					g.ID, o.ID, b.Item, strings.Join(read.Bounded, ", "), g.ID)
+				continue
+			}
 			s.logger.Printf("officers: grant %d approved: HQ listed no %s item %s in any status read; left unsettled (the grant's next approval or POST /ui/connector-grants/%d/rerun tries again)",
 				g.ID, o.ID, b.Item, g.ID)
 			continue

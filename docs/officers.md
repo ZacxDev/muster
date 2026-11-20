@@ -1060,11 +1060,16 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   An item HQ does not list in any status stays unsettled too. A builtin
   officer's backend re-runs nothing (no `rerun` capability); muster logs it.
 - **Reads only what it needs, a small page at a time.** How each recorded
-  item stands is read by paging each status list (escalated, done, open,
-  claimed, waiting) to its end, 25 items a page (`officers.StatusPageLimit`),
-  and stopping as soon as every recorded item is found. A page still over
-  muster's 1 MiB answer cap is asked again at half the size, down to one
-  item. (It used to read pages of 100, and one page of 100 large escalated
+  item stands is read by paging each status list to its end, the short live
+  lists first and HQ's done history last (open, claimed, waiting, escalated,
+  done), 25 items a page (`officers.StatusPageLimit`), and stopping as soon
+  as every recorded item is found: an item still being worked is answered
+  without reading done at all. A page still over muster's 1 MiB answer cap
+  is asked again at half the size, down to one item, and the page after it
+  at double the size, back up to 25. A list still unread after 400 pages
+  (`officers.MaxStatusPages`) is logged as stopped at the page bound, and an
+  item not found before it is logged as such (not as absent from HQ); it
+  stays unsettled. (It used to read pages of 100, and one page of 100 large escalated
   items was over the cap: the whole re-run gave up and nothing was re-run.)
 - **Not retried.** When the record or HQ's items cannot be read, the re-run
   logs one line naming the grant and why; the blocked items stay unsettled

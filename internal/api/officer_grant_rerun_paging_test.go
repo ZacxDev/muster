@@ -58,3 +58,85 @@ func TestABlockedItemsReRunSurvivesAnEscalatedListOverTheCap(t *testing.T) {
 		t.Fatalf("%d blocks left unsettled after every one was re-run", r.blocks(rrGitHub))
 	}
 }
+
+// doneReads counts the HQ reads of the done list.
+func (r *rerunRig) doneReads() int {
+	n := 0
+	for _, q := range r.hq.Requests() {
+		if q.Method == "GET" && strings.HasSuffix(q.Path, "/items") && strings.Contains(q.Query, "status=done") {
+			n++
+		}
+	}
+	return n
+}
+
+// addDone adds n items that finished done (HQ's history).
+func (r *rerunRig) addDone(n int) {
+	for i := 0; i < n; i++ {
+		r.hq.Complete(r.hq.AddItem(rrOff, rrKind, "example-org/example-infra#d"+strconv.Itoa(i)))
+	}
+}
+
+// TestAStillClaimedBlockedItemReadsNoDonePage: the blocked item is still
+// claimed and HQ's done history is long. The approval answers it from the
+// short live lists and reads NO page of done (it used to read done, all of
+// it, before the live lists). CONTROL: the done list is long enough to take
+// several pages, and the item is settled as still being worked.
+func TestAStillClaimedBlockedItemReadsNoDonePage(t *testing.T) {
+	r := newRerunRig(t)
+	item := r.held("example-org/example-infra#9201")
+	r.refuse(officers.GitHubConnector)
+	r.addDone(4*officers.StatusPageLimit + 3)
+	before := r.doneReads()
+	r.approve(rrGitHub)
+	if n := r.doneReads() - before; n != 0 {
+		t.Fatalf("the approval read %d done page(s), want 0: item %s is still claimed; log:\n%s", n, item, r.logs.String())
+	}
+	if len(r.hq.Reruns()) != 0 || r.blocks(rrGitHub) != 0 {
+		t.Fatalf("re-runs %+v, %d blocks unsettled; want none re-run and the claimed item settled", r.hq.Reruns(), r.blocks(rrGitHub))
+	}
+	if !strings.Contains(r.logs.String(), "item "+item+" is claimed, not escalated") {
+		t.Fatalf("no claimed-skip line for %s; log:\n%s", item, r.logs.String())
+	}
+}
+
+// TestABlockedItemPastThePageBoundIsNotLoggedAsGone: a blocked item HQ no
+// longer has, with a done history past officers.MaxStatusPages pages. The
+// read stops at the bound and the log says so, naming the list and the
+// bound, and the item as not found BEFORE the bound — never "HQ listed no …
+// item in any status read". The block stays unsettled. CONTROL: with a short
+// done history the same item IS logged as listed in no status.
+func TestABlockedItemPastThePageBoundIsNotLoggedAsGone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		done    int
+		want    []string
+		notWant string
+	}{
+		{"past the bound", officers.MaxStatusPages*officers.StatusPageLimit + 10,
+			[]string{"done list read stopped at the page bound (400 pages of up to 25)", "not found before the page bound of the done list(s)"},
+			"in any status read"},
+		{"control: a short history", 30, []string{"in any status read"}, "page bound"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRerunRig(t)
+			item := r.held("example-org/example-infra#9301")
+			r.refuse(officers.GitHubConnector)
+			r.hq.Forget(item)
+			r.addDone(tc.done)
+			r.approve(rrGitHub)
+			logs := r.logs.String()
+			for _, w := range tc.want {
+				if !strings.Contains(logs, w) {
+					t.Fatalf("log lacks %q; log:\n%s", w, logs)
+				}
+			}
+			if strings.Contains(logs, tc.notWant) {
+				t.Fatalf("log has %q; log:\n%s", tc.notWant, logs)
+			}
+			if r.blocks(rrGitHub) != 1 {
+				t.Fatalf("%d blocks unsettled, want 1 (the item not found stays unsettled)", r.blocks(rrGitHub))
+			}
+		})
+	}
+}

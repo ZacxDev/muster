@@ -70,7 +70,7 @@ func TestStatusesOfFollowsPagingToTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[last] != officers.StatusEscalated {
+	if got.Of[last] != officers.StatusEscalated {
 		t.Fatalf("the last item of %d was not found: %v", n, got)
 	}
 	wantPages := (n + officers.StatusPageLimit - 1) / officers.StatusPageLimit
@@ -111,7 +111,7 @@ func TestStatusesOfHalvesAPageOverTheCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id := range want {
-		if got[id] != officers.StatusEscalated {
+		if got.Of[id] != officers.StatusEscalated {
 			t.Fatalf("item %s not found over the cap: %v (requests %v)", id, got, p.calls)
 		}
 	}
@@ -131,7 +131,7 @@ func TestStatusesOfStopsOnceEveryItemIsFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["101"] != officers.StatusEscalated || got["201"] != officers.StatusDone {
+	if got.Of["101"] != officers.StatusEscalated || got.Of["201"] != officers.StatusDone {
 		t.Fatalf("statuses %v", got)
 	}
 	// escalated: three pages of 25 (60 items); done: the first page holds 201.
@@ -146,7 +146,7 @@ func TestStatusesOfReturnsAReadFailure(t *testing.T) {
 	boom := errors.New("HQ unavailable")
 	p := &pagedList{fail: fmt.Errorf("%w: GET items", boom)}
 	got, err := officers.StatusesOf(context.Background(), p.items, []string{officers.StatusEscalated}, map[officers.ItemID]bool{"1": true})
-	if !errors.Is(err, boom) || got != nil {
+	if !errors.Is(err, boom) || got.Of != nil {
 		t.Fatalf("got %v, %v; want the failure", got, err)
 	}
 	// One item alone over the cap is an error too.
@@ -154,5 +154,68 @@ func TestStatusesOfReturnsAReadFailure(t *testing.T) {
 		size: func(officers.Item) int { return 10 }, capBytes: 5}
 	if _, err := officers.StatusesOf(context.Background(), big.items, []string{officers.StatusEscalated}, map[officers.ItemID]bool{"2": true}); !errors.Is(err, officers.ErrHQAnswerTooLarge) {
 		t.Fatalf("one item over the cap: %v, want ErrHQAnswerTooLarge", err)
+	}
+}
+
+// TestStatusesOfReportsThePageBound: a list longer than MaxStatusPages pages
+// stops at the bound, and says so (Bounded names the status) rather than
+// reading as "not listed"; the next status is still read. CONTROL: a list of
+// exactly MaxStatusPages full pages ends on its last page and is NOT bounded.
+func TestStatusesOfReportsThePageBound(t *testing.T) {
+	full := officers.MaxStatusPages * officers.StatusPageLimit
+	beyond := officers.ItemID(strconv.Itoa(full + 7))
+	p := &pagedList{byStatus: map[string][]officers.Item{officers.StatusDone: listOf(officers.StatusDone, full+10, 1)},
+		size: func(officers.Item) int { return 1 }, capBytes: 1 << 20}
+	got, err := officers.StatusesOf(context.Background(), p.items, []string{officers.StatusDone, officers.StatusWaiting}, map[officers.ItemID]bool{beyond: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Of[beyond]; ok || len(got.Bounded) != 1 || got.Bounded[0] != officers.StatusDone {
+		t.Fatalf("got %+v; want %s absent and Bounded [done]", got, beyond)
+	}
+	if len(p.calls) != 400+1 || p.calls[400] != "waiting/25/" {
+		t.Fatalf("%d requests (last %q); want 400 done pages then 1 waiting page", len(p.calls), p.calls[len(p.calls)-1])
+	}
+
+	exact := &pagedList{byStatus: map[string][]officers.Item{officers.StatusDone: listOf(officers.StatusDone, full, 1)},
+		size: func(officers.Item) int { return 1 }, capBytes: 1 << 20}
+	got, err = officers.StatusesOf(context.Background(), exact.items, []string{officers.StatusDone}, map[officers.ItemID]bool{"absent": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Bounded) != 0 || len(exact.calls) != 400 {
+		t.Fatalf("control: a list of exactly %d items read %d pages, Bounded %v; want 400 pages, not bounded", full, len(exact.calls), got.Bounded)
+	}
+}
+
+// TestStatusesOfGrowsThePageBackAfterAHalving: one item (id 10) fits a page
+// only alone; the pages after it are asked at double the size each time,
+// back up to StatusPageLimit and never past it, so the list's reach is not
+// cut to one item a page for the rest of the status.
+func TestStatusesOfGrowsThePageBackAfterAHalving(t *testing.T) {
+	size := func(it officers.Item) int {
+		if it.ID == "10" {
+			return 995
+		}
+		return 10 // 25 × 10 fits the cap
+	}
+	p := &pagedList{byStatus: map[string][]officers.Item{officers.StatusEscalated: listOf(officers.StatusEscalated, 100, 0)}, size: size, capBytes: 1000}
+	got, err := officers.StatusesOf(context.Background(), p.items, []string{officers.StatusEscalated}, map[officers.ItemID]bool{"99": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Of["99"] != officers.StatusEscalated {
+		t.Fatalf("item 99 not found: %+v", got)
+	}
+	want := []string{
+		"escalated/25/", "escalated/12/", "escalated/6/", // 0..5
+		"escalated/12/6", "escalated/6/6", "escalated/3/6", // 6..8
+		"escalated/6/9", "escalated/3/9", "escalated/1/9", // 9
+		"escalated/2/10", "escalated/1/10", // 10 alone
+		"escalated/2/11", "escalated/4/13", "escalated/8/17", "escalated/16/25",
+		"escalated/25/41", "escalated/25/66", "escalated/25/91",
+	}
+	if fmt.Sprint(p.calls) != fmt.Sprint(want) {
+		t.Fatalf("requests\n %v\nwant\n %v", p.calls, want)
 	}
 }

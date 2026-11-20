@@ -977,6 +977,14 @@ func (s *Server) Escalate(id string) {
 	it.Status, it.Outcome, it.ClaimedBy, it.LeaseExpiresAt = "escalated", "escalated", "", nil
 }
 
+// Forget removes item id, so no status list holds it (an item HQ no longer
+// has).
+func (s *Server) Forget(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.items, id)
+}
+
 // Notice is one accepted sensitive-path notice.
 type Notice struct {
 	Officer string
