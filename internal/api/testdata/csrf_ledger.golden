@@ -250,6 +250,7 @@ cookie POST /transcribe
 cookie POST /ui/chief/fleet/actions/{id}/{verb}
 cookie POST /ui/chief/fleet/bulk
 cookie POST /ui/chief/fleet/chat
+cookie POST /ui/connector-grants/{id}/rerun
 cookie POST /ui/connector-requests/{id}/approve
 cookie POST /ui/connector-requests/{id}/deny
 cookie POST /uploads
