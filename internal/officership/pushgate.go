@@ -129,12 +129,14 @@ type PushGate struct {
 	// (prqueue.go): with one, such a create is queued (202) and the sweep
 	// opens it once a slot frees. nil: the open cap refuses, as before.
 	Queue PRQueue
-	// ItemFinished answers whether item is FINISHED in HQ — completed,
-	// cancelled or gone — so its queued pull request is moot: the drain reads
-	// it before it opens a queued create (prqueue.go); finished true says
-	// why. An item that is open, waiting, escalated or claimed (by anyone) is
-	// not finished. nil: the drain opens nothing (fail closed).
-	ItemFinished func(ctx context.Context, item int) (finished bool, why string, err error)
+	// ItemGone answers whether item is GONE from HQ — listed in no status
+	// (cancelled or removed) — so its queued pull request is moot: the drain
+	// reads it before it opens a queued create (prqueue.go); gone true says
+	// why. An item that is open, waiting, escalated, claimed (by anyone) or
+	// COMPLETED (done or no_action) is not gone: the officer may complete its
+	// item once its create is queued. nil: the drain opens nothing (fail
+	// closed).
+	ItemGone func(ctx context.Context, item int) (gone bool, why string, err error)
 
 	// createSem serialises a draft officer's creates (draftCreate holds it
 	// from the rate-limit read until afterCreate); built once by createOnce.

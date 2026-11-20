@@ -156,8 +156,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Loops:          s.prLoopsFor(cfg, o),
 		PublicBranches: s.publicBranchesFor(cfg, o),
 		Queue:          s.prQueueFor(cfg, o),
-		ItemFinished: func(ctx context.Context, item int) (bool, string, error) {
-			return itemFinished(ctx, hq.c, item)
+		ItemGone: func(ctx context.Context, item int) (bool, string, error) {
+			return itemGone(ctx, hq.c, item)
 		},
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
@@ -303,50 +303,40 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
 }
 
-// itemLiveStatuses are the statuses of an item whose work is not over: its
-// queued pull request is still opened (open, released or claimed again by
-// anyone; waiting on a person; escalated to one).
-var itemLiveStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated}
-
-// itemFinished is the queue drain's item re-read (PushGate.ItemFinished),
-// with officer c's own token: NOT finished when HQ lists item in a live
-// status (itemLiveStatuses), whoever holds it; finished when it lists it
-// done (completed: done or no_action); finished as cancelled when it lists it
-// nowhere. 🔴 A claim is not the test: a lease lasts at most an hour and only
-// the officer heartbeats it, and a down holder's claim is released, while a
-// queued create may wait longer than that. An unreadable list, or a live list
-// at its page bound that does not name the item (officers.AllItemsFull: not
-// proven absent), is an error: the drain waits.
-func itemFinished(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
+// itemGone is the queue drain's item re-read (PushGate.ItemGone), with
+// officer c's own token: GONE only when HQ lists item in NO status
+// (officers.ItemStatuses: open, claimed, waiting, escalated — and done, which
+// also holds no_action) and every list was read whole — the item was
+// cancelled or removed, so its queued pull request is moot.
+//
+// 🔴 A COMPLETED ITEM IS NOT GONE: the officer is told it may complete its
+// item once its create is queued (kickoff.go), so a done item's queued pull
+// request is still opened — the work is in the pushed branch. 🔴 A claim is
+// not the test either: a lease lasts at most an hour, and a down holder's
+// claim is released, while a queued create may wait longer than that.
+//
+// A list at its page bound (officers.AllItemsFull) that does not name the
+// item does not prove it absent, so the item is NOT gone and the create
+// opens: the done list only grows, and waiting on it would block the
+// officer's whole queue in that repository for good. An unreadable list is an
+// error: the drain waits and tries again.
+func itemGone(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
 	want := strconv.Itoa(item)
-	has := func(items []officers.Item) bool {
-		for _, it := range items {
-			if string(it.ID) == want {
-				return true
-			}
-		}
-		return false
-	}
 	cut := false
-	for _, st := range itemLiveStatuses {
+	for _, st := range officers.ItemStatuses {
 		items, err := c.AllItems(ctx, st)
 		if err != nil {
 			return false, "", fmt.Errorf("HQ's %s items could not be read: %v", st, err)
 		}
-		if has(items) {
-			return false, "", nil
+		for _, it := range items {
+			if string(it.ID) == want {
+				return false, "", nil
+			}
 		}
 		cut = cut || officers.AllItemsFull(len(items))
 	}
-	done, err := c.AllItems(ctx, officers.StatusDone)
-	if err != nil {
-		return false, "", fmt.Errorf("HQ's done items could not be read: %v", err)
-	}
-	if has(done) {
-		return true, fmt.Sprintf("item %d is completed in HQ, so its pull request is moot", item), nil
-	}
 	if cut {
-		return false, "", fmt.Errorf("item %d is in none of HQ's lists read, and one was at its page bound, so its state is unknown", item)
+		return false, "", nil
 	}
 	return true, fmt.Sprintf("item %d is no longer in HQ (cancelled or removed), so its pull request is moot", item), nil
 }

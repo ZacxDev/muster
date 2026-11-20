@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -43,27 +44,41 @@ import (
 // item does not end with no pull request and nobody told — when:
 //
 //   - its branch is gone;
-//   - its item is FINISHED in HQ (ItemFinished: completed, cancelled or
-//     gone), which makes the pull request moot. An item that is open,
-//     released, waiting, escalated or claimed again still has its pull
-//     request opened: the work is in the pushed branch, and claims lapse
-//     (an hour's lease, released when its holder is down) while it waits;
+//   - its item is GONE from HQ (ItemGone: listed in no status — cancelled or
+//     removed), which makes the pull request moot. 🔴 An item that is
+//     COMPLETED (done or no_action), open, released, waiting, escalated or
+//     claimed again still has its pull request opened: the work is in the
+//     pushed branch, the officer is told it may complete its item once it is
+//     queued (kickoff.go), and claims lapse (an hour's lease, released when
+//     its holder is down) while it waits;
 //   - its stored title or body no longer passes createTextWhy (the body
 //     contract, credential shapes, the officer's id or an internal detail in a
 //     public repository);
 //   - its item now has its pull request (the per-item limit);
 //   - checkComparison at the branch's CURRENT head refuses it (a push since
-//     the create is checked here like any create's head).
+//     the create is checked here like any create's head);
+//   - GitHub refuses to open it for good (permanentOpenError: 400, 410 or
+//     422 — e.g. "No commits between" for a branch with nothing ahead of the
+//     base). Asking again would get the same answer, and a row left first
+//     would block every create queued behind it forever.
 //
 // A pull request already open from the branch is skipped with no notice
 // (nothing is lost) — read before the create lock and AGAIN once it is held,
 // so a drain racing another drain of the same row finds the other's pull
 // request rather than counting it against the item. A skip whose settle finds
 // the row already settled (another drain decided it) tells HQ nothing. The open cap or the daily limit still full, a read that
-// fails (the branch, the pull requests from it, HQ, the comparison), STOPS the
-// drain: nothing behind jumps the queue, and the next drain tries again. An
-// opened one is re-checked and announced exactly as a create the officer made
-// itself (recheckCreated).
+// fails (the branch, the pull requests from it, HQ, the comparison), or an
+// open GitHub may yet accept (any other error: 5xx, 401, 403, 404, 409, 429,
+// the network) STOPS the drain: nothing behind jumps the queue, and the next
+// drain tries again. An opened one is re-checked and announced exactly as a
+// create the officer made itself (recheckCreated).
+//
+// NO AGE BOUND: a queued row leaves the queue only by being opened or by one
+// of the skips above, never by age. Every way a row can stay is a wait the
+// next drain re-reads (a full limit, a failed read, a transient GitHub error);
+// a row that can never open (its item gone, its branch gone, a refusal,
+// GitHub refusing it for good) is dropped by the drain itself. An age bound
+// would drop exactly the pushed work the queue exists to open.
 //
 // ⚠ ONE muster PROCESS. The create lock (createSem) is per process, as the
 // draft gate's is: two replicas draining one officer's queue at once could
@@ -199,9 +214,9 @@ func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		where = fmt.Sprintf("position %d of %d in the queue", pos, total)
 	}
 	return queued("the pull request from %s is QUEUED, not refused: %s. muster recorded it (%s for %s) and opens it as a draft itself, "+
-		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it; you may "+
-		"complete your item.%s A push to %s since is fine: the drain checks the branch's head when it opens it",
-		head, why, where, sr.Repo, freed, head)
+		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it. %s%s "+
+		"A push to %s since is fine: the drain checks the branch's head when it opens it",
+		head, why, where, sr.Repo, officers.QueuedCreateDropRule, freed, head)
 }
 
 // drainNow drains sr's queue right after a create was queued, on the
@@ -263,14 +278,14 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number), nil, false)
 		return false, nil
 	}
-	if g.ItemFinished == nil {
+	if g.ItemGone == nil {
 		return true, errors.New("muster cannot read the item's state in HQ, so the queued pull request is not opened")
 	}
-	finished, why, err := g.ItemFinished(ctx, q.Item)
+	gone, why, err := g.ItemGone(ctx, q.Item)
 	if err != nil {
 		return true, fmt.Errorf("item %d's state in HQ could not be read: %v", q.Item, err)
 	}
-	if finished {
+	if gone {
 		g.skipQueued(ctx, sr, q, why, nil, true)
 		return false, nil
 	}
@@ -313,6 +328,10 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		return false, nil
 	}
 	pr, err := gh.OpenDraftPR(ctx, q.Title, q.Branch, sr.Base, q.Body)
+	if permanentOpenError(err) {
+		g.skipQueued(ctx, sr, q, fmt.Sprintf("GitHub refused to open it (%d), and asking again gets the same answer: %v", statusOf(err), err), nil, true)
+		return false, nil
+	}
 	if err != nil {
 		return true, fmt.Errorf("GitHub did not open it: %v", err)
 	}
@@ -332,6 +351,20 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		shortSHA(sha), g.now().Sub(q.QueuedAt).Round(time.Minute), q.Item)
 	g.recheckCreated(ctx, sr, gh, pr)
 	return false, nil
+}
+
+// permanentOpenError reports whether err, from OpenDraftPR, is GitHub refusing
+// the create for good: 400 (malformed), 410 (gone) or 422 (validation: no
+// commits between base and head, an invalid head or base). Anything else —
+// 5xx, 401/403 (a token, a permission or a secondary rate limit), 404 (an
+// installation's access), 409, 429, a network error — may pass later, so the
+// drain keeps the row and tries again.
+func permanentOpenError(err error) bool {
+	switch statusOf(err) {
+	case http.StatusBadRequest, http.StatusGone, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // skipQueued settles q skipped, with why, logs it and — notify — tells HQ

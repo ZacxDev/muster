@@ -974,7 +974,7 @@ released after the stop and before the start, so the item goes back to the
 queue and is claimed once, by whichever instance takes it next. A stop that
 fails starts nothing and releases nothing. A draft officer's create that
 [the open-pull-request queue](#the-open-pull-request-queue) holds for that
-item is not dropped by the release: the drain skips only an item finished in
+item is not dropped by the release: the drain skips only an item gone from
 HQ, so it still opens it, and a second create for the item (from the
 restarted instance) meets the per-item limit.
 
@@ -2253,8 +2253,11 @@ refused. muster:
 4. answers **`202`** `{"queued": true, "message": …}`.
 
 The answer says the pull request is queued, muster opens it itself, and the
-officer must **not** escalate it or ask a human to open it. The charter says the
-same. The per-item and per-day limits still refuse.
+officer must **not** escalate it or ask a human to open it. It also says the
+officer may complete its item (`done` or `no_action`) once the create is
+queued, and when muster drops a queued create (the drain's skips below). The
+charter says the same, from one constant (`officers.QueuedCreateDropRule`).
+The per-item and per-day limits still refuse.
 
 - **No queue-jumping.** While any create of the officer is queued in a
   repository, a new create there is queued behind it even when a slot is
@@ -2293,19 +2296,27 @@ same. The per-item and per-day limits still refuse.
   and tells HQ (so the item does not end with no pull request and nobody
   told), when:
   - the branch is gone;
-  - the item is **finished** in HQ: listed done (completed, `done` or
-    `no_action`), or listed nowhere (cancelled or removed). An item that is
-    open, released, waiting, escalated or claimed again by anyone still has
-    its pull request opened, because the work is in the pushed branch. A
-    claim is not the test: a lease lasts at most an hour, and a down holder's
-    claim is released, while a queued create may wait longer. The officer may
-    complete its item once it is queued. If HQ cannot be read, or a list
-    it reads is at its page bound without naming the item, the drain waits;
+  - the item is **gone** from HQ: listed in no status at all (cancelled or
+    removed). An item that is **completed** (listed done: `done` or
+    `no_action`), open, released, waiting, escalated or claimed again by
+    anyone still has its pull request opened, because the work is in the
+    pushed branch, and the officer is told it may complete its item once it
+    is queued. A claim is not the test: a lease lasts at most an hour, and a
+    down holder's claim is released, while a queued create may wait longer.
+    A list at its page bound (500 items) that does not name the item does
+    not prove it gone, so the create is opened: the done list only grows,
+    and waiting on it would block the officer's queue in that repository for
+    good. If HQ cannot be read, the drain waits;
   - the stored title or body no longer passes the body contract or the
     credential, officer-id and public-repository checks;
   - the item has its pull request now;
   - the comparison at the branch's **current** head is refused. A push after
-    the create is fine: that head is what is checked and opened.
+    the create is fine: that head is what is checked and opened;
+  - GitHub refuses to open it **for good**: `400`, `410` or `422` (for
+    example *"No commits between"*, a branch with nothing ahead of the
+    base). The notice carries GitHub's answer. Asking again would get the
+    same answer, and a row left at the front would block every create queued
+    behind it.
 
   A branch that already has an open pull request is skipped with no notice.
   That check runs again once the create lock is held, so two drains racing
@@ -2314,7 +2325,17 @@ same. The per-item and per-day limits still refuse.
   The drain **stops**, and the next one tries again, so nothing behind jumps
   the queue, when:
   - the open or daily limit is still full;
-  - any read fails (the branch, its pull requests, HQ, the comparison).
+  - any read fails (the branch, its pull requests, HQ, the comparison);
+  - GitHub's open fails in a way that may pass later: a `5xx`, `401`, `403`
+    (a token, a permission or a secondary rate limit), `404`, `409`, `429`
+    or a network error.
+
+  **No age bound.** A queued create leaves the queue only by being opened or
+  by one of the skips above, never by age. Every way a row can stay is a
+  wait the next drain reads again; a row that can never open (its item or
+  branch gone, a refusal, GitHub refusing it for good) is dropped by the drain
+  itself. An age bound would drop exactly the pushed work the queue exists to
+  open.
 
   An opened pull request is re-checked and announced to HQ exactly as one the
   officer opened itself.
