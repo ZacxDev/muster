@@ -78,7 +78,8 @@ func TestACardPostIsAnsweredWithNoContentOrItsRefusalFragment(t *testing.T) {
 // TestACardsFormsCarryTheirHtmxPost: an ask card's answer form and its
 // dismiss form (the Asks page) post by htmx to their own routes with nothing
 // swapped, tagged with the card's key; a step-up gated form does not (its
-// confirm dialog submits it); a session page's block keeps plain forms.
+// confirm dialog submits it); the list drawn with a return (an officer's page)
+// keeps plain forms.
 func TestACardsFormsCarryTheirHtmxPost(t *testing.T) {
 	items := designItems()
 	out := attentionItemsHTML(items, designNow)
@@ -100,7 +101,7 @@ func TestACardsFormsCarryTheirHtmxPost(t *testing.T) {
 	if li := itemLi(t, attentionItemsHTML(items, designNow), "ask-1"); strings.Contains(li, `data-attention-answer data-asks-controls hx-post`) || !strings.Contains(li, `data-step-up-form`) {
 		t.Errorf("a step-up form posts by htmx:\n%s", li)
 	}
-	if li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot"), "ask-1"); strings.Contains(li, "hx-post") {
-		t.Errorf("a session page's block posts by htmx:\n%s", li)
+	if li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, designReturn), "ask-1"); strings.Contains(li, "hx-post") {
+		t.Errorf("a list drawn with a return posts by htmx:\n%s", li)
 	}
 }

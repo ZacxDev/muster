@@ -23,7 +23,7 @@ import (
 //   - the QUESTION (or what the session waits on), clamped to four lines while
 //     the card is collapsed;
 //   - the CONTEXT slot ("why it's here") and the MEDIA slot (internal/api
-//     asksCardContextSlot / asksCardMediaSlot: the seam the ask-attachments
+//     asksCardContextRow / asksCardMediaSlot: the seam the ask-attachments
 //     work fills);
 //   - its CONTROLS: the option buttons, the suggested-reply chips, the answer
 //     box with its microphone and Answer;

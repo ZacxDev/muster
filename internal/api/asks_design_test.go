@@ -233,7 +233,8 @@ func TestDismissIsASmallIconButtonWithAnAccessibleName(t *testing.T) {
 // sits in the head — a thumb aimed at the head (now: expand) must not cancel
 // the ask. It is after the question: at the footer's end when the footer has
 // links (ask-1: View in session), else at the answer row's end (ask-2: no
-// footer of a lone ✕, the design review). A session page's block keeps the
+// footer of a lone ✕, the design review). The list drawn with a return (an
+// officer's page) keeps the
 // same rule.
 func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 	out := attentionItemsHTML(designItems(), designNow)
@@ -259,31 +260,36 @@ func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 			t.Errorf("%s: Dismiss comes before the question", key)
 		}
 	}
-	block := attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot")
+	block := attentionItemsHTMLTo(designItems(), designNow, designReturn)
 	for _, key := range []string{"ask-1", "ask-2"} {
 		li := itemLi(t, block, key)
 		if d, txt := strings.Index(li, "data-attention-dismiss"), strings.Index(li, "data-attention-text"); d < 0 || d < txt {
-			t.Errorf("session page block %s: Dismiss is not after the question:\n%s", key, li)
+			t.Errorf("a list drawn with a return, %s: Dismiss is not after the question:\n%s", key, li)
 		}
 	}
 }
 
-// TestASessionPageBlockKeepsItsCompactCard: a session page's asks block
-// (returnTo set) still draws the compact card — its box open beside its
-// options, its forms posting back to that page with boost off — not the feed's
-// card: the feed's toggle, badge and footer are the Asks page's alone.
-func TestASessionPageBlockKeepsItsCompactCard(t *testing.T) {
-	li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot"), "ask-1")
+// designReturn is a page outside the Asks page that draws the answer form
+// with a return: an officer's page (officer_needs_you.go).
+const designReturn = officersPagePath + "/builtin:triage"
+
+// TestAListWithAReturnKeepsItsCompactCard: the answer form drawn outside the
+// Asks page (returnTo set: an officer's page) still draws the compact card —
+// its box open beside its options, its forms posting back to that page with
+// boost off — not the feed's card: the feed's toggle, badge and footer are the
+// Asks page's alone.
+func TestAListWithAReturnKeepsItsCompactCard(t *testing.T) {
+	li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, designReturn), "ask-1")
 	// The form is THE answer form (askAnswerFormHTML, the design review): its
 	// options are the Asks card's.
-	for _, want := range []string{`<textarea id="answer-1"`, `<input type="hidden" name="return" value="/agents/deploy-bot">`, ` hx-boost="false"`, `class="` + ui.AsksOptionClass + `" data-attention-option>Deploy now</button>`} {
+	for _, want := range []string{`<textarea id="answer-1"`, `<input type="hidden" name="return" value="` + designReturn + `">`, ` hx-boost="false"`, `class="` + ui.AsksOptionClass + `" data-attention-option>Deploy now</button>`} {
 		if !strings.Contains(li, want) {
-			t.Errorf("the block's card lacks %q:\n%s", want, li)
+			t.Errorf("the card lacks %q:\n%s", want, li)
 		}
 	}
 	for _, bad := range []string{"data-asks-toggle", "data-asks-badge", "data-asks-footer", "<details"} {
 		if strings.Contains(li, bad) {
-			t.Errorf("the block's card draws %q:\n%s", bad, li)
+			t.Errorf("the card draws %q:\n%s", bad, li)
 		}
 	}
 }

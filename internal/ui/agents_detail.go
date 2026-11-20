@@ -192,9 +192,10 @@ type AgentDetailView struct {
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
-	// Asks is the agent's OPEN attention asks as the queue draws them, with
-	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
-	// is that block's fragment URL, "" when the queue is not served (no block).
+	// Asks is the header's asks badge (AskerAsksBadgeHTML: the count of the
+	// agent's OPEN attention asks, linking to the Asks page filtered to them;
+	// internal/api attention_asker.go), "" for none; AsksSrc is the badge's
+	// fragment URL, "" when the queue is not served (no badge).
 	Asks    string
 	AsksSrc string
 	// Switcher is the session switcher below the chat form (switcher.go), on
@@ -210,8 +211,8 @@ type AgentDetailView struct {
 	Card AgentCardView
 	// StepUp is the "Confirm it's you" dialog the page's step-up gated forms
 	// ask with before they submit (StepUpFormScript): the ⋯ menu's Rotate
-	// credentials (agentRotateConfirm), a team card in the asks block. The
-	// server sets it only for a page that can draw such a form. nil: none.
+	// credentials (agentRotateConfirm). The server sets it only for a page
+	// that can draw such a form. nil: none.
 	StepUp *StepUpView
 }
 
@@ -432,6 +433,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				agentTitle(v),
 				// The viewer's tags on the agent (session_tags.go), after the title.
 				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
+				// The agent's open asks, a count that opens the Asks page
+				// filtered to them (AskerAsksBadge), as the folded header's.
+				g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
@@ -970,12 +974,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// WHAT PINS THE COMPOSER ABOVE THE BAR (an operator report: with questions
 		// waiting, the message bar was pushed down under the bottom bar). The bar
 		// is absolute in the padding; the column's in-flow content — the
-		// transcript, the asks block, the composer last — is laid out in the
-		// content box above it, so the composer's box ends at the bar's top. The
-		// form used to carry the padding itself, which put the bar inside the
-		// form's own box and let an overgrown column carry the composer down
-		// under it. With the asks block shrinking (askerAsksSection) and the
-		// transcript's floor (#chat-log), the content never outgrows the column.
+		// transcript, the composer last — is laid out in the content box above
+		// it, so the composer's box ends at the bar's top. The form used to carry
+		// the padding itself, which put the bar inside the form's own box and let
+		// an overgrown column carry the composer down under it. (The asks block
+		// that grew the column is gone: the asks are a badge in the header.)
 		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative "+switcherRoom(false))),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
@@ -989,9 +992,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
 		// header (chiefPageStrip), and nothing there opens a drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
-		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
-		// session does, with the chip in its header (foldedHeader); see below.
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// The header's asks badge's live refresh, which must sit INSIDE this
+		// SSE section (askerAsksRefresh). No asks block: the asks are the
+		// header's badge, answered on the Asks page.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", askerAsksRefresh(v.AsksSrc)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
@@ -1008,12 +1012,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// other session (an operator report). py-1 keeps a focus ring at the
 			// scroll edge from being clipped; the column's own gutter is the sides'.
 			//
-			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. Beside it the
-			// asks block shrinks (askerAsksSection) and the composer does not, so
-			// what is left after the composer and this floor is all the asks block
-			// can take — the conversation keeps a strip on screen however many
-			// questions wait, and the column's in-flow content never outgrows it
-			// (which is what slid the composer under the switcher).
+			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. The
+			// conversation keeps a strip on screen whatever else the column holds
+			// (a notice, the drift banner), and the column's in-flow content never
+			// outgrows it (which is what slid the composer under the switcher,
+			// when an asks block shared the column).
 			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-[7.5rem] [&[data-cg-unlaid]>*]:invisible"),
 			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
 			// can paint mid-document — under load, between any two tags — and a
@@ -1061,11 +1064,6 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// when what it would draw is still exactly this.
 			chatLogVersioned(v),
 		),
-		// A claude-code agent's asks: between the transcript and the composer, where a
-		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
-		// question never sits between the header and the conversation. Its
-		// "N waiting" chip is the header's badge (askerAsksBadge).
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
