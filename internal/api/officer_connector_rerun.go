@@ -195,7 +195,8 @@ func (s *Server) WaitForConnectorBlocks() {
 // escalated (re-run) and done (skipped: finished done or no_action). Done is
 // LAST: it is HQ's whole history, and StatusesOf stops once every blocked
 // item is found, so an item still claimed (or escalated) is answered from
-// the short lists without reading done at all.
+// the short lists without reading done at all. The queue drain's itemGone
+// (officer_ship.go) reads the same list, for the same reason.
 var blockStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated, officers.StatusDone}
 
 // rerunBlocked asks HQ to re-run each item recorded as blocked on approved

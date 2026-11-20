@@ -303,11 +303,6 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
 }
 
-// queueItemStatuses are the statuses itemGone reads, the short live lists
-// first and done LAST: done is the officer's whole history, and
-// officers.StatusesOf stops as soon as the item is found.
-var queueItemStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated, officers.StatusDone}
-
 // itemGone is the queue drain's item re-read (PushGate.ItemGone), with
 // officer c's own token: GONE only when HQ lists item in NO status (open,
 // claimed, waiting, escalated — and done, which also holds no_action) and
@@ -320,6 +315,9 @@ var queueItemStatuses = []string{officers.StatusOpen, officers.StatusClaimed, of
 // not the test either: a lease lasts at most an hour, and a down holder's
 // claim is released, while a queued create may wait longer than that.
 //
+// It reads the same statuses in the same order as a grant's re-run
+// (blockStatuses: the short live lists first, done LAST, since done is the
+// officer's whole history and the read stops once the item is found).
 // Each list is paged by officers.StatusesOf: cursor to cursor until the last
 // page, whatever order a backend lists in (the built-in one lists oldest
 // first, so a recently completed item is on done's LAST page), each page
@@ -331,7 +329,7 @@ var queueItemStatuses = []string{officers.StatusOpen, officers.StatusClaimed, of
 //     Bounded): the item may be beyond it, so its absence proves nothing.
 func itemGone(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
 	id := officers.ItemID(strconv.Itoa(item))
-	read, err := officers.StatusesOf(ctx, c.Items, queueItemStatuses, map[officers.ItemID]bool{id: true})
+	read, err := officers.StatusesOf(ctx, c.Items, blockStatuses, map[officers.ItemID]bool{id: true})
 	if err != nil {
 		return false, "", fmt.Errorf("HQ's items could not be read: %v", err)
 	}
