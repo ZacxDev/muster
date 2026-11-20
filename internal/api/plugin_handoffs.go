@@ -15,17 +15,26 @@ import (
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
-// VIEWER HAND-OFF (docs/plugins.md#viewer-hand-off; docs/design/previews.md
-// seam (a)). Two doors, one for each side:
+// THE HAND-OFF (docs/plugins.md#viewer-hand-off; docs/design/previews.md
+// seam (a); docs/design/meetings.md "The hand-off, extended"). Two doors, one
+// for each side:
 //
 //   - POST /plugin-handoffs: the owner's BROWSER, signed in on muster's own
 //     origin (requireOperatorWrite: a session, same-origin), mints a code for
-//     one of its own live viewer plugins and a mirrored window it is viewing.
-//     The window is checked against the owner's own hosts as the hub lists
-//     them; whether the sign-in's step-up is fresh is read from the session,
-//     never from the request. Answers the plugin's entry URL with the code.
+//     EXACTLY ONE target: a mirrored window it is viewing, for one of its own
+//     live viewer plugins, or an app tab's page (`{"app": {}}`, with an
+//     optional `ref`), for one of its own live app plugins. The window is
+//     checked against the owner's own hosts as the hub lists them; whether
+//     the sign-in's step-up is fresh is read from the session, never from the
+//     request. Answers the plugin's entry URL with the code.
 //   - POST /plugin/v1/handoffs/redeem: the PLUGIN's own token (capability
-//     viewer) spends the code once and learns who and what it was for.
+//     viewer OR app) spends the code once and learns who and what it was for.
+//
+// 🔴 THE PURPOSE IS THE TARGET'S, NEVER THE REQUEST'S: a mirror target mints
+// `view`, an app target `app` (plugins.HandoffTarget.purpose). A body naming a
+// purpose is not read. The capability is the target's too: the store mints an
+// app code only for a plugin holding `app`, a mirror code only for one holding
+// `viewer`.
 //
 // Both answer the typed feature_disabled 404 while MUSTER_PLUGIN_ORIGINS is
 // unset (the plugin-viewers feature) or plugins are off.
@@ -46,13 +55,15 @@ const (
 )
 
 func (s *Server) registerPluginHandoffRoutes(mux Mux) {
-	mux.HandleFunc("POST "+pluginHandoffsPath, s.requirePluginViewersOn(s.requireOperatorWrite(s.handlePluginHandoffMint)))
-	mux.HandleFunc("POST "+pluginHandoffRedeemPath, s.requirePluginViewersOn(s.requirePluginToken(s.handlePluginHandoffRedeem, plugins.CapViewer)))
+	mux.HandleFunc("POST "+pluginHandoffsPath, s.requirePluginOriginsOn(s.requireOperatorWrite(s.handlePluginHandoffMint)))
+	mux.HandleFunc("POST "+pluginHandoffRedeemPath, s.requirePluginOriginsOn(s.requirePluginToken(s.handlePluginHandoffRedeem, pluginCapHandoff)))
 }
 
-// requirePluginViewersOn answers the typed feature_disabled 404 unless plugins
+// requirePluginOriginsOn answers the typed feature_disabled 404 unless plugins
 // are on AND MUSTER_PLUGIN_ORIGINS is set, before any credential is examined.
-func (s *Server) requirePluginViewersOn(next http.HandlerFunc) http.HandlerFunc {
+// (It was requirePluginViewersOn: the same check, which now gates the app
+// tab's hand-offs as well as the viewers'.)
+func (s *Server) requirePluginOriginsOn(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case s.ext.Plugins == nil:
@@ -66,7 +77,8 @@ func (s *Server) requirePluginViewersOn(next http.HandlerFunc) http.HandlerFunc 
 }
 
 // pluginHandoffMintIn is POST /plugin-handoffs' body. Only the host and the
-// window are read from the target: the session is the hub's.
+// window are read from a mirror target (the session is the hub's), and only
+// the ref from an app target. No purpose is read: it is the target's.
 type pluginHandoffMintIn struct {
 	Plugin int64 `json:"plugin"`
 	// Owner, when set and not the principal's own, is the TEAM whose host the
@@ -77,21 +89,32 @@ type pluginHandoffMintIn struct {
 			Host   string `json:"host"`
 			Window string `json:"window"`
 		} `json:"mirror"`
+		App *struct {
+			Ref string `json:"ref"`
+		} `json:"app"`
 	} `json:"target"`
 }
 
+// PluginHandoffMintBody is the mint's 400: the two shapes it takes.
+const PluginHandoffMintBody = `the body is {"plugin": <id>, "target": {"mirror": {"host", "window"}}} or {"plugin": <id>, "target": {"app": {}}}`
+
 // handlePluginHandoffMint is POST /plugin-handoffs {plugin, target:{mirror:
-// {host, window}}} → 200 {url}: the plugin's entry URL with
-// muster_code and muster_plugin.
+// {host, window}}} or {plugin, target:{app:{ref?}}} → 200 {url}: the plugin's
+// entry URL with muster_code and muster_plugin.
 func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	var in pluginHandoffMintIn
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil || in.Plugin <= 0 || in.Target.Mirror == nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"plugin": <id>, "target": {"mirror": {"host", "window"}}}`})
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil || in.Plugin <= 0 ||
+		(in.Target.Mirror == nil) == (in.Target.App == nil) {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PluginHandoffMintBody})
 		return
 	}
+	purpose := plugins.PurposeView
+	if in.Target.App != nil {
+		purpose = plugins.PurposeApp
+	}
 	refused := func(code int, msg string) {
-		metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "refused").Inc()
+		metrics.PluginHandoffs.WithLabelValues(purpose, "refused").Inc()
 		s.writeJSON(w, code, map[string]any{"error": msg})
 	}
 	// 🔴 WHOSE PLUGIN, ON WHOSE WINDOW (team sharing 2b.3b). The principal's
@@ -106,8 +129,18 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 	// viewer plugin is refused with TeamNoViewerPlugin.
 	mctx := r.Context()
 	var target plugins.MirrorTarget
+	var handoff plugins.HandoffTarget
 	ok := false
-	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
+	switch {
+	case in.Target.App != nil:
+		// An app tab is its PERSON's (person-owned only, decision 14): never
+		// a team's, so no owner other than the principal's own is taken.
+		if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
+			refused(http.StatusNotFound, PluginHandoffNoPlugin)
+			return
+		}
+		handoff, ok = plugins.HandoffTarget{App: &plugins.AppTarget{Ref: appRef(in.Target.App.Ref)}}, true
+	case in.Owner > 0 && in.Owner != requestOwner(r.Context()):
 		ps, member := s.teamViewerPlugins(r.Context(), in.Owner, in.Target.Mirror.Window)
 		if !member {
 			refused(http.StatusNotFound, PluginHandoffNoWindow)
@@ -119,16 +152,17 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		}
 		target, ok = handoffTargetIn(s.teamHostsOf(r.Context(), in.Owner), in.Target.Mirror.Host, in.Target.Mirror.Window)
 		mctx = s.teamPreviewPrincipal(r.Context(), in.Owner)
-	} else {
+		handoff = plugins.HandoffTarget{Mirror: &target}
+	default:
 		target, ok = s.handoffMirrorTarget(r, in.Target.Mirror.Host, in.Target.Mirror.Window)
+		handoff = plugins.HandoffTarget{Mirror: &target}
 	}
 	if !ok {
 		refused(http.StatusNotFound, PluginHandoffNoWindow)
 		return
 	}
 	code, p, err := s.ext.Plugins.MintHandoff(mctx, in.Plugin, plugins.HandoffIn{
-		Target:  plugins.HandoffTarget{Mirror: &target},
-		Purpose: plugins.PurposeView,
+		Target: handoff,
 		// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field.
 		SteppedUp: stepup.Fresh(r.Context(), s.stepUpNow()),
 		// The plugin's link is re-checked against the CURRENT allowlist.
@@ -143,7 +177,7 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		refused(http.StatusForbidden, PluginHandoffOriginRetired)
 		return
 	case errors.Is(err, plugins.ErrHandoffRateLimited):
-		metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "rate_limited").Inc()
+		metrics.PluginHandoffs.WithLabelValues(purpose, "rate_limited").Inc()
 		w.Header().Set("Retry-After", "60")
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many hand-offs this minute"})
 		return
@@ -152,7 +186,7 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the hand-off could not be made"})
 		return
 	}
-	metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "minted").Inc()
+	metrics.PluginHandoffs.WithLabelValues(purpose, "minted").Inc()
 	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
 		// The member who opened the TEAM's hand-off (#696 round 0, (c)): the
 		// row is the team's, so the team's audit names the person.
@@ -167,6 +201,16 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 	}
 	u.RawQuery = url.Values{"muster_code": {code}, "muster_plugin": {strconv.FormatInt(p.ID, 10)}}.Encode()
 	s.writeJSON(w, http.StatusOK, map[string]any{"url": u.String()})
+}
+
+// appRef is an app target's ref as the mint stores it: ref when
+// plugins.ValidAppRef accepts it, "" (dropped, not refused) otherwise. muster
+// passes it through and never interprets it.
+func appRef(ref string) string {
+	if plugins.ValidAppRef(ref) {
+		return ref
+	}
+	return ""
 }
 
 // handoffMirrorTarget resolves (host, window) against the principal's own

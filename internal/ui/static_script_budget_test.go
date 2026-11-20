@@ -53,6 +53,8 @@ func scriptedDocuments(t *testing.T, f Features) map[string]string {
 	out["mirror view +preview"] = renderRaw(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1", Nav: NavChrome{Feat: f},
 		Plugins: &PluginChips{MintPath: "/plugin-handoffs", Host: "ws", Session: "main", Window: "@1", Chips: []PluginChip{{ID: 1, Label: "Example"}},
 			Previews: mirror.WindowPreviews{Offered: 1}}}))
+	// An app tab's page (app_page.go), the one page that links app-page.js.
+	out["app page"] = renderRaw(t, AppPage(sampleAppPageView(NavChrome{Feat: f})))
 	return out
 }
 

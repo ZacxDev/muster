@@ -641,6 +641,13 @@ jobs:
       - name: a team agent's terminal reconnects without asking a fresh operator
         if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/terminal-gate.test.mjs
+      # The app tab's page script (internal/ui appPageScriptSrc): it mints an
+      # app target at load into a NEW frame, the alive poll's 404 removes the
+      # frame, and in the Android app it shows the Open card instead. Node
+      # only, < 1 s.
+      - name: the app tab's page removes its frame once the app is revoked
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/app-page.test.mjs
       # Every e2e port offset in e2e/lib/env.ts is its own. Node only, < 1 s.
       - name: e2e ports are unique
         if: ${{ !cancelled() && strategy.job-index == 0 }}
