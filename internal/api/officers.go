@@ -766,6 +766,20 @@ func (s *Server) NoClaudeAccount(ctx context.Context, a agents.Agent) bool {
 	return routed
 }
 
+// LimitRestartable is THE rule for which agents muster restarts off a stale
+// usage-limit menu (internal/limitpark): an instance of a declared POD officer,
+// which the wake loop stops and starts again (officers restartLimitParked,
+// fed by officerFleet.Instances, which asks this). The gateway asks the same
+// function (agentgateway.Gateway.UseLimitRestartable, wired by
+// cmd/muster-server) to decide whose stale menu refusal marks nothing, so a
+// refusal is silenced for exactly the agents that get restarted. A host
+// officer's instance (its fleet reports no park) and every other agent are
+// false: their refusals mark the account and fail them over, as before.
+func (s *Server) LimitRestartable(_ context.Context, a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	return ok && !o.OnHost()
+}
+
 // instanceOnNoClaudeAccount is true for an instance of a declared officer's
 // pool on the LLM proxy, false for every other agent. It is the accounts'
 // attribution answer (officerPoolOf, officers.ProxyAgent), so a turn's
@@ -1020,6 +1034,14 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
 			PromptPending: ok && promptPending(a),
 			Spent:         f.s.officerRT.spent(o, name)}
+		if ok && f.s.ext.LimitParks != nil && f.s.LimitRestartable(octx, a) {
+			switch why, stuck, held := f.s.ext.LimitParks.Stuck(a.ID); {
+			case stuck:
+				in.LimitParked = why
+			case held:
+				in.LimitHeld = why
+			}
+		}
 		if in.Error {
 			in.ErrorClass = classifyInstanceError(a, idx[name])
 			in.ErrorText = instanceErrorText(a, idx[name])
@@ -1139,6 +1161,9 @@ func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kick
 	}
 	if err := re.RearmKickoff(octx, a.ID, kickoff); err != nil {
 		return fmt.Errorf("officers: re-arm %s: %w", name, err)
+	}
+	if f.s.ext.LimitParks != nil {
+		f.s.ext.LimitParks.Stopped(a.ID)
 	}
 	return f.s.ext.Provisioner.Start(octx, a.ID)
 }
@@ -1363,7 +1388,17 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
-	return f.s.ext.Provisioner.Stop(octx, a.ID)
+	if err := f.s.ext.Provisioner.Stop(octx, a.ID); err != nil {
+		return err
+	}
+	// Its CLIs went with the pod: whatever menu any pane was parked on. After
+	// the stop succeeded, so a failed one leaves the park (and the restart
+	// still owed) in place. A stop of an instance stuck on a stale menu
+	// counts against limitpark.MaxRestartsPerDay.
+	if f.s.ext.LimitParks != nil {
+		f.s.ext.LimitParks.Stopped(a.ID)
+	}
+	return nil
 }
 
 // OfficerPoolsReporter is the declared officers' pools push
