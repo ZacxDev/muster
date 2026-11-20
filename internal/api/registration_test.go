@@ -30,6 +30,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/limitpark"
 	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pages"
@@ -186,6 +187,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		JobWorkspace:    stubJobWorkspace{},
 		AccountFailover: stubAccountFailover{},
 		Uploads:         &uploads.Service{},
+		LimitParks:      limitpark.New(nil, nil),
 	})
 	s.UseRouter(stubRouter{})
 	return s
