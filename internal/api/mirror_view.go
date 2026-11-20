@@ -228,11 +228,6 @@ type mirrorViewBatch struct {
 	Context *ui.ContextView `json:"context,omitempty"`
 }
 
-// viewCloseRead is the view socket's close detection: c.CloseRead, whose
-// context ends when the page goes. A test replaces it to hold the window in
-// which the page has gone and the context has not ended yet (streamEndReason).
-var viewCloseRead = func(c *websocket.Conn, ctx context.Context) context.Context { return c.CloseRead(ctx) }
-
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
 //
 // Its open is measured phase by phase up to the first batch written to the
@@ -273,7 +268,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// CloseRead's reader closes the socket when ITS context ends, so a
 	// shutdown that ended that context would close the socket before the page
 	// could be told why (shutdownFrame).
-	ctx, done, ok := s.terminals.add(viewCloseRead(c, r.Context()))
+	ctx, done, ok := s.terminals.add(socketSettingsOf(r.Context()).viewCloseRead(c, r.Context()))
 	if !ok {
 		op.finish(telemetry.ReasonShutdown)
 		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)
