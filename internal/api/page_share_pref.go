@@ -10,10 +10,11 @@ import (
 // (Account → Pages; notify_preferences.pages_agent_share, migration 0135;
 // docs/pages.md#when-an-agent-shares).
 //
-// Off — every user until they turn it on — an agent's page_share_request
-// files a pending link and a card only the owner's own door approves
-// (page_share.go). On, page_share_request for THAT OWNER'S pages makes the
-// link live at once and tells them (page_tools.go pageShareAuto).
+// On — every person until they turn it off (migration 0163; a stored choice,
+// off included, is kept) — page_share_request for THAT OWNER'S pages makes the
+// link live at once and tells them (page_tools.go pageShareAuto). Off, an
+// agent's page_share_request files a pending link and a card only the owner's
+// own door approves (page_share.go).
 //
 // 🔴 ONLY THE OWNER FLIPS IT, AND ONLY THEIR OWN: the route is a signed-in
 // session's same-origin write (requireOperatorWrite — no agent token, no
@@ -33,7 +34,7 @@ const (
 	pagesAgentShareLabel = "Let my agents share pages without asking"
 	pagesAgentShareHelp  = "When one of your agents shares a page, its link goes live at once — anyone the agent gives it to can open the page — " +
 		"instead of waiting for you on Asks. You are told every time an agent shares a page — a new link or one you had already shared (a notification and the page's card in the chat), and can revoke it in one tap. " +
-		"Off, you approve every link an agent asks for."
+		"On unless you turn it off. Off, you approve every link an agent asks for."
 )
 
 // pagesAgentShareSwitch is the switch in notifySwitch's shape (its drawing is

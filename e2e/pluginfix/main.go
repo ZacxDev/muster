@@ -73,7 +73,8 @@
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
 //	  - notifypref: clears the owner's notification preferences
-//	    (notify_preferences), the same way: off, the default, is left behind.
+//	    (notify_preferences), the same way: each switch's default is left
+//	    behind (off, but "Let my agents share pages without asking" on).
 //	  - ccagent: a running claude-code agent (the folded header's page).
 //	  - page / rmpage: a page as a session's create_page writes it — its
 //	    creator (an agent, or a mirrored session on its host), its versions
@@ -167,7 +168,7 @@ func run(args []string) error {
 		}
 	case "notifypref":
 		// Clears the owner's notification preferences (migration 0094): the
-		// next reader sees the default, off.
+		// next reader sees each switch's default (pages_agent_share: on).
 		owner, err := num(1)
 		if err != nil || len(args) != 3 || args[2] != "clear" {
 			return fmt.Errorf("usage: notifypref <owner-id> clear")

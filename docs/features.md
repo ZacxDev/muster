@@ -53,7 +53,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Fleet proposals](#fleet-orchestration) | the chief proposes what to send each of your stopped sessions; each is a card in the fleet digest, sent only when you tap Approve | the fleet digest | off | 1 line |
 | [Morning report](#morning-report) | one notification each morning, on days something happened overnight, opening a page of the questions waiting on you (answer them there), what got done, what is stuck and the night's usage | a database; for merged pull requests, session routing + PR mail routing and the GitHub App; for plan usage, the usage poll | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
-| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
+| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (live at once by default, and you are told; you can turn on asking first) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
@@ -639,18 +639,19 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
 Agents publish small pages for you — a showcase, questions, a form, file
 uploads, an approval, or their own script in a sandbox — shown to you at once
 (a card in the chat, a push), and shared with a link anyone can open: one tap
-on Share, or an agent's request, which waits for your approval unless you
-turned on **Let my agents share pages without asking** on your Account page
-(each user's own choice, off by default). What viewers send comes back to the agent as
+on Share, or an agent's request, which goes live at once unless you turned
+off **Let my agents share pages without asking** on your Account page (each
+user's own choice, on by default; off, it waits for your approval). What viewers send comes back to the agent as
 data, and you are notified. [pages.md](pages.md).
 
 - **Needs:** the core's database, and `MUSTER_PUBLIC_URL` (links are written on
   it). An `upload` block needs [attachments](#attachments).
 - **Turn it on:** `MUSTER_PAGES=1` in `.env`.
 - **Safety:** a page is served sandboxed, with no network; it never runs as
-  muster. You approve every link an agent asks for, unless you opted in to
-  your agents sharing without asking (Account → Pages; then you are told each
-  time). You can revoke any link.
+  muster. By default an agent's share request makes its link live at once and
+  you are told each time; turn off **Let my agents share pages without
+  asking** (Account → Pages) to approve every link an agent asks for. You can
+  revoke any link.
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
 

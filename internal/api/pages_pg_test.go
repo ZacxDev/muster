@@ -100,6 +100,17 @@ func newPageFixture(t *testing.T) *pageFixture {
 	return f
 }
 
+// askFlow turns the owner's "Let my agents share pages without asking" OFF —
+// on is every person's default since migration 0163 — for a test of the ask
+// flow: an agent's page_share_request files a pending link and an owner card.
+func (f *pageFixture) askFlow(t *testing.T) *pageFixture {
+	t.Helper()
+	if err := f.srv.ext.NotifyPrefs.SetPagesAgentShare(f.as(f.owner, authz.ViaSession), f.owner, false); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 func (f *pageFixture) member(t *testing.T, name string) int64 {
 	t.Helper()
 	var id int64
@@ -257,7 +268,7 @@ var shellNonce = regexp.MustCompile(`script-src 'nonce-([A-Za-z0-9+/]{24})';`)
 // keeps the link and serves the new version; rollback serves the old; revoke
 // 404s it.
 func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
-	f := newPageFixture(t)
+	f := newPageFixture(t).askFlow(t)
 	id := f.create(t, f.agent, "Launch date", formBlocks)
 
 	// Private: page_get shows no link; no token serves it.
@@ -459,13 +470,13 @@ func pageToolText(v map[string]any) string {
 // not one of its two options; each leaves the link pending and the card open.
 // Not now denies it for good.
 //
-// It is the guard of an owner who did NOT opt in to their agents sharing
-// without asking (the default for every user), so it says so: an opted-in
-// owner's agent files no card at all (TestAnOptedInOwnersAgentSharesAtOnce).
+// It is the guard of an owner who turned OFF their agents sharing without
+// asking (on is every person's default), so it says so: an opted-in owner's
+// agent files no card at all (TestAnOptedInOwnersAgentSharesAtOnce).
 func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
-	f := newPageFixture(t)
+	f := newPageFixture(t).askFlow(t)
 	if f.srv.pageAgentShareOn(f.as(f.owner, authz.ViaSession), f.owner) {
-		t.Fatal("the owner starts opted in; this is the ask flow's guard")
+		t.Fatal("the owner is still opted in; this is the ask flow's guard")
 	}
 	id := f.create(t, f.agent, "Approve me", `[{"type":"markdown","text":"x"}]`)
 	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
@@ -515,7 +526,7 @@ func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
 // pages are its HOST's; another host of the same owner, and an agent, cannot
 // reach them; its share request is a card it waits on (pull).
 func TestAMirroredSessionMakesAndSharesPagesOnItsHost(t *testing.T) {
-	f := newPageFixture(t)
+	f := newPageFixture(t).askFlow(t)
 	ctx := f.as(f.owner, authz.ViaMirrorHost)
 	ws := mirrorCaller("workstation", "0d1e2f3a-aaaa-4bbb-8ccc-000000000001")
 	out := f.toolAs(t, ctx, ws, pageCreateTool, map[string]any{"title": "From a session", "blocks": json.RawMessage(`[{"type":"markdown","text":"hi"}]`)})
@@ -936,7 +947,7 @@ func TestTheShellDrawsTheBrandAsEveryBrandedSurface(t *testing.T) {
 // owner's Delete, never another member's) deletes the object, the page, its
 // links (the link 404s) and withdraws a link's card still waiting.
 func TestAPagesFilesAreKeptUnderItsPrefixUntilThePageIsDeleted(t *testing.T) {
-	f := newPageFixture(t)
+	f := newPageFixture(t).askFlow(t)
 	id := f.create(t, f.agent, "Files to delete", formBlocks)
 	sid := strconv.FormatInt(id, 10)
 	l := f.liveLink(t, f.owner, id)
