@@ -164,11 +164,16 @@ const (
 // every agent with nowhere to run until another account reset.
 //
 // ⚠ A ccd FROM BEFORE `usage_limit` SENDS NO MARK, so its 429 reads as
-// transient here even when it was a usage limit. The account is then marked
-// on the agent's next turn: the CLI raises its usage-limit menu on a limit, and
-// a pane parked on it is the 409 above, which every ccd that fails over sends.
-// Nothing else marks an account (the usage poller, internal/ccusage, only
-// clears a mark).
+// transient here even when it was a usage limit. The account is marked only
+// when a turn meets the CLI's usage-limit menu: the CLI raises it in the
+// session that hit the limit, and that session's next turn is refused with the
+// 409 above, which every ccd that fails over sends. A turn in a FRESH session
+// (each job's, a new chat's) has no menu on its pane and may 429 unmarked
+// again; so may the parked session's own turn after ccd stops its idle lane
+// (cmd/ccd lanes.release), since that lane's CLI starts fresh. Nothing else
+// marks an account (the usage poller, internal/ccusage, only clears a mark),
+// so under such a ccd an exhausted account can stay unmarked until its image
+// is updated.
 func AccountFailure(failureType string, usageLimit bool, status int) string {
 	switch failureType {
 	case FailureAuthFailed:

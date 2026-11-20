@@ -280,7 +280,7 @@ func TestAJobsWorktreeIsRemovedHoweverTheJobEnds(t *testing.T) {
 		wantStatus string
 		wantReason string
 	}{
-		{"failed", func(g *cliGateway) { g.err = &agents.RuntimeError{Status: 429, Type: "rate_limited", Message: "limit"} },
+		{"failed", func(g *cliGateway) { g.err = &agents.RuntimeError{Status: 429, Type: "rate_limited", Message: "limit", UsageLimit: true} },
 			nil, jobs.StatusFailed, "rate_limited"},
 		{"timed out", func(g *cliGateway) { g.block = true }, nil, jobs.StatusTimedOut, jobs.ReasonTimeout},
 		{"panicked", func(g *cliGateway) { g.panics = true }, nil, jobs.StatusFailed, jobs.ReasonInternal},

@@ -142,9 +142,13 @@ type accountGateway struct {
 	transient bool
 	// message is the failure's text ("": a usage limit's).
 	message string
-	reply   string
-	mu      sync.Mutex
-	onAcct  []string
+	// failTimes, when positive, is how many turns on a limited account fail
+	// before it answers (0: every one fails).
+	failTimes int
+	failed    int
+	reply     string
+	mu        sync.Mutex
+	onAcct    []string
 }
 
 func (g *accountGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, emit func(string)) (string, error) {
@@ -153,7 +157,13 @@ func (g *accountGateway) Chat(ctx context.Context, a agents.Agent, key, msg stri
 	g.mu.Unlock()
 	route, _ := agents.TurnRouteFrom(ctx)
 	_ = route
-	if g.limited[a.CCAccount] {
+	g.mu.Lock()
+	fail := g.limited[a.CCAccount] && (g.failTimes == 0 || g.failed < g.failTimes)
+	if fail {
+		g.failed++
+	}
+	g.mu.Unlock()
+	if fail {
 		status := g.status
 		if status == 0 {
 			status = 429
@@ -198,6 +208,8 @@ func newFailoverRig(t *testing.T, targets map[string]string, limited map[string]
 		JobWorkspace:    f.ws,
 		AccountFailover: fo,
 	})
+	// A transient 429's same-account retries wait 1ms, 2ms (not 30s, 60s).
+	f.s.jobRateLimitBackoff = time.Millisecond
 	f.ts = httptest.NewServer(f.s.Handler())
 	t.Cleanup(f.ts.Close)
 	return &failoverRig{jobFixture: f, ags: ags, fo: fo, gw: gw}
@@ -404,8 +416,9 @@ var _ = errors.New
 // 🔴 A TRANSIENT 429 DOES NOT MOVE THE WORKER. north answers rate_limited and
 // south is free, but the 429 is not marked usage_limit: the job runner must not
 // fail the worker over (failoverJob keys on jobs.Outcome.AccountFailure, never
-// on the reason), so the job fails rate_limited on north after one turn, as
-// any failed turn does, with no failover asked for and none recorded. The same
+// on the reason). It sends the turn again on north, twice (JobRateLimitRetries),
+// and then fails the job rate_limited on north, with no failover asked for and
+// none recorded. The same
 // for a usage limit from a ccd before the mark (the CLI's text, no field):
 // ccpool.AccountFailure reads no text. The limit menu's 409 and a marked 429
 // do move it, as before.
@@ -434,6 +447,10 @@ func TestOnlyAUsageLimitFailsAJobsWorkerOver(t *testing.T) {
 					t.Fatalf("job = %v/%v on %v, failover calls %q; want succeeded on south after north:rate_limited",
 						out["status"], out["reason"], out["cc_account"], calls)
 				}
+				// A usage limit is not retried on its account: one turn there.
+				if got := strings.Join(r.gw.turns(), ","); got != "north,south" {
+					t.Fatalf("turns ran on %q, want north,south", got)
+				}
 				return
 			}
 			if calls != "" {
@@ -445,12 +462,41 @@ func TestOnlyAUsageLimitFailsAJobsWorkerOver(t *testing.T) {
 			if _, ok := out["account_failovers"]; ok {
 				t.Fatalf("a job that was not re-queued carries account_failovers: %v", out["account_failovers"])
 			}
-			if got := strings.Join(r.gw.turns(), ","); got != "north" {
-				t.Fatalf("turns ran on %q, want north", got)
+			if got := strings.Join(r.gw.turns(), ","); got != "north,north,north" {
+				t.Fatalf("turns ran on %q, want north,north,north (the turn and its two same-account retries)", got)
 			}
 			if got := r.ags.current().CCAccount; got != "north" {
 				t.Fatalf("the worker is on %q, want north (not moved)", got)
 			}
 		})
+	}
+}
+
+// TestATransient429JobIsRetriedOnTheSameAccount: north's first turn answers a
+// transient 429 (no usage_limit mark, not the limit menu's 409) and its next
+// one answers. The job is sent again on north after the backoff and succeeds
+// there: no failover asked for, the worker still on north, no failover
+// recorded on the job.
+func TestATransient429JobIsRetriedOnTheSameAccount(t *testing.T) {
+	r := newFailoverRig(t, map[string]string{"north": "south"}, map[string]bool{"north": true}, "rate_limited")
+	r.gw.transient, r.gw.message, r.gw.failTimes = true, "API Error: Request rate limited", 1
+	out := r.await(t, r.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+	if out["status"] != jobs.StatusSucceeded || out["result"] != "LGTM" || out["cc_account"] != "north" {
+		t.Fatalf("job = %v/%v (%v) on %v, want succeeded/LGTM on north", out["status"], out["result"], out["error"], out["cc_account"])
+	}
+	if got := strings.Join(r.gw.turns(), ","); got != "north,north" {
+		t.Fatalf("turns ran on %q, want north,north", got)
+	}
+	r.fo.mu.Lock()
+	calls := strings.Join(r.fo.calls, ",")
+	r.fo.mu.Unlock()
+	if calls != "" {
+		t.Fatalf("failover calls = %q, want none", calls)
+	}
+	if got := r.ags.current().CCAccount; got != "north" {
+		t.Fatalf("the worker is on %q, want north", got)
+	}
+	if _, ok := out["account_failovers"]; ok {
+		t.Fatalf("account_failovers = %v, want none", out["account_failovers"])
 	}
 }
