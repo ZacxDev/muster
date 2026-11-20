@@ -529,6 +529,17 @@ export const officerNeedsYouPort = port + 445;
 // blocks above.
 export const pagesDeclutterPort = port + 455;
 export const pagesDeclutterConnectPort = port + 456;
+// tests/plugin-app.spec.ts: the app tab's page — its own server (plugins and
+// MUSTER_PLUGIN_ORIGINS on), the stub app plugin (e2e/lib/appstub.ts) and the
+// previews specs' TLS edge in front of it (e2e/previewfix edge), which every
+// name of the stub's zone resolves to (+470 to +472: clear of the blocks above).
+export const pluginAppPort = port + 470;
+export const pluginAppStubPort = port + 471;
+export const pluginAppEdgePort = port + 472;
+// cls.spec.ts "the app tab's page": the same three, its own (+473 to +475).
+export const clsAppPort = port + 473;
+export const clsAppStubPort = port + 474;
+export const clsAppEdgePort = port + 475;
 // The knock push spec (plugin-knock-push.spec.ts): its own server (push and
 // plugins on, a paired test phone) and its push sink's CONNECT proxy
 // (e2e/pushsink), through which that server reaches the sink's TLS endpoint.

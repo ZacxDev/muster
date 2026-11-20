@@ -1787,8 +1787,9 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   page.
 - **Permissions-Policy, exactly.** `/apps/{id}`'s header is a pinned whole
   string; every other route's is exactly `microphone=(self)` (a golden over
-  every route). *Red if:* a feature is added, `self` is added to `camera`,
-  or the header leaks to another page.
+  every route). *Red if:* a feature is added, `self` is dropped from any
+  feature (spike S5: `self` must be present), or the header leaks to another
+  page.
 - **The frame, exactly.** The rendered `sandbox` attribute equals
   `PluginChipSandbox` and the `allow` attribute is a pinned whole string with
   the exact origin. *Red if:* `allow-top-navigation` is added, or the origin
