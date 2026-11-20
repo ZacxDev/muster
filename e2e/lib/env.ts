@@ -540,6 +540,11 @@ export const pluginAppEdgePort = port + 472;
 export const clsAppPort = port + 473;
 export const clsAppStubPort = port + 474;
 export const clsAppEdgePort = port + 475;
+// The knock push spec (plugin-knock-push.spec.ts): its own server (push and
+// plugins on, a paired test phone) and its push sink's CONNECT proxy
+// (e2e/pushsink), through which that server reaches the sink's TLS endpoint.
+export const knockPushPort = port + 476;
+export const knockPushSinkPort = port + 477;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

@@ -47,6 +47,7 @@ DELETE /connector-grants/{id}
 DELETE /connector-standing-grants/{id}
 DELETE /connectors/{name}
 DELETE /mirror/ask-attachments/{id}
+DELETE /plugin/v1/notify/{ref}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
@@ -385,6 +386,7 @@ POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages
 POST /plugin/v1/messages/{id}/owner-answered
+POST /plugin/v1/notify
 POST /plugin/v1/pair
 POST /plugin/v1/task-writes/claim
 POST /plugin/v1/task-writes/{id}/result

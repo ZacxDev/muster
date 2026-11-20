@@ -67,7 +67,7 @@ A plugin token opens only the routes its **capabilities** allow:
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
 | `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
 | `tasks` | [`POST /plugin/v1/tasks`](#post-pluginv1tasks-one-task-per-upstream-record) only: filing a task and commenting on it by key. Nothing else: a `tasks` token is `403` on every other route but `GET /plugin/v1/self`, and on `POST /plugin/v1/tasks` it may not send `route_to_chief` or `reference` (`400`), which need `messages`. For a plugin that files tasks without bringing messages (migration `0167`). It never [auto-starts](#auto-start) an agent: auto-start needs `messages`. A `comment` lands on the open task carrying `key` among **all** your tasks, whichever plugin or person filed it, as with `messages` |
-| `app` | an [app tab](#app-tab): a tab in your sidebar for the plugin's own page, `/apps/{id}`, which frames the entry URL, and the [hand-off](#viewer-hand-off) redeem for its codes (`POST /plugin/v1/handoffs/redeem`, which takes `viewer` or `app`). Never paired (migration `0168`) |
+| `app` | an [app tab](#app-tab): a tab in your sidebar for the plugin's own page, `/apps/{id}`, which frames the entry URL, the [hand-off](#viewer-hand-off) redeem for its codes (`POST /plugin/v1/handoffs/redeem`, which takes `viewer` or `app`), and the [knock notification](#post-pluginv1notify-a-knock-notification) (`POST`/`DELETE /plugin/v1/notify`). Never paired (migration `0168`) |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
@@ -190,6 +190,64 @@ cookies in muster's frame as third-party: Safari blocks them and Chrome
 partitions them at best. Redeem the hand-off code at your entry URL and keep
 the session in the page's memory; reloading the frame re-enters through
 muster's page.
+
+### `POST /plugin/v1/notify`: a knock notification
+
+An `app` plugin may ask muster to push you one of a **fixed set of
+notifications whose text muster writes**
+([design](design/meetings.md#core-seam-knock-notification)). There is one
+kind, `knock`: someone is waiting to join your meeting.
+
+```
+POST   /plugin/v1/notify        {"kind": "knock", "ref": "<id>", "count": 2}
+DELETE /plugin/v1/notify/<ref>
+```
+
+| field | rule |
+|---|---|
+| `kind` | exactly `knock`; anything else `400` |
+| `ref` | `^[A-Za-z0-9_-]{1,64}$`: the plugin's own id for what the push is about (the same rule as the page's `?ref=`) |
+| `count` | 1–99, how many are waiting |
+
+No other field is accepted: a body with any other (a guest's `name`, a
+`title`, a `body`) is `400` and sends nothing.
+
+- **Needs `app`.** A token without it is `403`, on both routes.
+- **The text is muster's.** The title is your tab label, the body
+  "Someone is waiting to join your meeting", or "<count> people are waiting
+  to join your meeting". No guest's name ever: it is text a stranger typed.
+- **Where it goes.** The `app` event, its own toggle on Account →
+  Notifications ("An app needs you", on by default), to your browsers and
+  paired phones ([push.md](push.md)): payload v2 `type: "app"`, tag
+  `app-<plugin id>-<ref>` (so a later count replaces the earlier one), and a
+  tap opens `/apps/<plugin id>?ref=<ref>`.
+- **The withdrawal.** `DELETE /plugin/v1/notify/<ref>` withdraws it: a
+  `resolved` under the same tag (silent on a paired phone), `202`. It is sent
+  only for a knock that went out and is not yet withdrawn, for up to an hour
+  after that ref's last knock; anything else (a ref never knocked about,
+  already withdrawn, or older) answers `204` and sends nothing. Those `204`s
+  are capped at 60 per plugin per hour (`429` with `Retry-After`); the
+  withdrawal of a knock that is out is never refused. Call it when the lobby
+  empties or you open the meeting.
+- **Limits.** One send per `(plugin, ref)` per 30 s, and 30 per plugin in any
+  hour. Past either: `429` with `Retry-After` (seconds), and the drop is
+  logged like every dropped push. A refused send spends neither cap.
+- **Its own budget.** Knocks never spend your cap of 30 notifications per 10
+  minutes that every other event shares: they have their own, 10 per 10
+  minutes across all your app plugins. A knock past it is still answered
+  `202` (it was queued) and is dropped and logged as `the owner's app
+  budget … is reached`.
+- **Answered by muster's own push.** The `503` and `204` answers are about
+  muster's native push alone (your browsers and paired phones): a server
+  without it answers `503`, and the toggle and device checks read only its
+  settings. For an admin on a server that also runs the permission router,
+  the router is still handed the knock as it is every other notification, but
+  the answer never depends on it.
+- **Answers.** `202` queued; `204` you turned the toggle off or have no
+  device (not an error: the plugin keeps its lobby row either way), logged as
+  a dropped push; `503` push is not configured on this server.
+- A team's token is refused, as on every route but the hand-off redeem and
+  `/self`.
 
 ### Viewer hand-off
 

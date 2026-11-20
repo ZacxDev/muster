@@ -625,6 +625,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /plugin/v1/self": classPlugin,
 	// A hand-off redeem names a code, which RLS and the plugin id confine.
 	"POST /plugin/v1/handoffs/redeem": classPlugin,
+	// The knock notification and its withdrawal (plugin_notify.go): they name
+	// a ref in the token's own plugin's tag, and push to the token's owner.
+	"POST /plugin/v1/notify":         classPlugin,
+	"DELETE /plugin/v1/notify/{ref}": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
@@ -2228,6 +2232,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// The knock's withdrawal (plugin_notify.go): {ref} names no stored row. The
+	// tag it withdraws, and the record of which knocks are out, are the
+	// PRESENTING token's own plugin's, and the resolved goes to that token's
+	// owner, so another owner's token withdraws only its own plugin's
+	// notification — a 204 for A's ref, as for a ghost ref. TestAnotherPluginCannotWithdrawAKnock is its control.
+	"DELETE /plugin/v1/notify/{ref}": "the ref names no row: controlled in TestAnotherPluginCannotWithdrawAKnock",
 	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
 	// with fleet proposals off, so every id answers 404 for A and the ghost
 	// alike. That another owner's tap on A's proposal decides nothing and sends
