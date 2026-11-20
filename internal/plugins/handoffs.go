@@ -26,8 +26,12 @@ const (
 	HandoffTTL = 60 * time.Second
 	// HandoffMintsPerMinute is how many codes one owner may mint in a minute.
 	HandoffMintsPerMinute = 60
-	// PurposeView is the purpose of a code minted from a session view's chip.
+	// PurposeView is the purpose of a code minted from a session view's chip
+	// (a mirror target); PurposeApp of one minted by an app tab's page (an
+	// app target, docs/design/meetings.md). The purpose follows the TARGET
+	// (HandoffTarget.purpose), never anything a request says.
 	PurposeView = "view"
+	PurposeApp  = "app"
 	// handoffKeep is the age past which a mint deletes its owner's rows. It is
 	// not a retention period: there is no background reaper, so an owner's
 	// older rows stay until that owner's NEXT mint.
@@ -44,13 +48,44 @@ var ErrHandoffRateLimited = errors.New("plugins: too many hand-offs this minute"
 // a host the server no longer trusts.
 var ErrViewerOriginRetired = errors.New("plugins: the plugin's origin is no longer allowed")
 
-var purposeRE = regexp.MustCompile(`^[a-z_]{1,32}$`)
-
-// HandoffTarget is the session view a code was minted on. Phase 1 knows only a
-// mirrored window: its host, its tmux session (display only) and its tmux
-// window id (`@3`), which with the owner is what a plugin matches on.
+// HandoffTarget is what a code was minted for: EXACTLY ONE of a mirrored
+// window (its host, its tmux session, display only, and its tmux window id
+// `@3`, which with the owner is what a plugin matches on) and an app tab's
+// page (App).
 type HandoffTarget struct {
 	Mirror *MirrorTarget `json:"mirror,omitempty"`
+	App    *AppTarget    `json:"app,omitempty"`
+}
+
+// AppTarget is an app tab's page (`/apps/{id}`): {"app": {}}, or {"app":
+// {"ref": "<ref>"}} when the page was opened with ?ref= (a notification's
+// tap). muster passes Ref through and does not interpret it; the plugin treats
+// it as a hint. Only a Ref ValidAppRef accepts is ever stored.
+type AppTarget struct {
+	Ref string `json:"ref,omitempty"`
+}
+
+var appRefRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// ValidAppRef reports whether ref may ride an app target: 1-64 of
+// A-Z a-z 0-9 _ -. Anything else is dropped by the caller, not refused.
+func ValidAppRef(ref string) bool { return appRefRE.MatchString(ref) }
+
+// purpose is the code's purpose and the capability its plugin must hold, from
+// the target alone: a mirror target mints `view` and needs viewer, an app
+// target mints `app` and needs app. A target with neither or both is invalid,
+// and so is an app target carrying a ref ValidAppRef refuses.
+func (t HandoffTarget) purpose() (string, Capability, error) {
+	switch {
+	case t.Mirror != nil && t.App == nil:
+		return PurposeView, CapViewer, nil
+	case t.App != nil && t.Mirror == nil:
+		if t.App.Ref != "" && !ValidAppRef(t.App.Ref) {
+			return "", "", invalid("an app target's ref is 1-64 of A-Z a-z 0-9 _ -")
+		}
+		return PurposeApp, CapApp, nil
+	}
+	return "", "", invalid("a hand-off has exactly one target: mirror or app")
 }
 
 // MirrorTarget is one mirrored window, as muster's hub lists it.
@@ -62,10 +97,10 @@ type MirrorTarget struct {
 
 // HandoffIn is what a mint records. SteppedUp is the minting session's own
 // step-up state, read by the caller from the request's sign-in, never from
-// anything the request says.
+// anything the request says. There is no purpose field: it is the target's
+// (HandoffTarget.purpose).
 type HandoffIn struct {
 	Target    HandoffTarget
-	Purpose   string
 	SteppedUp bool
 	// Origins is the deployment's CURRENT MUSTER_PLUGIN_ORIGINS. The plugin's
 	// stored origin and entry URL must still pass ValidViewerLink against it,
@@ -102,11 +137,9 @@ func handoffCodeShapeOK(code string) bool {
 }
 
 func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn, now time.Time) (string, Plugin, error) {
-	if in.Target.Mirror == nil {
-		return "", Plugin{}, invalid("a hand-off needs a target")
-	}
-	if !purposeRE.MatchString(in.Purpose) {
-		return "", Plugin{}, invalid("a hand-off purpose is 1-32 of a-z and _")
+	purpose, need, err := in.Target.purpose()
+	if err != nil {
+		return "", Plugin{}, err
 	}
 	target, err := json.Marshal(in.Target)
 	if err != nil {
@@ -118,13 +151,14 @@ func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn,
 	}
 	var p Plugin
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		// The principal's own live viewer plugin, locked FOR UPDATE: a
+		// The principal's own live plugin holding the TARGET's capability
+		// (viewer for a mirror, app for an app page), locked FOR UPDATE: a
 		// concurrent revoke settles first, and two mints for one plugin count
 		// one after the other. Row-level security hides every other owner's.
 		var err error
 		p, err = scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins
-			WHERE id = $1 AND revoked_at IS NULL AND 'viewer' = ANY (capabilities)
-			  AND `+ownedByPrincipal+` FOR UPDATE`, pluginID))
+			WHERE id = $1 AND revoked_at IS NULL AND $2::text = ANY (capabilities)
+			  AND `+ownedByPrincipal+` FOR UPDATE`, pluginID, string(need)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -154,7 +188,7 @@ func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn,
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO plugin_handoffs (owner_id, plugin_id, code_hash, target, purpose, stepped_up, minted_at, expires_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			p.OwnerID, p.ID, HashToken(code), target, in.Purpose, in.SteppedUp, now, now.Add(HandoffTTL))
+			p.OwnerID, p.ID, HashToken(code), target, purpose, in.SteppedUp, now, now.Add(HandoffTTL))
 		return err
 	})
 	if err != nil {

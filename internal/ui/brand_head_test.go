@@ -56,6 +56,9 @@ func brandedDocuments(b Brand) map[string]func(io.Writer) error {
 		"MirrorViewPage": func(w io.Writer) error {
 			return MirrorViewPage(MirrorViewView{Host: "laptop", Session: "main", Nav: NavChrome{Feat: feat}}).Render(w)
 		},
+		"AppPage": func(w io.Writer) error {
+			return AppPage(sampleAppPageView(NavChrome{Feat: feat})).Render(w)
+		},
 		"StepUpFormPage": func(w io.Writer) error {
 			return StepUpFormPage(StepUpFormView{Action: "/mirror/confirm-send", BackHref: "/agents", Window: "12 hours", Brand: b}).Render(w)
 		},
@@ -196,7 +199,7 @@ func TestDocumentHeadsHaveOneSpelling(t *testing.T) {
 	want := []string{
 		// DocHeadHTML: internal/api's hand-written documents (writeAuthDocument),
 		// held from that side by TestEveryHandWrittenDocumentDrawsDocHead.
-		"AgentDetailPage", "AgentTerminalPage", "DocHeadHTML", "MirrorViewPage", "NavDocument", "SendAgainPage",
+		"AgentDetailPage", "AgentTerminalPage", "AppPage", "DocHeadHTML", "MirrorViewPage", "NavDocument", "SendAgainPage",
 		"SendQueueRetryConfirmPage", "StepUpFormPage", "TaskDetailPage", "TaskNotFoundPage", "shell",
 	}
 	if got := callersOf(t, ".", "docHead"); strings.Join(got, ",") != strings.Join(want, ",") {

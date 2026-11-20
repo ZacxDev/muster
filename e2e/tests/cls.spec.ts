@@ -179,6 +179,10 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
   'GET /s/{token}/assets/{asset}': 'a file download (an author\'s image or video the shell hands its frame)',
+  // An app tab's page frames a plugin's entry URL, which needs the stub app
+  // plugin on an https test origin (meetings PR 1c); until then it is not
+  // measured here.
+  'GET /apps/{id}': 'measured by plugin-app.spec.ts (PR 1c)',
 };
 
 const BAR = 0.01;

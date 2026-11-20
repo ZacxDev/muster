@@ -273,8 +273,8 @@ func TestAHandoffNamesOnlyTheOwnersPluginAndWindow(t *testing.T) {
 			t.Errorf("redeem with %s: %d %s; want the one 404", name, rec.Code, rec.Body.String())
 		}
 	}
-	if rec := f.redeem(msgTok, code); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"viewer\" capability`) {
-		t.Errorf("redeem with a messages-only token: %d %s; want 403 naming viewer", rec.Code, rec.Body.String())
+	if rec := f.redeem(msgTok, code); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `\"viewer\" nor the \"app\" capability`) {
+		t.Errorf("redeem with a messages-only token: %d %s; want 403 naming viewer and app", rec.Code, rec.Body.String())
 	}
 	// CONTROL: those refusals did not spend it; the clock moves 59 s and it redeems.
 	f.now = f.now.Add(plugins.HandoffTTL - time.Second)

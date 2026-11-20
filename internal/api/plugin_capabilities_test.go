@@ -12,8 +12,9 @@ import (
 )
 
 // pluginRouteCapabilities is THE LEDGER of what each /plugin/v1/* route needs
-// (plugins.capabilities, migrations 0102, 0112, 0141, 0167): "messages", "viewer", "draft_checks",
-// "chief_extension", "messages or tasks" (POST /plugin/v1/tasks, decision 11), or "any" for a route every
+// (plugins.capabilities, migrations 0102, 0112, 0141, 0167, 0168): "messages", "viewer", "draft_checks",
+// "chief_extension", "messages or tasks" (POST /plugin/v1/tasks, decision 11), "viewer or app" (the
+// hand-off redeem, meetings PR 1b), or "any" for a route every
 // live plugin token opens. It is written out here by hand, not read from the
 // registration, so a route moving between capabilities is a diff a person reads.
 var pluginRouteCapabilities = map[string]string{
@@ -27,7 +28,7 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/task-writes/claim":            "messages",
 	"POST /plugin/v1/task-writes/{id}/result":      "messages",
 	"POST /plugin/v1/messages/{id}/owner-answered": "messages",
-	"POST /plugin/v1/handoffs/redeem":              "viewer",
+	"POST /plugin/v1/handoffs/redeem":              "viewer or app",
 	"GET /plugin/v1/drafts/checks":                 "draft_checks",
 	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
 	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
@@ -102,6 +103,17 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 		viewerRefused, viewerCode := capabilityRefused(h, method, path, pgnViewerTok)
 		messagesRefused, messagesCode := capabilityRefused(h, method, path, pgnTok)
 		tasksRefused, tasksCode := capabilityRefused(h, method, path, pgnTasksTok)
+		appRefused, appCode := capabilityRefused(h, method, path, pgnAppTok)
+		switch want := pluginRouteCapabilities[route]; want {
+		case "any", "none", "viewer or app":
+			if appRefused {
+				t.Errorf("%s with an app-only token: refused (%d); want it past the capability check", route, appCode)
+			}
+		default:
+			if !appRefused {
+				t.Errorf("%s with an app-only token: %d; want 403, the route needs %s", route, appCode, want)
+			}
+		}
 		switch want := pluginRouteCapabilities[route]; want {
 		case "any", "none", "messages or tasks":
 			if tasksRefused {
@@ -127,7 +139,7 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			if messagesRefused {
 				t.Errorf("CONTROL %s with a messages token: refused (%d); want it past the capability check", route, messagesCode)
 			}
-		case "viewer":
+		case "viewer", "viewer or app":
 			if !messagesRefused {
 				t.Errorf("%s with a messages-only token: %d; want 403, the route needs viewer", route, messagesCode)
 			}
