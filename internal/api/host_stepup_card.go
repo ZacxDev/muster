@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -28,6 +29,10 @@ import (
 //     action for any other tool — which is the push title;
 //   - the WHY line: for a draft, its officer item ("<officer>: <what the item
 //     is>"), else the asking session; who asked is a small label beside it;
+//   - the WHERE line, when the title and preview alone would not identify the
+//     call: the route an answer goes on, the outreach batch, the session a
+//     message is routed to, the pairing code, or who asked for a draft's
+//     decision;
 //   - the PREVIEW: for plugin_draft_decide the post itself (venue, exact
 //     text, media), for dispatch_approve its held-start summary and
 //     instructions block, for every other tool one plain sentence — never
@@ -92,8 +97,17 @@ func (s *Server) stepUpCardFor(ctx context.Context, host string, c toolCaller, n
 	card := &attention.StepUpCard{Tool: name, Asker: asker, Why: stepUpAskedByPrefix + asker, Details: details}
 	if name == pluginDraftDecideTool {
 		s.stepUpDraftCard(ctx, args, card)
+		if card.Why != stepUpAskedByPrefix+asker {
+			// The why is the draft's item (or the reject's reason): who asked
+			// is the card's where line.
+			card.About = stepUpAskedByPrefix + asker
+		}
 	} else {
-		card.Title, card.Preview = stepUpToolSummary(name, args, what, held)
+		route := ""
+		if name == routeReplyToolName {
+			route = s.stepUpRouteWhere(ctx, host, args)
+		}
+		card.Title, card.Preview, card.About = stepUpToolSummary(name, args, what, held, route)
 	}
 	card.Preview = stepUpCutPreview(card.Preview)
 	return card
@@ -114,10 +128,37 @@ func stepUpCutPreview(p string) string {
 		" characters. Refuse unless you have read the rest in muster's web UI."
 }
 
-// stepUpToolSummary is the title and preview of a card for any gated tool but
-// plugin_draft_decide: one plain sentence from its arguments, never their
-// JSON. held is dispatch_approve's held-start summary.
-func stepUpToolSummary(name, args, what, held string) (title, preview string) {
+// stepUpRouteWhere is a route_reply card's where line: the item the route
+// carries and the session it was sent to, read from the route args names;
+// the route's id alone when it cannot be read.
+func (s *Server) stepUpRouteWhere(ctx context.Context, host, args string) string {
+	var in struct {
+		RouteID string `json:"route_id"`
+	}
+	_ = json.Unmarshal([]byte(orEmptyJSON(args)), &in)
+	rid := fence.Cut(strings.TrimSpace(in.RouteID), 64)
+	if !routesOn(s.ext) || !plugins.ValidRouteID(in.RouteID) {
+		return "On route " + rid
+	}
+	r, err := s.ext.Routes.Route(ctx, in.RouteID)
+	if err != nil {
+		return "On route " + rid
+	}
+	line := "Answers plugin message #" + strconv.FormatInt(r.MessageID, 10)
+	if r.MessageID == 0 {
+		line = "Answers task #" + strconv.FormatInt(r.TaskID, 10)
+	}
+	if to := strings.TrimSuffix(strings.TrimSpace(r.TargetLabel), " @ "+host); to != "" {
+		line += ", routed to " + to
+	}
+	return line
+}
+
+// stepUpToolSummary is the title, preview and where line of a card for any
+// gated tool but plugin_draft_decide: plain sentences from its arguments,
+// never their JSON. held is dispatch_approve's held-start summary, route a
+// route_reply card's where line (stepUpRouteWhere).
+func stepUpToolSummary(name, args, what, held, route string) (title, preview, where string) {
 	var in struct {
 		ID           json.Number `json:"id"`
 		TaskID       json.Number `json:"task_id"`
@@ -129,6 +170,7 @@ func stepUpToolSummary(name, args, what, held string) (title, preview string) {
 		HostDispatch json.Number `json:"host_dispatch"`
 		MessageID    json.Number `json:"message_id"`
 		Subject      string      `json:"subject"`
+		Code         string      `json:"code"`
 		BatchID      string      `json:"batch_id"`
 		ApproveIDs   []int64     `json:"approve_ids"`
 	}
@@ -136,9 +178,9 @@ func stepUpToolSummary(name, args, what, held string) (title, preview string) {
 	approve := in.Decision == "approve"
 	switch name {
 	case dispatchApproveTool:
-		return "Start this agent?", "The held start: " + held
+		return "Start this agent?", "The held start: " + held, ""
 	case routeReplyToolName:
-		return "Send this answer to a routed message?", in.Body
+		return "Send this answer to a routed message?", in.Body, route
 	case attentionAnswerTool:
 		to := "your ask"
 		if in.ID != "" {
@@ -146,12 +188,12 @@ func stepUpToolSummary(name, args, what, held string) (title, preview string) {
 		} else if in.TaskID != "" {
 			to = "the ask about task #" + in.TaskID.String()
 		}
-		return "Answer an ask as you?", "Answer " + to + " with: " + in.Answer
+		return "Answer an ask as you?", "Answer " + to + " with: " + in.Answer, ""
 	case connectorRequestDecideTool:
 		if approve {
-			return "Approve a connector request?", "Approve connector request #" + in.ID.String() + "."
+			return "Approve a connector request?", "Approve connector request #" + in.ID.String() + ".", ""
 		}
-		return "Deny a connector request?", "Deny connector request #" + in.ID.String() + "."
+		return "Deny a connector request?", "Deny connector request #" + in.ID.String() + ".", ""
 	case agentDestroyTool:
 		which := "one of your agents"
 		switch {
@@ -162,22 +204,41 @@ func stepUpToolSummary(name, args, what, held string) (title, preview string) {
 		case in.HostDispatch != "":
 			which = "the agent of host dispatch #" + in.HostDispatch.String()
 		}
-		return "Destroy an agent?", "Destroy " + which + "."
+		return "Destroy an agent?", "Destroy " + which + ".", ""
 	case pluginMessageRouteTool:
-		p := "Route plugin message #" + in.MessageID.String()
-		if in.Subject != "" {
-			p += " as “" + in.Subject + "”"
+		to := "To this session"
+		if sub := strings.TrimSpace(in.Subject); sub != "" {
+			to = "To session " + sub
 		}
-		return "Route a plugin message?", p + "."
+		return "Route a plugin message?", "Route plugin message #" + in.MessageID.String() + ".", to
 	case pluginRequestDecideTool:
-		if approve {
-			return "Approve a plugin's pairing?", "Approve pairing request #" + in.ID.String() + " (it mints the plugin a token)."
+		code := "Pairing code " + strings.TrimSpace(in.Code)
+		if strings.TrimSpace(in.Code) == "" {
+			code = "No pairing code given"
 		}
-		return "Refuse a plugin's pairing?", "Refuse pairing request #" + in.ID.String() + "."
+		if approve {
+			return "Approve a plugin's pairing?", "Approve pairing request #" + in.ID.String() + " (it mints the plugin a token).", code
+		}
+		return "Refuse a plugin's pairing?", "Refuse pairing request #" + in.ID.String() + ".", code
 	case pluginOutboundBatchDecideTool:
-		return "Approve part of an outreach batch?", fmt.Sprintf("Send %d of the batch's follows and likes; reject the rest.", len(in.ApproveIDs))
+		n := distinctIDs(in.ApproveIDs)
+		entries := "entries"
+		if n == 1 {
+			entries = "entry"
+		}
+		return "Approve part of an outreach batch?", fmt.Sprintf("Send %d of the batch's follows and likes; reject the rest.", n),
+			fmt.Sprintf("Outreach batch %s: %d %s to send", fence.Cut(strings.TrimSpace(in.BatchID), 64), n, entries)
 	}
-	return upperFirst(what) + "?", ""
+	return upperFirst(what) + "?", "", ""
+}
+
+// distinctIDs is how many different ids ids holds.
+func distinctIDs(ids []int64) int {
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		seen[id] = true
+	}
+	return len(seen)
 }
 
 // upperFirst is s with its first letter upper-case.
@@ -327,10 +388,14 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<div class="flex min-w-0 flex-col gap-3" data-stepup-card data-tool="` + esc(c.Tool) + `">
-<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>` + esc(c.Title) + `</h2>
+<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>` + esc(textplain.Title(c.Title)) + `</h2>
 <p class="break-words text-base text-fg" data-stepup-why>` + esc(c.Why) + `</p>
 `)
-	if c.Asker != "" {
+	if c.About != "" {
+		b.WriteString(`<p class="break-words text-sm text-fg" data-stepup-about>` + esc(c.About) + `</p>
+`)
+	}
+	if c.Asker != "" && c.About != stepUpAskedByPrefix+c.Asker {
 		b.WriteString(`<p class="break-words text-xs text-fg2" data-stepup-asker>` + esc(stepUpAskedByPrefix+c.Asker) + `</p>
 `)
 	}

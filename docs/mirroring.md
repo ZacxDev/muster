@@ -1750,20 +1750,33 @@ A card leads with what is about to happen and why, and folds the rest away.
   subject ("Marketing: rebrand announcement"). Otherwise it is the session
   that asked ("Asked by work:1"). A rejection says *Reject this draft*,
   with the reason when one was given. Who asked is a small label under it.
+- **The where line**, when the title and preview alone would not say which
+  call this is: the message and session a `route_reply` answer goes on
+  ("Answers plugin message #7, routed to work:1"), the outreach batch and how
+  many different entries it sends ("Outreach batch b-17: 3 entries to send"),
+  where `plugin_message_route` sends a message ("To this session" when it
+  names none), the pairing code a `plugin_request_decide` names, and, on a
+  draft card whose why is the officer's item or a reject's reason, who asked
+  ("Asked by work:1").
 - **The preview.** For `plugin_draft_decide`: the venue, the post's exact
   text and its media, read from the draft the call names. For
   `dispatch_approve`: the held start and its instructions block (above).
   For every other tool: one plain sentence built from its arguments, never
   their JSON. A preview longer than 2,600 characters is cut and labelled as an
   excerpt.
+- **A long part is cut, never refused.** The title, why, where line, venue
+  and media refs each have a bound (300 characters for the why, 64 for the
+  venue, 150 for a media ref), and a longer one ends in "…". A long reject
+  reason, plugin label, media ref or item subject still files the card.
 - **Details**, collapsed on the card's page and absent from the notification:
   the machine, the session, the tool and its exact arguments, why the phone is
   needed, and the call's hash. They are stored with the card
   (`attention_asks.step_up`, [schema](schema.md)).
 
-The notification's body is the why and the start of the post. The card's text
-(what the page shows and the phone's prompt confirms, below) is the title, the
-why, the preview and a media line ("With 1 image"). All three are built from
+The notification's body is the why, the where line and the start of the post.
+The card's text (what the page shows and the phone's prompt confirms, below) is
+the title, the why, the where line, the preview and a media line ("With 1
+image"). All three are built from
 the same stored parts.
 
 🔴 **A draft card shows only the draft its decision is bound to.** The

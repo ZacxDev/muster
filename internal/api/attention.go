@@ -1136,10 +1136,14 @@ func attentionPushTitle(it attentionItem) string {
 	return itemWho(it) + askPushTitleSuffix
 }
 
-// stepUpPushText is step-up card c's push body before its cut: its why, then
-// its preview (a post's text), on one line. Never its Details.
+// stepUpPushText is step-up card c's push body before its cut: its why, its
+// where line, then its preview (a post's text), on one line. Never its
+// Details.
 func stepUpPushText(c *attention.StepUpCard) string {
 	parts := []string{c.Why}
+	if c.About != "" {
+		parts = append(parts, c.About)
+	}
 	if c.Preview != "" {
 		parts = append(parts, c.Preview)
 	}

@@ -35,6 +35,13 @@ const stepUpOfficer = "marketing:stepup"
 
 func newStepUpDraftRig(t *testing.T, body string) *stepUpDraftRig {
 	t.Helper()
+	return newStepUpDraftRigWith(t, body, "launch/hero-1", "rebrand announcement")
+}
+
+// newStepUpDraftRigWith is newStepUpDraftRig with the draft's one media ref
+// and its officer item's subject named.
+func newStepUpDraftRigWith(t *testing.T, body, ref, subject string) *stepUpDraftRig {
+	t.Helper()
 	f := newDraftToolFixture(t)
 	f.srv.ext.Attention = attention.NewPG(f.pool)
 	dsn := dbtest.DSN(t)
@@ -46,7 +53,7 @@ func newStepUpDraftRig(t *testing.T, body string) *stepUpDraftRig {
 	if err := store.PutDef(ctx, f.owner, builtin.Def{Officer: stepUpOfficer, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	item, _, err := store.Enqueue(ctx, f.owner, builtin.NewItem{Officer: stepUpOfficer, Kind: "marketing.post", SubjectKey: "rebrand announcement"}, time.Now())
+	item, _, err := store.Enqueue(ctx, f.owner, builtin.NewItem{Officer: stepUpOfficer, Kind: "marketing.post", SubjectKey: subject}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +65,7 @@ func newStepUpDraftRig(t *testing.T, body string) *stepUpDraftRig {
 		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label = 'step-up'`)
 	})
 	d, err := f.plugins.FileOutbound(f.asOwner, f.chief.ID, f.owner, f.chief.Name, plugins.NewOutbound{Officer: stepUpOfficer,
-		Plugin: f.plugin.Name, Venue: "x", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: body, Media: []string{"launch/hero-1"}})
+		Plugin: f.plugin.Name, Venue: "x", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: body, Media: []string{ref}})
 	if err != nil {
 		t.Fatalf("file an outbound draft: %v", err)
 	}
@@ -69,7 +76,7 @@ func newStepUpDraftRig(t *testing.T, body string) *stepUpDraftRig {
 	dbtest.OwnerExec(t, dsn, `ALTER TABLE plugin_reply_drafts DISABLE TRIGGER plugin_reply_drafts_outbound_immutable`)
 	dbtest.OwnerExec(t, dsn, `UPDATE plugin_reply_drafts SET officer_item_id = `+strconv.FormatInt(item, 10)+` WHERE id = `+id)
 	dbtest.OwnerExec(t, dsn, `ALTER TABLE plugin_reply_drafts ENABLE TRIGGER plugin_reply_drafts_outbound_immutable`)
-	if _, _, err := f.plugins.UploadDraftMedia(f.asOwner, f.plugin.ID, d.ID, plugins.DraftMedia{Ref: "launch/hero-1", SHA256: sha("launch/hero-1"),
+	if _, _, err := f.plugins.UploadDraftMedia(f.asOwner, f.plugin.ID, d.ID, plugins.DraftMedia{Ref: ref, SHA256: sha(ref),
 		ContentType: "image/webp", Size: 10, Key: plugins.MediaKeyPrefix + "x/0"}); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
@@ -116,14 +123,14 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 	if c == nil {
 		t.Fatalf("the card has no parts: %q", a.Question)
 	}
-	if c.Title != "Post to X?" || c.Why != "Marketing: rebrand announcement" || c.Venue != "X" || c.Preview != body || c.Changed ||
+	if c.Title != "Post to X?" || c.Why != "Marketing: rebrand announcement" || c.About != "Asked by work:2" || c.Venue != "X" || c.Preview != body || c.Changed ||
 		c.DraftID != r.draft.ID || c.Tool != pluginDraftDecideTool {
 		t.Fatalf("the card's parts: %+v", c)
 	}
 	if len(c.Media) != 1 || c.Media[0] != (attention.StepUpMedium{N: 0, Ref: "launch/hero-1", Type: "image/webp", SHA256: sha("launch/hero-1")}) {
 		t.Fatalf("the card's media: %+v", c.Media)
 	}
-	const question = "Post to X?\nMarketing: rebrand announcement\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
+	const question = "Post to X?\nMarketing: rebrand announcement\nAsked by work:2\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
 	if a.Question != question {
 		t.Fatalf("the card's question:\n%q\nwant\n%q", a.Question, question)
 	}
@@ -139,7 +146,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 	}
 	// The push: the title and the why and the post, nothing else.
 	n := attentionNotification(askItem(a), false)
-	if n.Title != "Post to X?" || n.Body != "Marketing: rebrand announcement · Big news: acme is now acme-two. Read more on the blog." {
+	if n.Title != "Post to X?" || n.Body != "Marketing: rebrand announcement · Asked by work:2 · Big news: acme is now acme-two. Read more on the blog." {
 		t.Fatalf("the push: %q / %q", n.Title, n.Body)
 	}
 	for _, never := range []string{"tower", "{", "paired phone", "plugin_draft_decide"} {
@@ -189,7 +196,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 func TestAChangedDraftsStepUpCardSaysRefuse(t *testing.T) {
 	const body = "The real post."
 	r := newStepUpDraftRig(t, body)
-	const question = "This draft changed since it was asked\nRefuse: the draft no longer matches what the session asked you to decide."
+	const question = "This draft changed since it was asked\nRefuse: the draft no longer matches what the session asked you to decide.\nAsked by work:2"
 	for name, args := range map[string]map[string]any{
 		"another body":  {"decision": "approve", "body_sha256": sha("Another post."), "media_sha256": []string{sha("launch/hero-1")}},
 		"another media": {"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/other")}},
@@ -218,7 +225,7 @@ func TestARejectStepUpCardSaysSoPlainly(t *testing.T) {
 	const body = "A post to reject."
 	r := newStepUpDraftRig(t, body)
 	a := r.decideCard(t, map[string]any{"decision": "reject", "body_sha256": sha(body), "reason": "wrong tone"})
-	const question = "Reject this draft?\nReject this draft: wrong tone\n\nA post to reject.\n\nWith 1 image"
+	const question = "Reject this draft?\nReject this draft: wrong tone\nAsked by work:2\n\nA post to reject.\n\nWith 1 image"
 	if a.Question != question {
 		t.Fatalf("the reject card:\n%q\nwant\n%q", a.Question, question)
 	}
@@ -242,8 +249,87 @@ func TestARouteReplyStepUpCardIsASentence(t *testing.T) {
 	}
 	t.Cleanup(func() { dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM attention_asks WHERE asker_label = 'step-up'`) })
 	if a.StepUp == nil || a.StepUp.Title != "Send this answer to a routed message?" || a.StepUp.Preview != "See you Friday." ||
-		a.Question != "Send this answer to a routed message?\nAsked by work:1\n\nSee you Friday." ||
+		a.StepUp.About != "Answers plugin message #"+strconv.FormatInt(m.ID, 10)+", routed to work:1" ||
+		a.Question != "Send this answer to a routed message?\nAsked by work:1\nAnswers plugin message #"+strconv.FormatInt(m.ID, 10)+", routed to work:1\n\nSee you Friday." ||
 		!strings.Contains(a.StepUp.Details, "route_reply {") || !strings.Contains(a.StepUp.Details, "A session on tower (work:1 @ tower)") {
 		t.Fatalf("the route_reply card: %q %+v", a.Question, a.StepUp)
+	}
+}
+
+// A LONG PART IS CUT, NEVER A CARD THAT CANNOT BE FILED (attention
+// CleanStepUp): each input below is one another door allows but is longer
+// than the card part it lands in, and the call still files its card, with that
+// part cut to its bound and ending "…".
+
+// TestAStepUpCardCutsALongRejectReason: a reject reason of
+// plugins.MaxDecisionReasonRunes (1000) characters — the why is cut to 300.
+func TestAStepUpCardCutsALongRejectReason(t *testing.T) {
+	const body = "A post to reject."
+	r := newStepUpDraftRig(t, body)
+	a := r.decideCard(t, map[string]any{"decision": "reject", "body_sha256": sha(body), "reason": strings.Repeat("r", 1000)})
+	want := "Reject this draft: " + strings.Repeat("r", 280) + "…"
+	if a.StepUp == nil || a.StepUp.Why != want || len([]rune(a.StepUp.Why)) != 300 {
+		t.Fatalf("the reject card's why (%d runes): %+v", len([]rune(a.StepUp.Why)), a.StepUp)
+	}
+	if !strings.HasPrefix(a.Question, "Reject this draft?\n"+want+"\nAsked by work:2\n\n") {
+		t.Fatalf("the reject card's question:\n%q", a.Question)
+	}
+}
+
+// TestAStepUpCardCutsALongOfficerSubject: an officer item subject of 500
+// characters (the item table's bound) — the why is cut to 300.
+func TestAStepUpCardCutsALongOfficerSubject(t *testing.T) {
+	const body = "A post for a long item."
+	r := newStepUpDraftRigWith(t, body, "launch/hero-1", strings.Repeat("s", 500))
+	a := r.decideCard(t, map[string]any{"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/hero-1")}})
+	want := "Marketing: " + strings.Repeat("s", 288) + "…"
+	if a.StepUp == nil || a.StepUp.Why != want || len([]rune(a.StepUp.Why)) != 300 {
+		t.Fatalf("the card's why (%d runes): %+v", len([]rune(a.StepUp.Why)), a.StepUp)
+	}
+}
+
+// TestAStepUpCardCutsALongMediaRef: a media ref of 193 characters (the
+// longest plugins.ValidMediaRef takes: 64 + "/" + 128) — the card's ref is
+// cut to 150; the medium's index and hash are kept whole.
+func TestAStepUpCardCutsALongMediaRef(t *testing.T) {
+	const body = "A post with a long media ref."
+	ref := strings.Repeat("a", 64) + "/" + strings.Repeat("b", 128)
+	r := newStepUpDraftRigWith(t, body, ref, "rebrand announcement")
+	a := r.decideCard(t, map[string]any{"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha(ref)}})
+	want := strings.Repeat("a", 64) + "/" + strings.Repeat("b", 84) + "…"
+	if a.StepUp == nil || len(a.StepUp.Media) != 1 || a.StepUp.Media[0] != (attention.StepUpMedium{N: 0, Ref: want, Type: "image/webp", SHA256: sha(ref)}) ||
+		len([]rune(a.StepUp.Media[0].Ref)) != 150 {
+		t.Fatalf("the card's media: %+v", a.StepUp)
+	}
+}
+
+// TestAStepUpCardCutsALongPluginLabel: a reply draft's venue is its plugin's
+// label, up to plugins.MaxLabelRunes (80) characters — the venue is cut to
+// 64; the title carries it whole.
+func TestAStepUpCardCutsALongPluginLabel(t *testing.T) {
+	f := newDraftToolFixture(t)
+	f.srv.ext.Attention = attention.NewPG(f.pool)
+	label := strings.Repeat("L", 80)
+	dsn := dbtest.DSN(t)
+	plug := strconv.FormatInt(f.plugin.ID, 10)
+	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET label = '`+label+`' WHERE id = `+plug)
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dsn, `UPDATE plugins SET label = 'Example inbox' WHERE id = `+plug)
+		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label = 'step-up'`)
+	})
+	const body = "Thanks, see you then."
+	id := f.draft(t, "x-stepup-label", "someone@example.test", true, body)
+	declareHostOfficerOn(t, f.srv, f.owner, "tower")
+	text, isErr := f.decide(t, f.tok, otherRouteSID, id, "approve", sha(body))
+	if isErr {
+		t.Fatalf("decide: %s", text)
+	}
+	a, err := f.srv.ext.Attention.Get(f.asOwner, stepUpCardOf(t, text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("L", 63) + "…"
+	if a.StepUp == nil || a.StepUp.Venue != want || len([]rune(a.StepUp.Venue)) != 64 || a.StepUp.Title != "Send this reply on "+label+"?" {
+		t.Fatalf("the reply card: %+v", a.StepUp)
 	}
 }

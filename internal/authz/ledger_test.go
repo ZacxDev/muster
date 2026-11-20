@@ -396,6 +396,12 @@ var (
 		// AS the named fixture user. A fixture command, never linked into a
 		// binary, and it refuses any database not ending in _e2e.
 		"e2e/pagesfix.run",
+		// The step-up card page's browser fixture (e2e/stepupfix): it writes
+		// and clears one step-up confirmation card through the real attention
+		// store AS the named fixture user, so row-level security files it
+		// under that user. A fixture command, never linked into a binary, and
+		// it refuses any database not ending in _e2e.
+		"e2e/stepupfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

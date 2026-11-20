@@ -1,12 +1,13 @@
 -- muster 0171 — A STEP-UP CONFIRMATION CARD'S STRUCTURED PARTS
 -- (internal/attention step_up.go; internal/api host_stepup_card.go;
--- docs/sending-and-step-up.md "What the card shows").
+-- docs/mirroring.md "What a card shows").
 --
 --   attention_asks.step_up
 --       a step-up card's parts, as muster built them when it filed the card:
---       {"tool", "title", "why", "asker", "preview", "venue", "draft_id",
+--       {"tool", "title", "why", "asker", "about", "preview", "venue", "draft_id",
 --       "media": [{"n", "ref", "type", "sha256"}], "changed", "details"} —
 --       the short action title (the push title), the one-line why, who asked,
+--       the one line naming who or where the call is about,
 --       the preview (a post's exact text, or a plain summary of the call),
 --       for a draft decision the draft it is bound to and its media, whether
 --       that draft no longer matched the call when the card was filed, and

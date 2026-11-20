@@ -168,26 +168,72 @@ func TestAnOldStepUpCardStillRenders(t *testing.T) {
 	}
 }
 
-// TestEveryOtherGatedToolGetsAHumanSummary: no tool's card face is JSON.
+// TestEveryOtherGatedToolGetsAHumanSummary: no tool's card face is JSON, and
+// every card that its title and preview alone would not identify says who or
+// where in one plain line: the route an answer goes on, the batch (its
+// distinct entries), the session a message is routed to, the pairing code.
 func TestEveryOtherGatedToolGetsAHumanSummary(t *testing.T) {
-	cases := []struct{ tool, args, title, preview string }{
-		{routeReplyToolName, `{"route_id":"r1","body":"See you Friday."}`, "Send this answer to a routed message?", "See you Friday."},
-		{attentionAnswerTool, `{"id":12,"answer":"yes"}`, "Answer an ask as you?", "Answer ask #12 with: yes"},
-		{connectorRequestDecideTool, `{"id":4,"decision":"approve"}`, "Approve a connector request?", "Approve connector request #4."},
-		{connectorRequestDecideTool, `{"id":4,"decision":"deny"}`, "Deny a connector request?", "Deny connector request #4."},
-		{agentDestroyTool, `{"name":"helper"}`, "Destroy an agent?", "Destroy agent helper."},
-		{pluginMessageRouteTool, `{"message_id":9,"subject":"billing"}`, "Route a plugin message?", "Route plugin message #9 as \u201cbilling\u201d."},
-		{pluginRequestDecideTool, `{"id":2,"decision":"approve","code":"x"}`, "Approve a plugin's pairing?", "Approve pairing request #2 (it mints the plugin a token)."},
-		{pluginOutboundBatchDecideTool, `{"batch_id":"b","batch_sha256":"s","approve_ids":[1,2]}`, "Approve part of an outreach batch?", "Send 2 of the batch's follows and likes; reject the rest."},
-		{dispatchApproveTool, `{"hold_id":"held:1"}`, "Start this agent?", "The held start: Start a new agent on pod/gateway"},
+	const route = "Answers plugin message #7, routed to work:1"
+	cases := []struct{ tool, args, title, preview, where string }{
+		{routeReplyToolName, `{"route_id":"r1","body":"See you Friday."}`, "Send this answer to a routed message?", "See you Friday.", route},
+		{attentionAnswerTool, `{"id":12,"answer":"yes"}`, "Answer an ask as you?", "Answer ask #12 with: yes", ""},
+		{connectorRequestDecideTool, `{"id":4,"decision":"approve"}`, "Approve a connector request?", "Approve connector request #4.", ""},
+		{connectorRequestDecideTool, `{"id":4,"decision":"deny"}`, "Deny a connector request?", "Deny connector request #4.", ""},
+		{agentDestroyTool, `{"name":"helper"}`, "Destroy an agent?", "Destroy agent helper.", ""},
+		{pluginMessageRouteTool, `{"message_id":9,"subject":"mirror:abc-123"}`, "Route a plugin message?", "Route plugin message #9.", "To session mirror:abc-123"},
+		{pluginMessageRouteTool, `{"message_id":9}`, "Route a plugin message?", "Route plugin message #9.", "To this session"},
+		{pluginRequestDecideTool, `{"id":2,"decision":"approve","code":"ABCD-EFGH"}`, "Approve a plugin's pairing?", "Approve pairing request #2 (it mints the plugin a token).", "Pairing code ABCD-EFGH"},
+		{pluginRequestDecideTool, `{"id":2,"decision":"refuse","code":"WXYZ-1234"}`, "Refuse a plugin's pairing?", "Refuse pairing request #2.", "Pairing code WXYZ-1234"},
+		{pluginOutboundBatchDecideTool, `{"batch_id":"b-17","batch_sha256":"s","approve_ids":[1,2,2,1,5]}`, "Approve part of an outreach batch?",
+			"Send 3 of the batch's follows and likes; reject the rest.", "Outreach batch b-17: 3 entries to send"},
+		{pluginOutboundBatchDecideTool, `{"batch_id":"b-18","batch_sha256":"s","approve_ids":[4,4]}`, "Approve part of an outreach batch?",
+			"Send 1 of the batch's follows and likes; reject the rest.", "Outreach batch b-18: 1 entry to send"},
+		{dispatchApproveTool, `{"hold_id":"held:1"}`, "Start this agent?", "The held start: Start a new agent on pod/gateway", ""},
 	}
 	for _, c := range cases {
-		title, preview := stepUpToolSummary(c.tool, c.args, hostStepUpTools[c.tool], "Start a new agent on pod/gateway")
-		if title != c.title || preview != c.preview {
-			t.Errorf("%s: %q / %q, want %q / %q", c.tool, title, preview, c.title, c.preview)
+		r := ""
+		if c.tool == routeReplyToolName {
+			r = route
 		}
-		if strings.Contains(title+preview, "{") {
-			t.Errorf("%s: JSON on the card's face: %q %q", c.tool, title, preview)
+		title, preview, where := stepUpToolSummary(c.tool, c.args, hostStepUpTools[c.tool], "Start a new agent on pod/gateway", r)
+		if title != c.title || preview != c.preview || where != c.where {
+			t.Errorf("%s %s: %q / %q / %q, want %q / %q / %q", c.tool, c.args, title, preview, where, c.title, c.preview, c.where)
 		}
+		if strings.Contains(title+preview+where, "{") {
+			t.Errorf("%s: JSON on the card's face: %q %q %q", c.tool, title, preview, where)
+		}
+	}
+}
+
+// TestAStepUpCardsWhereLineIsOnEveryFace: the where line is in the card's
+// question (what the phone confirms), its push body and its page — and a
+// draft card's where line (who asked) replaces the page's asker label rather
+// than repeating it.
+func TestAStepUpCardsWhereLineIsOnEveryFace(t *testing.T) {
+	n, err := attention.Clean(attention.New{Asker: attention.Asker{System: true, Label: hostDecisionLabel},
+		StepUp: &attention.StepUpCard{Tool: pluginOutboundBatchDecideTool, Title: "Approve part of an outreach batch?", Why: "Asked by work:1",
+			Asker: "work:1", About: "Outreach batch b-17: 3 entries to send", Preview: "Send 3 of the batch's follows and likes; reject the rest.", Details: "D"},
+		Options: []string{hostDecisionConfirm, hostDecisionRefuse}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const question = "Approve part of an outreach batch?\nAsked by work:1\nOutreach batch b-17: 3 entries to send\n\nSend 3 of the batch's follows and likes; reject the rest."
+	if n.Question != question {
+		t.Fatalf("the question:\n%q\nwant\n%q", n.Question, question)
+	}
+	a := attention.Ask{ID: 8, Asker: n.Asker, Question: n.Question, Options: n.Options, StepUp: n.StepUp, Status: attention.Open}
+	if got := attentionNotification(askItem(a), false).Body; got != "Asked by work:1 · Outreach batch b-17: 3 entries to send · Send 3 of the batch's follows and likes; reject the rest." {
+		t.Fatalf("the push body %q", got)
+	}
+	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-about>Outreach batch b-17: 3 entries to send</p>`) ||
+		!strings.Contains(page, `data-stepup-asker>Asked by work:1</p>`) {
+		t.Fatalf("the page lacks the where line or the asker:\n%s", page)
+	}
+	// A draft card: the where line is who asked, drawn once.
+	d := stepUpFixtureAsk(t, "Big news.")
+	d.StepUp.About = "Asked by main:1"
+	page := askQuestionHTML(d)
+	if strings.Count(page, "Asked by main:1") != 1 || !strings.Contains(page, `data-stepup-about>Asked by main:1</p>`) {
+		t.Fatalf("a draft card's who-asked line:\n%s", page)
 	}
 }

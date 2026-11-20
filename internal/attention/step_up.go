@@ -28,6 +28,13 @@ import (
 // (fence.Sanitize: no control, format, bidi or invisible code point; one-line
 // fields have no line break; everything bounded), so a renderer only escapes
 // them for its medium.
+//
+// 🔴 A LONG PART IS CUT, NEVER REFUSED. Every text part is built from inputs
+// other doors bound more loosely (a reject reason, a plugin's label, a media
+// ref, an officer item's subject), so a part over its bound is cut with "…"
+// (stepUpLine), never a reason to file no card: a card that cannot be filed
+// leaves a valid call unconfirmable. Only the identifiers (the tool's name, a
+// medium's SHA-256), which a cut would make a wrong value, are refused.
 // ---------------------------------------------------------------------------
 
 // The bounds of a StepUpCard. A card's Text must fit MaxQuestionRunes: the
@@ -35,6 +42,7 @@ import (
 const (
 	MaxStepUpTitleRunes   = 200
 	MaxStepUpWhyRunes     = 300
+	MaxStepUpAboutRunes   = 200
 	MaxStepUpAskerRunes   = 200
 	MaxStepUpVenueRunes   = 64
 	MaxStepUpToolRunes    = 64
@@ -57,6 +65,11 @@ type StepUpCard struct {
 	Why string `json:"why"`
 	// Asker names who asked (the asking session), drawn as a small label.
 	Asker string `json:"asker,omitempty"`
+	// About is the card's where line: who or what the call is about, when
+	// the title and preview do not: the route an answer goes on, the batch,
+	// the session a message is routed to, the pairing code, or — on a draft
+	// card — who asked. "" for none.
+	About string `json:"about,omitempty"`
 	// Preview is what is about to happen: a post's exact text, or a plain
 	// summary of the call. Line breaks kept.
 	Preview string `json:"preview,omitempty"`
@@ -118,14 +131,18 @@ func (c *StepUpCard) MediaLine() string {
 	return "With " + strings.Join(parts, " and ")
 }
 
-// Text is the card's question: its title, its why, then its preview and its
-// media line. No host, no session, no hash, no JSON — those are Details.
-// THE ONE TEXT the push, the page's summary and the phone's prompt read.
+// Text is the card's question: its title, its why and its where line, then
+// its preview and its media line. No host, no hash, no JSON — those are
+// Details. THE ONE TEXT the page's summary and the phone's prompt read.
 func (c *StepUpCard) Text() string {
 	if c == nil {
 		return ""
 	}
-	parts := []string{c.Title + "\n" + c.Why}
+	head := c.Title + "\n" + c.Why
+	if c.About != "" {
+		head += "\n" + c.About
+	}
+	parts := []string{head}
 	if c.Preview != "" {
 		parts = append(parts, c.Preview)
 	}
@@ -135,9 +152,20 @@ func (c *StepUpCard) Text() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// stepUpLine is s as a one-line field bounded to max runes: sanitised, line
-// breaks folded to spaces, runs of space folded; refused when longer.
-func stepUpLine(field, s string, max int) (string, error) {
+// stepUpLine is s as a one-line field of at most max runes: sanitised, line
+// breaks folded to spaces, runs of space folded; when longer, its first max-1
+// runes and "…" (the file header: a long part is cut, never refused).
+func stepUpLine(s string, max int) string {
+	out := whyLine(s)
+	if utf8.RuneCountInString(out) > max {
+		return fence.Cut(out, max-1)
+	}
+	return out
+}
+
+// stepUpID is s as a one-line identifier of at most max runes, refused when
+// longer: a cut identifier would be a wrong one.
+func stepUpID(field, s string, max int) (string, error) {
 	out := whyLine(s)
 	if utf8.RuneCountInString(out) > max {
 		return "", fmt.Errorf("%w: a step-up card's %s is longer than %d characters", ErrInvalid, field, max)
@@ -168,21 +196,14 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 	}
 	var out StepUpCard
 	var err error
-	if out.Tool, err = stepUpLine("tool", c.Tool, MaxStepUpToolRunes); err != nil {
+	if out.Tool, err = stepUpID("tool", c.Tool, MaxStepUpToolRunes); err != nil {
 		return nil, err
 	}
-	if out.Title, err = stepUpLine("title", c.Title, MaxStepUpTitleRunes); err != nil {
-		return nil, err
-	}
-	if out.Why, err = stepUpLine("why", c.Why, MaxStepUpWhyRunes); err != nil {
-		return nil, err
-	}
-	if out.Asker, err = stepUpLine("asker", c.Asker, MaxStepUpAskerRunes); err != nil {
-		return nil, err
-	}
-	if out.Venue, err = stepUpLine("venue", c.Venue, MaxStepUpVenueRunes); err != nil {
-		return nil, err
-	}
+	out.Title = stepUpLine(c.Title, MaxStepUpTitleRunes)
+	out.Why = stepUpLine(c.Why, MaxStepUpWhyRunes)
+	out.Asker = stepUpLine(c.Asker, MaxStepUpAskerRunes)
+	out.About = stepUpLine(c.About, MaxStepUpAboutRunes)
+	out.Venue = stepUpLine(c.Venue, MaxStepUpVenueRunes)
 	if out.Preview, err = stepUpBlock("preview", c.Preview, MaxStepUpPreviewRunes); err != nil {
 		return nil, err
 	}
@@ -207,13 +228,9 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 			return nil, fmt.Errorf("%w: a step-up card's medium index is negative", ErrInvalid)
 		}
 		cm := StepUpMedium{N: m.N}
-		if cm.Ref, err = stepUpLine("medium ref", m.Ref, MaxStepUpMediumRunes); err != nil {
-			return nil, err
-		}
-		if cm.Type, err = stepUpLine("medium type", m.Type, 100); err != nil {
-			return nil, err
-		}
-		if cm.SHA256, err = stepUpLine("medium sha256", m.SHA256, 64); err != nil {
+		cm.Ref = stepUpLine(m.Ref, MaxStepUpMediumRunes)
+		cm.Type = stepUpLine(m.Type, 100)
+		if cm.SHA256, err = stepUpID("medium sha256", m.SHA256, 64); err != nil {
 			return nil, err
 		}
 		out.Media = append(out.Media, cm)
