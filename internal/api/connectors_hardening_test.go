@@ -35,6 +35,7 @@ var connectorOperatorWrites = []string{
 	"POST /teams/{id}/connectors/standing/{standing}/revoke",
 	"POST /teams/{id}/connectors/{grant}/approve",
 	"POST /teams/{id}/connectors/{grant}/deny",
+	"POST /ui/connector-grants/{id}/rerun",
 	"POST /ui/connector-requests/{id}/approve",
 	"POST /ui/connector-requests/{id}/deny",
 }
