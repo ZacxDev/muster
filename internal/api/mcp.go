@@ -276,7 +276,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		s.writeMCP(w, req.ID, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "muster", "version": BuildVersion},
+			"serverInfo":      map[string]any{"name": "muster", "version": s.version()},
 			"instructions":    surface.instructions,
 		}, nil)
 	case "ping":

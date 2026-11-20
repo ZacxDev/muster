@@ -96,7 +96,7 @@ func TestAMissingStaticFileIsNeverCached(t *testing.T) {
 // comes from the worker's cache — so must every script it runs, under the URL
 // it links them by, or the offline shell opens inert.
 func TestTheWorkerPrecachesEveryScriptTheShellLinks(t *testing.T) {
-	sw, err := ServiceWorkerSource()
+	sw, err := ServiceWorkerSource(BuildVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

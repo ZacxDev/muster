@@ -29,14 +29,6 @@ import (
 // pAnchor is markdown.go's mdAnchor attributes.
 const pAnchor = `" target="_blank" rel="noopener" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">`
 
-// withHTMLEvery sets the stream's render interval for one test.
-func withHTMLEvery(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := chatStreamHTMLEvery
-	chatStreamHTMLEvery = d
-	t.Cleanup(func() { chatStreamHTMLEvery = old })
-}
-
 // recorder is a wsChatStream writer that keeps every message as JSON.
 type recorder struct {
 	mu  sync.Mutex
@@ -75,9 +67,8 @@ func sameMsgs(t *testing.T, got, want []string) {
 // 🔴 REGRESSION: red at 1b029ed9 — the socket sent {"type":"delta","content":…}
 // with no html, and the page rendered it with its own JS copy.
 func TestTheChatStreamRendersEachBubbleWithTheGoRenderer(t *testing.T) {
-	withHTMLEvery(t, 0)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, 0)
 	st.emit(agents.StreamEvent{Kind: "text", Text: "see **bo"})
 	st.emit(agents.StreamEvent{Kind: "text", Text: "ld** and _x_"})
 	st.emit(agents.StreamEvent{Kind: "tool_call", ToolID: "c1", ToolName: "Bash", ToolArgs: `{"command":"ls"}`})
@@ -97,9 +88,8 @@ func TestTheChatStreamRendersEachBubbleWithTheGoRenderer(t *testing.T) {
 // which the stored row is drawn with) — and a target of words, never the
 // subject id the generic rule would pick.
 func TestAStreamedMusterToolCallCarriesItsPlainLabel(t *testing.T) {
-	withHTMLEvery(t, 0)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, 0)
 	st.emit(agents.StreamEvent{Kind: "tool_call", ToolID: "c1", ToolName: "connector_request_decide", ToolArgs: `{"id":4,"decision":"deny"}`})
 	st.emit(agents.StreamEvent{Kind: "tool_call", ToolID: "c2", ToolName: "mcp__muster__route_to_session", ToolArgs: `{"subject":"mirror:cs-1","text":"log retries"}`})
 	st.end()
@@ -113,9 +103,8 @@ func TestAStreamedMusterToolCallCarriesItsPlainLabel(t *testing.T) {
 // streams (ui/mentions.go), as the stored transcript draws them; a name the
 // index does not hold stays text.
 func TestTheChatStreamLinksMentions(t *testing.T) {
-	withHTMLEvery(t, 0)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, 0)
 	st.mentions = ui.NewMentionIndex(func() ui.MentionNames { return ui.MentionNames{Agents: []string{"fix-login"}} }, nil)
 	st.emit(agents.StreamEvent{Kind: "text", Text: "ask fix-login, not fix-logout"})
 	st.end()
@@ -146,7 +135,6 @@ func TestWithChatLogLiveGivesTheLogAMentionsIndex(t *testing.T) {
 // chat socket's turn writes through (wsStreamEmit) links a mention of an
 // agent the server's own store lists.
 func TestWSStreamEmitGivesTheTurnAMentionsIndex(t *testing.T) {
-	withHTMLEvery(t, 0)
 	srv, _ := viewServer(t, nil)
 	emit, st := wsStreamEmit(context.Background(), nil, srv, "agent-under-test")
 	r := &recorder{}
@@ -159,13 +147,39 @@ func TestWSStreamEmitGivesTheTurnAMentionsIndex(t *testing.T) {
 	}
 }
 
+// TestAChatStreamRendersAtItsServersInterval: the chat socket's stream takes
+// its interval from ITS server (chatHTMLEvery), not from a package variable a
+// test reassigns while an earlier test's socket is still running (the race this
+// replaced). Two servers set differently each get their own; an unset server,
+// and a stream with no server, get production's 100 ms.
+func TestAChatStreamRendersAtItsServersInterval(t *testing.T) {
+	slow, _ := viewServer(t, nil)
+	slow.chatHTMLEvery = time.Hour
+	fast, _ := viewServer(t, nil)
+	fast.chatHTMLEvery = 7 * time.Millisecond
+	unset, _ := viewServer(t, nil)
+	for _, c := range []struct {
+		name string
+		srv  *Server
+		want time.Duration
+	}{
+		{"slow", slow, time.Hour},
+		{"fast", fast, 7 * time.Millisecond},
+		{"unset", unset, 100 * time.Millisecond},
+		{"no server", nil, 100 * time.Millisecond},
+	} {
+		if _, st := wsStreamEmit(context.Background(), nil, c.srv, "agent-under-test"); st.every != c.want {
+			t.Errorf("%s: the stream renders every %s; want %s", c.name, st.every, c.want)
+		}
+	}
+}
+
 // TestTheChatStreamRendersAtMostOncePerWindow: inside the window a delta
 // carries only its text; the bubble's owed html is sent when it ends (here, at
 // a thinking event and at the turn's end), so nothing streamed stays unrendered.
 func TestTheChatStreamRendersAtMostOncePerWindow(t *testing.T) {
-	withHTMLEvery(t, time.Hour)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, time.Hour)
 	st.emit(agents.StreamEvent{Kind: "text", Text: "a "})
 	st.emit(agents.StreamEvent{Kind: "text", Text: "**b**"})
 	st.emit(agents.StreamEvent{Kind: "text", Text: " c"})
@@ -195,9 +209,8 @@ func TestTheChatStreamRendersAtMostOncePerWindow(t *testing.T) {
 //
 // #538 round 1 F3: before this test, `queued` ending a bubble survived every test.
 func TestQueuedAndAcceptedDoNotEndTheBubble(t *testing.T) {
-	withHTMLEvery(t, time.Hour)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, time.Hour)
 	st.emit(agents.StreamEvent{Kind: "text", Text: "a"})
 	st.emit(agents.StreamEvent{Kind: "text", Text: " _b_"})
 	st.emit(agents.StreamEvent{Kind: "queued", Text: "waiting"})
@@ -222,9 +235,8 @@ func TestQueuedAndAcceptedDoNotEndTheBubble(t *testing.T) {
 // mid-bubble (the model is thinking, a tool is slow to start) is drawn
 // rendered when the window ends, not left as plain text until the next event.
 func TestTheChatStreamRendersAPausedReplyWhenItsWindowEnds(t *testing.T) {
-	withHTMLEvery(t, 40*time.Millisecond)
 	r := &recorder{}
-	st := newWSChatStream(r.write)
+	st := newWSChatStream(r.write, 40*time.Millisecond)
 	st.emit(agents.StreamEvent{Kind: "text", Text: "x"})
 	st.emit(agents.StreamEvent{Kind: "text", Text: " **y**"})
 	want := jsonOf(map[string]any{"type": "delta", "content": "", "html": `<p class="my-1">x <strong>y</strong></p>`})
@@ -294,9 +306,9 @@ func deltaServer(t *testing.T, f http.Handler) (*Server, *httptest.Server, *send
 //
 // 🔴 REGRESSION: red at 1b029ed9 — no "sent" message, and no delta carries html.
 func TestTheChatSocketSendsRenderedHTMLForASentMessageAndItsReply(t *testing.T) {
-	withHTMLEvery(t, time.Hour) // one html at the first delta, the rest at the end
 	f := deltaCCD{deltas: []string{"see **bo", "ld** and https://example.com/foo_", " then x_ and café_x_.txt <script>"}}
 	s, ts, store := deltaServer(t, f)
+	s.chatHTMLEvery = time.Hour // one html at the first delta, the rest at the end
 	c, ctx := dialChat(t, s, ts)
 	sendChat(t, ctx, c, "please **look** at <b>x</b>")
 	msgs := readUntilEnd(t, ctx, c)

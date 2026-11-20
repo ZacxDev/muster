@@ -82,16 +82,17 @@ func (s *Server) handleAgentCLIDownload(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
-	// 🔴 THIS HEADER DESCRIBES THE SERVER, NOT THE SERVED BYTES. BuildVersion is
-	// THIS process's version, stamped by Dockerfile's server build; the binary in
-	// the body is built from the same source tree but with no `-X`, so running it
+	// 🔴 THIS HEADER DESCRIBES THE SERVER, NOT THE SERVED BYTES. s.version() is
+	// BuildVersion, THIS process's version, stamped by Dockerfile's server
+	// build; the binary in the body is built from the same source tree but
+	// with no `-X`, so running it
 	// and asking `--version` answers `dev` and will not match this header. It is
 	// still worth sending — the two come from one tree and one image, so it
 	// identifies the build the bytes came FROM — but it is not a report of what
 	// the downloaded binary will say about itself. The comment here previously
 	// read "the version the bytes were built at", which is the claim this
 	// paragraph corrects.
-	w.Header().Set("X-Muster-Version", BuildVersion)
+	w.Header().Set("X-Muster-Version", s.version())
 	w.WriteHeader(http.StatusOK)
 
 	// Copy errors are logged, not written: the header block is already sent, so

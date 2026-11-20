@@ -81,7 +81,7 @@ func TestEveryStaticLinkCarriesItsContentHash(t *testing.T) {
 	}
 
 	// The service worker precaches the stylesheet under the URL pages link.
-	sw, err := ServiceWorkerSource()
+	sw, err := ServiceWorkerSource(BuildVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,7 +18,23 @@ import (
 // BuildVersion is the running build version, set from main via -ldflags
 // "-X github.com/ZacxDev/muster/internal/api.BuildVersion=<ver>". Surfaced in
 // /health and the startup log so the running build is identifiable.
+//
+// 🔴 A VAR ONLY SO THE LINKER CAN STAMP IT; NOTHING ASSIGNS IT AT RUN TIME. A
+// handler reads the version through its Server (Server.version), and a test
+// that needs another build sets that Server's buildVersion. Tests used to
+// reassign this variable while a request handler from another test could be
+// reading it — every page reads it (shellFeatures' SnapBuild) — which `go test
+// -race` reports. TestNothingAssignsBuildVersion holds the line.
 var BuildVersion = "dev"
+
+// version is the build this server reports: buildVersion when set (a test),
+// else BuildVersion.
+func (s *Server) version() string {
+	if s.buildVersion != "" {
+		return s.buildVersion
+	}
+	return BuildVersion
+}
 
 // telemetryConnectSrc, when non-empty, is an extra origin appended to the CSP
 // connect-src directive so the browser may POST cross-origin RUM (the Grafana
