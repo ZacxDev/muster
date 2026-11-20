@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/podagent"
 )
 
@@ -37,7 +38,7 @@ const (
 	failTerminal     = "terminal"      // 502: tmux could not be driven
 	failTranscript   = "transcript"    // 502: the reply could not be read back
 	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
-	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit (409 from the limit menu: limitMenuFailure)
+	failRateLimited  = "rate_limited"  // 429: the API rate-limited the turn — usage_limit when it is the account's usage limit (409 from the limit menu: limitMenuFailure)
 	failBilling      = "billing_error" // 502
 	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
@@ -81,7 +82,8 @@ func limitMenuFailure(lm *limitMenuShown) *failure {
 	if lm.limit != "" {
 		msg = lm.limit + " — " + msg
 	}
-	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit,
+	// UsageLimit: the menu IS the usage limit's, whatever its text says.
+	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit, UsageLimit: true,
 		Message: msg + "; nothing was typed — the account hit its limit"}
 }
 
@@ -135,6 +137,17 @@ func classifyAPIError(e apiError) *failure {
 		f.Status, f.Type = http.StatusBadGateway, failAuth
 	default:
 		f.Status, f.Type = http.StatusBadGateway, failTurn
+	}
+	// 🔴 A 429 IS NOT ALWAYS A USAGE LIMIT. Both rate-limited rows above also
+	// take a transient request rate limit ("API Error: Request rate limited"),
+	// which the CLI codes rate_limit exactly like "You've hit your weekly
+	// limit · resets …" — so the code cannot tell them apart, and only the
+	// CLI's text says which it was (cctranscript.IsLimitText, the predicate
+	// the transcript readers use). It is decided HERE, once, and sent as a
+	// field, so muster reads a usage limit by structure (an officer chat
+	// tells the member its accounts are at their limit only on this).
+	if f.Type == failRateLimited {
+		f.UsageLimit = cctranscript.IsLimitText(e.Message)
 	}
 	if f.Message == "" {
 		f.Message = "the turn failed with no message from the CLI"
