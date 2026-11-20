@@ -61,7 +61,8 @@ type QueuedPR struct {
 	Instance string
 	State    string
 	// PR is the pull request muster opened (state opened); Note why it was
-	// skipped.
+	// skipped — or, on a row still queued, what HQ was told about why it
+	// waits (PRQueueMark), so it is told once.
 	PR       int
 	Note     string
 	QueuedAt time.Time
@@ -88,6 +89,11 @@ type PRQueueStore interface {
 	// head: a create that refreshed it since is not settled by a decision
 	// made on the older head. ok false when nothing was settled.
 	PRQueueSettle(ctx context.Context, officer string, id int64, head, state string, pr int, note string) (bool, error)
+	// PRQueueMark sets note on officer's row id while it is still queued AT
+	// head and its note is still empty: ok true only for the call that set
+	// it, so a caller that tells HQ only on ok tells it once per row and
+	// head. A create that refreshes the row (PRQueueAdd) clears the note.
+	PRQueueMark(ctx context.Context, officer string, id int64, head, note string) (bool, error)
 }
 
 // MemPRQueueStore is PRQueueStore in this process's memory.
@@ -121,7 +127,7 @@ func (m *MemPRQueueStore) PRQueueAdd(_ context.Context, officer string, q Queued
 		if r.officer != officer || r.q.Repo != q.Repo || r.q.Branch != q.Branch {
 			continue
 		}
-		r.q.HeadSHA, r.q.Title, r.q.Body, r.q.Item, r.q.Instance = q.HeadSHA, q.Title, q.Body, q.Item, q.Instance
+		r.q.HeadSHA, r.q.Title, r.q.Body, r.q.Item, r.q.Instance, r.q.Note = q.HeadSHA, q.Title, q.Body, q.Item, q.Instance, ""
 		fresh := r.q.State != PRQueueQueued
 		if fresh {
 			m.next++
@@ -173,6 +179,18 @@ func (m *MemPRQueueStore) PRQueueSettle(_ context.Context, officer string, id in
 		return false, nil
 	}
 	r.q.State, r.q.PR, r.q.Note = state, pr, truncateNote(note)
+	return true, nil
+}
+
+// PRQueueMark implements PRQueueStore.
+func (m *MemPRQueueStore) PRQueueMark(_ context.Context, officer string, id int64, head, note string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || r.officer != officer || r.q.State != PRQueueQueued || r.q.HeadSHA != head || r.q.Note != "" {
+		return false, nil
+	}
+	r.q.Note = truncateNote(note)
 	return true, nil
 }
 
@@ -237,6 +255,16 @@ func (s *PGPRQueueStore) PRQueueSettle(ctx context.Context, officer string, id i
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE officer_pr_queue SET state = $4, pr = $5, note = $6, settled_at = now()
 		WHERE officer = $1 AND id = $2 AND head_sha = $3 AND state = 'queued'`, officer, id, head, state, prArg, truncateNote(note))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// PRQueueMark implements PRQueueStore: one conditional UPDATE.
+func (s *PGPRQueueStore) PRQueueMark(ctx context.Context, officer string, id int64, head, note string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_pr_queue SET note = $4
+		WHERE officer = $1 AND id = $2 AND head_sha = $3 AND state = 'queued' AND note = ''`, officer, id, head, truncateNote(note))
 	if err != nil {
 		return false, err
 	}
