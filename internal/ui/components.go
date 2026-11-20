@@ -25,7 +25,7 @@ import (
 // html package does not provide first-class constructors for.
 func hx(name, value string) g.Node { return g.Attr(name, value) }
 
-// wordmark is muster's own brand in the header and the sidebar when no
+// wordmark is muster's own brand in the header when no
 // branding is set: the brand pack's horizontal lockup (lockup, brand.go), one
 // <img> of the mark and the outlined wordmark, whose accessible name is its
 // alt text, "muster".
@@ -52,8 +52,8 @@ func wordmark() g.Node {
 // those pages carry nothing of muster's mark). Below sm it crops the header's
 // lockup (wordmark) to its mark, the left 100 of the lockup's 350 viewBox
 // units, which is 38 px at the header's 28 px height (2.375rem). The same file
-// and element, so nothing else is loaded; the sidebar, which has the room,
-// keeps the whole lockup. The LINK stays a 44 px target (min-w-[44px], the
+// and element, so nothing else is loaded. (The sidebar draws no lockup: its
+// server switcher draws the square mark.) The LINK stays a 44 px target (min-w-[44px], the
 // touch-target rule e2e/tests/layout.spec.ts holds every control to) with the
 // 38 px mark inside it at its left edge; the link then ends at about 112 px,
 // still left of the pill's column.
@@ -955,14 +955,11 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
 			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
-			// Sidebar header: brand + close. min-h keeps the row the height the
-			// 44px close button gave it (py-3 + 44px = 68px) where the button is
-			// hidden — the desktop rail — so its border still lines up with the
-			// content header's beside it.
-			Div(
-				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
-				Span(Class("inline-flex min-w-0 items-center gap-2 text-lg font-semibold tracking-tight"), brandMark(feat.Brand)),
-				Span(Class("flex-1")),
+			// Sidebar header: ONE row (server_switcher.go;
+			// docs/design/web-server-switcher.md) — the server in view's logo,
+			// which is the button that opens the list of the other muster
+			// servers this browser knows, then search and close.
+			serverSwitcher(feat.Brand,
 				// The command palette's other way in (palette.go): the same box
 				// the session switcher's magnifier opens.
 				sidebarSearchButton(),
@@ -982,9 +979,6 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
-			// The server in view, and the other muster servers this browser
-			// knows (server_switcher.go; docs/design/web-server-switcher.md).
-			serverSwitcher(feat.Brand),
 			// The agents, like a chat app's channels (nav_agents.go): the chief,
 			// then whoever waits on the operator, then the rest by recency — a
 			// lazy partial in the panel's flex-1 middle.

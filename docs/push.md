@@ -396,10 +396,17 @@ address, with its own account), the sidebar's top row switches between them.
 It is the web app's counterpart of the Android app's switcher; the design and
 what it cannot match is [design/web-server-switcher.md](design/web-server-switcher.md).
 
-- **The row** shows the server you are on: its colour and its label. On a
-  phone it is in the menu (the button at the top left). Tap it, or press Enter
-  on it, for the list of servers; the one you are on is marked **In view**.
-  Escape closes the list.
+- **The row** shows the server you are on as its logo alone (or, with no
+  logo, a monogram: the first letters of its name; with no branding at all,
+  muster's own square mark). In the list, each server also has a small dot
+  of its colour. Its name
+  is the button's label for a screen reader and its tooltip. On a phone it is
+  in the menu (the button at the top left). Tap the logo, or press Enter on
+  it, for the list of servers, even when this is the only one (Add server is
+  there); the one you are on is marked **In view**. Escape closes the list.
+- **The list** shows each server's logo (or monogram) and name, not its
+  address. Only two servers with the same name show their addresses, so you
+  can tell them apart.
 - **Add server** asks for the other server's address
   (`https://muster.example.com`; `http://` only for `localhost` or
   `127.0.0.1`). Only the address's origin is kept: a path or anything after
@@ -421,7 +428,7 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
   referrer), and only while the list is open. A server with no logo, or one
   that is down or behind a sign-in proxy that does not let `/brand/` through
   ([branding.md](branding.md#behind-an-edge-that-signs-people-in)), shows its
-  colour and label. The server you are on shows its own name.
+  monogram and label. The server you are on shows its own name.
 - **Manage servers** renames a server's label (empty: its address again) and
   removes a server from the list. Removing does not sign you out
   of it or turn off its notifications: do that on that server.
@@ -449,6 +456,6 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
   `muster_session` cookie jar and see each other's sign-in cookie on every
   request, with or without the switcher (it adds nothing beyond ordinary
   navigation between them).
-- **A server addressed by IP** may show no logo, only its colour and label:
+- **A server addressed by IP** may show no logo, only its monogram and label:
   the CSP's wildcard host does not match IP addresses in browsers that follow
   the spec (`localhost` and `127.0.0.1` are listed explicitly).

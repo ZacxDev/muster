@@ -183,6 +183,18 @@ module.exports = {
           6: role('idle-6'),
           7: role('idle-7'),
         },
+        // The servers' colours (internal/ui server_switcher.go): the server
+        // switcher's monograms, the Android app's palette.
+        server: {
+          0: role('server-0'),
+          1: role('server-1'),
+          2: role('server-2'),
+          3: role('server-3'),
+          4: role('server-4'),
+          5: role('server-5'),
+          6: role('server-6'),
+          7: role('server-7'),
+        },
       },
     },
   },
