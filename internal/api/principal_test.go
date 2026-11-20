@@ -332,6 +332,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		// A session view's Preview button (plugin_chip.go).
 		"GET /ui/mirror/preview-button",
+		// Its panel's Pages tab.
+		"GET /ui/mirror/session-pages",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
 		// Suggested replies (suggest.go): the composer's set and its counts,
@@ -419,6 +421,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/{name}/chat-context",
 		"GET /ui/dispatch-card",
 		"GET /ui/agents/{name}/task",
+		// The agent page's Open button and its Pages tab.
+		"GET /ui/agents/{name}/open-button",
+		"GET /ui/agents/{name}/session-pages",
 		"GET /ui/chief/panel",
 		"GET /ui/chief/threads/search",
 		"GET /ui/chief/fleet",

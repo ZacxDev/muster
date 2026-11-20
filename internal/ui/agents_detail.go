@@ -106,6 +106,9 @@ const (
 // AgentDetailView is the data the agent detail page renders.
 type AgentDetailView struct {
 	ID int64
+	// Open is the header's Open button and its panel: the agent's pages
+	// (plugin_chip.go — an agent has no previews); nil with pages off.
+	Open *PluginChips
 	// Tags is the viewer's own tags on the agent (internal/sessiontags), drawn
 	// in the header after the title (sessionTagsHead); nil for none.
 	Tags        []string
@@ -382,6 +385,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
 				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
 				g.If(v.ChiefChat != nil, chatIndexScript()),
+				// The Open button's panel, closed (plugin_chip.go): the agent's
+				// pages.
+				previewPanel(v.Open),
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
 				// Rotate credentials' "Confirm it's you" (agentRotateConfirm).
@@ -442,6 +448,8 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// The agent's open asks, a count that opens the Asks page
 				// filtered to them (AskerAsksBadge), as the folded header's.
 				g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
+				// The agent's Open button (its pages), while it has any.
+				previewButtonSlot(v.Open),
 				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
@@ -466,9 +474,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
-				// A chief's ⋯ says how much memory its chat uses, when that is
-				// high (chiefMemorySlot).
-				agentMenuSlotWith(v.Card, gatewayChiefMemory(v)),
+				// The ⋯'s extra items: a chief's memory line (chiefMemorySlot), or
+				// every other agent's Chat history and Focus history.
+				agentMenuSlotWith(v.Card, gatewayMenuExtra(v)),
 				agentModelControl(v),
 			),
 		),
@@ -516,17 +524,29 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 			chatIndexButton("chat-log"),
 		)
 	}
-	n := 2
-	if v.FocusHistory != "" {
-		n = 3
-	}
+	// 🔴 EVERY OTHER AGENT'S HEADER KEEPS NEW CHAT ALONE: Chat history and
+	// Focus history are items of its ⋯ menu (historyMenuItems). With the Open
+	// button drawn, the row of ☰, the title and three tools left the title
+	// 8px at 390px on a claude-code agent's one-row header and 36px on a
+	// gateway agent's first row (e2e session-open.spec.ts, measured).
 	return Div(
 		g.Attr("data-header-tools", ""),
-		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(n, compact)),
+		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
 		newChatButton(v.ID),
-		chatHistoryButton(sessionDrawerID),
-		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
+}
+
+// historyMenuItems is the ⋯ menu's Chat history and Focus history (the
+// header row keeps New chat alone, agentHeaderToolsWith): nothing on a
+// chief's chat, whose list icon opens both (chatIndexButton).
+func historyMenuItems(v AgentDetailView) g.Node {
+	if v.ChiefChat != nil {
+		return nil
+	}
+	return g.Group{
+		chatHistoryMenuItem(sessionDrawerID),
+		g.If(v.FocusHistory != "", focusHistoryMenuItem()),
+	}
 }
 
 // menuRowMin is the header second row's minimum height: the ⋯ trigger's own
@@ -871,6 +891,23 @@ func chatHistoryButton(forID string) g.Node {
 	)
 }
 
+// chatHistoryMenuItem is chatHistoryButton as an item of a claude-code
+// agent's ⋯ menu (foldedMenuItems): the same <label for> the drawer's
+// checkbox, and it closes the menu as it is picked (data-menu-close), so the
+// drawer is not drawn under a menu still in the top layer.
+func chatHistoryMenuItem(forID string) g.Node {
+	return Label(
+		g.Attr("for", forID),
+		g.Attr("role", "menuitem"),
+		g.Attr("tabindex", "0"),
+		g.Attr("data-menu-close", ""),
+		g.Attr("data-chat-history", ""),
+		Class(headerMenuItemClass+" cursor-pointer"),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
+		Span(g.Text("Chat history")),
+	)
+}
+
 // newChatButton is the header control that creates a new chat session. It is a
 // tiny form POSTing to /agents/{id}/sessions; the handler returns HX-Redirect to
 // the new (or reused-empty) session, which htmx follows. The form uses
@@ -943,12 +980,25 @@ func agentModelControl(v AgentDetailView) g.Node {
 // view with no card.
 func agentMenuSlot(a AgentCardView) g.Node { return agentMenuSlotWith(a, nil) }
 
-// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none).
+// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none; the
+// page's Chat history and Focus history, historyMenuItems, or a chief's memory
+// line, gatewayChiefMemory).
 func agentMenuSlotWith(a AgentCardView, extra g.Node) g.Node {
 	if a.ID == 0 {
 		return nil
 	}
 	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(a, "start", extra))
+}
+
+// gatewayMenuExtra is a gateway agent's ⋯ menu's extra items: a chief chat's
+// memory slot (gatewayChiefMemory), every other agent's Chat history and Focus
+// history (historyMenuItems). nil when there are none, so the menu keeps its
+// narrow width and no divider.
+func gatewayMenuExtra(v AgentDetailView) g.Node {
+	if v.ChiefChat != nil {
+		return gatewayChiefMemory(v)
+	}
+	return historyMenuItems(v)
 }
 
 // gatewayChiefMemory is a gateway chief's ⋯ menu's memory slot (its only

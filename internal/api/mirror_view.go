@@ -155,7 +155,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 		// The TEAM's viewer plugins (team sharing 2b.3b), never the viewer's.
 		vp, _ := s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
-		v.Plugins = pluginChips(vp, e)
+		v.Plugins = s.sessionOpenChips(op.begin("pages"), vp, h, e)
 		allowSameOriginFrame(w, viewerFrameSrc(vp))
 		viewDocument(w)
 		op.serverTiming(w)
@@ -200,7 +200,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
 	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
-	v.Plugins = pluginChips(vp, e)
+	v.Plugins = s.sessionOpenChips(op.begin("pages"), vp, h, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)

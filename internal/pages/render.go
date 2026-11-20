@@ -70,9 +70,15 @@ func SetContentHeaders(h http.Header) {
 
 // ShellCSP is the shell's Content-Security-Policy for a script nonce: its one
 // script, its own styles, the brand logo, and frames of this origin only.
-func ShellCSP(nonce string) string {
+func ShellCSP(nonce string) string { return shellCSP(nonce, "'none'") }
+
+// EmbedShellCSP is ShellCSP for the OWNER's view framed in a session's panel
+// (ShellView.Embed): the same policy, but muster's own origin may frame it.
+func EmbedShellCSP(nonce string) string { return shellCSP(nonce, "'self'") }
+
+func shellCSP(nonce, ancestors string) string {
 	return "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; " +
-		"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		"connect-src 'self'; frame-ancestors " + ancestors + "; base-uri 'none'; form-action 'none'"
 }
 
 // ShellHeaders is every header the shell is served with, for nonce.
@@ -88,9 +94,30 @@ func ShellHeaders(nonce string) map[string]string {
 	}
 }
 
+// EmbedShellHeaders is ShellHeaders for the owner's view framed in a
+// session's panel: EmbedShellCSP and X-Frame-Options SAMEORIGIN, every other
+// header the same.
+//
+// 🔴 ONLY THE OWNER'S OWN VIEW IS EVER SERVED SO (/pages/{id}/view?embed=1,
+// signed in): a share link's shell (/s/{token}) is the page a stranger opens,
+// and stays frame-ancestors 'none' — no page of any origin frames it.
+func EmbedShellHeaders(nonce string) map[string]string {
+	h := ShellHeaders(nonce)
+	h["Content-Security-Policy"] = EmbedShellCSP(nonce)
+	h["X-Frame-Options"] = "SAMEORIGIN"
+	return h
+}
+
 // SetShellHeaders sets ShellHeaders on h.
 func SetShellHeaders(h http.Header, nonce string) {
 	for k, v := range ShellHeaders(nonce) {
+		h.Set(k, v)
+	}
+}
+
+// SetEmbedShellHeaders sets EmbedShellHeaders on h.
+func SetEmbedShellHeaders(h http.Header, nonce string) {
+	for k, v := range EmbedShellHeaders(nonce) {
 		h.Set(k, v)
 	}
 }
@@ -495,6 +522,11 @@ type ShellView struct {
 	// relay sends their session, and the header draws the version chip. nil
 	// for a link's viewer, who gets the same header without it.
 	Owner *OwnerChrome
+	// Embed: the owner's view framed in a session's panel (?embed=1, served
+	// with EmbedShellHeaders): the popover's links to muster's own screens
+	// (Page details, Made by) open in a new tab (the panel's frame grants no
+	// top navigation, ui.SessionPageSandbox).
+	Embed bool
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the version
@@ -654,11 +686,14 @@ func Shell(v ShellView) string {
 			}
 			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
 		}
-		made := ""
-		if o.SessionHref != "" {
-			made = `<a href="` + esc(o.SessionHref) + `" data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		made, top := "", ""
+		if v.Embed {
+			top = ` target="_blank" rel="noopener"`
 		}
-		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
+		if o.SessionHref != "" {
+			made = `<a href="` + esc(o.SessionHref) + `"` + top + ` data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		}
+		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `"` + top + ` data-page-details>Page details</a></div>
 <div id="action-toasts" aria-live="polite"></div>
 <div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
 <p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>

@@ -226,7 +226,14 @@ func pageCreatorOf(c toolCaller) (pages.Creator, bool) {
 		// The session id is the one the mirror MCP request bound to
 		// (mirror_mcp.go: the pane's Claude Code session), recorded on a new
 		// page so its owner can open that session from it (pageSessionLink).
-		return pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}, true
+		// And the tmux window it runs in (its session view lists the window's
+		// pages by it, whatever Claude session made them): none for a caller
+		// with no window (a remote one).
+		cr := pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}
+		if c.mirrorWindow != "" && c.mirrorTmuxSession != "" {
+			cr.MirrorTmuxSession, cr.MirrorWindow = c.mirrorTmuxSession, c.mirrorWindow
+		}
+		return cr, true
 	}
 	return pages.Creator{}, false
 }

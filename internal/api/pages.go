@@ -226,9 +226,14 @@ func servePageContent(w http.ResponseWriter, r *http.Request, body string) bool 
 	return true
 }
 
-// serveShell writes a shell document.
+// serveShell writes a shell document: framed by no page, but the owner's
+// own view in a session's panel (v.Embed) by muster's own pages only.
 func serveShell(w http.ResponseWriter, v pages.ShellView) {
-	pages.SetShellHeaders(w.Header(), v.Nonce)
+	if v.Embed && v.Owner != nil {
+		pages.SetEmbedShellHeaders(w.Header(), v.Nonce)
+	} else {
+		pages.SetShellHeaders(w.Header(), v.Nonce)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, pages.Shell(v))
 }
@@ -1293,6 +1298,8 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := 0
+	// ?embed=1: framed in a session's panel (ui.SessionPageEmbedPath).
+	embed := r.URL.Query().Get("embed") == "1"
 	if q := r.URL.Query().Get("v"); q != "" {
 		var err error
 		if n, err = strconv.Atoi(q); err != nil || n <= 0 {
@@ -1317,8 +1324,12 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	}
 	list := make([]pages.ShellVersion, 0, len(versions))
 	for _, x := range versions {
-		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion,
-			Href: pageViewPath(id) + "?v=" + strconv.Itoa(x.Version)})
+		href := pageViewPath(id) + "?v=" + strconv.Itoa(x.Version)
+		if embed {
+			// A version picked in the panel's frame stays in the frame.
+			href += "&embed=1"
+		}
+		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion, Href: href})
 	}
 	pageShellTimes(list, versions, s.now())
 	shareURL := ""
@@ -1330,8 +1341,13 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	var share strings.Builder
 	_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
+	if embed {
+		// Framed in the session's own panel: no button back to the session
+		// it is already in.
+		sessHref, sessLabel = "", ""
+	}
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
-	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(),
+	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed,
 		Owner: &pages.OwnerChrome{Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
 			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))

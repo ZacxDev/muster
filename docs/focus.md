@@ -466,13 +466,13 @@ history row adds nothing, so a session that is summarized again without moving
 does not fill its history.
 
 You can scroll back through it:
-- on a mirrored session's rendered view, the "Your messages" sheet (the list
-  icon in the header) has two tabs, **Your messages** and **What it worked on**.
-  The arrow keys move between them, and the tab you pick is remembered for that
-  window in the browser;
-- on a dispatched agent's page, the target icon in the header opens a
-  **What it worked on** dialog. That page has no "Your messages" sheet, so the
-  history is a dialog of its own rather than a tab.
+- on a mirrored session's rendered view, the "Your messages" sheet (the
+  header's **⋯** menu, **Messages and what it worked on**) has two tabs, **Your
+  messages** and **What it worked on**. The arrow keys move between them, and the
+  tab you pick is remembered for that window in the browser;
+- on a dispatched agent's page, **What it worked on** in the header's **⋯** menu
+  opens a dialog. That page has no "Your messages" sheet, so the history is a
+  dialog of its own rather than a tab.
 
 Both list the newest first, 20 at a time, and load older pages as you scroll
 (or with **Load older**). Pages come from `GET /ui/focus/history`, which reads

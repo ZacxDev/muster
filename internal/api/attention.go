@@ -1764,6 +1764,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	b.WriteString(asksPageScript)
 	b.WriteString(ui.AsksFeedScriptHTML())
+	// The feed area's tab swipe (ui/tab_swipe.go, the session panel's too).
+	b.WriteString(ui.TabSwipeScriptHTML())
 	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.

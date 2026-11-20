@@ -1,5 +1,6 @@
 import { FrameLocator, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { titleRoomPort } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
@@ -515,11 +516,11 @@ for (const vp of [
       const s = 'release-notes-drafter';
       const leftOut = (u: URL) => !(u.searchParams.get('session') === s && u.pathname.startsWith('/mirror/'));
       await page.goto(viewOf(s, winOf(s)));
-      await expect(page.locator('#mv-back')).toBeVisible();
+      await expect(page.locator('#mv-back')).toBeAttached();
       // CONTROL: bare home is this window (it was just opened).
       const bare = await page.request.get(origin + '/', { maxRedirects: 0 });
       expect(new URL(bare.headers()['location'], origin).searchParams.get('session'), 'control: bare home is this window').toBe(s);
-      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), page.locator('#mv-back').click()]);
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), (await menuItem(page, '#mv-back')).click()]);
       expect(leftOut(new URL(page.url())), `the view's Home landed on ${page.url()}`).toBe(true);
       await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(rig.host)}&session=${encodeURIComponent(s)}&window=${encodeURIComponent(winOf(s))}`);
       await expect(page.locator('#term-back')).toBeVisible();

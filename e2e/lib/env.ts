@@ -493,6 +493,11 @@ export const sidebarOfficersConnectPort = port + 441;
 export const featuresMemberMainPort = port + 442;
 export const featuresMemberBrowserPort = port + 443;
 export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
+// The session view's Open button and its Previews | Pages panel
+// (session-open.spec.ts): its own mirror server (plugins and pages on).
+// +457: clear of officerNeedsYou's +445, pluginAutostart's +450 to +452,
+// morningReport's +453 and pagesDeclutter's +455/+456.
+export const sessionOpenPort = port + 457;
 // tests/morning-report.spec.ts: the morning report's page on a phone — its own
 // server with MUSTER_MORNING_REPORT=1 (+453: clear of the blocks above,
 // officerNeedsYouPort's +445 and chiefPropose's +446 to +449).

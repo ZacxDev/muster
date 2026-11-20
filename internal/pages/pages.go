@@ -113,11 +113,64 @@ type Creator struct {
 	// made before it was recorded. It identifies; it never scopes: a tool
 	// acts on its HOST's pages (creatorClause), as before.
 	MirrorSession string
-	Label         string
+	// MirrorTmuxSession and MirrorWindow are the tmux session name and window
+	// id (@N) the mirrored session ran in when it made the page (0162), as its
+	// host listed it: what the window's session view lists its pages by, so
+	// a new session in the same window (a /clear, a restart, a resume) keeps
+	// them. Both "" for an agent's page, a caller with no window, and a page
+	// made before they were recorded. Like MirrorSession, they identify and
+	// never scope a tool.
+	MirrorTmuxSession string
+	MirrorWindow      string
+	Label             string
 }
 
 // Valid reports whether c names exactly one creator.
 func (c Creator) Valid() bool { return (c.AgentID > 0) != (c.MirrorHost != "") }
+
+// SessionRef names ONE session whose pages are listed (Store.SessionPages): a
+// dispatched agent (AgentID), or a mirrored WINDOW on its host — MirrorHost,
+// the window (MirrorTmuxSession and MirrorWindow: what Creator recorded at
+// create, 0162) and the session keys it runs now (MirrorSessions:
+// Creator.MirrorSession, mirror.Window.MCPCallerKeys). A window's pages are
+// the ones made IN it, whichever Claude session made them (a /clear, a
+// restart, a resume start a new one), and the ones its sessions now made
+// wherever they ran.
+//
+// 🔴 A MIRRORED WINDOW IS MATCHED BY ITS WINDOW OR ITS SESSIONS, NEVER BY ITS
+// HOST ALONE: a host's every window would otherwise list every page any of
+// them made. So a page made before 0152 recorded the session (mirror_session
+// and the window both NULL) is listed for no window (docs/pages.md).
+type SessionRef struct {
+	AgentID           int64
+	MirrorHost        string
+	MirrorTmuxSession string
+	MirrorWindow      string
+	MirrorSessions    []string
+}
+
+// window reports whether s names a whole tmux window.
+func (s SessionRef) window() bool { return s.MirrorTmuxSession != "" && s.MirrorWindow != "" }
+
+// Valid reports whether s names exactly one session: an agent, or a host with
+// a window or at least one session key.
+func (s SessionRef) Valid() bool {
+	if s.AgentID > 0 {
+		return s.MirrorHost == "" && len(s.MirrorSessions) == 0 && !s.window() && s.MirrorWindow == "" && s.MirrorTmuxSession == ""
+	}
+	if s.MirrorHost == "" {
+		return false
+	}
+	if s.window() {
+		return true
+	}
+	for _, k := range s.MirrorSessions {
+		if k != "" {
+			return true
+		}
+	}
+	return false
+}
 
 // Page is one page.
 type Page struct {

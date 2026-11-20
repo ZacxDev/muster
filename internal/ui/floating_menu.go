@@ -72,7 +72,8 @@ import (
 // open popover. A trigger without the attribute is left without it.
 //
 // A request started from inside a menu closes it as the request STARTS, so a
-// request that fails (and morphs nothing) does not leave it open. Closing — by
+// request that fails (and morphs nothing) does not leave it open; so does a
+// tap on an item marked data-menu-close (one that opens a sheet or a dialog). Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
 //
 // A page without the Popover API can still use the placement: it marks its
@@ -189,5 +190,26 @@ var floatingMenuScriptSrc = staticJS("floating-menu", `
     var m = el && el.closest && el.closest('[data-floating-menu]');
     if (m && isOpen(m)) { try { m.hidePopover(); } catch (err) {} }
   });
+  // focusBack is where focus goes back to when what a menu item opened (a
+  // sheet, a dialog) closes: the item itself while it is on screen, else —
+  // its menu closed, so the item cannot hold focus and the browser would drop
+  // it to <body> — the menu's trigger. Pages call window.__musterFocusBack.
+  function focusBack(el) {
+    var m = el && el.closest && el.closest('[data-floating-menu]');
+    if (m && !isOpen(m) && m.id) {
+      var t = document.querySelector('[popovertarget="' + m.id + '"]');
+      if (t) return t;
+    }
+    return el;
+  }
+  window.__musterFocusBack = focusBack;
+  // A menu item marked data-menu-close closes its menu as it is picked
+  // (capturing, before the item's own handler): what it opens — a sheet, a
+  // dialog — is not drawn under a menu still in the top layer.
+  document.addEventListener('click', function (e) {
+    var it = e.target && e.target.closest && e.target.closest('[data-floating-menu] [data-menu-close]');
+    var m = it && it.closest('[data-floating-menu]');
+    if (m && isOpen(m)) { try { m.hidePopover(); } catch (err) {} }
+  }, true);
 })();
 `)

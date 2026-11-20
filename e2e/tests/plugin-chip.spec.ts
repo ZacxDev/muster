@@ -153,22 +153,20 @@ test('the Preview button on both session views: drawn only while the window has 
   const resp = await page.goto(origin + viewOf('@1'));
   expect(resp!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
   await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the prompt of the chip window');
-  const toggle = page.locator('header #preview-toggle-row');
+  const toggle = page.locator('header #preview-toggle');
   await expect(toggle).toHaveCount(1);
   await expect(toggle).toHaveAttribute('data-preview-count', '3');
-  await expect(toggle).toHaveAttribute('aria-label', 'Preview: 1 preview open, 2 servers to preview');
+  await expect(toggle).toHaveAttribute('aria-label', 'Open: 1 preview open, 2 servers to preview');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  // At this phone width it is in the header's SECOND row, under the title,
-  // and the header row's own button is not drawn (operator decision: the
-  // title keeps its width).
-  await expect(page.locator('#preview-toggle')).toBeHidden();
+  // At this phone width it is in the header ROW, an icon and its count, a
+  // 44px target, right of the title (session-open.spec.ts measures the row).
   const box = (await toggle.boundingBox())!;
   const title = (await page.locator('header h1').first().boundingBox())!;
-  expect(box.y + box.height / 2, 'the button is below the title').toBeGreaterThan(title.y + title.height);
-  expect(Math.round(box.height), 'a 20px pill in the second row').toBe(20);
-  // Its tap goes to it, not to the title's hit area over the same row.
+  expect(box.x, 'the button is right of the title').toBeGreaterThanOrEqual(title.x + title.width);
+  expect([Math.round(box.width), Math.round(box.height)], 'a 44px icon button').toEqual([44, 44]);
+  // Its tap goes to it.
   const hit = await page.evaluate(([x, y]) => (document.elementFromPoint(x, y) as Element | null)?.closest('[data-preview-toggle]')?.id ?? 'none', [box.x + box.width / 2, box.y + box.height / 2]);
-  expect(hit, 'the second-row button is on top at its centre').toBe('preview-toggle-row');
+  expect(hit, 'the button is on top at its centre').toBe('preview-toggle');
   // No row above the chat any more.
   await expect(page.locator('#plugin-chips')).toHaveCount(0);
   await expect(page.locator('#preview-panel')).toBeHidden();
@@ -193,12 +191,12 @@ test('the Preview button on both session views: drawn only while the window has 
   await expect(newTab).toHaveAttribute('aria-label', 'Open the preview in a new tab');
   const pbox = (await panel.boundingBox())!;
   expect([Math.round(pbox.x), Math.round(pbox.width)], 'the panel is the whole screen on a phone').toEqual([0, 390]);
-  const frameEl = page.locator('#preview-panel iframe');
+  const frameEl = page.locator('#preview-panel [data-preview-frame]');
   await expect(frameEl).toHaveAttribute('sandbox', SANDBOX);
   await expect(frameEl).toHaveAttribute('allow', '');
   await expect(frameEl).toHaveAttribute('referrerpolicy', 'no-referrer');
   expect(await frameEl.getAttribute('sandbox')).not.toContain('allow-top-navigation');
-  const framed = page.frameLocator('#preview-panel iframe');
+  const framed = page.frameLocator('#preview-panel [data-preview-frame]');
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   expect(landings).toHaveLength(1);
   // The plugin's content cannot navigate muster's tab.
@@ -260,17 +258,17 @@ test('the Preview button on both session views: drawn only while the window has 
   const term = page.frameLocator('iframe[data-muster-view]');
   await expect(term.locator('#term')).toHaveCount(1);
   await expect(term.locator('#preview-panel[data-window="@1"]')).toHaveCount(1);
-  await expect(term.locator('#preview-toggle-row')).toHaveCount(1);
+  await expect(term.locator('#preview-toggle')).toHaveCount(1);
 
   // A window with NO rendered view opens on /mirror/terminal: the button is
   // there, aimed at that window, and its panel's New tab lands for it.
   const t = await page.goto(origin + viewOf('@2'));
   expect(new URL(page.url()).pathname).toBe('/mirror/terminal');
   expect(t!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
-  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('data-preview-count', '1');
+  await expect(page.locator('#preview-toggle')).toHaveAttribute('data-preview-count', '1');
   await expect(page.locator('#preview-panel')).toHaveAttribute('data-window', '@2');
-  await page.locator('#preview-toggle-row').click();
-  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
+  await page.locator('#preview-toggle').click();
+  await expect(page.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
   const [tab2] = await Promise.all([context.waitForEvent('page'), page.locator('#preview-panel [data-preview-newtab]').click()]);
   await expect(tab2.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
   await tab2.close();
@@ -309,18 +307,19 @@ test('the Preview button follows the host: hidden while the window has nothing t
   // NOTHING TO PREVIEW: no button on either view, and no sidebar mark.
   await page.goto(origin + viewOf('@1'));
   await expect(page.locator('#preview-slot')).toHaveCount(1);
-  await expect(page.locator('#preview-slot-row')).toHaveCount(1);
   await expect(page.locator('[data-preview-toggle]')).toHaveCount(0);
   await expect(page.locator('#mv-log [data-bubble="user"]').first()).toBeVisible();
-  // The geometry the button must not move when it appears: the title, the
-  // header, and where the conversation starts.
+  // The geometry the button must not move when it appears: where the title
+  // starts and its height, the header, and where the conversation starts.
+  // (The title's WIDTH gives the button its room: it is flex-1 and
+  // truncates, operator decision on the session header.)
   const geometry = () =>
     page.evaluate(() => {
-      const r = (q: string) => {
+      const r = (q: string, w = true) => {
         const b = document.querySelector(q)!.getBoundingClientRect();
-        return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+        return w ? [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)] : [Math.round(b.x), Math.round(b.y), Math.round(b.height)];
       };
-      return { title: r('header h1'), header: r('header'), log: r('#mv-log') };
+      return { title: r('header h1', false), header: r('header'), log: r('#mv-log') };
     });
   const before = await geometry();
   const nav = () => page.request.get(origin + '/ui/nav/agents').then((r) => r.text());
@@ -329,15 +328,15 @@ test('the Preview button follows the host: hidden while the window has nothing t
   // The host reports an offer: the open page's button appears at the slot's
   // next poll, with no reload, and the sidebar marks @1 alone.
   playPreviews('@1 1 0\n');
-  await expect(page.locator('#preview-toggle-row'), 'the button appeared live').toHaveAttribute('data-preview-count', '1', { timeout: 30_000 });
-  await expect(page.locator('#preview-toggle-row')).toBeVisible();
-  expect(await geometry(), 'the title (its width included), the header and the conversation did not move when the button appeared').toEqual(before);
+  await expect(page.locator('#preview-toggle'), 'the button appeared live').toHaveAttribute('data-preview-count', '1', { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle')).toBeVisible();
+  expect(await geometry(), 'the title, the header and the conversation did not move when the button appeared').toEqual(before);
   const marked = mirroredEntries(await nav()).filter((e) => e.markup.includes('data-nav-preview'));
   expect(marked.map((e) => entryMatches(e.markup, 'data-mirror-claude'))).toEqual([true]);
 
   // And goes when the host has nothing again.
   playPreviews('@1 0 0\n');
-  await expect(page.locator('#preview-toggle-row'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
   await expect.poll(nav, { timeout: 20_000 }).not.toContain('data-nav-preview');
   playPreviews('@1 2 1\n@2 1 0\n');
 });
@@ -373,9 +372,9 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   const full = panel.locator('[data-preview-newtab]');
   const exit = panel.locator('[data-preview-exit-full]');
   const head = panel.locator('h2#preview-panel-title');
-  const frameEl = panel.locator('iframe');
-  const framed = page.frameLocator('#preview-panel iframe');
-  await page.locator('#preview-toggle-row').click();
+  const frameEl = panel.locator('[data-preview-frame]');
+  const framed = page.frameLocator('#preview-panel [data-preview-frame]');
+  await page.locator('#preview-toggle').click();
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   expect(landings).toHaveLength(1);
   await expect(full).toBeVisible();
@@ -428,7 +427,7 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF]);
 
   // ESCAPE: the first leaves full screen, the second closes the panel.
-  await page.locator('#preview-toggle-row').click();
+  await page.locator('#preview-toggle').click();
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await full.click();
   await expect(panel).toHaveAttribute('data-preview-full', '');
@@ -454,7 +453,7 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
 
   // CLOSE from full screen (reopened: its tap, with the header hidden, is a
   // script's) releases the claim with it.
-  await page.locator('#preview-toggle-row').click();
+  await page.locator('#preview-toggle').click();
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await full.click();
   await expect(panel).toHaveAttribute('data-preview-full', '');
@@ -480,8 +479,8 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(page.locator('iframe[data-muster-view]')).toBeVisible();
   const term = page.frameLocator('iframe[data-muster-view]');
   const before = (await msgs()).length;
-  await term.locator('#preview-toggle-row').click();
-  await expect(term.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await term.locator('#preview-toggle').click();
+  await expect(term.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await expect(term.locator('#preview-panel [data-preview-newtab]'), 'Full screen in the frame too').toHaveText('Full screen');
   await term.locator('#preview-panel [data-preview-newtab]').click();
   await expect(term.locator('#preview-panel')).toHaveAttribute('data-preview-full', '');
@@ -530,8 +529,8 @@ test('in the Android app Back closes the regular panel: the open panel claims Ba
 
   await page.goto(origin + viewOf('@1'));
   const panel = page.locator('#preview-panel');
-  const framed = page.frameLocator('#preview-panel iframe');
-  const toggle = page.locator('#preview-toggle-row');
+  const framed = page.frameLocator('#preview-panel [data-preview-frame]');
+  const toggle = page.locator('#preview-toggle');
   await expect(toggle).toBeVisible();
   const h0 = await historyLength();
   expect(await msgs(), 'nothing claimed while the panel is shut').toEqual([]);
@@ -544,15 +543,15 @@ test('in the Android app Back closes the regular panel: the open panel claims Ba
   expect(await msgs(), 'the open regular panel claimed Back').toEqual([CLAIM_ON]);
   expect(await historyLength(), 'loading the hand-off in the frame added no history entry').toBe(h0);
   // The frame is sandboxed exactly as drawn (it is a new element per load).
-  await expect(panel.locator('iframe')).toHaveAttribute('sandbox', SANDBOX);
-  await expect(panel.locator('iframe')).toHaveAttribute('referrerpolicy', 'no-referrer');
-  await expect(panel.locator('iframe')).toHaveAttribute('allow', '');
-  await expect(panel.locator('iframe')).toHaveCount(1);
+  await expect(panel.locator('[data-preview-frame]')).toHaveAttribute('sandbox', SANDBOX);
+  await expect(panel.locator('[data-preview-frame]')).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect(panel.locator('[data-preview-frame]')).toHaveAttribute('allow', '');
+  await expect(panel.locator('[data-preview-frame]')).toHaveCount(1);
   // THE SHELL'S BACK closes it (true: handled, no goBack) and releases.
   expect(await back(), 'Back closed the regular panel').toBe(true);
   await expect(panel).toBeHidden();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await expect(panel.locator('iframe')).toHaveAttribute('src', 'about:blank');
+  await expect(panel.locator('[data-preview-frame]')).toHaveAttribute('src', 'about:blank');
   expect(await msgs(), 'closing released the claim').toEqual([CLAIM_ON, CLAIM_OFF]);
   expect(await historyLength(), 'unloading the frame added no history entry').toBe(h0);
 
@@ -655,13 +654,13 @@ test('in the Android app Back acts on the panel in the view on screen: a panel i
   // closes the rendered panel (a single shared slot had been emptied by the
   // other panel's close, and Back answered false: the shell's goBack).
   await page.locator('#preview-toggle').click();
-  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(page.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   expect(await last()).toBe(CLAIM_ON);
   await tap('#view-terminal');
   await expect.poll(termShown, 'the terminal view on screen').toBe('terminal');
   await expect(term.locator('#term')).toHaveCount(1);
   await tap('#preview-toggle', 'term');
-  await expect(term.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(term.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await tap('#preview-panel [data-preview-close]', 'term');
   await expect(termPanel).toBeHidden();
   expect(await last(), 'the rendered panel still holds the claim').toBe(CLAIM_ON);
@@ -676,7 +675,7 @@ test('in the Android app Back acts on the panel in the view on screen: a panel i
   // shown (no panel open there): Back does NOT close the panel it cannot
   // see, and answers false.
   await page.locator('#preview-toggle').click();
-  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(page.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await tap('#view-terminal');
   await expect.poll(termShown).toBe('terminal');
   expect(await back(), 'no panel on screen, no dock: Back is the shell\'s').toBe(false);
@@ -715,6 +714,6 @@ test('in the Android app Back acts on the panel in the view on screen: a panel i
   expect(await last()).toBe(CLAIM_ON);
   await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('htmx:beforeHistorySave', { bubbles: true })));
   await expect(panel, 'the snapshot never holds the panel open').toBeHidden();
-  await expect(panel.locator('iframe')).toHaveAttribute('src', 'about:blank');
+  await expect(panel.locator('[data-preview-frame]')).toHaveAttribute('src', 'about:blank');
   expect(await last(), 'and its claim is released').toBe(CLAIM_OFF);
 });
