@@ -303,8 +303,9 @@ func askLogHref(q url.Values) string {
 
 // askLogLazyHTML is the Log tab's panel before it is opened: a placeholder the
 // page's script fills from GET /attention/log, saying "Loading…" meanwhile —
-// and, for a browser that runs no script, a plain link to the page on the tab
-// (<noscript>). A failed load says so with a Retry (asksPageScript loadLog).
+// a line drawn hidden that the script reveals as it fetches, so a browser that
+// runs no script never shows a load that never comes — and, for that browser,
+// a plain link to the page on the tab (<noscript>). A failed load says so with a Retry (asksPageScript loadLog).
 func askLogLazyHTML(q url.Values) string {
 	src := askLogPanelPath
 	if e := askLogQuery(q, 0).Encode(); e != "" {
@@ -312,7 +313,7 @@ func askLogLazyHTML(q url.Values) string {
 	}
 	href := html.EscapeString(askLogHref(askLogQuery(q, 0)))
 	return `<div class="flex flex-col gap-3" data-asklog-lazy data-src="` + html.EscapeString(src) + `" data-href="` + href + `">
-<p class="px-1 text-sm text-fg2" role="status" data-asklog-loading>` + askLogLoadingText + `</p>
+<p class="px-1 text-sm text-fg2" role="status" data-asklog-loading hidden>` + askLogLoadingText + `</p>
 <noscript><p class="px-1 text-sm text-fg2"><a class="underline" href="` + href + `">Open the ask log</a></p></noscript></div>`
 }
 

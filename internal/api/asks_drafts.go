@@ -423,6 +423,9 @@ const asksPageScript = `<script>
     var lazy = root.querySelector('[data-asklog-lazy]');
     if (!lazy || lazy.hasAttribute('data-loading')) return;
     lazy.setAttribute('data-loading', '');
+    // Drawn hidden (askLogLazyHTML): only a page that runs this says Loading….
+    var shown = lazy.querySelector('[data-asklog-loading]');
+    if (shown) shown.hidden = false;
     fetch(lazy.getAttribute('data-src'), { credentials: 'same-origin' }).then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.text();

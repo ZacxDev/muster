@@ -210,11 +210,107 @@ func TestTheSmallerAsksFixes(t *testing.T) {
 			t.Errorf("the outbound card lacks %s:\n%s", want, card)
 		}
 	}
-	if lazy := askLogLazyHTML(url.Values{}); !strings.Contains(lazy, `data-asklog-loading>Loading…</p>`) || !strings.Contains(lazy, `<noscript>`) {
+	if lazy := askLogLazyHTML(url.Values{}); !strings.Contains(lazy, `data-asklog-loading hidden>Loading…</p>`) || !strings.Contains(lazy, `<noscript>`) {
 		t.Errorf("the Log tab's loading line:\n%s", lazy)
 	}
-	queued := attention.Ask{Delivery: attention.DeliveryQueued, DeliveryDetail: "this muster has no agent gateway"}
+	queued := attention.Ask{Delivery: attention.DeliveryQueued, DeliveryDetail: "the agent is in the middle of a turn"}
 	if got, _ := answerDeliveryText(queued, "Worker Seven", false); got != "Will reach Worker Seven when it's back." {
 		t.Errorf("the queued delivery %q", got)
+	}
+	if lazy := askLogLazyHTML(url.Values{}); !strings.Contains(lazy, `<p class="px-1 text-sm text-fg2" role="status" data-asklog-loading hidden>Loading…</p>`) {
+		t.Errorf("the Log tab's loading line is not drawn hidden (a page with no script would say Loading… forever):\n%s", lazy)
+	}
+}
+
+// TestAQueuedAnswerSaysWhyWhenItWillNotClearOnItsOwn: a delivery waiting on
+// something muster retries (busy, mid-turn, being replaced, the runtime took
+// nothing, an agent still starting) says it will arrive; one waiting on what
+// never clears without the owner — the agent stopped, no agent gateway — says
+// why and what to do. The details are the very strings deliverAnswer stores
+// (its constants and the literal ones its other leaves write). RED before:
+// every queued detail read "Will reach … when it's back."
+func TestAQueuedAnswerSaysWhyWhenItWillNotClearOnItsOwn(t *testing.T) {
+	const who = "Worker Seven"
+	for detail, want := range map[string]string{
+		"the agent is in the middle of a turn":           "Will reach Worker Seven when it's back.",
+		"the agent is busy with another delivery":        "Will reach Worker Seven when it's back.",
+		"the agent is being replaced":                    "Will reach Worker Seven when it's back.",
+		"the agent's runtime took nothing (busy)":        "Will reach Worker Seven when it's back.",
+		"the agent has not had its first turn yet":       "Will reach Worker Seven when it's back.",
+		"the agent is not running (provisioning)":        "Will reach Worker Seven when it's back.",
+		"the agent is not running (pending)":             "Will reach Worker Seven when it's back.",
+		"the agent is not running (stopped)":             "Waiting: Worker Seven is stopped. Start it again and muster delivers the answer.",
+		"the agent is not running (error)":               "Waiting: Worker Seven stopped with an error. Restart it and muster delivers the answer.",
+		"this muster has no agent gateway":               "Not delivered: this server has no agent gateway, so it cannot send answers to Worker Seven. Whoever runs this server must set one up; until then, give the answer in Worker Seven's session.",
+		"the agent is not running (stopped) and more":    "Will reach Worker Seven when it's back.",
+		"this muster has no agent gateway, or something": "Will reach Worker Seven when it's back.",
+	} {
+		a := attention.Ask{Delivery: attention.DeliveryQueued, DeliveryDetail: detail}
+		got, retry := answerDeliveryText(a, who, false)
+		if got != want || retry {
+			t.Errorf("%q: %q (retry %v), want %q", detail, got, retry, want)
+		}
+	}
+}
+
+// TestAnOverLongAnswerSaysSo: an answer over attention.MaxAnswerRunes (a long
+// dictation) returns to the ask page with its own notice, never "Type an
+// answer or pick an option." — which a blank answer still gets. The refusal
+// is the store's own (attention.CleanAnswer). RED before: both landed on
+// ?notice=ask-invalid.
+func TestAnOverLongAnswerSaysSo(t *testing.T) {
+	now := time.Now()
+	a := attention.Ask{ID: 33, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Notes?", Status: attention.Open, CreatedAt: now}
+	s := whereServer(t, a)
+	_, long := attention.CleanAnswer(strings.Repeat("a", attention.MaxAnswerRunes+1))
+	_, blank := attention.CleanAnswer("   ")
+	if long == nil || blank == nil {
+		t.Fatalf("control: CleanAnswer took %v / %v", long, blank)
+	}
+	if got := attentionErrText(long, a); got != "the answer is longer than 8000 characters" {
+		t.Errorf("the over-length refusal's own words %q", got)
+	}
+	for err, want := range map[error][2]string{
+		long:  {"ask-too-long", "Not recorded: the answer is longer than 8000 characters. Shorten it and send it again."},
+		blank: {"ask-invalid", "Type an answer or pick an option."},
+	} {
+		form := url.Values{"return": {askPagePath(a.ID)}}
+		r := httptest.NewRequest("POST", askPagePath(a.ID)+"/answer", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		s.attentionFormFailed(rec, r, err, a)
+		if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != askPagePath(a.ID)+"?notice="+want[0] {
+			t.Errorf("%v: %d %q, want 303 to ?notice=%s", err, rec.Code, loc, want[0])
+			continue
+		}
+		if body := askPageBody(t, s, a, askPagePath(a.ID)+"?notice="+want[0]); !strings.Contains(body, want[1]) {
+			t.Errorf("%v: the ask page does not say %q:\n%s", err, want[1], body)
+		}
+	}
+}
+
+// TestASettledAskPageNamesWhoAsked: a settled ask's page is headed by its
+// state (Answered, Dismissed, Expired), so its badge row names who asked —
+// which an open ask's page leaves to its heading ("… is asking"). RED before:
+// a settled page named nobody.
+func TestASettledAskPageNamesWhoAsked(t *testing.T) {
+	now := time.Now()
+	a := attention.Ask{ID: 34, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Ship it?", Status: attention.Open, CreatedAt: now}
+	s := whereServer(t, a)
+	const who = `<span class="font-semibold text-fg" data-ask-source>Worker Seven</span> asked · `
+	if body := askPageBody(t, s, a, askPagePath(a.ID)); strings.Contains(body, "data-ask-source") || askPageH1(body) != "Worker Seven is asking" {
+		t.Errorf("the open page: heading %q, or its badge row names the asker again:\n%s", askPageH1(body), body)
+	}
+	for _, st := range []attention.Status{attention.Answered, attention.Cancelled, attention.Expired} {
+		a.Status = st
+		body := askPageBody(t, s, a, askPagePath(a.ID))
+		if !strings.Contains(body, `<p class="min-w-0 flex-1 truncate text-sm text-fg2">`+who+`<time `) {
+			t.Errorf("%s: the settled page does not name who asked:\n%s", st, body)
+		}
+	}
+	n := a
+	n.Kind, n.Status = attention.KindNotice, attention.Cancelled
+	if body := askPageBody(t, s, n, askPagePath(n.ID)); !strings.Contains(body, `data-ask-source>Worker Seven</span> sent a notice · `) {
+		t.Errorf("a dismissed notice's page does not name who sent it:\n%s", body)
 	}
 }

@@ -127,10 +127,18 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		dismiss = "Dismiss"
 	}
 	// The badge row: the badge, where (when it is not the heading's name) and
-	// how long ago — never who again, which the heading already says.
+	// how long ago — and, on a settled page only, who asked: an open ask's
+	// heading says who is asking, a settled one's says only its state.
 	where := ""
 	if place != "" && place != source {
 		where = esc(place) + " · "
+	}
+	if a.Status != attention.Open {
+		verb := "asked"
+		if notice {
+			verb = "sent a notice"
+		}
+		where = `<span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · ` + where
 	}
 	// With options to tap, they are the primary action: Answer is quiet and
 	// Dismiss is a text link (a step-up card draws neither options nor box).
