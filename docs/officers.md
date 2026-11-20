@@ -853,9 +853,16 @@ again since:
   restart it (k of 4 today): …").
 
 Decided by timestamps only: a typed turn that hit the limit (a `429`) always
-marks, and so does any refusal from a pane parked after the reading. At most 4
-such restarts per instance per UTC day; past that the instance is held (logged
-once that day) until an operator acts. An instance in `error` is never
+marks, and so does any refusal from a pane parked after the reading. The timing rule
+paces it: the stop ends the park, so the next restart of the same instance
+needs a new park and a newer reading, at most one per
+`MUSTER_CC_USAGE_POLL_INTERVAL`. As a backstop to that rule, at most 4 such
+restarts per instance per UTC day; past that the instance is held (logged once
+that day) until an operator acts. This backstop is kept in memory and is not
+the auto-restart's stored cap, which counts restarts of an instance in `error`
+per error episode. Only a pod officer's instance is restarted this way, so only
+its stale refusal marks nothing; any other agent's stale refusal marks the
+account and fails it over as before. An instance in `error` is never
 restarted this way: that is [the auto-restart's](#an-instance-in-error), which
 holds a `rate_limited` error, so the two never restart one instance twice. The record is in memory: a restarted muster marks the
 account on the pane's next refusal as before, and the poller's next clear

@@ -1133,6 +1133,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// and both of its inputs (EnableOfficers, EnableChiefLLM) are set.
 	if gw != nil {
 		gw.UseNoAccount(srv.NoClaudeAccount)
+		// The one rule for whose stale usage-limit menu refusal marks nothing:
+		// the agents the wake loop restarts off one (api.Server.LimitRestartable).
+		gw.UseLimitRestartable(srv.LimitRestartable)
 		a.gw = gw
 	}
 

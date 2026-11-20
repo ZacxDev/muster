@@ -5,11 +5,23 @@ import (
 	"time"
 )
 
-// LimitRestartsPerDay bounds how many times one instance is restarted off a
-// stale usage-limit menu (restartLimitParked) per UTC day. Each restart also
-// needs a NEW live reading of its account newer than the pane's park
-// (internal/limitpark), so the rate is at most one per usage-poll interval
-// before this cap is reached.
+// LimitRestartsPerDay is a BACKSTOP, not the limit-restart's pacing. The
+// pacing is the timing rule: a restart needs the pane parked since BEFORE a
+// live reading newer than the park (internal/limitpark Board.Stuck), and the
+// stop clears the park, so the next restart of the same instance needs a new
+// park and a newer reading — at most one restart per usage-poll interval
+// (MUSTER_CC_USAGE_POLL_INTERVAL, 15m by default). This cap only bounds what
+// that rule would allow if it were wrong (a CLI that re-raises the menu at
+// once, every interval): 4 per instance per UTC day, then the instance is
+// held for an operator.
+//
+// ⚠ IT IS NOT THE AUTO-RESTART'S STORED CAP (autorestart.go, migration 0170),
+// deliberately. That book is per error EPISODE of an instance in `error`: its
+// backoff is measured from when the instance entered error, and its rows
+// record the error class and text. A limit-parked instance is running, not in
+// error, and has no episode to key on; folding it in would also spend the
+// error path's daily places on a different failure. In memory is enough for
+// a backstop: a restarted muster forgets it, and the timing rule still holds.
 const LimitRestartsPerDay = 4
 
 // limitRestartDay is one instance's limit restarts on day (a UTC date).
@@ -39,8 +51,16 @@ const limitParkedStop = "its pane was parked on a stale usage-limit menu, and it
 // volume, and the claimed work is released and claimed again.
 //
 //   - Only an instance that is up and NOT in error: an instance in error is
-//     the error path's (it holds its slot until its own restart), so the two
-//     never restart one instance twice.
+//     the auto-restart's (autorestart.go planRestarts, which acts only on an
+//     instance in error), so the two never restart one instance twice. Nor
+//     can this stop hand it to the auto-restart afterwards: Fleet.Stop scales
+//     the instance to zero, so on the next pass it reads stopped (down, not
+//     in error) and is started like any stopped instance; planRestarts needs
+//     an instance in error that noteErrors saw enter it
+//     (TestALimitStoppedInstanceIsNotAutoRestartedOnTheNextPass, and in
+//     internal/api TestTheFleetReportsAStaleLimitParkAndAStopEndsIt). A
+//     start that then FAILS is a new error episode of its own, which the
+//     auto-restart handles by its own rules.
 //   - Bounded: at most LimitRestartsPerDay per instance per UTC day; past it
 //     the instance is held (logged once that day) and an operator acts.
 //   - Never while the account still reads limited: Board.Stuck answers only

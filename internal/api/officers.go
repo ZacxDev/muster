@@ -766,6 +766,20 @@ func (s *Server) NoClaudeAccount(ctx context.Context, a agents.Agent) bool {
 	return routed
 }
 
+// LimitRestartable is THE rule for which agents muster restarts off a stale
+// usage-limit menu (internal/limitpark): an instance of a declared POD officer,
+// which the wake loop stops and starts again (officers restartLimitParked,
+// fed by officerFleet.Instances, which asks this). The gateway asks the same
+// function (agentgateway.Gateway.UseLimitRestartable, wired by
+// cmd/muster-server) to decide whose stale menu refusal marks nothing, so a
+// refusal is silenced for exactly the agents that get restarted. A host
+// officer's instance (its fleet reports no park) and every other agent are
+// false: their refusals mark the account and fail them over, as before.
+func (s *Server) LimitRestartable(_ context.Context, a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	return ok && !o.OnHost()
+}
+
 // instanceOnNoClaudeAccount is true for an instance of a declared officer's
 // pool on the LLM proxy, false for every other agent. It is the accounts'
 // attribution answer (officerPoolOf, officers.ProxyAgent), so a turn's
@@ -1020,7 +1034,7 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
 			PromptPending: ok && promptPending(a),
 			Spent:         f.s.officerRT.spent(o, name)}
-		if ok && f.s.ext.LimitParks != nil {
+		if ok && f.s.ext.LimitParks != nil && f.s.LimitRestartable(octx, a) {
 			if why, stuck := f.s.ext.LimitParks.Stuck(a.ID); stuck {
 				in.LimitParked = why
 			}

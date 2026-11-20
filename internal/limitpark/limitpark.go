@@ -26,9 +26,11 @@
 //   - [Board.NoteLimit] (the gateway, on every usage-limit failure) answers
 //     whether the failure is STALE: a 409 from a pane parked SINCE BEFORE a
 //     newer live reading that shows the account usable for the limit the pane
-//     names, with no fresh limit hit on the account after that reading. A
-//     stale failure marks nothing and moves nobody: it says nothing the live
-//     reading did not already overrule. Decided by timestamps, never text: a
+//     names, with no fresh limit hit on the account after that reading. For
+//     an agent muster restarts off such a menu (a pod officer's instance:
+//     internal/api Server.LimitRestartable, the one rule), a stale failure
+//     marks nothing and moves nobody: it says nothing the live reading did
+//     not already overrule. Any other agent's still marks and fails over. Decided by timestamps, never text: a
 //     429 (a turn that WAS typed and hit the limit) is always fresh, and so is
 //     any failure newer than the reading.
 //   - [Board.Stuck] (the officer runtime, each wake-loop pass) answers whether

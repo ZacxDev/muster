@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/ccusage"
 	"github.com/ZacxDev/muster/internal/limitpark"
 )
@@ -24,6 +25,20 @@ const ccdWeekly429 = `{"error":{"type":"rate_limited","code":"rate_limit","upstr
 // same 409 before the reading marks (as before), and a typed 429 after the
 // reading — a turn that really hit the limit again — still marks.
 func TestAStaleLimitMenuDoesNotReMarkOverANewerUsableReading(t *testing.T) {
+	staleMenuTurns(t, true)
+}
+
+// TestANonRestartedAgentsStaleMenuStillMarksAndFailsOver: the suppression is
+// scoped to the agents muster restarts off a stale menu (UseLimitRestartable).
+// Any other agent — nothing restarts it — keeps the old behaviour: its stale
+// menu refusal marks the account and runs the failover, which is what gives
+// it a fresh CLI.
+func TestANonRestartedAgentsStaleMenuStillMarksAndFailsOver(t *testing.T) {
+	staleMenuTurns(t, false)
+}
+
+// staleMenuTurns drives the sequence with the agent restartable or not.
+func staleMenuTurns(t *testing.T, restartable bool) {
 	var status atomic.Int32
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +57,7 @@ func TestAStaleLimitMenuDoesNotReMarkOverANewerUsableReading(t *testing.T) {
 	gw.UseFailover(f)
 	gw.UseLimitParks(board)
 	a := ccAgent()
+	gw.UseLimitRestartable(func(_ context.Context, b agents.Agent) bool { return restartable && b.ID == a.ID })
 	turn := func() { _, _ = gw.Chat(context.Background(), a, "k", "hello", nil) }
 
 	answer(429, ccdWeekly429)
@@ -59,11 +75,17 @@ func TestAStaleLimitMenuDoesNotReMarkOverANewerUsableReading(t *testing.T) {
 		Status: "allowed", ReadAt: now, CheckedAt: now, Windows: map[string]ccusage.Window{ccusage.SevenDay: {Utilization: &u, Status: "allowed"}}}, "")
 	now = now.Add(2 * time.Minute)
 	turn()
-	if len(m.calls) != 2 || len(f.calls) != 2 {
-		t.Fatalf("a stale menu refusal re-marked the account over a newer usable reading: marks %q, failovers %q", m.calls, f.calls)
-	}
 	if _, stuck := board.Stuck(a.ID); !stuck {
 		t.Fatal("the stale-parked agent is not reported stuck")
+	}
+	if !restartable {
+		if len(m.calls) != 3 || len(f.calls) != 3 {
+			t.Fatalf("an agent nothing restarts: its stale menu refusal must still mark and fail over (as before): marks %q, failovers %q", m.calls, f.calls)
+		}
+		return
+	}
+	if len(m.calls) != 2 || len(f.calls) != 2 {
+		t.Fatalf("a stale menu refusal re-marked the account over a newer usable reading: marks %q, failovers %q", m.calls, f.calls)
 	}
 
 	now = now.Add(time.Minute)

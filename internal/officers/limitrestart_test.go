@@ -139,3 +139,31 @@ func TestTheLimitRestartAndTheAutoRestartNeverBothFire(t *testing.T) {
 		t.Fatalf("the limit restart did not stop instance 2 once:\n%s", r.logs.String())
 	}
 }
+
+// TestALimitStoppedInstanceIsNotAutoRestartedOnTheNextPass (round 0's open
+// point): with the bounded auto-restart on, an instance this path stops reads
+// stopped — not in error — on the next pass, so the auto-restart plans no
+// restart of it; the next pass simply starts it for its work. Over the
+// following passes it is stopped exactly once.
+func TestALimitStoppedInstanceIsNotAutoRestartedOnTheNextPass(t *testing.T) {
+	r, notices := newRestartRig(t, 1, restartAfter, 3)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.check(t)
+	r.fleet.limitParked = map[int]string{1: staleWhy}
+	r.check(t)
+	if !slices.Equal(r.fleet.stops, []int{1}) {
+		t.Fatalf("fixture: stops %v, want the parked instance stopped", r.fleet.stops)
+	}
+	for i := 0; i < 3; i++ {
+		r.clk.Advance(restartAfter)
+		if res := r.check(t); len(res.Decision.Restart) != 0 {
+			t.Fatalf("pass %d after the limit stop: the auto-restart planned %+v", i+1, res.Decision.Restart)
+		}
+	}
+	if len(r.fleet.stops) != 1 {
+		t.Fatalf("stops %v: the limit-stopped instance was stopped again", r.fleet.stops)
+	}
+	if got := notices.count(func(e officers.AutoRestartEvent) bool { return e.Restarted || e.Held }); got != 0 {
+		t.Fatalf("auto-restart notices %+v after a limit stop, want none", notices.all())
+	}
+}
