@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/podagent"
 )
 
@@ -23,8 +24,10 @@ import (
 //
 // The `type` vocabulary is the contract a muster-side account pool keys on: an
 // account whose turns come back `auth_failed` needs a new token; one that comes
-// back `rate_limited` is healthy and should be rested until its reset time, which
-// the CLI states in `message` ("You've hit your session limit · resets 9:45pm").
+// back `rate_limited` with `usage_limit` is healthy and should be rested until its
+// reset time, which the CLI states in `message` ("You've hit your session limit ·
+// resets 9:45pm"). A `rate_limited` without `usage_limit` is a transient request
+// rate limit: muster rests nothing for it (internal/ccpool AccountFailure).
 const (
 	failUnauthorized = "unauthorized"  // 401: the caller's bearer is wrong (NOT the model account)
 	failBadRequest   = "bad_request"   // 400
@@ -37,7 +40,7 @@ const (
 	failTerminal     = "terminal"      // 502: tmux could not be driven
 	failTranscript   = "transcript"    // 502: the reply could not be read back
 	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
-	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit (409 from the limit menu: limitMenuFailure)
+	failRateLimited  = "rate_limited"  // 429: the API rate-limited the turn — usage_limit when it is the account's usage limit (409 from the limit menu: limitMenuFailure)
 	failBilling      = "billing_error" // 502
 	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
@@ -61,9 +64,10 @@ const codeAwaitingApproval = "awaiting_approval"
 const codeRateLimit = "rate_limit"
 
 // limitMenuFailure is the answer for a pane parked on the CLI's usage-limit
-// menu (dialog.go limitMenuShown): type rate_limited, code rate_limit — what
-// muster's gateway marks the account on and fails the agent over on
-// (internal/agentgateway noteFailure keys on the type alone).
+// menu (dialog.go limitMenuShown): type rate_limited, code rate_limit,
+// usage_limit — what muster's gateway marks the account on and fails the agent
+// over on (internal/ccpool AccountFailure: usage_limit, or this 409, which a
+// ccd from before the mark also sends).
 //
 // 🔴 ITS STATUS IS 409, NOT THE 429 OF A RATE-LIMITED TURN, BECAUSE NOTHING WAS
 // TYPED. A 429 is a turn that was pasted and failed; a 409 from ccd is a refusal
@@ -81,7 +85,8 @@ func limitMenuFailure(lm *limitMenuShown) *failure {
 	if lm.limit != "" {
 		msg = lm.limit + " — " + msg
 	}
-	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit,
+	// UsageLimit: the menu IS the usage limit's, whatever its text says.
+	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit, UsageLimit: true,
 		Message: msg + "; nothing was typed — the account hit its limit"}
 }
 
@@ -135,6 +140,18 @@ func classifyAPIError(e apiError) *failure {
 		f.Status, f.Type = http.StatusBadGateway, failAuth
 	default:
 		f.Status, f.Type = http.StatusBadGateway, failTurn
+	}
+	// 🔴 A 429 IS NOT ALWAYS A USAGE LIMIT. Both rate-limited rows above also
+	// take a transient request rate limit ("API Error: Request rate limited"),
+	// which the CLI codes rate_limit exactly like "You've hit your weekly
+	// limit · resets …" — so the code cannot tell them apart, and only the
+	// CLI's text says which it was (cctranscript.IsLimitText, the predicate
+	// the transcript readers use). It is decided HERE, once, and sent as a
+	// field, so muster reads a usage limit by structure: only a marked one
+	// cools the account down, fails its agents over, or tells an officer chat
+	// its accounts are at their limit (internal/ccpool AccountFailure).
+	if f.Type == failRateLimited {
+		f.UsageLimit = cctranscript.IsLimitText(e.Message)
 	}
 	if f.Message == "" {
 		f.Message = "the turn failed with no message from the CLI"

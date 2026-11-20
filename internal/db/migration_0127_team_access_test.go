@@ -15,13 +15,18 @@ import "testing"
 var ownedAfter0127 = []string{
 	"agent_secrets",                              // 0128
 	"officer_contacts", "officer_contact_events", // 0132
-	"officer_public_branches",        // 0138
-	"plugin_chief_instructions",      // 0141
-	"chief_session_llm_usage",        // 0144
-	"chief_session_llm_reservations", // 0144
-	"fleet_owner_marks",              // 0147
-	"officer_connector_blocks",       // 0148
-	"officer_seen",                   // 0156
+	"officer_public_branches",            // 0138
+	"plugin_chief_instructions",          // 0141
+	"chief_session_llm_usage",            // 0144
+	"chief_session_llm_reservations",     // 0144
+	"fleet_owner_marks",                  // 0147
+	"officer_connector_blocks",           // 0148
+	"officer_seen",                       // 0156
+	"officer_cap_raises",                 // 0157
+	"fleet_actions",                      // 0158
+	"officer_chat_cards",                 // 0160
+	"morning_reports",                    // 0161
+	"page_assets", "page_version_assets", // 0164
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

@@ -6,9 +6,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/uploads"
+	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -16,7 +19,7 @@ import (
 // page's creator, demoted to VIEWER (a creator keeps the page's management
 // whatever their role, per the spec), revokes the team agent's pending link —
 // and its card is WITHDRAWN, though 0127 lets a viewer write no
-// attention_asks row through the ordinary cancel (0162's
+// attention_asks row through the ordinary cancel (0165's
 // muster_cancel_team_page_card). Then they delete the page — and its uploads
 // rows, the team's, under the page's prefix, are REVOKED, though 0127 lets a
 // viewer revoke none (muster_revoke_team_page_uploads). CONTROLS: the
@@ -26,10 +29,18 @@ import (
 // through the door.
 func TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive(t *testing.T) {
 	f := newTeamPageFixture(t)
+	// An upload store: a page's delete lists every live uploads row under its
+	// prefix (Files), and refuses to leave them while file uploads are off.
+	sg, err := uploads.NewSigner("team-page-delete-signing-key-0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.ext.Uploads = &uploads.Service{Store: uploads.NewPG(f.pool), Objects: &uploadstest.Objects{}, Signer: sg, PublicURL: "https://muster.example.test",
+		MaxBytes: 25 << 20, LinkTTL: time.Hour}
 	id := f.teamPage(t, "Budget review")
 	sid := strconv.FormatInt(id, 10)
 	sys := authz.System(context.Background())
-	if err := f.users.SetTeamMember(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, f.teamA, f.creator, authz.TeamViewer); err != nil {
+	if err = f.users.SetTeamMember(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, f.teamA, f.creator, authz.TeamViewer); err != nil {
 		t.Fatal(err)
 	}
 	out := f.teamTool(t, pageShareRequestTool, map[string]any{"page_id": id})
@@ -94,6 +105,13 @@ func TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive(t *testing.T) {
 			_, _ = f.pool.Exec(sys, `DELETE FROM uploads WHERE public_id = $1`, p)
 		}
 	})
+	// One of the two is also an author ASSET of the page (0164): its row
+	// follows the page (0165), so the delete lists it, and it goes with the
+	// page.
+	if _, err := f.pool.Exec(sys, `INSERT INTO page_assets (owner_id, page_id, public_id, content_type, size_bytes) VALUES ($1, $2, $3, 'image/png', 3)`,
+		f.teamA, id, pid("A")); err != nil {
+		t.Fatal(err)
+	}
 	// The door refuses a member who may not manage the page.
 	if n, err := f.pages.RevokeTeamPageUploads(session(f.both), id); err == nil {
 		t.Errorf("an operator (not the creator) revoked %d of the page's files", n)
@@ -109,5 +127,9 @@ func TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive(t *testing.T) {
 		if revoked != want {
 			t.Errorf("upload %s (%s) revoked = %v after the delete; want %v", p, rows[p].key, revoked, want)
 		}
+	}
+	var assets int
+	if err := f.pool.QueryRow(sys, `SELECT count(*) FROM page_assets WHERE page_id = $1`, id).Scan(&assets); err != nil || assets != 0 {
+		t.Errorf("the page's asset rows after the delete: %d (%v); want none", assets, err)
 	}
 }

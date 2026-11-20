@@ -149,14 +149,16 @@ func TestTheSummaryIsTheOwnersRowsOnly(t *testing.T) {
 }
 
 // TestASummaryFilterNarrowsEveryNumber: the same summary over kind
-// plain_text only — three rows, latencies 10, 20, 40 s: median 20 s, p90 36 s.
+// plain_text only — three rows, latencies 10, 20, 40 s: median 20 s, p90 36 s
+// (interpolated), and the discrete p90 40 s — the one time 9 in 10 (here all
+// 3) were answered within; 36 s is beaten by only 2 of the 3.
 func TestASummaryFilterNarrowsEveryNumber(t *testing.T) {
 	f := newReadFixture(t)
 	s, err := f.p.Summarize(asUser(2), Filter{Kind: KindPlainText}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Total != 3 || s.Answered != 3 || s.MedianAnswer != 20*time.Second || s.P90Answer != 36*time.Second ||
+	if s.Total != 3 || s.Answered != 3 || s.MedianAnswer != 20*time.Second || s.P90Answer != 36*time.Second || s.P90Within != 40*time.Second ||
 		!reflect.DeepEqual(s.ByAnsweredBy, map[string]int{ByOwner: 2, ByChief: 1}) {
 		t.Fatalf("plain_text summary: %+v", s)
 	}

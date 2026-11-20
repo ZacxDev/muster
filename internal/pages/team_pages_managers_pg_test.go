@@ -7,7 +7,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// A team's MANAGERS step in on its pages (operator decision Q1, 0162): when
+// A team's MANAGERS step in on its pages (operator decision Q1, 0165): when
 // the page's creator has LEFT the team, any manager manages the page; and any
 // manager may ALWAYS revoke a link, even while the creator is a member, so a
 // mistaken Share is undone at once. Held by the database: every statement

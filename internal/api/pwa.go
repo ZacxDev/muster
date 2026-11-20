@@ -73,7 +73,7 @@ type WebManifest struct {
 //     every phone treat the next version as a second app.
 //   - no `orientation`. The old portrait lock also locked tablets and foldables.
 //   - theme_color/background_color are ui.ThemeColorDark — the same constant the
-//     theme-color meta reads, itself pinned to input.css's --mu-bg — so the
+//     theme-color meta reads, itself pinned to tokens.css's --mu-bg — so the
 //     splash screen, the status bar and the page cannot disagree.
 //   - share_target is GET. Behind the forward-auth edge a POST is answered 303
 //     with its body dropped; a GET's query survives the login round trip (and
@@ -191,15 +191,15 @@ func brandedManifestJSON(b ui.Brand) []byte {
 // swBuildPlaceholder is the literal sw.js carries where the build goes.
 const swBuildPlaceholder = `"__MUSTER_BUILD__"`
 
-// ServiceWorkerSource is sw.js as served: the embedded file with BuildVersion
-// stamped in.
+// ServiceWorkerSource is sw.js as served: the embedded file with version (the
+// server's build, Server.version) stamped in.
 //
 // 🔴 THE STAMP IS WHAT MAKES A DEPLOY AN UPDATE. A browser only installs a new
 // worker when the script's BYTES change, and most releases change Go and HTML,
 // not sw.js — so without this every such deploy left installed apps on the old
 // worker and the "new version" prompt never appeared. With it, each build's
 // version is part of the script and every deploy is an update.
-func ServiceWorkerSource() ([]byte, error) {
+func ServiceWorkerSource(version string) ([]byte, error) {
 	data, err := web.Static.ReadFile("static/sw.js")
 	if err != nil {
 		return nil, err
@@ -213,7 +213,7 @@ func ServiceWorkerSource() ([]byte, error) {
 	if bytes.Count(data, []byte(swShellJSPlaceholder)) != 1 {
 		return nil, errSWPlaceholder
 	}
-	v, _ := json.Marshal(BuildVersion) // a JSON string is a valid JS string literal
+	v, _ := json.Marshal(version) // a JSON string is a valid JS string literal
 	css, _ := json.Marshal(web.Asset("/static/app.css"))
 	js, _ := json.Marshal(shellScriptURLs()) // a JSON array is a valid JS array literal
 	data = bytes.Replace(data, []byte(swBuildPlaceholder), v, 1)
@@ -260,7 +260,7 @@ var errSWPlaceholder error = swPlaceholderError{}
 // path through without a session — with an expired session a worker update is
 // a redirect, which the browser treats as a failed update and keeps the old one.
 func (s *Server) handleServiceWorker(w http.ResponseWriter, _ *http.Request) {
-	data, err := ServiceWorkerSource()
+	data, err := ServiceWorkerSource(s.version())
 	if err != nil {
 		s.logger.Printf("service worker: %v", err)
 		http.Error(w, "service worker unavailable", http.StatusInternalServerError)

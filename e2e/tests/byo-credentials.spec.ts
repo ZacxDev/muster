@@ -132,10 +132,10 @@ test('a member brings their own Claude token; an agent they create runs on it, n
   //    the admin's pool is never offered.
   const noClaude = await postAgents(machineURL, { user: uid, kind: 'claude-code', prompt: 'e2e byo' });
   expect(noClaude.status, noClaude.text).toBe(409);
-  expect(noClaude.text).toContain('Add your Claude setup token in Account → Credentials');
+  expect(noClaude.text).toContain('Add your Claude setup token in Account → Your AI accounts');
   const noKey = await postAgents(machineURL, { user: uid, kind: 'gateway', prompt: 'e2e byo' });
   expect(noKey.status, noKey.text).toBe(409);
-  expect(noKey.text).toContain('Add your OpenRouter key in Account → Credentials');
+  expect(noKey.text).toContain('Add your OpenRouter key in Account → Your AI accounts');
   const pinned = await postAgents(machineURL, { user: uid, kind: 'claude-code', cc_account: ADMIN_POOL, prompt: 'e2e byo' });
   expect(pinned.status, `pinning the admin's pool: ${pinned.text}`).toBe(409);
 

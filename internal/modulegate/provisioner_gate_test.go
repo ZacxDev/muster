@@ -63,6 +63,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/agent_destroy_tool.go (*Server).toolAgentDestroy Provisioner==nil":         1, // destroy an existing agent (never the chief)
 	"internal/api/end_session.go (*Server).toolEndSessionPropose Provisioner==nil":           1, // propose ending an existing pod agent (never the chief)
 	"internal/api/end_session.go (*Server).acceptEndSession Provisioner==nil":                1, // end it on the owner's tap: destroy, never the chief
+	"internal/api/fleet_actions.go (*Server).fleetCloseSession Provisioner==nil":             1, // a fleet wrap's close step on the owner's tap: destroy an existing agent, never the chief
 	"internal/api/agent_reap.go (*Server).reapStoppedAgents Provisioner==nil":                1, // the stopped-agent reaper (never the chief)
 	"internal/api/chief_restart_tool.go (*Server).chiefRestartOn Provisioner!=nil":           1, // chief_restart offered
 	"internal/api/chief_restart_tool.go (*Server).toolChiefRestart Provisioner==nil":         1, // chief_restart run

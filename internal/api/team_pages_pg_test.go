@@ -25,7 +25,7 @@ import (
 )
 
 // A TEAM'S PAGES through the real server against a real Postgres (migration
-// 0162; team_pages.go): a team agent's page records the person who started
+// 0165; team_pages.go): a team agent's page records the person who started
 // the agent; every member sees it in their Pages list marked with its team,
 // opens it and answers it; only that person is offered — and allowed — the
 // managing controls; any member's Share makes the link; a team agent's
@@ -190,7 +190,7 @@ func TestATeamAgentsPageRecordsItsCreatorAndIsListedForMembers(t *testing.T) {
 
 // TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage: a member who is
 // not the creator (a viewer; an operator in both teams) is drawn no Delete,
-// no "Show this version", no Revoke and no ⋯ menu, and each of those routes
+// no "Make current", no Revoke and no ⋯ Revoke link or New link, and each of those routes
 // answers them 403 with the server's own words, the page left whole. The
 // creator is drawn all of them and deletes the page.
 func TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage(t *testing.T) {
@@ -201,7 +201,7 @@ func TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managing := []string{"data-page-delete", "data-version-current", "data-link-revoke", "data-page-share-menu"}
+	managing := []string{"data-page-delete", "data-version-current", "data-link-revoke", "data-page-link-actions"}
 	for who, uid := range map[string]int64{"viewer": f.viewer, "operator (not the creator)": f.both} {
 		code, body := f.req(t, uid, http.MethodGet, "/pages/"+sid, "", nil)
 		if code != http.StatusOK || !strings.Contains(body, "data-page-share-box") {
@@ -262,11 +262,21 @@ func TestAnyMemberSharesATeamsPage(t *testing.T) {
 	}
 }
 
+// agentShareAlwaysOn is a preferences store that reads "let my agents share
+// without asking" ON for every owner, a team included: the store's own team
+// rule (notifypref, #847) taken away, so the application's alone is tested.
+type agentShareAlwaysOn struct{ notifypref.Store }
+
+func (agentShareAlwaysOn) PagesAgentShare(context.Context, int64) (bool, error) { return true, nil }
+
 // TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn: with "let my agents
-// share without asking" stored TRUE on the TEAM's own row — and read true
-// (the guard is what stands between it and a live link) — a team agent's
-// page_share_request files a pending link and a card, never a live link.
-// CONTROL: a person's own agent, its owner's setting on, goes live at once.
+// share without asking" stored TRUE on the TEAM's own row, a team agent's
+// page_share_request files a pending link and a card, never a live link. Two
+// guards stand in the way, and each is shown holding ALONE: the store reads a
+// team off whatever is stored (#847, notifypref), and — under a store that
+// reads every owner on — pageAgentShareAllowed never reads the setting for a
+// team. CONTROL: a person's own agent, its owner's setting on, goes live at
+// once.
 func TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn(t *testing.T) {
 	f := newTeamPageFixture(t)
 	id := f.teamPage(t, "Press")
@@ -274,10 +284,18 @@ func TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn(t *testing.T) {
 		ON CONFLICT (owner_id) DO UPDATE SET pages_agent_share = true`, f.teamA); err != nil {
 		t.Fatal(err)
 	}
+	// The store's guard: the team's stored true reads off.
+	if f.srv.pageAgentShareOn(f.asTeam(f.teamA), f.teamA) {
+		t.Error("the store reads the team's stored setting ON; a team is never auto-shared (#847)")
+	}
+	// The application's guard, alone.
+	stored := f.srv.ext.NotifyPrefs
+	f.srv.ext.NotifyPrefs = agentShareAlwaysOn{stored}
 	if !f.srv.pageAgentShareOn(f.asTeam(f.teamA), f.teamA) {
-		t.Fatal("instrument: the team's stored setting does not read true; the guard below would be untested")
+		t.Fatal("instrument: the always-on store does not read on; the guard below would be untested")
 	}
 	out := f.teamTool(t, pageShareRequestTool, map[string]any{"page_id": id})
+	f.srv.ext.NotifyPrefs = stored
 	if out["status"] != "pending" || pnum(out["ask_id"]) <= 0 {
 		t.Fatalf("a team agent's share with the team's setting on: %v; want a pending link and a card", out)
 	}
@@ -359,7 +377,7 @@ func TestAManagerStepsInOnATeamsPage(t *testing.T) {
 		t.Fatalf("a viewer's Share: %d %s", code, body)
 	}
 	_, screen := f.req(t, mgr, http.MethodGet, "/pages/"+sid, "", nil)
-	for _, m := range []string{"data-link-revoke", "data-page-share-menu", `data-page-share-action="revoke"`, `data-page-share-action="rotate"`} {
+	for _, m := range []string{"data-link-revoke", "data-page-link-actions", `data-page-share-action="revoke"`, `data-page-share-action="rotate"`} {
 		if !strings.Contains(screen, m) {
 			t.Errorf("a manager (the creator present) is not drawn %s", m)
 		}
@@ -391,7 +409,7 @@ func TestAManagerStepsInOnATeamsPage(t *testing.T) {
 		}
 	}
 	_, vscreen := f.req(t, f.viewer, http.MethodGet, "/pages/"+sid, "", nil)
-	for _, m := range []string{"data-page-delete", "data-version-current", "data-page-share-menu"} {
+	for _, m := range []string{"data-page-delete", "data-version-current", "data-page-link-actions"} {
 		if strings.Contains(vscreen, m) {
 			t.Errorf("a viewer, the creator gone, is drawn %s", m)
 		}
@@ -480,7 +498,7 @@ func TestEveryPageRouteHasATeamRule(t *testing.T) {
 	_ = url.Values{}
 }
 
-// TestTheTeamCardAnswerDoorHoldsInTheDatabase: 0162's
+// TestTheTeamCardAnswerDoorHoldsInTheDatabase: 0165's
 // muster_answer_team_page_card, called DIRECTLY (attention.PGStore
 // AnswerTeamPageCard), past every Go check in front of it, records only a
 // member's answer to a card of THEIR team whose link they already decided,

@@ -122,6 +122,10 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO fleet_owner_marks (looked_at) VALUES (now())`, func() []any { return nil }, nil},
 		{`INSERT INTO officer_seen (officer_owner, officer, seen_at) VALUES (1, 'draft:example-' || lower($1), now())`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_cap_raises (officer, day, daily_usd, raised_at) VALUES ('draft:example-' || lower($1), current_date, 20, now())`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO fleet_actions (class, proposer, subject_kind, subject_key, episode_id, text, text_sha256, state) VALUES ('continue', 'chief', 'mirror', $1, 1, 'go on', repeat('0', 64), 'proposed')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO officer_chat_cards (officer_owner, officer, kind, draft_id, body_sha256, media_sha256, card_sha256) VALUES (1, 'draft:example-' || lower($1), 'draft', 1, repeat('a', 64), '{}', repeat('b', 64))`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO morning_reports (day, window_since, window_until, quiet) VALUES ('2000-01-02', '2000-01-01T14:00:00Z', '2000-01-02T14:00:00Z', true)`, func() []any { return nil }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
@@ -145,6 +149,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
 		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
 		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
+		{`INSERT INTO page_assets (page_id, public_id, content_type, size_bytes) VALUES ($1, substr(md5('asset' || $2), 1, 22), 'image/png', 1)`, func() []any { return []any{page, tag} }, nil},
+		{`INSERT INTO page_version_assets (page_id, version, asset_id) VALUES ($1, 1, substr(md5('asset' || $2), 1, 22))`, func() []any { return []any{page, tag} }, nil},
 		{`INSERT INTO officer_types (key, charter) VALUES ('conf-' || lower($1), 'c')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_defs (officer, type_key) VALUES ('conf-' || lower($1) || ':a', 'conf-' || lower($1))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_items (officer, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'k', 's')`, func() []any { return []any{tag} }, nil},
@@ -250,10 +256,10 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, page := teamPageTables[tbl]; page {
-			// The team page policies (0162), pinned whole by the share ledger
+			// The team page policies (0165), pinned whole by the share ledger
 			// (teamPagePolicies); here only that each is one of them.
 			if w, ok := teamPagePolicies(tbl)[name]; !ok || w[0] != cmd || permissive != "PERMISSIVE" || w[1] != qual || w[2] != check {
-				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0162's team page policies", tbl, name, cmd, permissive, qual, check)
+				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0165's team page policies", tbl, name, cmd, permissive, qual, check)
 			}
 			continue
 		}
@@ -522,7 +528,7 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 0162 adds four, each pinned below to the same shape — scope all for its
+	// 0165 adds four, each pinned below to the same shape — scope all for its
 	// own duration, search_path pinned, EXECUTE to muster_app and not PUBLIC:
 	// muster_is_team_member (whether a page's creator is still on its team),
 	// muster_answer_team_page_card and muster_cancel_team_page_card (a member's
@@ -750,5 +756,5 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 }
 
 // teamReadTables is every table with a team_read policy: the share-class ones
-// (0127) and the team page ones (0162).
+// (0127) and the team page ones (0165).
 func teamReadTables() []string { return ownerFixedTables() }

@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notifypref"
 )
 
 // memNotifyPrefs is notifypref.Store in memory: owner → on, or err on every
@@ -22,8 +23,14 @@ type memNotifyPrefs struct {
 	err error
 	// first is "Start notification titles with the tmux name", owner → on.
 	first map[int64]bool
-	// pages is "Let my agents share pages without asking", owner → on.
+	// pages is "Let my agents share pages without asking", owner → on; a
+	// missing owner reads on (the default since migration 0163).
 	pages map[int64]bool
+	// teams is the owners that are TEAMS (users.kind = 'team'): each reads
+	// pages off whatever pages holds, as notifypref.PG does (so does a team
+	// acting principal reading its own). A read by any principal but the
+	// owner's own or the system scope is refused, as notifypref.PG refuses it.
+	teams map[int64]bool
 }
 
 func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool, error) {
@@ -32,7 +39,21 @@ func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool
 	if m.err != nil {
 		return false, m.err
 	}
-	return m.pages[owner], nil
+	// As notifypref.PG: only owner's own principal or the system scope reads
+	// it, and a team — named in teams, or the team acting principal reading
+	// its own — is always off.
+	pr, ok := authz.From(ctx)
+	if !ok || (!pr.All() && pr.UserID != owner) {
+		return false, notifypref.ErrNotOwner
+	}
+	if m.teams[owner] || (pr.Team && pr.UserID == owner) {
+		return false, nil
+	}
+	if on, ok := m.pages[owner]; ok {
+		return on, nil
+	}
+	// No choice made: on, as notifypref.PG reads a person's missing row.
+	return true, nil
 }
 
 func (m *memNotifyPrefs) SetPagesAgentShare(ctx context.Context, owner int64, on bool) error {
@@ -224,5 +245,42 @@ func TestAnAgentsAskIsNeverGivenATmuxAddress(t *testing.T) {
 	}
 	if got := attentionNotification(items[0], false).Title; got != "Deploy importer is asking" {
 		t.Fatalf("an agent's ask's push title %q", got)
+	}
+}
+
+// TestMemNotifyPrefsPagesAgentShareReadsAsTheStore: the in-memory fake answers
+// as notifypref.PG — a person with no choice reads on, their stored off reads
+// off; another member's principal and a principal-less ctx are refused; the
+// system scope reads; a team (listed, or reading as its own acting
+// principal) is off even when pages holds true.
+func TestMemNotifyPrefsPagesAgentShareReadsAsTheStore(t *testing.T) {
+	m := &memNotifyPrefs{pages: map[int64]bool{3: false, 9: true}, teams: map[int64]bool{9: true}}
+	as := func(uid int64, team bool) context.Context {
+		via := authz.ViaSession
+		if team {
+			via = authz.ViaAgent // a team acts only through such a door
+		}
+		return authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Team: team, Role: authz.RoleMember, Via: via})
+	}
+	if on, err := m.PagesAgentShare(as(2, false), 2); err != nil || !on {
+		t.Fatalf("a person with no choice: on=%v err=%v, want on", on, err)
+	}
+	if on, err := m.PagesAgentShare(as(3, false), 3); err != nil || on {
+		t.Fatalf("a stored off: on=%v err=%v, want off", on, err)
+	}
+	if _, err := m.PagesAgentShare(as(3, false), 2); !errors.Is(err, notifypref.ErrNotOwner) {
+		t.Fatalf("another member's read: err=%v, want ErrNotOwner", err)
+	}
+	if _, err := m.PagesAgentShare(context.Background(), 2); !errors.Is(err, notifypref.ErrNotOwner) {
+		t.Fatalf("a principal-less read: err=%v, want ErrNotOwner", err)
+	}
+	if on, err := m.PagesAgentShare(authz.System(context.Background()), 2); err != nil || !on {
+		t.Fatalf("the system scope: on=%v err=%v, want on", on, err)
+	}
+	if on, err := m.PagesAgentShare(authz.System(context.Background()), 9); err != nil || on {
+		t.Fatalf("a listed team whose pages is true: on=%v err=%v, want off", on, err)
+	}
+	if on, err := m.PagesAgentShare(as(11, true), 11); err != nil || on {
+		t.Fatalf("a team acting principal reading its own: on=%v err=%v, want off", on, err)
 	}
 }

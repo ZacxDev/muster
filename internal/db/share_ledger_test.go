@@ -66,7 +66,7 @@ const noMember = 4
 // non-creator may change) and to delete — noMember where no member does.
 type pageClass struct{ read, lock, delete int }
 
-// teamPageTables is the pages tables (migration 0162: a team's pages, seen
+// teamPageTables is the pages tables (migration 0165: a team's pages, seen
 // by its members). Not 0127's uniform classes: every member reads; only the
 // page's creator manages it (muster_page_manager). The planted rows record
 // no creator, so deleting a page falls to a MANAGER of the team; a member
@@ -78,6 +78,11 @@ var teamPageTables = map[string]pageClass{
 	"page_versions":  {1, noMember, noMember},
 	"page_links":     {1, 1, noMember},
 	"page_responses": {1, noMember, noMember},
+	// 0164's author assets follow their page (0165): every member reads them
+	// (or a member's view draws its images broken); only the page's owner
+	// (its agent) writes one.
+	"page_assets":         {1, noMember, noMember},
+	"page_version_assets": {1, noMember, noMember},
 }
 
 // teamPagePolicies is each team page table's policies, whole as pg_policies
@@ -137,6 +142,17 @@ var personalOwned = []string{
 	// 0156: when a person last looked at an officer's page; each member of
 	// a team looks on their own.
 	"officer_seen",
+	// 0157: an owner's raise of an officer's daily budget for one UTC day;
+	// only the officer's owner raises it.
+	"officer_cap_raises",
+	// 0158: the fleet's action log; same reason.
+	"fleet_actions",
+	// 0160: the confirm cards in a person's chat with an officer; one
+	// manager's cards are never another's.
+	"officer_chat_cards",
+	// 0161: the morning report; it lists its owner's own sessions, tasks and
+	// questions.
+	"morning_reports",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
@@ -372,7 +388,7 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 		if _, page := teamPageTables[tbl]; page {
 			want := teamPagePolicies(tbl)
 			if len(ps) != len(want) {
-				t.Errorf("%s (team pages) has policies %v; want exactly the four of 0162", tbl, names)
+				t.Errorf("%s (team pages) has policies %v; want exactly the four of 0165", tbl, names)
 			}
 			for _, p := range ps {
 				w, ok := want[p.name]
@@ -489,7 +505,7 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		// A lent table with team_owner_read (0133): the team's own rows read
 		// at that role, never written.
 		ownerRead, readsOwn := teamOwnerRead[tbl]
-		// A team page table (0162): read, lock and delete each at its own role.
+		// A team page table (0165): read, lock and delete each at its own role.
 		pc, page := teamPageTables[tbl]
 		wantDevice := 0
 		if (shared && level["manager"] >= c.read) || (readsOwn && level["manager"] >= ownerRead) || (page && level["manager"] >= pc.read) {

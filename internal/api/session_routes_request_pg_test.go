@@ -256,7 +256,7 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 					delivered++
 					for _, want := range []string{"[muster] Route " + res.RouteID, "your owner's request, their chat message " +
 						strconv.FormatInt(said.ID, 10), "the session answered your owner's request", "<<<route-answer untrusted nonce=",
-						"tell your owner what it says"} {
+						"do not repeat or quote it"} {
 						if !strings.Contains(m, want) {
 							t.Errorf("the answer's note lacks %q:\n%s", want, m)
 						}

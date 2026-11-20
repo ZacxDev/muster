@@ -5,6 +5,8 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { chiefUxConnectPort, chiefUxFakePort, chiefUxPort, dsn, hookToken, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { clsInit, readCls, settle } from '../lib/cls';
+import path from 'node:path';
 
 // THE CHIEF'S CHAT, AS AN OPERATOR REPORTED IT (the four complaints, one each):
 //
@@ -136,11 +138,16 @@ async function script(body: { input?: { type?: string; content?: string; call_id
     await gate('kickoff-' + kick[1]).wait();
     return { text: 'Kickoff done: looked at the task.' };
   }
+  // A reply naming one of the owner's sessions by the marker the chief's tools
+  // teach it: muster draws it as a session card (ui/session_card.go).
+  const named = /CARD-ME agent:(\d+)/.exec(first);
+  if (named) return { text: `Ask [[session:agent:${named[1]}]] about the retry logging.` };
   if (first.includes('SIDE-USAGE')) {
-    // 120,000 + 30,000 + 2,000 = 152k in context (output is not counted).
+    // 330,000 + 30,000 + 2,345 = 362,345 in context (output is not counted):
+    // past the 350k the ⋯ menu's memory line waits for.
     return {
       text: 'GOT: ' + first.slice(-200),
-      usage: { input_tokens: 120_000, output_tokens: 777, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000 },
+      usage: { input_tokens: 330_000, output_tokens: 777, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_345 },
     };
   }
   const hold = /HOLD-ME-(\w+)/.exec(first);
@@ -570,16 +577,73 @@ test.describe('a dispatched agent', () => {
 
 const pageLog = (page: Page) => page.locator('#chat-log');
 const pageWorking = (page: Page) => page.locator('#chat-working');
-// The chief page's chats: the header sheet's Chats tab (internal/ui
+// The chief page's chats: the strip of chips under its header (internal/ui
 // chief_chats.go), which names the chat the page is on (data-chief-chat-kind).
-const chats = (page: Page) => page.locator('#chat-index [data-chief-chats]');
+// In the panel the same strip is over the panel's transcript.
+const chats = (page: Page) => page.locator('body > [data-chief-strip-row] [data-chief-chat-strip]');
+const panelChats = (page: Page) => page.locator('#chief-panel [data-chief-chat-strip]');
+const sessionOf = (u: string) => new URL(u).searchParams.get('session');
 
-// openChats opens the header's sheet on its Chats tab.
-async function openChats(page: Page) {
-  await page.locator('header #chat-index-open').click();
-  await expect(page.locator('#chat-index')).toBeVisible();
-  await page.locator('#chat-index [role="tab"][data-tab="chats"]').click();
-  await expect(chats(page)).toBeVisible();
+// shot saves a screenshot when MUSTER_E2E_CHIEF_SHOTS names a directory (the
+// before/after images a reviewer looks at); a generator, never an assertion.
+async function shot(page: Page, name: string) {
+  const dir = process.env.MUSTER_E2E_CHIEF_SHOTS;
+  if (dir) await page.screenshot({ path: path.join(dir, name) });
+}
+
+// stripIds is the chat ids of a strip's chips, in order (hidden ones too).
+const stripIds = (strip: ReturnType<Page['locator']>) =>
+  strip.locator('[data-chief-chip]').evaluateAll((els) => els.map((e) => e.getAttribute('data-chief-chip') ?? ''));
+// currentId is the chat id of a strip's current chip.
+const currentId = async (strip: ReturnType<Page['locator']>) => {
+  await expect(strip.locator('[aria-current="true"]')).toHaveCount(1);
+  return (await strip.locator('[aria-current="true"]').getAttribute('data-chief-chat-row'))!;
+};
+
+// noSheet: nothing modal is involved — no open <dialog>, no visible
+// role="dialog", no open popover.
+async function noSheet(page: Page, scope = 'page') {
+  await expect(page.locator('dialog[open]'), `${scope}: no open dialog`).toHaveCount(0);
+  if (scope === 'page') await expect(page.locator('[role="dialog"]:visible'), `${scope}: no visible role=dialog`).toHaveCount(0);
+  expect(await page.evaluate(() => document.querySelectorAll(':popover-open').length), `${scope}: no open popover`).toBe(0);
+}
+
+// stripLayout: the strip is ONE row under the header (no wrap, no overlap with
+// the header or its context chip), every target is at least 44px, and the page
+// does not scroll sideways.
+async function stripLayout(page: Page, strip: ReturnType<Page['locator']>, label: string, under?: ReturnType<Page['locator']>) {
+  const sb = (await strip.boundingBox())!;
+  expect.soft(sb.height, `${label}: the strip is one 52px row`).toBeLessThanOrEqual(52.5);
+  if (under) {
+    const hb = (await under.boundingBox())!;
+    expect.soft(sb.y, `${label}: the strip starts below the header`).toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
+    const ctx = await under.locator('#chief-context').boundingBox();
+    if (ctx) expect.soft(ctx.y + ctx.height, `${label}: the context chip is in the header, above the strip`).toBeLessThanOrEqual(sb.y + 0.5);
+  }
+  const boxes = await strip
+    .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat], button[data-chief-archived]')
+    .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width, what: e.outerHTML.slice(0, 60) }; }));
+  expect(boxes.length, `${label}: the strip has targets`).toBeGreaterThan(2);
+  for (const b of boxes) {
+    expect.soft(Math.abs(b.top - boxes[0].top), `${label}: ${b.what} is on the strip's one row`).toBeLessThanOrEqual(1);
+    expect.soft(b.h, `${label}: ${b.what} is a 44px target`).toBeGreaterThanOrEqual(44);
+    expect.soft(b.w, `${label}: ${b.what} is a 44px target`).toBeGreaterThanOrEqual(44);
+  }
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect.soft(sw, `${label}: the page does not scroll sideways`).toBeLessThanOrEqual(cw);
+}
+
+// currentInView: the current chip is wholly inside its strip's scroller.
+async function currentInView(strip: ReturnType<Page['locator']>, label: string) {
+  const r = await strip.evaluate((s) => {
+    const sc = s.querySelector('[data-chief-chip-scroller]')!;
+    const cur = sc.querySelector('[aria-current="true"]')!.closest('[data-chief-chip]')!;
+    const a = sc.getBoundingClientRect(), b = cur.getBoundingClientRect();
+    return { left: b.left - a.left, right: a.right - b.right, overflow: sc.scrollWidth - sc.clientWidth };
+  });
+  expect.soft(r.left, `${label}: the current chip's left edge is in view`).toBeGreaterThanOrEqual(-0.5);
+  expect.soft(r.right, `${label}: the current chip's right edge is in view`).toBeGreaterThanOrEqual(-0.5);
+  return r.overflow;
 }
 
 async function openChiefPage(page: Page) {
@@ -649,67 +713,339 @@ for (const vp of [
       await expect(pageWorking(page)).toBeHidden();
     });
 
-    test('side chats: a labelled New side chat, the switcher lists the primary first, the context chip', async ({ page }) => {
+    test('a session the chief names is a card: its name, a status dot, no raw id; a tap opens it', async ({ page }) => {
       test.setTimeout(90_000);
+      const name = `e2e-ux-card-${vp.name.replace(/\W+/g, '-')}-${stamp}`;
+      const id = fix('agent', '1', name, `e2e-ux-card-token-${stamp}-${vp.name.length}`);
+      agentsMade.add(name);
       await openChiefPage(page);
-      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
-      const primaryURL = page.url();
-      // The control has VISIBLE text; the header's icon-only ＋ is gone.
-      // The header has ONE chat control, the mirrored session's list icon; no
-      // ＋, no clock (Chat history), no target (Focus history), and no chat bar.
-      await expect(page.locator('header #chat-index-open')).toBeVisible();
-      await expect(page.getByRole('button', { name: 'New chat session' })).toHaveCount(0);
-      await expect(page.locator('header label[aria-label="Chat history"], header #focus-history-open')).toHaveCount(0);
-      await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
-      // The control has VISIBLE text, in the sheet's Chats tab.
-      await openChats(page);
-      const newSide = chats(page).getByRole('button', { name: 'New side chat', exact: true });
-      await expect(newSide).toBeVisible();
-      await expect(newSide).toHaveText('+New side chat');
-      await newSide.click();
-      await page.waitForURL((u) => u.toString() !== primaryURL);
-      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'side');
       await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
-      // A turn in the side chat, which reports its tokens: the chip — in the
-      // header, under the title — shows them when the turn ends, no reload.
-      await sendOnPage(page, `side question SIDE-USAGE (${vp.name})`);
-      await expect(pageLog(page)).toContainText(`GOT: side question SIDE-USAGE (${vp.name})`, { timeout: 20_000 });
-      const chip = page.locator('header #chief-context-chip');
-      await expect(chip).toBeVisible({ timeout: 10_000 });
-      await expect(chip.locator('[data-ctx-count]')).toHaveText('152k');
-      // A tap shows the exact count.
-      await chip.click();
-      await expect(page.locator('#chief-context-detail [data-ctx-detail]')).toContainText('152,000 tokens');
-      await page.keyboard.press('Escape');
-      // No sideways scroll at the phone's width.
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      // The Chats tab: the primary first, with its badge, then this side chat,
-      // marked current.
-      await openChats(page);
-      const rows = chats(page).locator('[data-chief-chat-row]');
-      await expect(rows.first()).toContainText('Primary');
-      // The tab was drawn with the page, before the first line titled this
-      // chat: the row is this chat by its link, not by its title.
-      const here = new URL(page.url()).searchParams.get('session');
-      await expect(rows.nth(1)).toHaveAttribute('href', new RegExp(`[?&]session=${here}(&|$)`));
-      await expect(rows.nth(1)).toHaveAttribute('aria-current', 'page');
-      // Switch back to the primary.
-      await rows.first().click();
-      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary', { timeout: 10_000 });
-      await expect(pageLog(page)).not.toContainText('side question SIDE-USAGE');
+      await sendOnPage(page, `who has it? CARD-ME agent:${id}`);
+      const reply = pageLog(page).locator('[data-bubble="assistant"]').filter({ hasText: 'about the retry logging' }).last();
+      await expect(reply).toBeVisible({ timeout: 20_000 });
+      const card = reply.locator('[data-session-card]');
+      await expect(card).toHaveCount(1);
+      await expect(card.locator('[data-session-card-title]')).toHaveText(name);
+      await expect(card.locator('[data-session-status]')).toHaveCount(1);
+      await expect(reply).not.toContainText('[[session:');
+      await expect(reply).not.toContainText(`agent:${id}`);
+      await card.locator('[data-session-card-open]').click();
+      await page.waitForURL((u) => u.pathname === '/agents/' + name);
+      await expect(page.locator('#chat-form')).toBeVisible();
+      fix('rmagent', '1', name);
+      agentsMade.delete(name);
     });
 
-    test('the panel has the labelled New side chat too, under its thread list', async ({ page }) => {
-      test.setTimeout(60_000);
+    // + LANDS WHERE YOU CAN TYPE (the operator: "the chief new side chat button
+    // doesn't work" — the server opened the chat and the page moved to it, but
+    // nothing on screen said so). Red at main: no strip, no current chip, and
+    // the composer was not focused.
+    test('the chip strip: + lands in the message box, an empty chat is reused, a used one is not, a chip switches', async ({ page }) => {
+      test.setTimeout(150_000);
+      const tap = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
+      await page.addInitScript(clsInit);
+      await openChiefPage(page);
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      const primary = await currentId(chats(page));
+      // The header keeps the one list icon, whose sheet holds no chats now.
+      await expect(page.locator('header #chat-index-open')).toBeVisible();
+      await expect(page.locator('#chat-index [role="tab"][data-tab="chats"], #chat-index [data-chief-chats]')).toHaveCount(0);
+      await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
+      await expect(chats(page).locator(`[data-chief-chip="${primary}"]`)).toHaveAttribute('data-chief-chip-kind', 'primary');
+      await expect(chats(page).locator(`[data-chief-chat-row="${primary}"]`)).toContainText('★Primary');
+      const before = await stripIds(chats(page));
+      await shot(page, `after-page-primary-${vp.name}.png`);
+
+      // 1. + from the primary: a NEW chat, its chip current, the cursor in its box.
+      const plus = chats(page).locator('button[data-chief-side-chat]');
+      await expect(plus).toHaveAccessibleName('New side chat');
+      const url0 = page.url();
+      await tap(plus);
+      await page.waitForURL((u) => u.toString() !== url0);
+      const s1 = sessionOf(page.url())!;
+      expect(before, '+ opened a NEW chat').not.toContain(s1);
+      await expect(chats(page).locator(`[data-chief-chat-row="${s1}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(chats(page).locator(`[data-chief-chat-row="${s1}"]`)).toHaveText('New chat');
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'side');
+      await expect(page.locator('#chat-input'), 'the cursor is in the new chat\'s message box').toBeFocused();
+      expect(await stripIds(chats(page)), 'the new chip is the newest side chat, right after the primary').toEqual([before[0], s1, ...before.slice(1)]);
+      await noSheet(page);
+      // No layout shift landing on it (the strip is drawn with the page).
+      await settle(page);
+      const landed = await readCls(page);
+      expect(landed.unsupported).toBeUndefined();
+      expect(landed.total, `layout shift landing on a new chat: ${JSON.stringify(landed.shifts)}`).toBeLessThan(0.01);
+      await shot(page, `after-page-plus-${vp.name}.png`);
+      // Only "+"'s answer asks for the focus: the address it landed on no
+      // longer carries the ask, so a reload — or a plain load of ?session= —
+      // leaves the cursor alone.
+      expect(new URL(page.url()).searchParams.has('focus'), 'the focus ask is dropped from the address').toBe(false);
+      const quiet = async (label: string) => {
+        await expect(page.locator('#chat-form')).toBeVisible();
+        await page.waitForLoadState('load');
+        await page.waitForTimeout(500);
+        await expect(page.locator('#chat-input'), label).not.toBeFocused();
+      };
+      await page.reload();
+      await quiet('a reload does not take the focus');
+      await page.goto(origin + '/agents/' + chiefName + '?session=' + s1);
+      await quiet('a plain load of ?session=N does not take the focus');
+
+      // 2. + again while that chat is empty: the SAME chat, no second chip,
+      // still current, the cursor in its box (HX-Redirect to this very page).
+      const ids1 = await stripIds(chats(page));
+      await page.locator('#chat-input').blur();
+      const reloaded = page.waitForEvent('load');
+      await tap(plus);
+      await reloaded;
+      expect(sessionOf(page.url()), 'the empty chat is reused').toBe(s1);
+      expect(await stripIds(chats(page)), 'no second chip').toEqual(ids1);
+      await expect(chats(page).locator(`[data-chief-chat-row="${s1}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(page.locator('#chat-input'), 'a reused chat lands in its message box too').toBeFocused();
+      await noSheet(page);
+
+      // 3. Once it has a line, + makes a NEW chat. The turn reports its tokens:
+      // the ⋯ menu says how much memory the chat uses when it ends, no reload.
+      await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+      // No token chip in the header (operator decision, #871).
+      await expect(page.locator('header [data-chief-context-row], header #chief-context-chip')).toHaveCount(0);
+      const memory = page.locator('#agent-actions [data-chief-memory]');
+      await expect(memory, 'no memory line before a turn reported its tokens').toHaveCount(0);
+      // A turn in the side chat that reports 362,345 tokens of context: the ⋯
+      // menu says it in plain words when the turn ends, no reload — and the
+      // header still carries no chip.
+      await sendOnPage(page, `side question SIDE-USAGE (${vp.name})`);
+      await expect(pageLog(page)).toContainText(`GOT: side question SIDE-USAGE (${vp.name})`, { timeout: 20_000 });
+      await expect(memory).toHaveCount(1, { timeout: 10_000 });
+      await page.locator('#agent-actions-open').click();
+      await expect(memory).toBeVisible();
+      await expect(memory).toHaveText('Memory used: 362k');
+      await page.keyboard.press('Escape');
+      await expect(page.locator('header [data-chief-context-row], header #chief-context-chip')).toHaveCount(0);
+      await tap(plus);
+      await page.waitForURL((u) => sessionOf(u.toString()) !== s1);
+      const s2 = sessionOf(page.url())!;
+      expect(ids1, 'a used chat is not reused').not.toContain(s2);
+      await expect(chats(page).locator(`[data-chief-chat-row="${s2}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(page.locator('#chat-input')).toBeFocused();
+      const ids2 = await stripIds(chats(page));
+      expect(ids2.slice(0, 3), 'primary, the new chat, then the used one').toEqual([primary, s2, s1]);
+      await stripLayout(page, chats(page), `${vp.name} on a new chat`, page.locator('header'));
+      await shot(page, `after-page-second-plus-${vp.name}.png`);
+
+      // 4. A chip switches: the transcript and the current marker move.
+      await tap(chats(page).locator(`[data-chief-chat-row="${s1}"]`));
+      await page.waitForURL((u) => sessionOf(u.toString()) === s1);
+      await expect(pageLog(page)).toContainText(`side question SIDE-USAGE (${vp.name})`);
+      await expect(chats(page).locator(`[data-chief-chat-row="${s1}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(chats(page).locator('[aria-current="true"]')).toHaveCount(1);
+      // On a phone the chips overflow and scroll sideways; the current one —
+      // the third chip — is scrolled into view.
+      const overflow = await currentInView(chats(page), `${vp.name} on the third chip`);
+      if (vp.use.hasTouch) expect(overflow, 'the phone\'s strip overflows (so the scroll into view is exercised)').toBeGreaterThan(0);
+      await stripLayout(page, chats(page), `${vp.name} on the third chip`, page.locator('header'));
+      await shot(page, `after-page-switched-${vp.name}.png`);
+
+      // 8. The unread dot: a turn held in s1, the operator leaves for the
+      // primary, the reply lands in s1 — its chip carries the dot.
+      const key = 'unread' + vp.name + stamp;
+      await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+      await sendOnPage(page, `while you are away HOLD-ME-${key}`);
+      await expect.poll(() => gate(key).entered, { timeout: 15_000 }).toBe(1);
+      await tap(chats(page).locator(`[data-chief-chat-row="${primary}"]`));
+      await page.waitForURL((u) => sessionOf(u.toString()) === primary);
+      // (A side chat an earlier run left unread keeps its own dot: count them.)
+      await expect(chats(page).locator(`[data-chief-chip="${s1}"] [data-chief-unread]`)).toHaveCount(0);
+      const dotsBefore = await chats(page).locator('[data-chief-unread]').count();
+      gate(key).release();
+      await expect
+        .poll(async () => {
+          await page.reload();
+          return chats(page).locator(`[data-chief-chip="${s1}"] [data-chief-unread]`).count();
+        }, { timeout: 20_000, message: 'the side chat\'s chip shows an unread dot' })
+        .toBe(1);
+      await expect(chats(page).locator('[data-chief-unread]'), 'one more dot: that chip\'s').toHaveCount(dotsBefore + 1);
+      await expect(chats(page).locator(`[data-chief-chip="${primary}"] [data-chief-unread]`), 'none on the chat you are on').toHaveCount(0);
+
+      // The instrument: a shift nobody asked for (a block above the strip,
+      // no input) reads above the bar, so the zero above is a measurement.
+      await settle(page);
+      await page.evaluate(() => {
+        const d = document.createElement('div');
+        d.style.height = '160px';
+        const row = document.querySelector('[data-chief-strip-row]')!;
+        row.parentElement!.insertBefore(d, row);
+      });
+      await settle(page, 500);
+      const control = await readCls(page);
+      expect(control.total, 'positive control: an injected shift above the strip is measured').toBeGreaterThan(0.01);
+    });
+
+    // 5. Every chip's ⋯ by keyboard. Red at main: no chips.
+    test('a chip\'s ⋯ menu by keyboard: archive (inline Archived), unarchive, make primary, fresh primary\'s confirm, Escape', async ({ page }) => {
+      test.setTimeout(120_000);
+      await openChiefPage(page);
+      const primary = await currentId(chats(page));
+      // The empty side chat the test above left (its chip is still "New chat").
+      const side = (await chats(page).locator('[data-chief-chip-kind="side"]').filter({ hasText: 'New chat' }).first().getAttribute('data-chief-chip'))!;
+      expect(side).toBeTruthy();
+      const menuOf = (sid: string) => chats(page).locator(`[data-chief-chip="${sid}"] button[aria-haspopup="menu"]`);
+      const menu = (sid: string) => page.locator(`#chief-chat-menu-${sid}`);
+      // openByKeyboard: focus the chip's ⋯, Enter, and the menu is open.
+      const openByKeyboard = async (sid: string) => {
+        await menuOf(sid).focus();
+        await expect(menuOf(sid)).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(menu(sid)).toBeVisible();
+        await expect(menuOf(sid)).toHaveAttribute('aria-expanded', 'true');
+      };
+      await chats(page).locator(`[data-chief-chat-row="${side}"]`).click();
+      await page.waitForURL((u) => sessionOf(u.toString()) === side);
+
+      // Archive the open chat: you land on the primary, and it is behind
+      // "Archived (n)", which expands inline.
+      const toggle = chats(page).locator('button[data-chief-archived]');
+      const archivedBefore = (await toggle.count()) ? Number(/\((\d+)\)/.exec((await toggle.textContent())!)![1]) : 0;
+      await openByKeyboard(side);
+      await page.keyboard.press('Tab');
+      await expect(menu(side).getByRole('menuitem', { name: 'Make primary' })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(menu(side).getByRole('menuitem', { name: 'Archive' })).toBeFocused();
+      const toPrimary = page.waitForURL((u) => sessionOf(u.toString()) === primary);
+      await page.keyboard.press('Enter');
+      await toPrimary;
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(toggle).toHaveText(`Archived (${archivedBefore + 1})`);
+      await expect(chats(page).locator('[data-chief-archived-chip]')).toHaveCount(archivedBefore + 1);
+      const archivedChip = chats(page).locator(`[data-chief-chip="${side}"]`);
+      await expect(archivedChip).toHaveAttribute('data-chief-chip-kind', 'archived');
+      await expect(archivedChip).toBeHidden();
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(archivedChip, 'Archived expands inline').toBeVisible();
+      await noSheet(page);
+      await stripLayout(page, chats(page), `${vp.name} with Archived open`, page.locator('header'));
+      await shot(page, `after-page-archived-open-${vp.name}.png`);
+
+      // Unarchive it from its ⋯: it is back among the side chats, and the page
+      // stays on the primary.
+      await openByKeyboard(side);
+      await page.keyboard.press('Tab');
+      await expect(menu(side).getByRole('menuitem', { name: 'Unarchive' })).toBeFocused();
+      let reloaded = page.waitForEvent('load');
+      await page.keyboard.press('Enter');
+      await reloaded;
+      expect(sessionOf(page.url())).toBe(primary);
+      await expect(chats(page).locator(`[data-chief-chip="${side}"]`)).toHaveAttribute('data-chief-chip-kind', 'side');
+      await expect(chats(page).locator(`[data-chief-chip="${side}"]`)).toBeVisible();
+
+      // Make primary moves the ★ (and the chip to the front); the page stays.
+      await openByKeyboard(side);
+      await page.keyboard.press('Tab');
+      await expect(menu(side).getByRole('menuitem', { name: 'Make primary' })).toBeFocused();
+      reloaded = page.waitForEvent('load');
+      await page.keyboard.press('Enter');
+      await reloaded;
+      await expect(chats(page).locator(`[data-chief-chip="${side}"]`)).toHaveAttribute('data-chief-chip-kind', 'primary');
+      await expect(chats(page).locator(`[data-chief-chat-row="${side}"]`)).toContainText('★');
+      await expect(chats(page).locator(`[data-chief-chip="${primary}"]`)).toHaveAttribute('data-chief-chip-kind', 'side');
+      expect((await stripIds(chats(page)))[0], 'the primary is first').toBe(side);
+      // And back.
+      await openByKeyboard(primary);
+      await page.keyboard.press('Tab');
+      await expect(menu(primary).getByRole('menuitem', { name: 'Make primary' })).toBeFocused();
+      reloaded = page.waitForEvent('load');
+      await page.keyboard.press('Enter');
+      await reloaded;
+      await expect(chats(page).locator(`[data-chief-chip="${primary}"]`)).toHaveAttribute('data-chief-chip-kind', 'primary');
+
+      // Fresh primary, on the primary's ⋯, asks its confirm (dismissed:
+      // nothing happens); Escape then closes the menu.
+      const here = page.url();
+      await openByKeyboard(primary);
+      await page.keyboard.press('Tab');
+      await expect(menu(primary).getByRole('menuitem', { name: 'Fresh primary' })).toBeFocused();
+      const asked: string[] = [];
+      page.once('dialog', (d) => { asked.push(d.type() + ':' + d.message()); void d.dismiss(); });
+      await page.keyboard.press('Enter');
+      await expect.poll(() => asked.length, { message: 'Fresh primary asks its confirm' }).toBe(1);
+      expect(asked[0]).toMatch(/^confirm:Start a fresh primary chat\?/);
+      await page.waitForTimeout(300);
+      expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here);
+      await page.keyboard.press('Escape');
+      await expect(menu(primary)).toBeHidden();
+      await expect(menuOf(primary)).toHaveAttribute('aria-expanded', 'false');
+
+      // Put the empty side chat away again, so a later + opens a new one.
+      await menuOf(side).click();
+      await menu(side).getByRole('menuitem', { name: 'Archive' }).click();
+      await expect(chats(page).locator(`[data-chief-chip="${side}"]`)).toHaveAttribute('data-chief-chip-kind', 'archived');
+    });
+
+    // The chief PANEL: the same strip, every answer into the panel body, the
+    // URL the grid's. Red at main: no strip in the panel.
+    test('the panel draws the same strip: +, a chip and archive stay in the grid', async ({ page }) => {
+      test.setTimeout(90_000);
+      const tap = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
       await openChief(page);
-      // No chat bar over the panel's transcript.
+      const strip = panelChats(page);
+      await expect(strip).toBeVisible();
       await expect(panel(page).locator('[data-chief-chat-bar]')).toHaveCount(0);
-      await panel(page).locator('#chief-panel-actions label[for="chief-threads"]').click();
-      const newSide = panel(page).locator('[data-chief-chats]').getByRole('button', { name: 'New side chat', exact: true });
-      await expect(newSide).toBeVisible();
-      await expect(newSide).toHaveText('+New side chat');
-      await expect(panel(page).locator('[data-chief-chats]')).toHaveAttribute('data-chief-chat-kind', /primary|side/);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      const grid = page.url();
+      const start = await currentId(strip);
+      const primary = (await strip.locator('[data-chief-chip-kind="primary"]').getAttribute('data-chief-chip'))!;
+      const before = await stripIds(strip);
+      const active = panel(page).locator('[data-chief-active-session]');
+      await shot(page, `after-panel-${vp.name}.png`);
+
+      await tap(strip.locator('button[data-chief-side-chat]'));
+      await expect(active).not.toHaveAttribute('data-chief-active-session', start);
+      const p1 = (await active.getAttribute('data-chief-active-session'))!;
+      expect(before, '+ in the panel opened a NEW chat').not.toContain(p1);
+      await expect(strip.locator(`[data-chief-chat-row="${p1}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(panel(page).locator('#chat-input'), 'the cursor is in the panel\'s message box').toBeFocused();
+      expect(page.url(), 'the grid stays').toBe(grid);
+      await noSheet(page, 'panel');
+      await expect(panel(page).locator('#chief-threads')).not.toBeChecked();
+      await stripLayout(page, strip, `${vp.name} panel`);
+      await shot(page, `after-panel-plus-${vp.name}.png`);
+
+      // Escape on a chip's ⋯ closes the MENU only: the panel stays open, on
+      // the same chat (the panel's Escape used to shut the whole panel).
+      const p1Menu = strip.locator(`[data-chief-chip="${p1}"] button[aria-haspopup="menu"]`);
+      await expect(p1Menu).toHaveAccessibleName('Actions for New chat');
+      await p1Menu.focus();
+      await expect(p1Menu).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(page.locator(`#chief-panel-chat-menu-${p1}`)).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator(`#chief-panel-chat-menu-${p1}`)).toBeHidden();
+      await page.waitForTimeout(300);
+      await expect(panel(page), 'Escape on the menu leaves the panel open').toHaveAttribute('data-chief-panel-open', '1');
+      await expect(active).toHaveAttribute('data-chief-active-session', p1);
+      await expect(panel(page).locator('#chat-form')).toBeVisible();
+
+      // A chip switches the panel's chat.
+      await tap(strip.locator(`[data-chief-chat-row="${primary}"]`));
+      await expect(active).toHaveAttribute('data-chief-active-session', primary);
+      await expect(strip.locator(`[data-chief-chat-row="${primary}"]`)).toHaveAttribute('aria-current', 'true');
+      expect(page.url()).toBe(grid);
+
+      // Archive p1 from its chip's ⋯: the panel stays on the primary, p1 is
+      // behind Archived (n), which expands inline.
+      await tap(strip.locator(`[data-chief-chip="${p1}"] button[aria-haspopup="menu"]`));
+      const m = page.locator(`#chief-panel-chat-menu-${p1}`);
+      await expect(m).toBeVisible();
+      await m.getByRole('menuitem', { name: 'Archive' }).click();
+      await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toHaveAttribute('data-chief-chip-kind', 'archived');
+      await expect(active).toHaveAttribute('data-chief-active-session', primary);
+      await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toBeHidden();
+      await tap(strip.locator('button[data-chief-archived]'));
+      await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toBeVisible();
+      expect(page.url(), 'the grid stays').toBe(grid);
+      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(sw).toBeLessThanOrEqual(cw);
     });
   });
 }

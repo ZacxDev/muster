@@ -5,7 +5,7 @@ import { signIn } from '../lib/signin';
 import { dsn, repoRoot, teamPagesConnectPort, teamPagesPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
-// A TEAM'S PAGE, read by a member who is NOT its creator (migration 0162;
+// A TEAM'S PAGE, read by a member who is NOT its creator (migration 0165;
 // docs/pages.md "A team's pages"), at a phone (390×844) and a desktop
 // (1280×800), each set here, never inherited from the config.
 //
@@ -74,15 +74,16 @@ for (const size of sizes) {
       const row = page.locator(`li[data-page-id="${f.page}"]`);
       await expect(row).toBeVisible();
       await expect(row.locator(`[data-page-team="${f.team}"]`)).toHaveText(`Team: ${f.name}`);
-      await expect(row.locator('[data-page-share-menu]'), 'the ⋯ menu is drawn for a member who is not the creator').toHaveCount(0);
+      await expect(row.locator('[data-page-link-actions]'), 'the ⋯ menu is drawn for a member who is not the creator').toHaveCount(0);
       const width = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       expect(width, 'Pages scrolls sideways').toBeLessThanOrEqual(0);
 
-      // 2. Its screen: Share, and no Delete, Show this version, Revoke or ⋯.
-      await Promise.all([page.waitForURL(origin + `/pages/${f.page}`), row.locator('[data-page-title]').click()]);
+      // 2. Its screen (the row's ⋯ → Details): Share, and no Delete, Make
+      // current, Revoke, Revoke link or New link.
+      await page.goto(origin + `/pages/${f.page}`);
       await expect(page.locator(`[data-testid="page-detail"] [data-page-team="${f.team}"]`)).toContainText(`Team: ${f.name}`);
       await expect(page.locator('[data-page-share-box] button').first()).toBeVisible();
-      for (const sel of ['[data-page-delete]', '[data-version-current]', '[data-link-revoke]', '[data-page-share-menu]']) {
+      for (const sel of ['[data-page-delete]', '[data-version-current]', '[data-link-revoke]', '[data-page-link-actions]']) {
         await expect(page.locator(sel), `${sel} is drawn for a member who is not the creator`).toHaveCount(0);
       }
 

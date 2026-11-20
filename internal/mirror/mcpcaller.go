@@ -72,6 +72,33 @@ func (w Window) RunsMCPCaller(key string) bool {
 	return (w.Claude && w.ClaudeSession == key) || slices.Contains(w.OtherClaude, key)
 }
 
+// MCPCallerKeys is every MCP caller key w runs NOW — exactly the keys
+// RunsMCPCaller accepts for w, enumerated (TestMCPCallerKeysAreRunsMCPCaller's
+// relationship): its Claude session, its other panes' Claude sessions, and its
+// opencode session's key while the host sends to it. What a page made from w
+// recorded as its session (pages.Creator.MirrorSession) is one of these, so
+// they are what w's pages are listed by (pages.SessionRef).
+func (w Window) MCPCallerKeys() []string {
+	var out []string
+	add := func(k string) {
+		if k != "" && !slices.Contains(out, k) && w.RunsMCPCaller(k) {
+			out = append(out, k)
+		}
+	}
+	if w.Claude {
+		add(w.ClaudeSession)
+	}
+	for _, k := range w.OtherClaude {
+		add(k)
+	}
+	// Its agent runtime's session's key (Window.SessionKey's rule): kept only
+	// while RunsMCPCaller binds it (an opencode window its host sends to).
+	if r, ok := w.Spec(); ok && w.AgentSession != "" {
+		add(r.AgentKey(w.AgentSession))
+	}
+	return out
+}
+
 // ValidMCPCaller reports whether key can name an MCP caller at all: a Claude
 // session id, or an opencode caller's key.
 func ValidMCPCaller(key string) bool {

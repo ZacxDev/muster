@@ -1,4 +1,4 @@
-// Command mkteampage makes, reads and removes a TEAM'S PAGE (migration 0162)
+// Command mkteampage makes, reads and removes a TEAM'S PAGE (migration 0165)
 // on the e2e database, for tests/team-pages.spec.ts: a team the operator
 // (user 1) is a VIEWER of, a second person who is the page's CREATOR (the
 // person who started the team agent that made it), and a two-version page the

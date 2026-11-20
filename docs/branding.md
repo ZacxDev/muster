@@ -3,7 +3,9 @@
 An admin can give a muster server its own logo and display name. muster then
 draws them in place of its own mark:
 
-- in the page header and the sidebar, on every signed-in page;
+- in the page header and the sidebar, on every signed-in page (the sidebar
+  draws the logo alone, as the [server switcher](push.md#several-servers-the-server-switcher)'s
+  button; with a name and no logo, a monogram of the name);
 - on the sign-in page;
 - as the favicon and the touch icon, on every page muster serves (the
   sign-in, invite, reset and claim pages included);
@@ -19,11 +21,13 @@ There is no environment variable for it. Branding is set in the UI and kept in
 the database, so a server without a database has none.
 
 With nothing set, every surface is exactly what it was before branding existed:
-the `muster` wordmark and muster's own icons.
+muster's own mark (the lockup in the header and on the sign-in page, the
+compact square mark in the sidebar's server switcher) and muster's own icons and favicons ([brand.md](brand.md)). With a logo
+set, none of muster's favicons is linked.
 
 ## Setting it
 
-Open **Account** as an admin. The **Instance branding** section has:
+Open **Account** as an admin. The **Server name and logo** section has:
 
 - **Display name**: optional, up to 64 characters. Surrounding spaces are
   trimmed. Control characters, text-direction controls and invisible
@@ -58,8 +62,8 @@ user with the admin role ([auth.md](auth.md)).
 
 Many logos are wordmarks: they already spell the server's name. Drawn with the
 name beside them, the header says it twice. Tick **The logo already shows the
-name** and, while a logo is set, the header, the sidebar and the sign-in page
-draw the logo alone. The logo's `alt` text is then the name, so a screen
+name** and, while a logo is set, the header and the sign-in page draw the logo
+alone (the sidebar always does). The logo's `alt` text is then the name, so a screen
 reader still announces it. (With the name drawn beside the logo, the logo's
 `alt` is empty, so the name is not read twice.)
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE USAGE PAGE (docs/usage.md): what the owner's chief cost over the last 7
@@ -39,6 +40,28 @@ func usageDays(r *http.Request) int {
 }
 
 // num is n with thousands separators ("12,345").
+// UsageTokensNote is what the totals' ⓘ says about the token counts: the
+// footnote the page used to end with (the jargon audit's F070).
+const UsageTokensNote = "A token total is a count, not a cost: a cache read costs far less than an input token. " +
+	"\"Estimated tokens avoided\" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns " +
+	"for the same plugin and sender before the rule was approved."
+
+// replyWord and messageWord are "reply"/"replies" and "message"/"messages"
+// for n.
+func replyWord(n int64) string {
+	if n == 1 {
+		return "reply"
+	}
+	return "replies"
+}
+
+func messageWord(n int64) string {
+	if n == 1 {
+		return "message"
+	}
+	return "messages"
+}
+
 func num(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	neg := strings.HasPrefix(s, "-")
@@ -129,7 +152,9 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 <span class="text-sm font-semibold text-fg">` + num(t.Messages) + ` plugin messages · ` + strconv.FormatInt(t.WithoutChiefPercent(), 10) + `% without your chief</span>
 <span class="text-sm text-fg">` + num(t.ByRule) + ` by a rule · ` + num(t.ByMuster) + ` by muster's own paths · ` + num(t.ByChief) + ` by a chief turn` +
 		ruleFallbackText(t.Fallbacks) + `</span>
-<span class="text-sm text-fg">` + num(t.Turns) + ` chief turns · ` + esc(tokensText(t.Tokens)) + `</span>
+<div class="flex items-center gap-1"><span class="text-sm text-fg" data-usage-replies>` + num(t.Turns) + ` chief ` + replyWord(t.Turns) + `</span>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "usage-tokens", Label: "Your chief's token counts", Heading: "Token counts",
+			Lead: UsageTokensNote, Code: num(t.Turns) + " chief " + replyWord(t.Turns) + " · " + tokensText(t.Tokens), Inline: true}) + `</div>
 `)
 	if t.UnknownTurns > 0 {
 		b.WriteString(`<span class="text-xs text-fg2">` + num(t.UnknownTurns) + ` of those turns reported no usage (counted as unknown, not free).</span>
@@ -153,8 +178,10 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 		d := rep.Days[i]
 		b.WriteString(`<li class="` + flowsCardClass + `" data-usage-day="` + d.Day.Format("2006-01-02") + `">
 <span class="text-sm font-semibold text-fg">` + d.Day.Format("Mon 2 Jan") + `</span>
-<span class="text-xs text-fg2">` + num(d.Messages) + ` messages (` + num(d.ByRule) + ` rule · ` + num(d.ByMuster) + ` muster · ` + num(d.ByChief) +
-			` chief) · ` + num(d.Turns) + ` turns · ` + num(d.Tokens.Total()) + ` tokens</span>
+<div class="flex items-center gap-1"><span class="text-xs text-fg2" data-usage-day-messages>` + num(d.Messages) + ` ` + messageWord(d.Messages) + `</span>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "usage-day-" + d.Day.Format("2006-01-02"), Label: "Breakdown of " + d.Day.Format("Mon 2 Jan"), Heading: d.Day.Format("Mon 2 Jan"),
+				Lead: "Placed by a rule, by muster's own paths and by your chief; your chief's replies and their tokens:",
+				Code: num(d.ByRule) + " rule · " + num(d.ByMuster) + " muster · " + num(d.ByChief) + " chief · " + num(d.Turns) + " " + replyWord(d.Turns) + " · " + num(d.Tokens.Total()) + " tokens", Inline: true}) + `</div>
 </li>
 `)
 	}
@@ -209,8 +236,7 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 	}
 	b.WriteString("</ul>\n")
 	s.writeChiefSessionsUsage(r, &b, since)
-	b.WriteString(`<p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. "Estimated tokens avoided" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
-<a href="` + routingRulesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Routing rules</a>
+	b.WriteString(`<a href="` + routingRulesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Routing rules</a>
 <a href="` + answersPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answers</a>
 </section>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Usage", "", false, b.String())

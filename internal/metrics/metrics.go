@@ -63,6 +63,18 @@ var (
 		Help: "Requests refused 421 because their Host is under MUSTER_PLUGIN_ORIGINS.",
 	})
 
+	// CSRFRefusals counts cookie-authenticated writes refused 403 by the
+	// central origin check (api.refuseCrossOriginCookieWrite, run in admit).
+	// route_class is the first path segment of the matched mux pattern (a
+	// bounded set: the registered routes); reason is one of the check's five
+	// refusals (api.csrfReason*). Nonzero means a page that is not muster's
+	// own, or a client that sends none of the headers the check reads, tried a
+	// write with a signed-in browser's cookie.
+	CSRFRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_csrf_refusals_total",
+		Help: "Cookie-authenticated writes refused 403 by the central origin check, by route class and reason.",
+	}, []string{"route_class", "reason"})
+
 	// PageLinkRequests counts requests to a page's share-link routes
 	// (/s/{token}…, internal/api pages.go) by route (shell, content, submit,
 	// upload) and outcome: served, not_found (unknown, not live or expired —

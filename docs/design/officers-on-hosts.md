@@ -165,9 +165,12 @@ a connector grant (granted per agent, decided per request) — works unchanged.
   owner-authority tool reached through that machine's mirror door — the
   ledger `hostStepUpTools`: `plugin_draft_decide`,
   `connector_request_decide`, `attention_answer`, `agent_destroy`,
-  `chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
-  `plugin_request_decide`; every other mirror tool is classified exempt with a
-  reason, and the test fails when a new one is neither — decides nothing. It
+  `dispatch_approve`, `route_reply`, `plugin_message_route`,
+  `plugin_request_decide`, `plugin_outbound_batch_decide`; every other mirror
+  tool is classified exempt with a reason, and the test fails when a new one
+  is neither — decides nothing. (`chief_restart` was on this list until the
+  operator chose to leave it ungated on every machine:
+  [mirroring.md](../mirroring.md#chief_restart-is-not-gated).) It
   files a **confirmation card** naming the tool and its exact arguments; the
   decision runs once, as the session that asked, only when the owner answers
   **Confirm** from their **paired phone**: a signed action whose challenge is

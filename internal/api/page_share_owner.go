@@ -215,8 +215,7 @@ func (s *Server) pageCardView(ctx context.Context, ref ui.PageToolRef) (ui.PageC
 		return ui.PageCardView{}, false
 	}
 	v := ui.PageCardView{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Kind: ui.PageCardKind(ref.Tool, ref.Status),
-		Reusable: s.ext.Pages.LinksReusable(), NoManage: !pageRevocable(ctx, p),
-		NoRevoke: !pageRevocable(ctx, p)}
+		Reusable: s.ext.Pages.LinksReusable(), NoRevoke: !pageRevocable(ctx, p)}
 	if ref.Version > 0 {
 		v.Version = ref.Version
 	}

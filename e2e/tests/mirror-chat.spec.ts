@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { signIn } from '../lib/signin';
 import { dsn, mirrorChatPort, repoRoot } from '../lib/env';
 import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
@@ -592,7 +593,7 @@ test('the message index lists every sent message in the transcript: loaded ones 
   const items = sheet.locator('[data-chat-index-item]');
   const unloaded = sheet.locator('[data-chat-index-unloaded]');
   await expect(sheet).toBeHidden();
-  await openBtn.tap();
+  await (await menuItem(page, '#chat-index-open')).tap();
   await expect(sheet).toBeVisible();
   await expect(openBtn).toHaveAttribute('aria-expanded', 'true');
   // ALL of them: 50 earlier ones the page never loaded, then the 150 it did.
@@ -635,7 +636,7 @@ test('the message index lists every sent message in the transcript: loaded ones 
   expect(id).toMatch(/^mv-p-\d+$/);
 
   // Messages stream in while the sheet is open: the list keeps up.
-  await openBtn.tap();
+  await (await menuItem(page, '#chat-index-open')).tap();
   await expect(sheet.locator('#chat-index-list > li')).toHaveCount(200);
   fs.appendFileSync(tr, prompt('a fresh message') + reply('ok'));
   await expect(sheet.locator('#chat-index-list > li')).toHaveCount(201);
@@ -647,7 +648,7 @@ test('the message index lists every sent message in the transcript: loaded ones 
   await items.last().tap();
   await expect.poll(() => inLogView(page, log.locator('[data-bubble="user"]').last(), '#mv-log')).toBe(true);
   // The backdrop closes it, and nothing scrolls sideways.
-  await openBtn.tap();
+  await (await menuItem(page, '#chat-index-open')).tap();
   await page.locator('#chat-index > [data-chat-index-close]').tap({ position: { x: 20, y: 20 } });
   await expect(sheet).toBeHidden();
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
@@ -659,7 +660,7 @@ test('the message index lists every sent message in the transcript: loaded ones 
 // still counts from the transcript's first prompt.
 test('a transcript with more prompts than the index holds says how many earlier ones are not listed', async ({ page }) => {
   await openView(page, newTranscript(pairs(2030, (i) => `message number ${i}`)));
-  await page.locator('#chat-index-open').tap();
+  await (await menuItem(page, '#chat-index-open')).tap();
   const sheet = page.locator('#chat-index');
   await expect(sheet.locator('#chat-index-more')).toBeVisible();
   await expect(sheet.locator('#chat-index-more')).toHaveText('30 more earlier, not listed');
@@ -675,7 +676,7 @@ test('a transcript with more prompts than the index holds says how many earlier 
 test('against a host that predates the index, the list is the loaded messages and says so', async ({ page }) => {
   await openView(page, newTranscript(pairs(200, (i) => `message number ${i}`)), { MUSTER_MIRROR_E2E_NO_PROMPT_INDEX: '1' });
   await expect(page.locator('#mv-log [data-bubble="user"]')).toHaveCount(150);
-  await page.locator('#chat-index-open').tap();
+  await (await menuItem(page, '#chat-index-open')).tap();
   const sheet = page.locator('#chat-index');
   await expect(sheet.locator('#chat-index-partial')).toBeVisible();
   await expect(sheet.locator('#chat-index-partial')).toContainText('Only the messages loaded so far are listed');

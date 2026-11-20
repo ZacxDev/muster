@@ -1,6 +1,6 @@
--- NUMBER: 0162 (open pull requests hold up to 0161; renumber at merge if main
--- moved, with db.teamPagesMigrationVersion).
--- muster 0162 — A TEAM'S PAGES ARE SEEN BY THE TEAM'S MEMBERS
+-- NUMBER: 0165 (written as 0162, renumbered 0165 at merge, after 0164; renumber
+-- it again at merge if main moved, with db.teamPagesMigrationVersion).
+-- muster 0165 — A TEAM'S PAGES ARE SEEN BY THE TEAM'S MEMBERS
 -- (internal/pages; docs/pages.md "A team's pages", docs/teams.md).
 --
 -- A page a team-owned agent makes belongs to the team (pages.owner_id is the
@@ -42,6 +42,12 @@
 --                  delete: owner.
 --   page_responses read: member.  insert: owner, or a member's OWN owner-view
 --                  response (by_owner).  update, delete: owner.
+--   page_assets, page_version_assets (0164: the page's author assets, and
+--                  which versions use them)  read: member.  insert, update,
+--                  delete: owner. 🔴 THEY FOLLOW THE PAGE: a member who reads
+--                  a team's page reads the assets its versions show, or the
+--                  owner view draws its images and video broken (the shell
+--                  reads each through Store.VersionAsset, as the caller).
 -- "owner" here is the user arm: the team acting principal (the team's agent)
 -- for a team's page, the person for their own.
 --
@@ -103,7 +109,8 @@
 -- system scope.
 --
 -- db.RLSOn re-applies this file after 0116 (which re-creates owner_isolation
--- on the four tables); its body drops it again. Every statement is
+-- on the four tables) and after 0164 (which does on the two asset tables);
+-- its body drops it again. Every statement is
 -- idempotent. rollback/rls_off.sql turns the tables' security off and leaves
 -- these policies inert, as it does 0116's.
 --
@@ -112,7 +119,7 @@
 -- ROLLBACK (after rolling the image back; an older image reads neither
 -- column and meets owner_isolation again):
 --   DO $$ DECLARE t text; BEGIN
---     FOREACH t IN ARRAY ARRAY['pages','page_versions','page_links','page_responses'] LOOP
+--     FOREACH t IN ARRAY ARRAY['pages','page_versions','page_links','page_responses','page_assets','page_version_assets'] LOOP
 --       EXECUTE format('DROP POLICY IF EXISTS team_read ON public.%I', t);
 --       EXECUTE format('DROP POLICY IF EXISTS page_insert ON public.%I', t);
 --       EXECUTE format('DROP POLICY IF EXISTS page_update ON public.%I', t);
@@ -135,7 +142,7 @@
 --   DROP FUNCTION IF EXISTS public.muster_is_team_member(bigint, bigint);
 --   ALTER TABLE public.page_responses DROP COLUMN IF EXISTS responder_user;
 --   ALTER TABLE public.pages DROP COLUMN IF EXISTS created_by_user;
---   DELETE FROM schema_migrations WHERE version = 162;
+--   DELETE FROM schema_migrations WHERE version = 165;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -453,6 +460,23 @@ BEGIN
     EXECUTE format('CREATE POLICY page_insert ON public.page_links AS PERMISSIVE FOR INSERT TO PUBLIC WITH CHECK (%s)', shr);
     EXECUTE format('CREATE POLICY page_update ON public.page_links AS PERMISSIVE FOR UPDATE TO PUBLIC USING (%s) WITH CHECK (%s)', shr, shr);
     EXECUTE format('CREATE POLICY page_delete ON public.page_links AS PERMISSIVE FOR DELETE TO PUBLIC USING (%s)', own);
+
+    -- page_assets, page_version_assets (0164): read with the page, written
+    -- only by the page's owner (its author), as page_versions.
+    FOREACH t IN ARRAY ARRAY['page_assets', 'page_version_assets'] LOOP
+        EXECUTE format('DROP POLICY IF EXISTS owner_isolation ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS team_read ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS page_insert ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS page_update ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS page_delete ON public.%I', t);
+        EXECUTE format('CREATE POLICY team_read ON public.%I AS PERMISSIVE FOR SELECT TO PUBLIC USING (%s)', t, shr);
+        EXECUTE format('CREATE POLICY page_insert ON public.%I AS PERMISSIVE FOR INSERT TO PUBLIC WITH CHECK (%s)', t, own);
+        EXECUTE format('CREATE POLICY page_update ON public.%I AS PERMISSIVE FOR UPDATE TO PUBLIC USING (%s) WITH CHECK (%s)', t, own, own);
+        EXECUTE format('CREATE POLICY page_delete ON public.%I AS PERMISSIVE FOR DELETE TO PUBLIC USING (%s)', t, own);
+        EXECUTE format('DROP TRIGGER IF EXISTS owner_fixed ON public.%I', t);
+        EXECUTE format('CREATE TRIGGER owner_fixed BEFORE UPDATE OF owner_id ON public.%I
+            FOR EACH ROW EXECUTE FUNCTION public.muster_owner_fixed()', t);
+    END LOOP;
 
     -- page_responses: a member adds only their own owner-view response.
     EXECUTE format('CREATE POLICY page_insert ON public.page_responses AS PERMISSIVE FOR INSERT TO PUBLIC WITH CHECK (%s OR (by_owner AND %s))', own, mem);

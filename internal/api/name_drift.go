@@ -151,7 +151,7 @@ func (s *Server) handleDriftDismiss(w http.ResponseWriter, r *http.Request) {
 		}
 		sub = focus.MirrorSubject(e.SessionKey())
 	default:
-		http.Error(w, "kind must be agent or mirror", http.StatusBadRequest)
+		http.Error(w, badSessionKindWords, http.StatusBadRequest)
 		return
 	}
 	if err := s.ext.Focus.DismissDrift(r.Context(), sub, r.PostFormValue("title")); err != nil {

@@ -120,7 +120,7 @@ it could not tell.
 A file someone uploaded is served from muster's own origin, so a file that a
 browser renders as a page (HTML, SVG, XHTML, or anything it sniffs as one)
 would run its script **as muster**, with the signed-in operator's session:
-stored XSS. Four routes serve uploaded bytes, and all four answer through one
+stored XSS. Six routes serve uploaded bytes, and all six answer through one
 function, `uploads.SetServeHeaders`:
 
 | Route | Who | Bytes |
@@ -129,6 +129,10 @@ function, `uploads.SetServeHeaders`:
 | `GET /uploads/{id}/file` | the owner's session (thumbnails, Open) | an upload, from the object store |
 | `GET /tasks/{id}/attachments/{aid}` | a session | a task's attachment, from Postgres |
 | `GET /attention/asks/{id}/attachments/{upload id}` | a session that may read the ask | an ask's attachment, from the object store ([below](#an-asks-attachments)) |
+| `GET /s/{token}/assets/{id}` | a page's live share link (its shell) | an author asset the page's current version uses ([pages.md](pages.md#images-and-video)) |
+| `GET /pages/{id}/versions/{v}/assets/{asset id}` | the page owner's session (their view's shell) | an author asset version `v` uses |
+
+The two asset routes differ in one header: an asset's id never names other bytes, so they send `Cache-Control: private, max-age=31536000, immutable` in place of `no-store` ([pages.md](pages.md#images-and-video)).
 
 Each response is decided from the type **sniffed from the bytes** at serve
 time, never from what the uploader claimed (a task attachment's stored type is
@@ -175,7 +179,7 @@ second store). They arrive from where the agent is, never from a browser:
 
 | Route | Who sends | Credential |
 |---|---|---|
-| `POST /mirror/ask-attachments?filename=<name>` | a mirror host's `muster-mirror`, for one of its sessions' `attention_ask` | the host's mirror token, and the calling session (`X-Muster-Claude-Session`), which the host must list running now |
+| `POST /mirror/ask-attachments?filename=<name>` | a mirror host's `muster-mirror`, for one of its sessions' `attention_ask` (Claude Code's or opencode's) | the host's mirror token, and the calling session, which the host must list running now: a Claude Code session's id in `X-Muster-Claude-Session`, or an opencode session's key in `X-Muster-Agent-Session` (`opencode:<id>`; `muster-mirror` also sends `X-Muster-Client: opencode`, which the route does not require, but a request carrying that marker must name the key), never both, by the same rule as the [MCP door](attention.md#mirrored-opencode-sessions) |
 | `POST /agent/ask-attachments?filename=<name>` | `ccd ask-attach <path>` in a dispatched claude-code agent's pod | the agent's own token (`X-Muster-Token`) |
 | `DELETE /mirror/ask-attachments/{id}` | a mirror host taking back an upload whose ask was not filed | as the POST: the upload is revoked and its object deleted; only its owner's uploads (another id is 404) |
 
@@ -184,7 +188,10 @@ On top of the rules above, an ask's file is held to **10 MiB** (or the store's
 own cap, if smaller), and its **sniffed** type must be PNG, JPEG, GIF, WebP,
 PDF, plain text, XML (SVG) or ZIP: anything else is a 415, before a byte is
 stored. The routes share the composer's in-flight limits. All three are 404
-while attachments are off. The senders never send a hidden file (a path whose
+while attachments are off. A mirror host resolves a session's paths against
+its working directory: a Claude Code session's process's, an opencode
+session's as its opencode server records it
+([attention.md](attention.md#attachments-and-context)). The senders never send a hidden file (a path whose
 resolved location below the working directory has a part starting with `.`),
 and open the file without following a link or blocking, refusing it unless it
 is still the file they checked. An ask's upload's row lives **7 days** (the

@@ -122,7 +122,7 @@ type teamPageCardAnswerer interface {
 //
 // 🔴 NOT THE ORDINARY ANSWER: 0127 writes attention_asks at OPERATOR, so a
 // VIEWER's answer would decide the link and then not record — the card left
-// open over a live link. 0162's muster_answer_team_page_card records it, for
+// open over a live link. 0165's muster_answer_team_page_card records it, for
 // this one kind of row only (an open owner card of a team the caller is a
 // member of, from their browser or phone, whose link the caller has already
 // decided), the caller recorded as answered_by_user.
@@ -139,7 +139,7 @@ func (s *Server) recordTeamPageCardAnswer(ctx context.Context, id int64, answer 
 // door — a signed-in browser or their paired phone, the doors that carry
 // their memberships (authz.Principal.TeamScope) — as ANY member of that team,
 // viewer included (operator decision D1: the card is the same act as Share,
-// which every member has, and 0162's link guard lets every member decide a
+// which every member has, and 0165's link guard lets every member decide a
 // pending link). A team agent's link goes live only on such a tap: no person
 // is the team, so the team's own door (attention.IsOwnerDoor) is never a
 // person's. The answer is recorded by recordTeamPageCardAnswer, since 0127
@@ -212,7 +212,7 @@ func pageAskOpenHTML(href string) string {
 //
 // On a TEAM's page revoked by a member (its creator or a manager, whatever
 // their role), the card is the team's, which 0127 lets only an operator
-// write: it is withdrawn through 0162's narrow door
+// write: it is withdrawn through 0165's narrow door
 // (attention.PGStore.CancelTeamPageCard), never the ordinary cancel, which
 // would fail for a viewer-role creator and leave the card answerable.
 func (s *Server) withdrawLinkCard(ctx context.Context, l pages.Link) {

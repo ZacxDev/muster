@@ -11,7 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// What a member may DO to a team's page (migration 0162), as the database
+// What a member may DO to a team's page (migration 0165), as the database
 // holds it: every statement below runs as the application role under forced
 // row-level security, so an application check is not what refuses it.
 

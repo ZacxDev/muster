@@ -34,6 +34,7 @@ var codenameFirstSurfaces = map[string]string{
 // noCodenameFirst is every OTHER function with a push title, with why the
 // switch does not apply to it.
 var noCodenameFirst = map[string]string{
+	"fleet_actions.go fleetPushNotification":               "the fleet's batched push: \"N proposals waiting\" names no session",
 	"server.go Server.goNotify":                            "the sink: it sends a declared CodenameTitle in place of Title (and plains the title), never declares one",
 	"agent_outcome.go Server.pushOutcome":                  "an agent's outcome: an agent has no tmux window",
 	"chief_owner_release.go Server.applyGateRelease":       "a task's gate: names a task, not a session",
@@ -43,6 +44,7 @@ var noCodenameFirst = map[string]string{
 	"officer_cap_hold.go Server.officerBudgetNotice":       "an officer's daily budget: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
 	"page_tools.go Server.pagePublished":                   "an agent published a page: names the page",
+	"morning_report.go Server.morningReportFor":            "the morning report: counts only, names no session",
 	"notify_owner.go Server.pageUpdated":                   "an agent published a page's new version: names the page",
 	"notify_owner.go Server.toolNotifyOwner":               "an agent's own notification: its title is the agent's, its body names the sender",
 	"page_tools.go Server.pageShareAuto":                   "an agent shared a page without asking: names the page",

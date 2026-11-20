@@ -170,6 +170,11 @@ func (s *Server) toolEndSessionPropose(ctx context.Context, a agents.Agent, argu
 	// (2): a line the owner typed in the chief's own chat, naming the session.
 	msg, why := s.ownerTurnFor(ctx, a)
 	if why != "" {
+		// 🔴 OUTSIDE AN OWNER TURN, A CARD (fleet proposals on): a close card
+		// the owner taps (fleet_answers.go fleetCloseCard).
+		if out, ok := s.fleetCloseCard(ctx, a, strings.TrimPrefix(strings.TrimSpace(in.Session), string(focus.KindMirror)+":")); ok {
+			return out
+		}
 		return refuse(s.ownerTurnRefusal(ctx, a, why, sayEnd))
 	}
 	key := strings.TrimPrefix(strings.TrimSpace(in.Session), string(focus.KindMirror)+":")

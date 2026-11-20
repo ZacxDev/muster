@@ -6,7 +6,7 @@ import (
 )
 
 // TestATeamMembersViewDrawsItsFileFieldOff: with UploadsOff set (a team
-// member's own view of a team's page, 0162), an upload block is drawn
+// member's own view of a team's page, 0165), an upload block is drawn
 // disabled with that sentence and no upload button; without it, a server
 // with no uploads says its own sentence, and one with uploads draws the field.
 func TestATeamMembersViewDrawsItsFileFieldOff(t *testing.T) {

@@ -438,7 +438,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	} else {
 		vp = s.viewerPlugins(op.begin("plugins"), e.Window)
 	}
-	v.Plugins = pluginChips(vp, e)
+	v.Plugins = s.sessionOpenChips(op.begin("pages"), vp, h, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)

@@ -342,14 +342,12 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Div(Class("flex min-w-0 items-center gap-1.5"),
 							terminalTitle(v),
 							sessionTagsHeadNode(v.TagTarget, v.Tags)),
-						// The status line; below `sm` the Preview button is at its
-						// end (plugin_chip.go), so the title keeps its width.
+						// The status line.
 						Div(Class("flex min-w-0 items-center gap-2"),
 							P(ID("term-status"), Class("min-w-0 flex-1 truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
 								// What typing here really reaches (InteractiveNote).
 								g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
-								g.Text("Not connected")),
-							previewButtonSlot(v.Plugins, PreviewInRow)),
+								g.Text("Not connected"))),
 						updatingChip("term-updating", "bottom-0 right-0 z-10"),
 					),
 					// Fit width: shown only while the far side is wider than this
@@ -363,15 +361,15 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
-					// The window's Preview button, while it has something to
-					// preview (plugin_chip.go).
-					previewButtonSlot(v.Plugins, PreviewInHeader),
+					// The session's Open button (previews and pages), while it
+					// has something to open (plugin_chip.go).
+					previewButtonSlot(v.Plugins),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
 				mirrorHostBanner("term-host-note", v.Offline, v.Note),
-				// The Preview button's panel, closed (plugin_chip.go).
+				// The Open button's panel, closed (plugin_chip.go).
 				previewPanel(v.Plugins),
 				Div(
 					ID("term-error"),
@@ -1515,20 +1513,22 @@ func terminalDocTitle(v AgentTerminalView) string {
 const TermTitleID = "term-title"
 
 // terminalTitle is a Terminal page's header title: a human name, else the
-// entry's label and qualifier as its card draws them, else the name; then the
-// mirrored badge. extra is a rename's in-place answer's hx-swap-oob
+// entry's label and qualifier as its card draws them, else the name; then, on
+// its own line, the mirrored badge (mirrorHostLine: each line truncates on its
+// own). extra is a rename's in-place answer's hx-swap-oob
 // (TerminalRenamed): the whole heading is swapped, so a name given or cleared
 // draws as a reload would.
 func terminalTitle(v AgentTerminalView, extra ...g.Node) g.Node {
 	raw, title, named := terminalNames(v)
 	return H1(ID(TermTitleID), g.Group(extra), g.Attr("tabindex", "-1"),
-		Class("min-w-0 flex-1 truncate text-sm font-semibold focus:outline-none"),
-		g.If(named, sessionNameTitle(v.SessionName, "")),
-		g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
-		// A mirrored entry: its label (the raw session name its tooltip),
-		// and/or its qualifier — drawn like its card.
-		g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
-		g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon))))
+		Class("min-w-0 flex-1 text-sm font-semibold focus:outline-none"),
+		Span(Class("block truncate"),
+			g.If(named, sessionNameTitle(v.SessionName, "")),
+			g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
+			// A mirrored entry: its label (the raw session name its tooltip),
+			// and/or its qualifier — drawn like its card.
+			g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier))),
+		g.If(v.Badge != "" && !titleNamesHost(!named, v.TitleQualifier, v.BadgeHost), mirrorHostLine(v.Badge, v.BadgeHost, v.BadgeHostIcon)))
 }
 
 func terminalDocName(title, qualifier string, named bool) string {

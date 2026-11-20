@@ -934,7 +934,7 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 }
 
 // AnswerTeamPageCard records a team MEMBER's answer to a team agent's page
-// share card (migration 0162's muster_answer_team_page_card): an open owner
+// share card (migration 0165's muster_answer_team_page_card): an open owner
 // card of a team the caller is a member of (viewer and up), answered from
 // their browser or paired phone (answerVia), whose page link the caller has
 // already decided. The answer is the same transition as Answer's, the caller
@@ -962,7 +962,7 @@ func (s *PGStore) AnswerTeamPageCard(ctx context.Context, id int64, answer strin
 }
 
 // CancelTeamPageCard withdraws a team page link's card on behalf of the team
-// member who revoked the link (migration 0162's
+// member who revoked the link (migration 0165's
 // muster_cancel_team_page_card): an open owner card of a team the caller is a
 // member of, named by a revoked, agent-made link of that team. 0127 writes
 // attention_asks at operator, so a viewer-role creator's or manager's cancel

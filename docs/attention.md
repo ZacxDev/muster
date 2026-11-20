@@ -59,10 +59,12 @@ dictation is on. An ask's options sit two to a row when there are two to four
 short ones (each at most 18 characters), one to a row otherwise. The question
 is cut to three lines until the card is expanded.
 
-**The answer form is the same everywhere:** on a card here and in a session
-page's asks block, the asker's options first (Answer is then quiet), then the
-one-line box that grows, its mic and **Answer** on one row. A session page has
-no footer, so its Dismiss ends that row.
+**The answer form is the same everywhere:** on a card here and on an
+officer's page, the asker's options first (Answer is then quiet), then the
+one-line box that grows, its mic and **Answer** on one row. An officer's page
+has no footer, so its Dismiss ends that row. A session's page draws no answer
+form: its header counts the asker's open questions and opens them here,
+filtered to that asker (below).
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
@@ -224,19 +226,30 @@ between waiting and idle, and its notification closes when the stop ends:
 began, or answered the prompt it was waiting on; a chief nudge muster sent
 does not count. A prompt answered at the terminal ends the stop the moment its
 host reports the window no longer waiting, and the push and the row go at
-once; a message of your own is seen by the next 30-second pass, and the push
-and the row go then), **you
+once. A message of your own typed into a pushed idle stop is checked the moment
+its host reports the window's status moved (normally busy, about a second after
+you press Enter): the session's transcript is read then, and if your message is
+in it the stop ends and the push and the row go at once. If the transcript does
+not show your message yet at that moment, nothing is decided there, and the
+next 30-second pass reads it again and ends the stop then. A stop that was
+never pushed, and a message the host reports no status change for, are left
+to that pass), **you
 opened the session in muster** (its rendered view or terminal, or the agent's
 conversation, on the web or in the app, which shows the same pages: the push
 and the row go at once; the Agents list, the bar, the Asks page and a prefetch
 do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
 from a host that is online. Whatever ends it, the notification is withdrawn
-as the stop ends, not on a later pass, with two exceptions that the next
-30-second pass closes instead: a stop whose notification was sent less than
-15 seconds before it ended (withdrawing it at once could reach your device
-before the notification itself, which would then stay up), and a stop
-ended because it repeats one you already dealt with. A stop you dealt with (acted in, or opened) is not
+as the stop ends, not on a later pass, with two exceptions. A stop whose
+notification was sent less than 15 seconds before it ended — or, for a stop
+back from a window that went missing, quietly shown again less than 15
+seconds before — is withdrawn once those 15 seconds are up, not at once
+(withdrawing it at once could reach your device before the notification
+itself, which would then stay up); the next 30-second pass is the backstop for
+it. Normally one withdrawal is sent; if muster cannot record that it sent one,
+it may send it again, which closes nothing new. A
+stop ended because it repeats one you already dealt with is closed by the next
+30-second pass. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next
 stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting
@@ -416,8 +429,8 @@ carries it as each item's `name` (absent when the session has no human name).
 
 Every attention text that names a mirrored window — a chief nudge's ask, a
 waiting session, a session question, a mirrored session's own ask (its source
-on the queue, its page's "*<source>* asks" header and the asks block of its
-session page), an answered ask's card and its delivery line ("Queued for …",
+on the queue and its page's "*<source>* asks" header), an answered ask's card
+and its delivery line ("Queued for …",
 "Waiting for … to read it"), a notice, a session-state stop's row, and their
 notifications — names it the same way
 (`mirror.Where`), so you can go straight to it in a terminal. The chief reads
@@ -491,13 +504,29 @@ itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as
 answered (`internal/api/attention_ask_page.go`).
 
-**The session's page also shows the asker's open questions with the same answer
-form as `/attention`** (its option buttons — a chief's task actions included —
-free text, Dismiss): an agent's page lists that agent's open asks, a window's
-rendered view the asks of the Claude sessions it runs, never another asker's.
-Answering there sends you back to that page; the list follows the queue live (an
-ask answered anywhere leaves it, a new one arrives, never replacing an answer
-you are typing) (`internal/api/attention_asker.go`). A session is not re-notified:
+**The session's page counts the asker's open questions in its header.** An
+agent's page (the chief's included) and a window's rendered view draw a small
+count badge while the asker has questions open: an agent's page counts that
+agent's open asks, a window's rendered view the asks of the Claude sessions it
+runs, never another asker's. It counts what waits on you, as every other
+count does: a team's question you only watch is not counted, nor is a
+session's question to its chief or a notice. The page draws no list of them and no answer form:
+**tap the badge** to open the Asks page filtered to them,
+`/attention?from=<asker>`, where they are answered, dismissed and listed like
+every other card. The count follows the queue live (an ask answered anywhere,
+or a new one, moves it without a reload), and with nothing open the badge is
+not drawn (`internal/api/attention_asker.go`).
+
+**The filtered Asks page** lists, on its Open tab, that asker's open questions
+alone (no notices, waiting sessions or drafts), with a line above the tabs —
+`Showing asks from <name> · Show all` — and its *N open* counts those that wait on you (no drafts or stalled sessions); **Show all**
+is the unfiltered page. The filter is `from=agent:<name>` for an agent, or
+`from=window:<host>:<window id>:<tmux session>` for a mirrored window; the
+other tabs are unfiltered. It is read as you: a `from` naming an agent you
+cannot read or a window that is not one of yours is ignored, and the page
+lists what it lists without it.
+
+A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
@@ -593,7 +622,7 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 | `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It counts as your own words for `agent_dispatch` instructions**, exactly as a browser answer does (operator decision; see the risk [below](#mirrored-claude-code-sessions)); the started agent's first message and the `task.chief_dispatch` audit row then say it came via MCP from `<host>`/`<session>` ([chief.md](chief.md)). Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
 | `agent_destroy {name \| id}` | Destroys one of the owner's agents through the agent page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `agent_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
 | `agents_list {worker_pool?}` | Lists the owner's agents, **only theirs**, read as `muster agent ls` reads them (`GET /api/agents`' store read, under the owner's row-level security, with the owner compared again as `agent_destroy` does), newest first: `{agents: [{id, name, display_name, kind, worker_pool, cc_account, status, task_id, created_at}], count}`. `name` is the slug `agent_destroy` takes; `worker_pool` is a machine-job worker's pool (`""` for none) and `cc_account` a claude-code agent's Claude account name (`""` otherwise). `worker_pool` filters to that pool's workers (and is echoed back). Read-only; **no audit row**. Refused: any argument but `worker_pool`. Listed with the agent store. Not offered, and unknown, to every dispatched agent, the chief included. |
-| `chief_restart {force?}` | Restarts the owner's **own chief** — the same as Stop then Start on its agent page ([chief.md](chief.md#restarting-the-chief)), typically after a muster release so it runs the new image and tool set. It takes **no agent**: the chief is the owner's lowest-id agent labelled `chief`, resolved among the owner's own agents only. Before anything is stopped it checks the Start would be allowed (the kind's credential). It then stops and starts the chief through the provisioner and **waits** (up to 4 minutes) for it to be running and ready on a **new** pod. Returns `{agent_id, agent, before:{status, pod, ready, image}, after:{…}, restarted: true}`, where `image` is the image the agent container runs, as the provisioner reports it. It **reports** the image and does not compare it with `MUSTER_AGENT_CC_IMAGE`; `muster-ops chief-restart` remains the check that the running image equals the configured one. Without a reading of the pod before the restart, a success also carries `new_pod_confirmed: false`. A tool error says what happened instead: not seen running on a new pod after the wait (with the time it really waited), a failed stop (*"it may be stopped"*), stopped but could not be started (*"start it from its agent page"*). **Refused while the chief is mid-turn** — a plugin message, kickoff or memo being delivered, or a chat turn running — unless `force: true`, which cuts that turn off exactly as the browser's Stop does. `force` never overrides another `chief_restart` or a chief replacement in progress. Refused: an owner with no chief, a chief turned off, any argument but `force` (*"chief_restart takes no agent"*). **No audit row**, like `agent_destroy` and the browser's Stop/Start: the host, the session and the outcome are in muster's server log. Listed only with a provisioner wired. Not offered, and unknown, to every dispatched agent, the chief included. |
+| `chief_restart {force?}` | Restarts the owner's **own chief** — the same as Stop then Start on its agent page ([chief.md](chief.md#restarting-the-chief)), typically after a muster release so it runs the new image and tool set. It takes **no agent**: the chief is the owner's lowest-id agent labelled `chief`, resolved among the owner's own agents only. Before anything is stopped it checks the Start would be allowed (the kind's credential). It then stops and starts the chief through the provisioner and **waits** (up to 4 minutes) for it to be running and ready on a **new** pod. Returns `{agent_id, agent, before:{status, pod, ready, image}, after:{…}, restarted: true}`, where `image` is the image the agent container runs, as the provisioner reports it. It **reports** the image and does not compare it with `MUSTER_AGENT_CC_IMAGE`; `muster-ops chief-restart` remains the check that the running image equals the configured one. Without a reading of the pod before the restart, a success also carries `new_pod_confirmed: false`. A tool error says what happened instead: not seen running on a new pod after the wait (with the time it really waited), a failed stop (*"it may be stopped"*), stopped but could not be started (*"start it from its agent page"*). **Refused while the chief is mid-turn** — a plugin message, kickoff or memo being delivered, or a chat turn running — unless `force: true`, which cuts that turn off exactly as the browser's Stop does. `force` never overrides another `chief_restart` or a chief replacement in progress. It asks **no phone confirmation**, from any machine, `force` included: a machine whose other owner-authority calls are step-up cards restarts the chief at once too ([mirroring.md](mirroring.md#chief_restart-is-not-gated)). Refused: an owner with no chief, a chief turned off, any argument but `force` (*"chief_restart takes no agent"*). **No audit row**, like `agent_destroy` and the browser's Stop/Start: the host, the session and the outcome are in muster's server log. Listed only with a provisioner wired. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `dispatch_request {target, prompt, model?, repo?, base?, task_id?, worker_pool?, cc_account?}` | With the chief's dispatch on (`MUSTER_CHIEF_DISPATCH_OWNERS` names the owner): **holds** a start of a new agent on the owner's behalf, and starts **nothing** — the first of the two verbs of [dispatch from your own session](chief.md#starting-an-agent-from-your-own-session). It runs the checks `agent_dispatch` runs that need no chief: the opt-in and the deployment; `target` (required, no default: `pod/claude-code`, or `pod/gateway` with `model`; `mirrored` and `host/…` targets refused as `agent_dispatch` refuses them); `model` only on `pod/gateway`, through `agent_dispatch`'s model check (a catalogue id or a display name naming exactly one model resolves to `openrouter/<id>`; anything else is refused with the closest ids); `prompt` (required without `task_id`, at most 8 KiB); `task_id` an open, ungated task of the owner's with no live agent; `repo` one of the owner's connected repositories; `worker_pool` and `cc_account` by `POST /api/agents`' own rules (`pod/claude-code` only, refused on `pod/gateway`; a pool name the create takes; an account among the owner's Claude accounts, omitted for muster's choice at the start); a `worker_pool` agent takes no `task_id` and **no `prompt`** (refused: it starts with no first turn, waiting for jobs, and a session may not give a pool's worker instructions — a pool may run its job turns without permission prompts or hold a private repository's mirror; it opens no pull request), and in a pool with a deploy key only that key's repository (the spec build's rule); and the owner's agent budget (the chief's caps). Returns `{hold_id, summary, expires_at, next}` (with `worker_pool` / `cc_account` when held): `summary` is the start in one sentence for the session to read back. The hold is a `chief.dispatch_held` audit row naming the host, the session, the target, the model, the worker pool and account when named, and the prompt's SHA-256. There is no idempotency key: the same request again files a second hold, which starts nothing and lapses after 15 minutes; any other argument (`request_key` included) is refused. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `dispatch_approve {hold_id}` | Starts **exactly** the start a `dispatch_request` held — once, within **15 minutes** of the request — through the same reservation, create and ledger as the chief's `agent_dispatch`, so the chief's caps apply and the start counts in its budget. Any of the owner's mirrored sessions may approve (the requesting one or another, on any of the owner's hosts); a session of another owner's reads the hold as missing. The agent's first message is the held prompt, fenced and marked as relayed from one of the owner's sessions, then (on a task) the task, then muster's rules, last; a pool worker gets no first message (a hold naming a pool and a prompt is refused here, before it is spent). The agent is created in the held `worker_pool` on the held `cc_account` (or muster's choice when none was held), and the answer and the approval row name both. A `chief.dispatch_approved` audit row names who approved and requested, the target, the model, the prompt's SHA-256 and the agent; the owner gets **one** notification (*"&lt;session&gt; dispatched &lt;agent&gt; (&lt;target&gt;, &lt;model&gt;)"*). Nothing is written in the chief's chat: the start is a reservation on the chief's ledger, so its budget's `live_agents` names the agent. Refused, each with its own sentence and nothing started: a hold already approved (*"a hold starts one agent, once"*), an expired one, a missing or another owner's one (*"no held dispatch …"*), a full budget, and a hold that can no longer start as held (the kind turned off, the repository disconnected, the task taken, the held Claude account no longer the owner's). Not offered, and unknown, to every dispatched agent, the chief included. |
 | `chief_ask {question, options?, route_id?, timeout_seconds?}` | Asks the owner's **chief** a question instead of the owner ([below](#asking-the-chief)). Returns `{id, status: "pending", expires_at, next}`. The session then calls `attention_wait {id}`, which ends `answered` with `answered_by` `chief` or `operator`, or `expired` once `timeout_seconds` pass (30 minutes when omitted; 60 s to 7 days, as for `attention_ask`). `route_id` names one of the owner's routes the question is about (another owner's route or a missing one: *"no such route: X"*). Refused when the owner has no chief. Not offered, and unknown, to every dispatched agent, the chief included. |
@@ -661,10 +690,9 @@ typed into the chat reaches muster only as a **Session waiting** item, which
 does not say what is being asked.
 
 Both runtimes' paragraphs then add, for `attention_ask`, the same `context`
-sentence; while attachments are on, Claude Code's also says to show files with `attachments: [paths in
-your working directory]` (its host uploads them; see
-[Attachments and context](#attachments-and-context)). An opencode session's
-attachments are not supported yet.
+sentence; while attachments are on, both also say to show files with
+`attachments: [paths in your working directory]` (their host uploads them; see
+[Attachments and context](#attachments-and-context)).
 
 An [officer](officers.md) instance gets `officerAttentionInstruction` in its
 place (`attentionInstructionFor`): follow its charter, and by default finish
@@ -703,9 +731,28 @@ ask carries the upload's id:
   file — is never sent. If the call fails after some of its files were
   uploaded — a later file refused, or muster refusing the ask — the host takes
   those uploads back (`DELETE /mirror/ask-attachments/<id>`, best effort). An older `muster-mirror` forwards
-  the paths unchanged, and muster refuses them saying to update it. A mirrored
-  opencode session's attachments are **not supported yet** (refused, saying
-  so: it has no pane to read a working directory from); that is a follow-up.
+  the paths unchanged, and muster refuses them saying to update it.
+- **A mirrored opencode session** names files by path the same way, with the
+  same confinement, limits, refusals and take-backs. Its host resolves them
+  against the directory **the host's opencode server records for the
+  session its call is bound to** (the session's `location.directory`, where
+  opencode runs that session's tools, read with the host's pair token). The
+  call is bound as every opencode call is
+  ([below](#mirrored-opencode-sessions)): by the session id it carries, to the
+  one window showing that session, or a subagent's root session. So a
+  subagent's child session gets its root's directory, never its own record.
+  Nothing else in the call is read for the directory, and neither is the
+  TUI's own working directory: a TUI started with a directory argument runs
+  its session there, not where the TUI was started. The uploads and the call
+  name the session by its key (`X-Muster-Agent-Session: opencode:<id>`), as
+  its call does. A host that cannot read that directory (opencode not paired,
+  the server unreachable, a session it records no absolute directory for)
+  refuses the attachments, and no ask is filed. The session id is the
+  caller's own claim, a selector and not a credential: a call that names
+  another of the host's bound opencode sessions acts as that session,
+  directory and all. That is the reach a Claude Code caller already has by
+  naming another pane. A `muster-mirror` older than this support refuses an
+  opencode session's attachments, saying so.
 - **A dispatched claude-code agent** runs `ccd ask-attach <path>` in its pod
   (the same confinement and the same open, against its workspace), which sends
   the file to `POST /agent/ask-attachments` with the agent's own token and
@@ -745,7 +792,9 @@ line; a control, format or bidi character is replaced) and refused past 500
 characters. Without it, muster stores a fallback read when the ask is filed:
 the session's focus title (`Working on: …`) and its last assistant message
 (`Last said: …`, at most 600 characters), with anything shaped like a secret
-redacted as a notification's text is. The two are never mixed: an ask that
+redacted as a notification's text is. A mirrored opencode session's fallback
+is read the same way: its focus title, and its last assistant message from its
+own window's view. The two are never mixed: an ask that
 gives a context stores only it, and the transcript is not read. Both are the
 asker's words: escaped on every page, and data, not instructions, in
 `attention_list`.
@@ -1011,7 +1060,7 @@ path: [Where the MCP secret is](features.md#where-the-mcp-secret-is)).
 
 | Tool | opencode | Why |
 |---|---|---|
-| `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. |
+| `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. Its `attachments` are uploaded by its host from the session's directory, and its `context` (or, without one, the fallback) is stored, as a Claude Code session's are ([Attachments and context](#attachments-and-context)). |
 | `notify_owner` | **offered** | A notification to the owner, labelled as the session ([push.md](push.md#an-agent-notifies-you)): an opencode agent the chief started on a host can say it is done. It decides nothing. |
 | `tasks_list`, `task_get`, `task_comment`, `task_set_status` | **offered** | Over the tasks that session created (a `created` link, which today only Claude Code's `muster task create` records, so usually none) and the task of its own running host dispatch. `in_progress` **claims nothing**, because a claim ends when its Claude session's window goes, which an opencode session never has. |
 | `attention_answer`, `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`, `plugin_draft_decide`, `plugin_outbound_batch_get`, `plugin_outbound_batch_decide`, `plugin_messages_list`, `plugin_message_route`, `agent_destroy`, `agents_list`, `chief_restart`, `dispatch_request`, `dispatch_approve` | refused | Each acts **as the operator**. Extending them to another runtime's sessions, often on other models, is a decision for the operator, not a default. |
@@ -1141,9 +1190,11 @@ sessions) add two things. Every other tool's description, and the
   call is refused, it reads the current definition, and it calls again.
 
 A host's `muster-mirror` (`-mcp-tools-refresh`, on by default) also re-reads
-the tool list every minute and sends `notifications/tools/list_changed` to its
-connected Claude Code sessions when the list changes, so they re-read it without
-reconnecting ([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
+the tool list every minute, and at once when it reconnects to muster. It sends
+`notifications/tools/list_changed` to each connected Claude Code session whose
+last list differs, so it re-reads it without reconnecting, and a session
+from before a mirror restart is made to initialize again
+([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
 refreshes the tool LIST. A definition already saved in a conversation is still
 recovered the way described above.
 

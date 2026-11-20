@@ -42,7 +42,7 @@ func teamRefused(why string) teamHostRule { return teamHostRule{why: why} }
 const (
 	whyOwnerAuthority = "an owner-authority decision (hostStepUpTools): a team decides through a member in muster's web UI, never through a host"
 	whyEstateRead     = "a read of the owner's whole estate: as the team it would show every team row to every session on the host"
-	whyPage           = "a team host's page would record no person as its creator (0162: only a team AGENT's page records who started it), so no member could manage it but a manager; team hosts make none yet"
+	whyPage           = "a team host's page would record no person as its creator (0165: only a team AGENT's page records who started it), so no member could manage it but a manager; team hosts make none yet"
 	whyConnectorG3    = "a host instance's connector tool: a team host officer that declares connectors is refused at boot (operator decision G3)"
 	whyOfficer        = "a team host officer instance's own (hostOfficerMirrorTool binds it to a recorded spawn)"
 )
@@ -76,12 +76,14 @@ var teamHostTools = map[string]teamHostRule{
 	officers.ToolContactsList: teamKept(whyOfficer),
 	officers.ToolContactNote:  teamKept(whyOfficer),
 
-	// Every owner-authority tool (all of hostStepUpTools).
+	// Every owner-authority tool: all of hostStepUpTools, and chief_restart,
+	// which the step-up gate exempts (an owner's session restarts their chief
+	// at once) but a team host is still refused, as before.
 	attentionAnswerTool:           teamRefused(whyOwnerAuthority),
 	connectorRequestDecideTool:    teamRefused(whyOwnerAuthority),
 	pluginDraftDecideTool:         teamRefused(whyOwnerAuthority),
 	agentDestroyTool:              teamRefused(whyOwnerAuthority),
-	chiefRestartTool:              teamRefused(whyOwnerAuthority),
+	chiefRestartTool:              teamRefused("an owner's restart of their own chief: a team decides through a member in muster's web UI, never through a host"),
 	dispatchApproveTool:           teamRefused(whyOwnerAuthority),
 	routeReplyToolName:            teamRefused(whyOwnerAuthority + "; and it relays text to an outside party as the team with no manager's approval (operator decision G2)"),
 	pluginMessageRouteTool:        teamRefused(whyOwnerAuthority),
@@ -107,6 +109,8 @@ var teamHostTools = map[string]teamHostRule{
 	pageShareRequestTool: teamRefused(whyPage),
 	pageResponsesTool:    teamRefused(whyPage),
 	pageLinkRevokeTool:   teamRefused(whyPage),
+	pageAssetUploadTool:  teamRefused(whyPage),
+	pageAssetDeleteTool:  teamRefused(whyPage),
 	// A host instance's connector tools (G3).
 	"connectors_list":     teamRefused(whyConnectorG3),
 	"connector_request":   teamRefused(whyConnectorG3),

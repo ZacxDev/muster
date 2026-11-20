@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/credentials"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -32,36 +33,51 @@ import (
 // AdminTeamsShares is what /admin/teams says a team shares. It replaced
 // phase 1's "Nothing is shared yet", which stayed on the page after phases 2
 // to 4 shipped and told an admin the opposite of what a member sees.
+//
+// The two server settings that decide where a team's agents run and work are
+// in the page's ⓘ (AdminTeamsSetup), never in the sentence (the jargon
+// audit's F108).
 const AdminTeamsShares = "A team owns shared work, and its members see it by role: viewers read, operators also file, " +
 	"comment and chat, managers also run the team's chief and agents. A team has its own tasks, a team chief " +
-	"(set up by a manager on the team's Chief page), the agents its chief starts, its officers, and its hosts' " +
-	"sessions. Its agents run on the server's Claude pool only when the team is listed in MUSTER_TEAMS_ON_SERVER_POOL, " +
-	"and work in your repositories only when it is listed in MUSTER_TEAMS_ON_GITHUB_APP; each team's line below says which."
+	"(set up by a manager on the team's Chief page), the agents its chief starts, its officers, and its computers' " +
+	"sessions. Each team's line below says whether its agents can run and work in your repositories."
 
-// adminTeamCredentials is team's line on /admin/teams: whether its agents
-// can run on the server's Claude pool (teamChiefRefusal: the same answer the
-// team's Chief page gives) and whether they may use the GitHub App. A team
-// LISTED on the server pool on a server with no Claude pool says so, rather
-// than "not on the server pool" (credentials.TeamPoolNotConfigured).
-func (s *Server) adminTeamCredentials(ctx context.Context, team int64) string {
-	pool := "Claude: on the server pool."
+// AdminTeamsSetup is the teams page's ⓘ: the settings that list a team.
+const AdminTeamsSetup = "MUSTER_TEAMS_ON_SERVER_POOL (its agents run on the server's Claude accounts)\n" +
+	"MUSTER_TEAMS_ON_GITHUB_APP (its agents work in your repositories through the GitHub App)"
+
+// adminTeamCredentials is team's line on /admin/teams, in words: whether its
+// agents can run on the server's Claude accounts (teamChiefRefusal: the same
+// answer the team's Chief page gives) and whether they may use the GitHub
+// App — and, for the line's ⓘ, the same facts in the server's own terms
+// (detail; the jargon audit's F109). A team LISTED on the server pool on a
+// server with no Claude pool says so, rather than "not on the server pool"
+// (credentials.TeamPoolNotConfigured).
+func (s *Server) adminTeamCredentials(ctx context.Context, team int64) (plain, detail string) {
+	pool, poolDetail := "Agents: run on the server's Claude accounts", "Claude: on the server pool."
 	switch why := s.teamChiefRefusal(ctx, team); {
 	case why == TeamChiefPoolRefusal && s.ext.Kinds != nil &&
 		s.ext.Kinds.Unavailable(ctx, team)[agents.KindClaudeCode] == credentials.TeamPoolNotConfigured:
-		pool = "Claude: listed on the server pool, but this server has no Claude pool configured, so its agents cannot run."
+		pool = "Agents: can't run — this server has no Claude accounts set up"
+		poolDetail = "Claude: listed on the server pool, but this server has no Claude pool configured, so its agents cannot run."
 	case why == TeamChiefPoolRefusal:
-		pool = "Claude: not on the server pool, so its agents cannot run."
+		pool = "Agents: can't run — the team isn't given the server's Claude accounts"
+		poolDetail = "Claude: not on the server pool, so its agents cannot run."
+	case why == TeamChiefKindRefusal:
+		pool, poolDetail = "Team chief: not available on this server", "Claude: "+why
+	case why == TeamChiefComposeRefusal:
+		pool, poolDetail = "Team chief: not available on this install", "Claude: "+why
 	case why != "":
-		pool = "Claude: " + why
+		pool, poolDetail = "Agents: can't run", "Claude: "+why
 	}
-	app := " GitHub App: not listed, so its agents work in no repository."
+	app, appDetail := "GitHub: not allowed for this team", "GitHub App: not listed, so its agents work in no repository."
 	switch {
 	case s.ext.GitHubApp == nil:
-		app = " GitHub App: none is configured."
+		app, appDetail = "GitHub: not connected", "GitHub App: none is configured."
 	case s.ext.GitHubAppTeams[team]:
-		app = " GitHub App: listed; a manager approves each repository."
+		app, appDetail = "GitHub: connected; a manager approves each repository", "GitHub App: listed; a manager approves each repository."
 	}
-	return pool + app
+	return pool + " · " + app, poolDetail + " " + appDetail
 }
 
 func (s *Server) registerAdminTeamRoutes(mux Mux) {
@@ -118,7 +134,8 @@ func (s *Server) renderAdminTeams(w http.ResponseWriter, r *http.Request, code i
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<form method="POST" action="/admin/teams" class="` + adminCard + `">
 <h1 class="text-base font-semibold text-fg">New team</h1>
-<p class="text-sm text-fg2" id="admin-teams-shares">` + AdminTeamsShares + `</p>
+<div class="flex items-center gap-1"><p class="text-sm text-fg2" id="admin-teams-shares">` + AdminTeamsShares + `</p>` +
+		ui.InfoSheetHTML(ui.SetupSheet("admin-teams-setup", "Which settings list a team", "A team is listed in these server settings:", AdminTeamsSetup, true)) + `</div>
 <label for="team-name" class="text-sm font-medium text-fg">Name</label>
 <input id="team-name" name="name" required maxlength="64" autocomplete="off" class="` + adminInput + `">
 <label for="team-manager" class="text-sm font-medium text-fg">First manager</label>
@@ -132,8 +149,11 @@ func (s *Server) renderAdminTeams(w http.ResponseWriter, r *http.Request, code i
 		id := strconv.FormatInt(t.ID, 10)
 		b.WriteString(`<li class="flex flex-col gap-2 rounded-lg border border-line px-3 py-3" data-team-id="` + id + `">
 <div class="flex flex-wrap items-baseline gap-2"><span class="font-semibold text-fg" data-team-name>` + html.EscapeString(t.Name) + `</span>
-<span class="text-xs text-fg2">#` + id + ` · created ` + fmtTime(t.CreatedAt) + `</span></div>`)
-		b.WriteString(`<p class="text-xs text-fg2" data-team-credentials>` + html.EscapeString(s.adminTeamCredentials(ctx, t.ID)) + `</p><ul class="flex flex-col gap-2">`)
+<span class="text-xs text-fg2">` + ui.PlainWhenHTML("Created ", t.CreatedAt, s.now()) + `</span></div>`)
+		plain, detail := s.adminTeamCredentials(ctx, t.ID)
+		b.WriteString(`<div class="flex items-center gap-1"><p class="text-xs text-fg2" data-team-credentials>` + html.EscapeString(plain) + `</p>` +
+			ui.InfoSheetHTML(ui.SetupSheet("admin-team-"+id+"-credentials", "Details of "+t.Name+"'s setup", "What the server's settings say:", detail, true)) +
+			`</div><ul class="flex flex-col gap-2">`)
 		in := map[int64]bool{}
 		if len(t.Members) == 0 {
 			b.WriteString(`<li class="text-sm text-fg2">No members.</li>`)

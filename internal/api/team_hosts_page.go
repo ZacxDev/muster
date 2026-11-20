@@ -72,8 +72,13 @@ const (
 	TeamHostsNoCodeHeld = "sends no attempt code (an older muster-mirror), so it cannot be confirmed: upgrade muster-mirror on that machine, or stop the live host"
 	TeamHostsNoToken    = "That token does not exist or is already revoked."
 	TeamHostsManager    = "Only a manager of the team manages its host tokens."
-	teamHostsThreat     = "A viewer reads everything on a team host's screens and transcripts, including any secret a command printed. An operator who types runs commands as the host's Unix user: an operator on a team host has a shell there. Team members have to trust each other."
-	teamHostsRotateOK   = "When an operator or a manager leaves, drops to viewer or is disabled, the team's host tokens are marked rotate: a copy they kept still connects, from any machine. Revoke the marked token and mint a new one."
+	// teamHostsLead is the page's trust warning in plain words, first (the
+	// jargon audit's F114); teamHostsDetail, the exact mechanism, is in its ⓘ.
+	teamHostsLead   = "Everyone in the team can see everything on these computers, including any secret a command printed; operators can type on them. Team members have to trust each other."
+	teamHostsDetail = "A team computer is a machine (or a Unix user on one) the team treats as shared, running its own muster-mirror with a team key. " +
+		"A viewer reads everything on its screens and transcripts. An operator who types runs commands as the host's Unix user: an operator on a team host has a shell there."
+	// teamHostsRotateOK is what to do when someone leaves (F115).
+	teamHostsRotateOK = "When someone leaves, drops to viewer or is disabled, replace each computer's connection key: a copy they kept still works, from any machine. The keys to replace are marked below."
 )
 
 // teamHostsWrite is the gate of the page and its writes: team {id}, managed
@@ -150,7 +155,8 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Team hosts · ` + html.EscapeString(name) + `</h1>
-<p class="text-sm text-fg2">A team host is a machine (or a Unix user on one) the team treats as shared, running its own muster-mirror with a team token. ` + html.EscapeString(teamHostsThreat) + `</p>
+<div class="flex items-center gap-1"><p class="text-sm text-fg2">` + html.EscapeString(teamHostsLead) + `</p>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "team-hosts-how", Label: "How team computers work", Heading: "How team computers work", Lead: teamHostsDetail, Inline: true}) + `</div>
 <p class="text-sm text-fg2">` + html.EscapeString(teamHostsRotateOK) + `</p></section>`)
 	if minted != "" {
 		b.WriteString(`<section class="` + adminCard + `" id="team-host-minted"><h2 class="text-base font-semibold text-fg">New team host token</h2>
@@ -218,9 +224,9 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 	b.WriteString(`</ul></section>
 <form method="POST" action="/teams/` + id + `/hosts" class="` + adminCard + `" data-step-up-form>
 <h2 class="text-base font-semibold text-fg">Add a team host</h2>
-<label for="team-host-name" class="text-sm font-medium text-fg">Host name (as its muster-mirror names it)</label>
+<label for="team-host-name" class="text-sm font-medium text-fg">Computer name</label>
 <input id="team-host-name" name="host" required autocomplete="off" class="` + adminInput + `">
-<button type="submit" class="` + adminButton + `">Mint a token</button></form>`)
+<button type="submit" class="` + adminButton + `">Create connection key</button></form>`)
 	// 🔴 "CONFIRM IT'S YOU" IN PLACE: minting, revoking and replacing are
 	// step-up gated (teamHostsFresh), so their forms ask before they submit on
 	// a stale sign-in (stepUpFormsHTML) — without it the only way past the 403

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -441,13 +442,12 @@ for (const vp of [
       // Start from no stored choice.
       await page.evaluate(() => { try { localStorage.clear(); } catch (e) {} });
       await page.reload();
-      const opener = page.locator('#chat-index-open');
       const sheet = page.locator('#chat-index');
       const msgsTab = sheet.locator('[role="tab"][data-tab="messages"]');
       const histTab = sheet.locator('[role="tab"][data-tab="focus"]');
       const msgsPanel = sheet.locator('#chat-index-tabs-panel-messages');
       const histPanel = sheet.locator('#chat-index-tabs-panel-focus');
-      await opener.click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet).toBeVisible();
       await expect(sheet.locator('[role="tablist"]')).toBeVisible();
       await expect(msgsTab).toHaveAttribute('aria-selected', 'true');
@@ -478,21 +478,21 @@ for (const vp of [
       await expect(histTab).toHaveAttribute('aria-selected', 'true');
       // Kept across a reload, for this window.
       await page.reload();
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet.locator('[role="tab"][data-tab="focus"]')).toHaveAttribute('aria-selected', 'true');
       await expect(sheet.locator('#chat-index-tabs-panel-focus')).toBeVisible();
       await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeHidden();
       // A click selects too, and is kept.
       await sheet.locator('[role="tab"][data-tab="messages"]').click();
       await page.reload();
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet.locator('[role="tab"][data-tab="messages"]')).toHaveAttribute('aria-selected', 'true');
     });
 
     test('the focus history scrolls back through every page, newest first, to its start', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(viewURL);
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await page.locator('#chat-index [role="tab"][data-tab="focus"]').click();
       const panel = page.locator('#chat-index-tabs-panel-focus');
       const items = panel.locator('[data-focus-history-item]');
@@ -524,7 +524,8 @@ for (const vp of [
     test("the dispatched agent's page has its focus history in a dialog", async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + agentName);
-      const open = page.locator('#focus-history-open');
+      // Focus history is an item of the header's ⋯ menu (opened first).
+      const open = await menuItem(page, '#focus-history-open');
       const dialog = page.locator('dialog#focus-history');
       await expect(open).toBeVisible();
       await expect(dialog).toBeHidden();
@@ -549,7 +550,7 @@ for (const vp of [
       await expect(dialog).toBeHidden();
       await expect(open).toHaveAttribute('aria-expanded', 'false');
       // The close button closes it too.
-      await open.click();
+      await (await menuItem(page, '#focus-history-open')).click();
       await expect(dialog).toBeVisible();
       await dialog.locator('[data-focus-history-close]').click();
       await expect(dialog).toBeHidden();
@@ -649,7 +650,7 @@ for (const vp of [
       const bad: string[] = [];
       for (const [label, url, ready] of [
         ['rendered view', viewURL, '#mv-log'],
-        ['agent page', origin + '/agents/' + agentName, '#focus-history-open'],
+        ['agent page', origin + '/agents/' + agentName, 'button[aria-label="New chat session"]'],
         // The Asks list, whose row carries a focus title's age.
         ['asks list', origin + '/attention', '[data-attention-item] [data-focus-age]'],
       ] as const) {

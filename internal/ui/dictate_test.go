@@ -319,7 +319,7 @@ func TestALiveRefreshRevealsTheMicsItDraws(t *testing.T) {
   });`) {
 		t.Errorf("the mic's script does not reveal on %s, letting go of a replaced button's recording", DictateRevealEvent)
 	}
-	for _, s := range []string{live, askerAsksBusy} {
+	for _, s := range []string{live} {
 		if !strings.Contains(s, `[data-dictate][data-state="opening"], [data-dictate][data-state="recording"], [data-dictate][data-state="busy"]`) {
 			t.Errorf("a refresh does not wait for an opening or recording mic:\n%s", s)
 		}

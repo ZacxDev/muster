@@ -116,17 +116,37 @@ func (l smallListener) Accept() (net.Conn, error) {
 // write timeout shortened to 300 ms and small socket buffers.
 func streamServer(t *testing.T, m Mirror) (*Server, *httptest.Server, *lockedLog) {
 	t.Helper()
-	saved := terminalWriteTimeout
-	terminalWriteTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { terminalWriteTimeout = saved })
+	return streamServerWith(t, m, nil)
+}
+
+// streamServerWith is streamServer whose every request carries set
+// (withSocketSettings), with a 300 ms write bound unless set names one: every
+// socket and write its handlers make — a beat included — use it, and no socket
+// from any other test's server can.
+func streamServerWith(t *testing.T, m Mirror, set *socketSettings) (*Server, *httptest.Server, *lockedLog) {
+	t.Helper()
+	if set == nil {
+		set = &socketSettings{}
+	}
+	if set.bound == 0 {
+		set.bound = 300 * time.Millisecond
+	}
 	lg := &lockedLog{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(lg, "", 0))
 	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Mirror: m})
-	ts := httptest.NewUnstartedServer(s.Handler())
+	ts := httptest.NewUnstartedServer(withSettingsHandler(s.Handler(), set))
 	ts.Listener = smallListener{ts.Listener}
 	ts.Start()
 	t.Cleanup(ts.Close)
 	return s, ts, lg
+}
+
+// withSettingsHandler is h with every request carrying set
+// (withSocketSettings).
+func withSettingsHandler(h http.Handler, set *socketSettings) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(withSocketSettings(r.Context(), set)))
+	})
 }
 
 func dialPage(t *testing.T, s *Server, ts *httptest.Server, path string) *websocket.Conn {
@@ -184,11 +204,15 @@ func disconnects(view string) map[string]float64 {
 // view's and the terminal's — fills the socket until a write hits
 // terminalWriteTimeout. That end is "timeout" (an error, logged for the
 // view), not the browser leaving.
-func TestAPageThatStopsReadingIsATimeout(t *testing.T) {
+func TestAPageThatStopsReadingIsATimeout(t *testing.T) { pageThatStopsReadingIsATimeout(t, 0) }
+
+// pageThatStopsReadingIsATimeout is TestAPageThatStopsReadingIsATimeout with
+// a heartbeat every beat (0: the default).
+func pageThatStopsReadingIsATimeout(t *testing.T, beat time.Duration) {
 	for _, c := range []struct{ view, path string }{{openViewMirror, viewSock}, {openViewTerminal, terminalSock}} {
 		t.Run(c.view, func(t *testing.T) {
 			m := &streamMirror{fakeMirror: &fakeMirror{online: true, v2: &fakeMirrorV2{}}, chunk: 64 << 10}
-			s, ts, lg := streamServer(t, m)
+			s, ts, lg := streamServerWith(t, m, &socketSettings{every: beat})
 			before := disconnects(c.view)
 			_ = dialPage(t, s, ts, c.path) // and never read
 			waitCount(t, c.view, telemetry.ReasonTimeout, before[telemetry.ReasonTimeout])
@@ -216,15 +240,21 @@ func TestAPageThatStopsReadingIsATimeout(t *testing.T) {
 // replaced so the stream's context stays live after the page has gone, and
 // no error frame or error line is produced for a page that is not there.
 func TestAPageThatLeftIsTheBrowserLeavingAtTheHandler(t *testing.T) {
+	pageThatLeftIsTheBrowserLeavingAtTheHandler(t, 0)
+}
+
+// pageThatLeftIsTheBrowserLeavingAtTheHandler is
+// TestAPageThatLeftIsTheBrowserLeavingAtTheHandler with a heartbeat every beat
+// (0: the default).
+func pageThatLeftIsTheBrowserLeavingAtTheHandler(t *testing.T, beat time.Duration) {
 	for _, c := range []struct{ view, path string }{{openViewMirror, viewSock}, {openViewTerminal, terminalSock}} {
 		t.Run(c.view, func(t *testing.T) {
-			if c.view == openViewMirror {
-				saved := viewCloseRead
-				viewCloseRead = func(_ *websocket.Conn, ctx context.Context) context.Context { return ctx }
-				t.Cleanup(func() { viewCloseRead = saved })
+			set := &socketSettings{every: beat}
+			if c.view == openViewMirror { // on this test's server only
+				set.closeRead = func(_ *websocket.Conn, ctx context.Context) context.Context { return ctx }
 			}
 			m := &streamMirror{fakeMirror: &fakeMirror{online: true, v2: &fakeMirrorV2{}}, chunk: 4 << 10}
-			s, ts, lg := streamServer(t, m)
+			s, ts, lg := streamServerWith(t, m, set)
 			before := disconnects(c.view)
 			page := dialPage(t, s, ts, c.path)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -256,11 +286,8 @@ func TestAPageThatLeftIsTheBrowserLeavingAtTheHandler(t *testing.T) {
 // connection is closed — so the NEXT batch write fails as if the page had
 // gone. The end is still a timeout: the socket remembers it stalled.
 func TestAnotherWritersTimeoutMakesTheNextWriteATimeout(t *testing.T) {
-	saved := terminalWriteTimeout
-	terminalWriteTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { terminalWriteTimeout = saved })
 	c := unreadPage(t)
-	live := context.Background()
+	live := withSocketSettings(context.Background(), &socketSettings{bound: 300 * time.Millisecond})
 	big := map[string]string{"type": "asks", "pad": strings.Repeat("z", 256<<10)}
 	var aerr error
 	for i := 0; i < 400 && aerr == nil; i++ {
@@ -299,9 +326,6 @@ func TestAnotherWritersTimeoutMakesTheNextWriteATimeout(t *testing.T) {
 // page's socket is closed". Here the order is fixed, not raced: the stream's
 // write has 30 s, the beat 100 ms.
 func TestAStreamWriteCutByAStalledBeatIsATimeout(t *testing.T) {
-	saved := terminalWriteTimeout
-	terminalWriteTimeout = 30 * time.Second
-	t.Cleanup(func() { terminalWriteTimeout = saved })
 	pad := strings.Repeat("z", 256<<10)
 	for _, w := range []struct {
 		name  string
@@ -319,7 +343,7 @@ func TestAStreamWriteCutByAStalledBeatIsATimeout(t *testing.T) {
 	} {
 		t.Run(w.name, func(t *testing.T) {
 			c := unreadPage(t)
-			live := context.Background()
+			live := withSocketSettings(context.Background(), &socketSettings{bound: 30 * time.Second})
 			streamErr := make(chan error, 1)
 			go func() {
 				var err error
@@ -358,9 +382,6 @@ func TestAStreamWriteCutByAStalledBeatIsATimeout(t *testing.T) {
 	}
 }
 
-// relayWrite tags the asks relay's write in TestABatchQueuedBehindTheAsksRelaysStallIsATimeout.
-type relayWrite struct{}
-
 // TestABatchQueuedBehindTheAsksRelaysStallIsATimeout: the asks relay writes
 // to the view's socket with terminalWriteJSON. When ITS write stalls on a page
 // that stopped reading while a batch is queued behind it, the relay's bound
@@ -369,49 +390,40 @@ type relayWrite struct{}
 // is the timeout, never the page gone: the stall must be noted BEFORE the
 // close can be seen, not after the relay's write returns (audit #713 F1).
 //
-// The relay is held after its write returns (pageWriteReturned) until the
+// The relay is held after its write returns (its writeReturns seam) until the
 // batch has failed, so a note written only then is too late, every run.
 func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
-	saved := terminalWriteTimeout
-	terminalWriteTimeout = 30 * time.Second // the batch's own bound, never reached
-	t.Cleanup(func() { terminalWriteTimeout = saved })
 	c := unreadPage(t)
-	live := context.Background()
+	// The batch's own bound, never reached.
+	live := withSocketSettings(context.Background(), &socketSettings{bound: 30 * time.Second})
 	batchErr, batchFailed := make(chan error, 1), make(chan struct{})
-	savedHook := pageWriteReturned
-	pageWriteReturned = func(ctx context.Context) {
-		if ctx.Value(relayWrite{}) == nil {
-			return
-		}
-		select {
-		case <-batchFailed:
-		case <-time.After(10 * time.Second):
-		}
-	}
 	relayWriting := make(chan struct{})
-	savedStart := pageWriteStarting
-	pageWriteStarting = func(ctx context.Context) {
-		if ctx.Value(relayWrite{}) != nil {
-			close(relayWriting)
-		}
+	// The seams ride on the relay's context only, so only its write runs them.
+	relaySeams := &socketSettings{
+		bound: 30 * time.Second, // as the batch's: only the relay's 2 s context bounds it
+		writeReturns: func() {
+			select {
+			case <-batchFailed:
+			case <-time.After(10 * time.Second):
+			}
+		},
+		writeStarts: func() { close(relayWriting) },
+		// And the relay's stall timer is held — until the batch has failed, or
+		// 300 ms, well inside stallGrace — before it notes and closes: a close
+		// by anything else at the bound (coder/websocket's own, on the write's
+		// context) is then seen by the batch with no note, every run. Only the
+		// relay's write can stall here: the batch's bound is 30 s.
+		stallFiring: func() {
+			select {
+			case <-batchFailed:
+			case <-time.After(300 * time.Millisecond):
+			}
+		},
 	}
-	// And the relay's stall timer is held — until the batch has failed, or
-	// 300 ms, well inside stallGrace — before it notes and closes: a close by
-	// anything else at the bound (coder/websocket's own, on the write's
-	// context) is then seen by the batch with no note, every run. Only the
-	// relay's write can stall here: the batch's bound is 30 s.
-	savedFiring := stallFiring
-	stallFiring = func() {
-		select {
-		case <-batchFailed:
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-	t.Cleanup(func() { pageWriteReturned, pageWriteStarting, stallFiring = savedHook, savedStart, savedFiring })
 
 	// The relay: one frame far larger than the socket's buffers, so it holds
 	// the write lock mid-frame, bounded at 2 s.
-	rctx, rcancel := context.WithTimeout(context.WithValue(live, relayWrite{}, true), 2*time.Second)
+	rctx, rcancel := context.WithTimeout(withSocketSettings(live, relaySeams), 2*time.Second)
 	defer rcancel()
 	relayErr := make(chan error, 1)
 	go func() {
@@ -419,7 +431,11 @@ func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
 	}()
 	// The batches, once the relay is writing: small, so they cannot fill the
 	// socket themselves; one ends up queued behind the relay's frame.
-	<-relayWriting
+	select {
+	case <-relayWriting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the relay's write never started (its writeStarts seam never ran)")
+	}
 	go func() {
 		var err error
 		for err == nil {
@@ -460,9 +476,7 @@ func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
 //
 // Red at dc6b8ace (the bridge ended at 4.1 s).
 func TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout(t *testing.T) {
-	savedT, savedI := terminalWriteTimeout, terminalPingInterval
-	terminalWriteTimeout, terminalPingInterval = 10*time.Second, 100*time.Millisecond
-	t.Cleanup(func() { terminalWriteTimeout, terminalPingInterval = savedT, savedI })
+	set := &socketSettings{bound: 10 * time.Second, ping: 100 * time.Millisecond}
 	c := unreadPage(t) // the page never reads, so never answers a ping
 	attach := func(ctx context.Context, _ io.Reader, _ io.Writer, _ <-chan provision.TermSize) error {
 		<-ctx.Done() // an idle terminal: no output, so the ping is the only writer
@@ -471,7 +485,7 @@ func TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout(t *testing.T) {
 	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		done <- bridgeTerminal(context.Background(), log.New(io.Discard, "", 0), c, "", false, true, provision.TermSize{}, false, attach)
+		done <- bridgeTerminal(withSocketSettings(context.Background(), set), log.New(io.Discard, "", 0), c, "", false, true, provision.TermSize{}, false, attach)
 	}()
 	select {
 	case <-done:
@@ -520,11 +534,15 @@ func unreadPage(t *testing.T) *websocket.Conn {
 // That is a timeout too — not the browser leaving, which is what the bridge's
 // context ending otherwise means.
 func TestAnIdleTerminalWhosePageStoppedAnsweringIsATimeout(t *testing.T) {
-	saved := terminalPingInterval
-	terminalPingInterval = 100 * time.Millisecond
-	t.Cleanup(func() { terminalPingInterval = saved })
+	idleTerminalWhosePageStoppedAnsweringIsATimeout(t, 0)
+}
+
+// idleTerminalWhosePageStoppedAnsweringIsATimeout is
+// TestAnIdleTerminalWhosePageStoppedAnsweringIsATimeout with a heartbeat every
+// beat (0: the default).
+func idleTerminalWhosePageStoppedAnsweringIsATimeout(t *testing.T, beat time.Duration) {
 	m := &streamMirror{fakeMirror: &fakeMirror{online: true}, chunk: 16, idle: true}
-	s, ts, _ := streamServer(t, m)
+	s, ts, _ := streamServerWith(t, m, &socketSettings{every: beat, ping: 100 * time.Millisecond})
 	before := disconnects(openViewTerminal)
 	_ = dialPage(t, s, ts, terminalSock) // and never reads, so never answers a ping
 	waitCount(t, openViewTerminal, telemetry.ReasonTimeout, before[telemetry.ReasonTimeout])

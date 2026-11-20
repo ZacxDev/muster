@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
@@ -174,8 +175,7 @@ const officerChatTurnSlack = 2 * time.Minute
 
 // Turn implements officers.ChatLanes: one turn in the chat's lane, recorded on
 // its session (the user turn once the lane took it; the reply when there is
-// one). A turn ccd refused before typing anything (agentgateway.Unsent: 409
-// busy, 503 not_ready, 503 capacity) is officers.ErrChatLaneUnavailable and is
+// one). A turn ccd refused before typing anything (chatTurnError) is
 // recorded nowhere.
 func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, chatID, text string) (string, error) {
 	s := l.s
@@ -203,22 +203,108 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 		defer s.OutcomeHold(a)()
 		return s.ext.Gateway.Chat(tctx, a, sess.SessionKey, text, nil)
 	}()
-	switch unsent := agentgateway.Unsent(err); unsent {
-	case "":
-	case agentgateway.UnsentBusy, agentgateway.UnsentNotReady, agentgateway.UnsentCapacity:
-		// Passes by itself: another turn, a CLI starting, every lane busy.
-		return "", fmt.Errorf("%w (%s)", officers.ErrChatLaneUnavailable, unsent)
-	default:
-		// Does not pass by itself (unresolved, unauthorized, rejected, never
-		// connected): a failure the runner backs off from.
-		return "", fmt.Errorf("%w (%s)", officers.ErrChatLaneBroken, unsent)
+	cerr, unsent := chatTurnError(err)
+	if unsent {
+		return "", cerr
 	}
 	store := context.WithoutCancel(octx)
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: text})
 	if reply != "" {
 		_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 	}
-	return reply, err
+	return reply, cerr
+}
+
+// chatTurnError is a chat turn's gateway error as the runner reads it, and
+// whether nothing was typed (unsent: the turn is recorded nowhere):
+//
+//   - a refusal that passes by itself (agentgateway.Unsent: 409 busy, 503
+//     not_ready, 503 capacity): officers.ErrChatLaneUnavailable, unsent;
+//   - 🔴 a 409 `rate_limited` — a pane parked on the CLI's usage-limit menu,
+//     which Unsent reads as busy so a deliverer queues it again — is NOT
+//     busy: busy passes within a turn, the limit lasts until its reset. It is
+//     ErrChatLaneUnavailable AND officers.ErrChatRateLimited, unsent, so the
+//     runner backs off and then tells the member;
+//   - every other Unsent reason (unresolved, unauthorized, rejected, never
+//     connected): officers.ErrChatLaneBroken, unsent;
+//   - a typed turn that failed `rate_limited` (ccd's 429):
+//     officers.ErrChatRateLimited, wrapping err;
+//   - either rate limit ALSO wraps officers.ErrChatUsageLimit when it is the
+//     account's usage limit (chatTurnUsageLimit) — the only one the runner
+//     tells the member is "at their usage limit"; a transient 429 is not;
+//   - anything else: err as it is (nil for a turn that answered).
+func chatTurnError(err error) (error, bool) {
+	limited := chatTurnRateLimited(err)
+	limitErr := officers.ErrChatRateLimited
+	if limited && chatTurnUsageLimit(err) {
+		limitErr = fmt.Errorf("%w: %w", officers.ErrChatRateLimited, officers.ErrChatUsageLimit)
+	}
+	switch unsent := agentgateway.Unsent(err); unsent {
+	case "":
+	case agentgateway.UnsentBusy, agentgateway.UnsentNotReady, agentgateway.UnsentCapacity:
+		if limited {
+			return fmt.Errorf("%w: %w (nothing was typed): %v%s", officers.ErrChatLaneUnavailable, limitErr, err, rateLimitDetail(err)), true
+		}
+		// Passes by itself: another turn, a CLI starting, every lane busy.
+		if unsent == agentgateway.UnsentBusy {
+			// A turn runs in the lane (or its pane shows a dialog): the
+			// runner waits a turn in flight out (officers.ErrChatLaneBusy).
+			return fmt.Errorf("%w: %w (%s)", officers.ErrChatLaneUnavailable, officers.ErrChatLaneBusy, unsent), true
+		}
+		return fmt.Errorf("%w (%s)", officers.ErrChatLaneUnavailable, unsent), true
+	default:
+		// Does not pass by itself (unresolved, unauthorized, rejected, never
+		// connected): a failure the runner backs off from.
+		return fmt.Errorf("%w (%s)", officers.ErrChatLaneBroken, unsent), true
+	}
+	if err != nil && limited {
+		return fmt.Errorf("%w: %w%s", limitErr, err, rateLimitDetail(err)), false
+	}
+	return err, false
+}
+
+// rateLimitDetail is the runtime's own message of a typed failure, as
+// " (<message>)" — where the CLI states its reset ("resets Nov 23, 1am
+// (UTC)"), which the runner quotes to the member. 🔴 err's text alone is not
+// enough: a RuntimeError's Error() carries a snippet of the body, which can be
+// cut short or empty, and the message is what ccd states the reset in.
+func rateLimitDetail(err error) string {
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) || rt.Message == "" {
+		return ""
+	}
+	return " (" + rt.Message + ")"
+}
+
+// chatTurnRateLimited reports whether err is the runtime's typed
+// `rate_limited` (cmd/ccd failure.go): a 429 for a turn the account's limit
+// failed, or a 409 from a pane parked on the usage-limit menu.
+func chatTurnRateLimited(err error) bool {
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && rt.Type == ccpool.FailureRateLimited
+}
+
+// chatTurnUsageLimit reports whether err, a chatTurnRateLimited, is the
+// account's USAGE LIMIT rather than a transient request rate limit — read
+// from the typed failure, never its text:
+//
+//   - ccd's `usage_limit` (agents.RuntimeError.UsageLimit), which ccd sets
+//     from the CLI's own limit text or its usage-limit menu
+//     (cmd/ccd classifyAPIError, limitMenuFailure);
+//   - or the 409 itself: ccd answers `rate_limited` with a 409 only for a
+//     pane parked on the usage-limit menu, so a ccd from before the field
+//     still reads as a usage limit there.
+//
+// 🔴 NOT THE CODE: the CLI codes a transient "Request rate limited" 429
+// `rate_limit` exactly like a usage limit, so a code check would tell the
+// member the accounts are at their limit for a passing throttle.
+//
+// The rule is ccpool.AccountFailure's — the same one the account pool marks
+// and the failover moves on — so the member is told "at their usage limit"
+// exactly when the account was marked.
+func chatTurnUsageLimit(err error) bool {
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status) == ccpool.FailureRateLimited
 }
 
 // officerChatTurnContext is the context a chat turn on agent a's session sess
@@ -319,7 +405,8 @@ func officerCallerName(ctx context.Context, a agents.Agent) string {
 
 // chatLaneQueueRefusal is the refusal, from a chat lane, of a queue verb
 // (claim, heartbeat, complete, release), a verb that ends its holder's lease
-// (an ask), or a ship action (bound to the primary's item, or a write to
+// (an ask), the rollout evidence attach (the sweep's, which a chat's would
+// replace on HQ's confirm step), or a ship action (bound to the primary's item, or a write to
 // GitHub): a chat session works its chat, and muster holds and ends its
 // chat's item.
 func chatLaneQueueRefusal(tool, chat string) string {

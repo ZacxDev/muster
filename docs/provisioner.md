@@ -241,8 +241,8 @@ those agents with a build that still has the kind before upgrading.
   - On Kubernetes it requires both `MUSTER_AGENT_NETPOL_FROM_*` variables.
 
   **The account pool.** Each new agent is assigned an account: first excluding
-  accounts marked `auth_failed`, then any account still cooling down after a
-  `rate_limited` (until the reset time the CLI stated, else
+  accounts marked `auth_failed`, then any account still cooling down after
+  hitting its usage limit (a transient 429 marks nothing; until the reset time the CLI stated, else
   `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN`, default `1h`) ranked last — but still
   chosen when it is all there is — then the least recently rate-limited, then
   the one with the fewest live agents. A pin at dispatch overrides this. An agent
@@ -451,7 +451,7 @@ task routing, a chief that runs as a gateway, and one that cannot deliver a
 first turn at all (where creating it stopped, then Start, still works).
 
 - **Only a personal token of scope `agent-create` reaches it.** Mint one at
-  `/account/tokens` (**Create agents**). A full-access token is refused (403),
+  `/account/tokens` (**Start agents only**). A full-access token is refused (403),
   so the CLI's ordinary token cannot create agents; an `agent-create` token
   reaches nothing else; the shared hook secret is refused too.
 - **The body** is JSON: `kind`, `repo`, `repo_branch`, `model`, `prompt` (the

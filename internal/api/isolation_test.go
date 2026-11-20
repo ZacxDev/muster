@@ -39,6 +39,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -300,18 +301,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/chief/fleet":         classList,
 	"GET /ui/chief/fleet/session": classList,
 	"POST /ui/chief/fleet/chat":   classList,
-	"GET /ui/connector-requests":  classList,
-	"GET /ui/connectors":          classList,
-	"GET /ui/connectors/new":      classList,
-	"GET /ui/notifications":       classList,
-	"GET /ui/tags":                classList,
-	"GET /ui/tasks":               classList,
-	"GET /ui/tasks/new":           classList,
-	"GET /ui/tasks/review-count":  classList,
-	"POST /chief/provision":       classList,
-	"POST /connectors":            classList,
-	"POST /tasks":                 classList,
-	"POST /tasks/merge":           classList, // the form names A's task as the loser
+	// Fleet proposals' cards (fleet_cards.go): each acts on the principal's
+	// own fleet_actions row by id (forced row-level security: another owner's
+	// id is not found), and the dialog route reads nothing.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": classParam,
+	"POST /ui/chief/fleet/bulk":                classList,
+	"GET /ui/chief/fleet/stepup":               classList,
+	"GET /ui/connector-requests":               classList,
+	"GET /ui/connectors":                       classList,
+	"GET /ui/connectors/new":                   classList,
+	"GET /ui/notifications":                    classList,
+	"GET /ui/tags":                             classList,
+	"GET /ui/tasks":                            classList,
+	"GET /ui/tasks/new":                        classList,
+	"GET /ui/tasks/review-count":               classList,
+	"POST /chief/provision":                    classList,
+	"POST /connectors":                         classList,
+	"POST /tasks":                              classList,
+	"POST /tasks/merge":                        classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,
@@ -334,6 +341,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/agents/{name}/chat-log":           classParam,
 	"GET /ui/dispatch-card":                    classParam,
 	"GET /ui/agents/{name}/task":               classParam,
+	"GET /ui/agents/{name}/open-button":        classParam, // by name, as the viewer (GetByName, then the pages store)
+	"GET /ui/agents/{name}/session-pages":      classParam,
 	"GET /ui/connectors/{name}/rotate":         classParam,
 	"GET /ui/tasks/{id}/card":                  classParam,
 	"GET /ui/tasks/{id}/edit":                  classParam,
@@ -477,7 +486,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/mcp": classMirrorHost,
 	// A session's ask attachment, sent by its host (ask_media.go): the host's
 	// token, a session it lists; it names no object.
-	"POST /mirror/ask-attachments": classMirrorHost,
+	"POST /mirror/ask-attachments":   classMirrorHost,
+	"POST /mirror/pages/{id}/assets": classMirrorHost,
 	// …and its take-back (the host owner's own upload, by id, under row-level
 	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
 	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
@@ -489,10 +499,12 @@ var isolationClasses = map[string]routeClass{
 	// JSON API is a personal token only; the runner door is a runner token
 	// only. Each names A's job (or A's runner token) by id.
 	"GET /flows":                            classList,
-	"POST /flows/jobs":                      classList,
 	"POST /flows/runner-tokens":             classList,
 	"POST /flows/jobs/{id}/cancel":          classParam,
 	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	// Running a task by hand from the page is an admin's (requireAdminRole,
+	// operator decision 2026-11-18); connecting one's own browser is not.
+	"POST /flows/jobs": classAdminOnly,
 	// An agent's request is decided by its owner only (PR 4).
 	"POST /flows/requests/{id}/approve": classParam,
 	"POST /flows/requests/{id}/deny":    classParam,
@@ -543,6 +555,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /rules/{id}/delete":  classParam,
 	"GET /usage":               classList,
 	"GET /answers":             classList,
+	// The morning report (morning_report.go): the caller's own report; a
+	// date names a day, not an object, and is read under row-level security.
+	"GET /morning":        classList,
+	"GET /morning/{date}": classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
@@ -639,8 +655,12 @@ var isolationClasses = map[string]routeClass{
 	// window from a ghost even to A, and the walk holds it to the stricter
 	// rule instead: no identifier of A's in an outsider's answer.
 	"GET /ui/mirror/preview-button": classMirror,
-	"GET /mirror/view/ws":           classMirror,
-	"POST /mirror/view/send":        classMirror,
+	// Its panel's Pages tab: the same address; the pages are the viewer's
+	// own rows (the store's row-level security), and an outsider's request
+	// for A's window answers the empty list, as one for a ghost does.
+	"GET /ui/mirror/session-pages": classMirror,
+	"GET /mirror/view/ws":          classMirror,
+	"POST /mirror/view/send":       classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
 	// Drag-to-scroll: the same address fields, plus `lines`.
@@ -706,7 +726,7 @@ var isolationClasses = map[string]routeClass{
 	// The Log tab's panel reads the caller's own asks (row-level security;
 	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
 	"GET /attention/log": classList,
-	// A session page's asks block names its asker by query (?agent=): A's
+	// A session page's asks badge names its asker by query (?from=agent:): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":      classParam,
 	"GET /attention/open/{key}": classParam,
@@ -794,6 +814,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/{officer}/resume":                  classParam,
 	"POST /officers/{officer}/mode":                    classParam,
 	"POST /officers/{officer}/run":                     classParam,
+	"POST /officers/{officer}/raise-cap":               classParam,
 	"POST /officers/{officer}/delete":                  classParam,
 	"POST /officers/{officer}/schedules":               classParam,
 	"POST /officers/{officer}/schedules/{name}/delete": classParam,
@@ -803,6 +824,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /pages/{id}/responses/{rid}/raw":              classParam,
 	"POST /pages/{id}/versions/{v}/submit":             classParam,
 	"POST /pages/{id}/versions/{v}/upload":             classParam,
+	"GET /pages/{id}/versions/{v}/assets/{asset}":      classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
 	"POST /pages/{id}/share":                           classParam,
 	"POST /pages/{id}/share/rotate":                    classParam,
@@ -814,16 +836,22 @@ var isolationClasses = map[string]routeClass{
 	"GET /s/{token}/content":                           classPublic,
 	"POST /s/{token}/submit":                           classPublic,
 	"POST /s/{token}/upload":                           classPublic,
+	"GET /s/{token}/assets/{asset}":                    classPublic,
 
 	// Needs you (officer_needs_you.go): {item} is a refusal of A's officer.
-	"POST /officers/{officer}/refusals/{item}/refile": classParam,
-	"POST /officers/{officer}/refusals/{item}/drop":   classParam,
+	"POST /officers/{officer}/refusals/{item}/refile":    classParam,
+	"POST /officers/{officer}/refusals/{item}/drop":      classParam,
+	"POST /officers/{officer}/chat":                      classParam,
+	"POST /officers/{officer}/chat/cards/{card}/approve": classParam,
+	"POST /officers/{officer}/chat/cards/{card}/reject":  classParam,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
+	// The morning report: A's newest report names the canary.
+	"GET /morning",
 	// Host officer spawns (phase 3): A's spawn's host is the canary.
 	"GET /officers/spawns",
 	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
@@ -852,9 +880,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block and A's ask's own page show
-	// A's canary-carrying question. (The tap on A's ask opens that page, by
-	// its id — controlMarkers has its own control.)
+	// The attention asks: A's agent's asks badge (its link names the agent)
+	// and A's ask's own page (its canary-carrying question) show A's data.
+	// (The tap on A's ask opens that page, by its id — controlMarkers has its
+	// own control.)
 	"GET /attention/asker", "GET /attention/asks/{id}",
 	// The attention summary through A's personal token: A's canary-carrying
 	// ask is on it (its why is the question).
@@ -1362,7 +1391,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
 		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, pageResp: aPageResp.ID, team: w.aTeam,
-		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID}
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID, morningDate: isoMorningDate}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1374,7 +1403,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
 		page: ghostID, pageLink: ghostID, pageDel: ghostID, pageResp: ghostID,
-		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID}
+		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
+	// The morning report (0161): A's report of isoMorningDate names the canary
+	// in a done line, so A's own page is told from the ghost day's by its body.
+	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
+		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTaskChanged, Label: w.canary + " morning"}}}}); err != nil {
+		t.Fatalf("A's morning report: %v", err)
+	}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1460,6 +1495,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
+	// The morning report (0161): A's report is a real object B must not reach.
+	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
 	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
@@ -1695,6 +1732,9 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	// morningDate is a day with a morning report (morning_report.go): A's
+	// carries the canary.
+	morningDate string
 	// The built-in officer store (officer_admin.go): a type key, an officer
 	// id (<type>:a) and an item of it.
 	officerType, officer                      string
@@ -1865,8 +1905,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path = strings.NewReplacer("{officer}", url.PathEscape(o.officer), "{name}", "nightly").Replace(path)
 	}
 	if path == "/attention/asker" {
-		// The asks block of A's agent (the agent page's), by name.
-		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
+		// The asks badge of A's agent (the agent page's), by name.
+		path += "?" + askerRef{agent: o.agentName}.query()
 	}
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
@@ -1881,12 +1921,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1", "{rid}", strconv.FormatInt(o.pageResp, 10),
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
-		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload,
+		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload, "{date}", o.morningDate,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" || path == "/ui/mirror/session-pages" ||
 		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
 		q := url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}
 		if o.mirrorOwner != 0 {
@@ -2158,12 +2198,29 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
+	// with fleet proposals off, so every id answers 404 for A and the ghost
+	// alike. That another owner's tap on A's proposal decides nothing and sends
+	// nothing (forced row-level security on fleet_actions) is
+	// TestAnotherOwnersProposalCannotBeDecided's.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": "fleet proposals off in the walk: controlled in TestAnotherOwnersProposalCannotBeDecided",
 	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
 	// session the host lists, which the walk names none of, so A's own call and
 	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the
 	// host's take-back revokes its owner's upload, and another owner's host
 	// naming that id gets 404 and leaves it live.
 	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
+	// A page's author asset (page_assets.go). The upload route takes a page
+	// THE CALLER MADE (the host whose session is listed), which
+	// the walk's credentials are not; the read names an asset id a version of
+	// the page must use, which the walk cannot name. Each is controlled in its
+	// own test: the author adds, another creator of the same owner and another
+	// owner get 404 (TestOnlyThePagesAuthorAddsAnAsset; another owner's host of
+	// the same name, TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost),
+	// and the owner reads an asset while another owner's session gets 404
+	// (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse).
+	"POST /mirror/pages/{id}/assets":              "needs a listed session of the page's host: controlled in TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost",
+	"GET /pages/{id}/versions/{v}/assets/{asset}": "an asset id the walk cannot name: controlled in TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
 	// so A's own PUT and a PUT naming a ghost both succeed — there is no
 	// "someone else's object" for the status to tell apart. That B's PUT of A's
@@ -2192,10 +2249,11 @@ var sideEffectControlled = map[string]string{
 	// Its control is pages_pg_test.go: the SAME routes with A's live token serve
 	// A's page (and record A's responses), another user's token serves only its
 	// own page, and an unknown, pending, denied or revoked token is that 404.
-	"GET /s/{token}":         "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"GET /s/{token}/content": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/submit": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/upload": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}":                "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/content":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/submit":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/upload":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/assets/{asset}": "a share link: its token is the credential no walker holds; controlled in page_assets_pg_test.go (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse)",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
 	// only (requireServiceToken), which acts as user 1, so no credential of a
 	// member — A's included — opens it, and A's answer is the ghost's 401. Its
@@ -3080,7 +3138,7 @@ func teamPageRouteList(routes []string) []string {
 	return out
 }
 
-// isoTeamPage is a page the TEAM owns (migration 0162), made by its agent on
+// isoTeamPage is a page the TEAM owns (migration 0165), made by its agent on
 // A's say-so (created_by_user = A), titled with the team's canary, with two
 // versions, a live link and a stranger's response.
 type isoTeamPage struct{ id, link, resp int64 }
@@ -3152,7 +3210,7 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 	// The team's host is online for the whole walk, every route included —
 	// the sidebar's too, which lists it to members only (VisibleHosts).
 	teamHost := w.objTeamHost(team, teamCanary)
-	// The team's page (0162), made on A's say-so: B is never its creator.
+	// The team's page (0165), made on A's say-so: B is never its creator.
 	tPage := w.addTeamPage(t, team, w.a.uid, teamCanary)
 	tPageObjs := w.objA
 	tPageObjs.page, tPageObjs.pageDel, tPageObjs.pageLink, tPageObjs.pageResp = tPage.id, tPage.id, tPage.link, tPage.resp
@@ -3198,7 +3256,7 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 				}
 			}
 		}
-		// THE TEAM PAGE LEG (0162): every page route, naming the TEAM's page.
+		// THE TEAM PAGE LEG (0165): every page route, naming the TEAM's page.
 		// A non-member sees it on no route; a member (viewer and up) reads it;
 		// and B — never its creator, a manager included — changes nothing of
 		// what its creator manages (its version, title), and only a manager
@@ -3216,7 +3274,7 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		if role != "none" && pageSaw == 0 {
 			t.Errorf("CONTROL: B as the team's %s saw the team's PAGE on no page route: the team-page leg is not reaching it", role)
 		}
-		// A MANAGER may always revoke a link (0162, operator decision Q1), so
+		// A MANAGER may always revoke a link (0165, operator decision Q1), so
 		// the walk's revoke route takes the manager's link away — and that is
 		// all it changes; every other role changes nothing.
 		want := pageBefore
@@ -3245,3 +3303,6 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		}
 	}
 }
+
+// isoMorningDate is the day of A's morning report in the isolation walk.
+const isoMorningDate = "2001-02-03"

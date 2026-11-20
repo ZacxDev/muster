@@ -36,9 +36,11 @@ var ownerAuthorityCallers = map[string][]string{
 // ownerAuthorityNotGated is the owner-authority tools the step-up gate does
 // NOT gate, each a decision: the reads of the owner's estate (refused to a
 // spawned agent's session outright, answered at once for the owner's own),
-// and dispatch_request, which files a hold that starts nothing
-// (dispatch_approve, gated, is the decision; its card shows the hold).
-var ownerAuthorityNotGated = []string{agentsListTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
+// dispatch_request, which files a hold that starts nothing (dispatch_approve,
+// gated, is the decision; its card shows the hold), and chief_restart
+// (operator decision "fully ungated": a restart of the owner's own chief runs
+// at once on every machine; its accepted risk is in hostStepUpExempt).
+var ownerAuthorityNotGated = []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
 	pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
 
 // ownerAuthoritySpawnRefused is the set every caller of ownersOwnSession
@@ -104,13 +106,13 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 			t.Errorf("not-gated tool %s is served by no function that checks ownersOwnSession", n)
 		}
 	}
-	gatedWant := []string{agentDestroyTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool, dispatchApproveTool,
+	gatedWant := []string{agentDestroyTool, attentionAnswerTool, connectorRequestDecideTool, dispatchApproveTool,
 		pluginDraftDecideTool, pluginMessageRouteTool, pluginOutboundBatchDecideTool, pluginRequestDecideTool, routeReplyToolName}
 	slices.Sort(gatedWant)
 	if g := hostStepUpToolNames(); !slices.Equal(g, gatedWant) {
 		t.Errorf("the gated set = %v, want %v", g, gatedWant)
 	}
-	notGatedWant := []string{agentsListTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
+	notGatedWant := []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
 		pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
 	if !slices.Equal(slices.Sorted(slices.Values(ownerAuthorityNotGated)), slices.Sorted(slices.Values(notGatedWant))) {
 		t.Errorf("the not-gated set = %v, want %v", ownerAuthorityNotGated, notGatedWant)

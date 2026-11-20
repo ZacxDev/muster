@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A TEAM'S PAGES, SEEN BY THE TEAM (migration 0162; docs/pages.md "A team's
+// A TEAM'S PAGES, SEEN BY THE TEAM (migration 0165; docs/pages.md "A team's
 // pages"). A page a team-owned agent makes belongs to the team; every member
 // of the team (viewer and up) reads it through a door where a person is
 // present (the browser session, a paired phone: authz.Principal.TeamScope),
@@ -31,7 +31,7 @@ import (
 //     stored as the person who sends it, and a team's page keeps only files
 //     the team owns: its quota and its delete read them as the team).
 //
-// The database holds every statement to the same rule (0162's
+// The database holds every statement to the same rule (0165's
 // muster_page_manager and guards); this gate is what answers with words, and
 // what the screen's controls follow (renderPageDetail draws none of them for
 // a member who may not use them).
@@ -67,15 +67,18 @@ var teamPageRoutes = map[string]teamPageRule{
 	"GET /pages/{id}/preview":              teamPageRead,
 	"GET /pages/{id}/responses/{rid}/raw":  teamPageRead,
 	"GET /pages/{id}/versions/{v}/content": teamPageRead,
-	"GET /pages/{id}/view":                 teamPageRead,
-	"POST /pages/{id}/versions/{v}/submit": teamPageRespond,
-	"POST /pages/{id}/share":               teamPageShare,
-	"POST /pages/{id}/delete":              teamPageCreator,
-	"POST /pages/{id}/rollback":            teamPageCreator,
-	"POST /pages/{id}/links/{link}/revoke": teamPageRevoke,
-	"POST /pages/{id}/share/rotate":        teamPageRevoke,
-	"POST /pages/{id}/share/revoke":        teamPageRevoke,
-	"POST /pages/{id}/versions/{v}/upload": teamPageNoFile,
+	// 0164's author assets follow the page (0165): any member reads the
+	// images and video the version they view shows.
+	"GET /pages/{id}/versions/{v}/assets/{asset}": teamPageRead,
+	"GET /pages/{id}/view":                        teamPageRead,
+	"POST /pages/{id}/versions/{v}/submit":        teamPageRespond,
+	"POST /pages/{id}/share":                      teamPageShare,
+	"POST /pages/{id}/delete":                     teamPageCreator,
+	"POST /pages/{id}/rollback":                   teamPageCreator,
+	"POST /pages/{id}/links/{link}/revoke":        teamPageRevoke,
+	"POST /pages/{id}/share/rotate":               teamPageRevoke,
+	"POST /pages/{id}/share/revoke":               teamPageRevoke,
+	"POST /pages/{id}/versions/{v}/upload":        teamPageNoFile,
 }
 
 // The refusals a member reads.
@@ -165,7 +168,7 @@ func memberOnTeamPage(ctx context.Context, pg pages.Page) bool {
 // pageManageable reports whether ctx may manage page pg (pages.MayManage):
 // what the page's screen draws its Delete, Show this version and ⋯ New link
 // for. Without a principal (a test's bare context) the page is the caller's
-// own, as every page was before 0162.
+// own, as every page was before 0165.
 func pageManageable(ctx context.Context, pg pages.Page) bool {
 	p, ok := authz.From(ctx)
 	if !ok {
