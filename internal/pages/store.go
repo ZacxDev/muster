@@ -399,7 +399,14 @@ func (s *PGStore) PagesFor(ctx context.Context, c Creator) ([]Summary, error) {
 func (s *PGStore) Pages(ctx context.Context) ([]Summary, error) { return s.summaries(ctx, "") }
 
 // SessionPages lists the pages session x made, newest made first. Row-level
-// security scopes it to the caller's own rows, whatever x names.
+// security scopes it to what the caller may read, whatever x names.
+//
+// 🔴 A MIRRORED WINDOW'S PAGES ARE ITS OWNER'S OWN, NAMED IN THE QUERY: since
+// 0165 a member also READS their teams' pages, and a team's page made from a
+// host, window and session of the same names (another owner's same strings
+// name another machine) would be counted as this window's. An agent is one
+// agents row, so its pages are whatever the caller may read of them.
+// TestAWindowsPagesAreItsOwnersEvenOnATeamsSameNamedHost.
 func (s *PGStore) SessionPages(ctx context.Context, x SessionRef) ([]Summary, error) {
 	if !x.Valid() {
 		return nil, nil
@@ -411,7 +418,7 @@ func (s *PGStore) SessionPages(ctx context.Context, x SessionRef) ([]Summary, er
 	} else {
 		// Made IN the window (its tmux session and window id), or by a
 		// session it runs now — always on the same host.
-		where, args = ` AND p.agent_id IS NULL AND p.mirror_host = $1 AND (
+		where, args = ` AND p.agent_id IS NULL AND p.owner_id = nullif(current_setting('muster.uid', true), '')::bigint AND p.mirror_host = $1 AND (
 			(p.mirror_tmux_session = $2 AND p.mirror_window = $3) OR p.mirror_session = ANY($4))`,
 			[]any{x.MirrorHost, x.MirrorTmuxSession, x.MirrorWindow, x.MirrorSessions}
 	}
