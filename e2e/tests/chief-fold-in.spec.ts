@@ -17,9 +17,10 @@ import { signIn } from '../lib/signin';
 //
 //   header   ONE row: the status row's controls are in the ⋯ menu (account,
 //            switched, Terminal), the status dot sits before the title.
-//   asks     hidden asks are a compact count badge IN THE HEADER that reopens
-//            them; the block itself sits under the thread, as a mirrored
-//            session's does.
+//   asks     the open asks are a compact count badge IN THE HEADER — no block
+//            on the page (operator decision: it took too much of the screen)
+//            — and a tap opens the Asks page filtered to exactly this
+//            session's asks.
 //   thread   no card around the transcript, no divider above the composer.
 //   relay    a relayed plugin message is a collapsed system row ("Message from
 //            <plugin> · <subject>") that opens to the full text; a person's
@@ -113,15 +114,14 @@ async function shot(page: Page, name: string) {
   if (dir) await page.screenshot({ path: path.join(dir, name) });
 }
 
+// badge is the header's asks badge (ui.AskerAsksBadge).
+const badge = (page: Page) => page.locator('header [data-asker-asks-link]');
+
 async function openChief(page: Page) {
   await signIn(page, origin);
   await page.goto(origin + '/agents/' + NAME);
-  await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(ASKS);
+  await expect(badge(page)).toHaveAttribute('data-count', String(ASKS));
   await expect(page.locator('#chat-form')).toBeVisible();
-  // Every test starts with the asks shown (a hide is kept per device).
-  await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
-  await page.reload();
-  await expect(page.locator('#asker-asks')).toBeVisible();
 }
 
 // A mirrored Claude Code window's Rendered view: "every other session".
@@ -171,9 +171,6 @@ for (const vp of [
       await shot(page, `chief-${vp.key}.png`);
       const chiefHeader = (await page.locator('header').boundingBox())!.height;
       const chiefLog = await logStyle('#chat-log');
-      await press(page, '[data-asker-asks-hide]');
-      await expect(page.locator('#asker-asks')).toBeHidden();
-      await shot(page, `chief-${vp.key}-asks-hidden.png`);
       // The status row's controls, where they went.
       await press(page, '#agent-actions-open');
       await expect(page.locator('#agent-actions')).toBeVisible();
@@ -241,32 +238,49 @@ for (const vp of [
       await expect(page.locator('iframe[data-muster-view]')).toBeVisible({ timeout: 15_000 });
     });
 
-    test('hidden asks are a count badge in the header that reopens them', async ({ page }) => {
+    // THE ASKS ARE A BADGE, NOT A BLOCK (operator decision). Two sessions with
+    // distinct counts — the chief's 3 asks, the dispatched agent's 1 — each
+    // page's header badge says its own count, and a tap lands on the Asks page
+    // listing exactly that session's asks: none of the other's.
+    // 🔴 RED at origin/main: the page drew the block, and its header badge was
+    // the block's hidden chip, not a link to the Asks page.
+    test('the header\'s asks badge counts this session\'s asks and opens Asks filtered to exactly them', async ({ page }) => {
       await openChief(page);
-      const block = page.locator('#asker-asks');
-      const badge = page.locator('header #asker-asks-chip');
-      await expect(badge).toBeHidden();
-      // The block sits under the thread and above the composer, as a mirrored session's does.
-      const log = (await page.locator('#chat-log').boundingBox())!;
-      const bb = (await block.boundingBox())!;
-      const form = (await page.locator('#chat-form').boundingBox())!;
-      expect.soft(bb.y, 'the asks are under the thread').toBeGreaterThanOrEqual(log.y + log.height - 1);
-      expect.soft(bb.y + bb.height, 'the asks end above the composer').toBeLessThanOrEqual(form.y + 1);
-      await press(page, '[data-asker-asks-hide]');
-      await expect(block).toBeHidden();
-      await expect(badge).toBeVisible();
-      await expect(badge).toHaveText(String(ASKS));
-      await expect(badge).toHaveAccessibleName(`Show the ${ASKS} questions waiting on your answer`);
+      await expect(page.locator('#asker-asks, #asker-asks-chip, [data-asker-asks-hide]'), 'no asks block').toHaveCount(0);
+      await expect(page.locator('main [data-attention-item]'), 'no ask card on the page').toHaveCount(0);
+      const b = badge(page);
+      await expect(b).toBeVisible();
+      await expect(b).toHaveText(String(ASKS));
+      await expect(b).toHaveAccessibleName(`Open the ${ASKS} questions waiting on your answer`);
+      expect((await b.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       // The badge leaves the title its words: "chief" is drawn whole, not
       // clipped to its "…" (at 390px it was, with the page header's gutter).
       const fit = await page.locator('header [data-agent-title-text]').evaluate((el) => [el.scrollWidth, el.clientWidth]);
       expect(fit[0], `the title is not clipped beside the badge (${fit})`).toBeLessThanOrEqual(fit[1] + 1);
       await expect(page.locator('header [data-title-more]')).toBeHidden();
-      // No floating pill left in the conversation's column.
-      await expect(page.locator('main #asker-asks-chip')).toHaveCount(0);
-      await press(page, 'header #asker-asks-chip');
-      await expect(block).toBeVisible();
-      await expect(badge).toBeHidden();
+
+      // The tap: the Asks page, filtered to this session, listing its 3 asks
+      // and not the dispatched agent's open one.
+      const asks = page.locator('#attention-items [data-attention-item]');
+      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + NAME), press(page, 'header [data-asker-asks-link]')]);
+      await expect(page.locator('[data-testid="asks-filter"]')).toContainText('Showing asks from chief');
+      await expect(asks).toHaveCount(ASKS);
+      for (let i = 0; i < ASKS; i++) await expect(asks.filter({ hasText: `Fold question ${i + 1}:` })).toHaveCount(1);
+      await expect(page.locator('#attention-items').getByText('Dispatched question'), 'not another session\'s ask').toHaveCount(0);
+      await expect(page.locator('[data-asks-open-count]')).toHaveText(`${ASKS} open`);
+      // "Show all" is the whole queue: the other session's ask is there (the
+      // control that it was open and listable).
+      await press(page, '[data-asks-filter-all]');
+      await page.waitForURL((u) => u.pathname === '/attention' && !u.searchParams.has('from'));
+      await expect(page.locator('#attention-items [data-attention-item]').filter({ hasText: 'Dispatched question' })).toHaveCount(1);
+
+      // The other session: its own count, its own one ask.
+      await page.goto(origin + '/agents/' + DISPATCHED);
+      await expect(badge(page)).toHaveText('1');
+      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + DISPATCHED), press(page, 'header [data-asker-asks-link]')]);
+      await expect(asks).toHaveCount(1);
+      await expect(asks.first()).toContainText('Dispatched question: retry the flaky job?');
+      await expect(page.locator('#attention-items').getByText('Fold question'), 'not the chief\'s asks').toHaveCount(0);
     });
 
     test('the thread is not wrapped in a card, and the composer has no divider', async ({ page }) => {
@@ -303,14 +317,12 @@ for (const vp of [
 
     // EVERY CLAUDE-CODE AGENT, NOT ONLY THE CHIEF (operator decision on #527): a
     // dispatched agent's page draws the same one-row header, its account,
-    // failover, pool and Terminal in the ⋯ menu, and its hidden asks as the
+    // failover, pool and Terminal in the ⋯ menu, and its open asks as the
     // header badge.
     test('a dispatched claude-code agent folds the same way', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + DISPATCHED);
-      await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(1);
-      await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
-      await page.reload();
+      await expect(badge(page)).toHaveAttribute('data-count', '1');
       await expect(page.locator('#chat-form')).toBeVisible();
       await shot(page, `dispatched-${vp.key}.png`);
       const header = page.locator('header');
@@ -331,14 +343,10 @@ for (const vp of [
       await shot(page, `dispatched-${vp.key}-menu.png`);
       await page.keyboard.press('Escape');
       await expect(menu).toBeHidden();
-      // Hidden asks: the header badge, which reopens them.
-      await press(page, '[data-asker-asks-hide]');
-      const badge = page.locator('header #asker-asks-chip');
-      await expect(badge).toBeVisible();
-      await expect(badge).toHaveText('1');
-      await expect(badge).toHaveAccessibleName('Show the 1 question waiting on your answer');
-      await press(page, 'header #asker-asks-chip');
-      await expect(page.locator('#asker-asks')).toBeVisible();
+      // Its open ask: the header badge, named for the one question.
+      await expect(badge(page)).toBeVisible();
+      await expect(badge(page)).toHaveText('1');
+      await expect(badge(page)).toHaveAccessibleName('Open the question waiting on your answer');
       // Terminal from the menu opens the terminal view in the kept frame.
       await press(page, '#agent-actions-open');
       await press(page, '#view-terminal');

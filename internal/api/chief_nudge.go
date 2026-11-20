@@ -363,6 +363,12 @@ func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFl
 		if p.budget <= 0 || octx.Err() != nil {
 			return
 		}
+		// 🔴 ONE JUDGE PER STOP: a stop a session minder was fed before it
+		// stopped running is the minder's if it acted on it, else closed in
+		// its queue before the chief judges it (chiefTakesStop).
+		if !s.chiefTakesStop(octx, o.ID, c) {
+			continue
+		}
 		decided, stop, refused := s.decideNudge(octx, o, chief, c, p)
 		if decided {
 			p.decided++
@@ -445,7 +451,13 @@ func (s *Server) stalledSessions(octx context.Context, facts []nudgeCandidate) [
 // episodeVerdict pushes past episodeChiefWait), never judged again. The
 // partial unique index chief_nudges_one_per_episode (0078) holds the same line
 // across passes and replicas.
+//
+// With the chief's nudges off (no decision store) the chief has judged
+// nothing: false — the session minder's feed asks this too (session_minder.go).
 func (s *Server) nudgeEpisodeJudged(octx context.Context, id int64) bool {
+	if s.ext.ChiefNudges == nil {
+		return false
+	}
 	_, decided, err := s.ext.ChiefNudges.ForEpisode(octx, id)
 	return err != nil || decided
 }

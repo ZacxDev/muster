@@ -172,8 +172,9 @@ type MCPProxy struct {
 	// tools/list and tools/call requests only, never this host's sessions.
 	Extras []MCPInstance
 	// ToolsRefresh is how often the instances' tool lists are re-read, and a
-	// change announced with notifications/tools/list_changed (WatchTools); 0
-	// turns the watch, the GET stream and the listChanged capability off.
+	// change announced with notifications/tools/list_changed (WatchTools,
+	// mcpsession.go); 0 turns the watch, the GET stream, the listChanged
+	// capability and the MCP sessions off.
 	ToolsRefresh time.Duration
 
 	// ExtrasIgnored is why a configured targets file was ignored at start
@@ -184,6 +185,10 @@ type MCPProxy struct {
 
 	// state caches the lists and holds the open GET streams.
 	state instanceState
+	// sessions are /mcp's MCP sessions (mcpsession.go), with the watch on.
+	sessions sessionTable
+	// legacyCallers counts requests served on the legacy path (countLegacy).
+	legacyCallers atomic.Uint64
 
 	// outsiderLogged: the first caller from another tmux server is logged,
 	// the rest are not (every Claude Code session on another tenant's server
@@ -690,12 +695,36 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &head)
 	openCode := OpenCodeCaller(r)
 	multi := len(p.Extras) > 0 && !openCode
+	// A Claude Code caller with the watch on is held to its MCP session
+	// (mcpsession.go): every request but initialize names one this process
+	// issued, and one whose tool list is stale is told so on this answer.
+	sid := ""
+	if p.sessionsOn(r) && head.Method != "initialize" {
+		var ok bool
+		if sid, ok = p.requireSession(w, r); !ok {
+			return
+		}
+		if sid != "" && len(head.ID) > 0 && string(head.ID) != "null" && head.Method != "tools/list" && acceptsEventStream(r) {
+			if cur := p.currentToolsHash(); p.sessions.stale(sid, cur) {
+				lw := &listChangedWriter{w: w}
+				defer func() {
+					if lw.finish() {
+						p.sessions.markNotified(sid, cur)
+					}
+				}()
+				w = lw
+			}
+		}
+	}
 	switch {
 	case head.Method == "initialize" && !openCode && (p.listChangedOn() || multi):
 		p.serveInitialize(w, r, body)
 		return
 	case head.Method == "tools/list" && multi:
-		p.serveMergedList(w, r, head.ID, body)
+		p.serveMergedList(w, r, head.ID, body, sid)
+		return
+	case head.Method == "tools/list" && sid != "":
+		p.serveSessionList(w, r, head.ID, body, sid)
 		return
 	case head.Method == "tools/call" && multi:
 		p.serveRoutedCall(w, r, head.ID, body)
@@ -966,6 +995,46 @@ func (p *MCPProxy) serveInitialize(w http.ResponseWriter, r *http.Request, body 
 	rest, started, err := readReply(w, resp)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		rest = p.rewriteInitialize(rest)
+		// A new MCP session for an initialize muster answered with a result
+		// (mcpsession.go). readReply has sent the header already only when
+		// muster kept the connection alive first, which initialize never does.
+		if p.sessionsOn(r) && !started && isResult(rest) {
+			w.Header().Set(MCPSessionIDHeader, p.sessions.create())
+		}
+	}
+	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+}
+
+// isResult reports whether body is a JSON-RPC answer carrying a result.
+func isResult(body []byte) bool {
+	var rep struct {
+		Result json.RawMessage `json:"result"`
+	}
+	return json.Unmarshal(body, &rep) == nil && len(rep.Result) > 0 && string(rep.Result) != "null"
+}
+
+// serveSessionList is a Claude Code session's tools/list with no extra
+// instance: the primary's answer relayed unchanged, and what it listed
+// recorded — for the session, and as the current plan (so another session
+// that listed an older set is told).
+func (p *MCPProxy) serveSessionList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte, sid string) {
+	seq := p.beginRead()
+	req, ok := p.primaryRequest(w, r, "tools/list", id, nil, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		if l, perr := parseToolsResult(rest); perr == nil {
+			l.at = time.Now()
+			pl, _ := p.storePlan(seq, l, map[string]toolsList{}, l.at)
+			p.sessions.setListed(sid, pl.hash)
+		}
 	}
 	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
 }
@@ -1009,7 +1078,7 @@ func (p *MCPProxy) rewriteInitialize(body []byte) []byte {
 // serveMergedList is a Claude Code caller's tools/list with extra instances:
 // the primary's answer — forwarded as before, and relayed unchanged when it is
 // not a list — merged with every instance's remote list (buildPlan).
-func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte, sid string) {
 	seq, readAt := p.beginRead(), time.Now()
 	req, ok := p.primaryRequest(w, r, "tools/list", id, nil, body, "")
 	if !ok {
@@ -1033,6 +1102,9 @@ func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id js
 	session.at = readAt
 	remote, at := p.remotesFor(r.Context())
 	pl, _ := p.storePlan(seq, session, remote, at)
+	if sid != "" {
+		p.sessions.setListed(sid, pl.hash)
+	}
 	tools := pl.merged
 	if tools == nil {
 		tools = []map[string]any{}

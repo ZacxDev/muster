@@ -15,8 +15,7 @@ import (
 // account, "↻ switched" and a large Terminal button — a floating "● N waiting"
 // pill sat above the thread, the thread was a bordered card with a divider above
 // the composer, and the working indicator was a bubble. A mirrored session has
-// one header row, its messages straight on the page, its asks between the
-// conversation and the composer and a one-line "working…".
+// one header row, its messages straight on the page and a one-line "working…".
 //
 // So a claude-code agent's page — the chief's and every dispatched one's — draws
 // (foldedHeader):
@@ -32,8 +31,8 @@ import (
 //     itself, no second popover), the worker pool, and Terminal (the same
 //     view-swap link the Rendered | Terminal switch draws, so the terminal still
 //     opens in the kept frame);
-//   - the "N waiting" chip as a count badge in the header (askerAsksBadge), and
-//     the asks block under the transcript (agentChatPane).
+//   - the agent's open asks as a count badge in the header (AskerAsksBadge),
+//     which opens the Asks page filtered to them; the page draws no asks block.
 //
 // The transcript, the composer, the working row and the relay rows are every
 // agent page's, whatever its kind (agentChatPane, chatLogInner).
@@ -61,7 +60,7 @@ func headerFolded(v AgentDetailView) bool {
 // 🔴 BELOW `sm` ITS GUTTER IS px-2 AND ITS TOOLS ARE gap-1, AND THAT IS
 // MEASURED ROOM, NOT TASTE. The row holds five 44px controls (☰, New chat,
 // Chat history, Focus history, ⋯), the 12px status dot and — while asks are
-// hidden — the badge. With the page header's px-4 and gap-3 tools, at 390px the
+// open — the asks badge. With the page header's px-4 and gap-3 tools, at 390px the
 // badge left the title 0px: "chief" drew as its "…" alone (the e2e
 // chief-fold-in shot). A mirrored session's header is px-2 for the same reason.
 func foldedHeader(v AgentDetailView) g.Node {
@@ -78,7 +77,7 @@ func foldedHeader(v AgentDetailView) g.Node {
 			g.If(v.Card.ID != 0, agentStrip(v.Card)),
 			foldedTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
-			g.If(v.AsksSrc != "", askerAsksBadge()),
+			g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 			agentHeaderToolsWith(v, true),
 			g.If(v.Card.ID != 0, Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(v.Card, "", foldedMenuItems(v)))),
 		),

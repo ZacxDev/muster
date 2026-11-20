@@ -165,24 +165,28 @@ func TestATeamsCardsConfirmInPlaceForAnOperator(t *testing.T) {
 	}
 }
 
-// TestATeamAgentsPagesConfirmInPlaceForAnOperator: the team chief's page, read
-// by B (operator), draws the dialog its asks block's team cards ask with (they
-// arrive with the block's live refresh); its terminal page gates the WHOLE
-// attach (data-step-up-attach), so a stale operator is asked before it
-// attaches instead of a socket refused with no way to confirm. V (viewer) gets
-// neither: there is nothing for a viewer to confirm.
+// TestATeamAgentsPagesConfirmInPlaceForAnOperator: the team chief's terminal
+// page, read by B (operator), gates the WHOLE attach (data-step-up-attach), so
+// a stale operator is asked before it attaches instead of a socket refused
+// with no way to confirm. V (viewer) does not get it: there is nothing for a
+// viewer to confirm.
 //
-// 🔴 RED at ea84f2ab: no dialog on either page for B.
+// The chief's chat page draws no step-up form for B any more, and so no
+// dialog: the team cards that asked with one were its asks block's, and the
+// page has no asks block (attention_asker.go) — they are answered on the Asks
+// page, which draws their dialog (TestATeamsCardsConfirmInPlaceForAnOperator).
+//
+// 🔴 RED at ea84f2ab: no dialog on the terminal page for B.
 func TestATeamAgentsPagesConfirmInPlaceForAnOperator(t *testing.T) {
 	td := newTeamDispatchWorld(t)
 	stale := time.Now().Add(-2 * stepup.Window())
 	agentPage := "/agents/" + td.chief.Name
-	if rec := isoBrowserAs(td.w, http.MethodGet, agentPage, td.w.b.uid, stale); !strings.Contains(rec.Body.String(), `id="term-confirm"`) ||
-		!strings.Contains(rec.Body.String(), "window.musterStepUpForms") {
-		t.Errorf("B's (operator) page of the team chief draws no confirm dialog or form script: %d %s", rec.Code, truncate(rec.Body.String(), 300))
-	}
-	if body := isoBrowserAs(td.w, http.MethodGet, agentPage, td.v.uid, stale).Body.String(); strings.Contains(body, `id="term-confirm"`) {
-		t.Errorf("V's (viewer) page of the team chief draws a confirm dialog")
+	for who, uid := range map[string]int64{"B (operator)": td.w.b.uid, "V (viewer)": td.v.uid} {
+		rec := isoBrowserAs(td.w, http.MethodGet, agentPage, uid, stale)
+		if body := rec.Body.String(); rec.Code != http.StatusOK || strings.Contains(body, "data-step-up-form") || strings.Contains(body, `id="term-confirm"`) {
+			t.Errorf("%s's page of the team chief: %d, a step-up form %v, a confirm dialog %v", who, rec.Code,
+				strings.Contains(body, "data-step-up-form"), strings.Contains(body, `id="term-confirm"`))
+		}
 	}
 	term := agentPage + "/terminal"
 	rec := isoBrowserAs(td.w, http.MethodGet, term, td.w.b.uid, stale)
