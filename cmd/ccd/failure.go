@@ -29,22 +29,22 @@ import (
 // resets 9:45pm"). A `rate_limited` without `usage_limit` is a transient request
 // rate limit: muster rests nothing for it (internal/ccpool AccountFailure).
 const (
-	failUnauthorized = "unauthorized"  // 401: the caller's bearer is wrong (NOT the model account)
-	failBadRequest   = "bad_request"   // 400
-	failInvalidInput = "invalid_input" // 400: the prompt holds a control character (server.go sanitizePrompt)
-	failBusy         = "busy"          // 409: a turn is already running in the session
-	failNotReady     = "not_ready"     // 503: the TUI has not reached its prompt
-	failNotSubmitted = "not_submitted" // 504: no UserPromptSubmit matching the pasted prompt (server.go reportedPromptMatches)
-	failLocalCommand = "local_command" // 502: a `/` prompt the CLI ran locally — no model turn, no reply
-	failTurnTimeout  = "turn_timeout"  // 504: no Stop/StopFailure within the turn budget
-	failTerminal     = "terminal"      // 502: tmux could not be driven
-	failTranscript   = "transcript"    // 502: the reply could not be read back
-	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
-	failRateLimited  = "rate_limited"  // 429: the API rate-limited the turn — usage_limit when it is the account's usage limit (409 from the limit menu: limitMenuFailure)
-	failBilling      = "billing_error" // 502
-	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
-	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
-	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
+	failUnauthorized = "unauthorized"              // 401: the caller's bearer is wrong (NOT the model account)
+	failBadRequest   = "bad_request"               // 400
+	failInvalidInput = "invalid_input"             // 400: the prompt holds a control character (server.go sanitizePrompt)
+	failBusy         = "busy"                      // 409: a turn is already running in the session
+	failNotReady     = "not_ready"                 // 503: the TUI has not reached its prompt
+	failNotSubmitted = "not_submitted"             // 504: no UserPromptSubmit matching the pasted prompt (server.go reportedPromptMatches)
+	failLocalCommand = "local_command"             // 502: a `/` prompt the CLI ran locally — no model turn, no reply
+	failTurnTimeout  = "turn_timeout"              // 504: no Stop/StopFailure within the turn budget
+	failTerminal     = "terminal"                  // 502: tmux could not be driven
+	failTranscript   = "transcript"                // 502: the reply could not be read back
+	failAuth         = podagent.FailureAuthFailed  // 502: the model account's credential was rejected
+	failRateLimited  = podagent.FailureRateLimited // 429: the API rate-limited the turn — usage_limit when it is the account's usage limit (409 from the limit menu: limitMenuFailure)
+	failBilling      = podagent.FailureBilling     // 502
+	failTurn         = "turn_failed"               // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
+	failEmptyReply   = "empty_reply"               // 502: the turn ended with no answer text
+	failCapacity     = "capacity"                  // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
 	// 500: a chat lane's MCP config could not be written (lanes.go "A CHAT
 	// LANE SAYS WHO IT IS"): its CLI is not run without it; nothing was typed.
 	failMCPConfig = "mcp_config"
@@ -132,7 +132,7 @@ func classifyAPIError(e apiError) *failure {
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited
 	case e.Code == "authentication_failed":
 		f.Status, f.Type = http.StatusBadGateway, failAuth
-	case e.Code == "billing_error":
+	case e.Code == failBilling:
 		f.Status, f.Type = http.StatusBadGateway, failBilling
 	case e.Status == http.StatusTooManyRequests:
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited

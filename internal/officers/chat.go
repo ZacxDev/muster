@@ -1074,7 +1074,8 @@ func chatUp(o Officer, obs Observation) map[int]bool {
 // the placement agree.
 //
 // 🔴 ONLY A HOME THAT CANNOT SERVE IT AGAIN SOON MOVES THE CHAT: in error
-// (it holds its slot and is not started), numbered past chat_max_instances,
+// (it holds its slot: at best the bounded auto-restart starts it minutes
+// later, at worst never), numbered past chat_max_instances,
 // holding a capped claim (Decide never starts that number), or not up
 // within chatHomeUpWithin of a chat waiting for it (its start keeps failing:
 // a failed start leaves it stopped, not in error). A routine stop

@@ -345,6 +345,12 @@ BEGIN
         ALTER TABLE public.page_version_assets DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.page_version_assets ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0170 (officer_auto_restarts), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_auto_restarts') IS NOT NULL THEN
+        ALTER TABLE public.officer_auto_restarts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_auto_restarts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_auto_restarts ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0166 (host_jobs, host_job_runs), when this schema has them; same reason as 0011.
     IF to_regclass('public.host_jobs') IS NOT NULL THEN
         ALTER TABLE public.host_jobs NO FORCE ROW LEVEL SECURITY;
