@@ -603,6 +603,77 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
 Passkey autofill (conditional mediation) is not available in a WebView; the
 buttons are.
 
+## Cross-origin writes
+
+`SameSite=Lax` does not stop a page on a **sibling host** (any other
+subdomain of muster's registrable domain): that page is the same site, so the
+browser attaches muster's cookies to a write it makes to muster. So every
+request that a **browser session** admits (in both modes) and whose method is
+not `GET`, `HEAD` or `OPTIONS` must come from muster's own pages. Before any
+handler runs, muster reads:
+
+1. **`Sec-Fetch-Site`, first.** `same-origin` admits. `same-site`,
+   `cross-site` and `none` are refused. One exception: with
+   `MUSTER_PUBLIC_URL` set, an `Origin` exactly equal to its origin is
+   admitted whatever `Sec-Fetch-Site` says. A browser sets `Origin` itself,
+   so only a page on that origin can send it.
+2. **Only if it is absent, `Origin`.** muster's own origin admits: its host
+   equal to the request's `Host`, or its scheme and host equal to
+   `MUSTER_PUBLIC_URL`'s (behind a proxy that rewrites `Host`). `null` and
+   any other origin are refused.
+3. **Only if both are absent, `Referer`.** A `Referer` on muster's own origin,
+   by the same rule as `Origin`, admits.
+4. **None of the three:** refused.
+
+A refusal is `403` with the error `cross-origin request refused: this action
+must come from muster's own pages`, logged (never the body) and counted in
+`muster_csrf_refusals_total{route_class, reason}`.
+
+- **Why `Sec-Fetch-Site` comes first.** Under `Referrer-Policy: no-referrer`
+  (which some of muster's pages still serve) a browser's native form `POST`
+  carries `Origin: null` while still carrying `Sec-Fetch-Site: same-origin`.
+  An `Origin`-first rule would refuse muster's own no-JavaScript forms.
+- **muster's default `Referrer-Policy` is `same-origin`.** It sends no
+  `Referer` to any other origin, so a token in a URL stays out of other
+  sites' logs, and a native form `POST` carries muster's real `Origin`. The
+  share links (`/s/…`), the notification redirect and page content documents
+  serve `no-referrer` themselves.
+- **Bearer credentials are not checked.** Personal tokens, plugin, runner,
+  mirror, device and agent tokens, and the hook and service secrets are
+  headers a cross-site page cannot make a browser send. A request carrying a
+  cookie and a bearer is judged by the credential its route's door read. The
+  muster CLI and `muster-mirror` use bearer tokens.
+- **The unauthenticated writes** (sign-in, sign-out, invite, reset and claim
+  links, passkey sign-in, plugin and device pairing) do not pass through the
+  session door. Sign-out reads the session, so it applies the same rule
+  itself (GoTrue mode: `isSameOrigin`). ⚠ The password-mode sign-in reads
+  the session only to exempt a signed-in browser from the sign-in throttle,
+  and checks no origin. Every function that reads a browser session is listed
+  in a test with its reason, and a new one fails it.
+- **The routes that also carry `requireSameOrigin`** keep it. It reads
+  `Origin`, then `Referer`, and refuses `Origin: null`, so a native form on
+  one of those routes still needs its page served `Referrer-Policy:
+  same-origin` ([sending-and-step-up.md](sending-and-step-up.md)).
+- The route ledger, `internal/api/testdata/csrf_ledger.golden`, lists every
+  write route as `cookie`, `bearer-only` or `unauthenticated`, and a test
+  fails when a route is added, removed or moves class.
+
+**What browsers send.** Current Chromium, Firefox and Safari send
+`Sec-Fetch-Site` on every request to a **trustworthy** origin (`https`, or a
+loopback address), and `Origin` on `fetch` and htmx writes.
+
+- **A plain-`http` deployment on a non-loopback address gets no
+  `Sec-Fetch-Site`** (measured in Chromium), so the check reads `Origin`.
+  htmx and `fetch` writes carry the real `Origin`, and so does a native form
+  `POST` from a page served `same-origin`, muster's default. ⚠ A form on a
+  page served `no-referrer` carries `Origin: null` there and is refused.
+- ⚠ **Not yet measured on a device:** the Android app's WebView (Chromium, so
+  by documentation it sends `Sec-Fetch-Site`), the installed PWA (the browser
+  itself) and Safari with its strict privacy settings. Each must show
+  `Sec-Fetch-Site: same-origin`, or else muster's own `Origin`, or else a
+  same-origin `Referer`, on a `fetch`, an htmx action and a form `POST`. Until
+  that is captured, treat those clients as unverified.
+
 ## Machine credentials
 
 | credential | acts as | notes |
