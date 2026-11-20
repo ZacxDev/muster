@@ -98,6 +98,7 @@ var notOfficerRouted = map[string]string{
 	"push_task.go Server.flushCommentedTasks -> pushTask":                 "not officer-reachable: the machine route's task comment (an agent's comment pushes no one)",
 	"push_task.go Server.teamTaskCommented -> pushTask":                   "not officer-reachable: a member's comment typed on a team task's page",
 	"push_task.go Server.notifyAgentRunning -> pushTask":                  "not officer-reachable: an officer instance has no task",
+	"morning_report.go Server.morningReportFor -> goNotify":               "not officer-reachable: muster's own daily job (MorningReportPass) pushes each owner their report; no tool or agent calls it",
 }
 
 // officerGateCalls are the calls that read officerPushes.

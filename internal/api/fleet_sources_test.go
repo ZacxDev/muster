@@ -35,7 +35,10 @@ func TestTheFleetReadersSubjectSources(t *testing.T) {
 		// a new read is a decision too).
 		"attachFleetEpisodes": {"Episodes.OpenEpisodes"},
 		"attachFleetInFlight": {"SendQueue.List"},
-		"attachFleetPRs":      {"FleetPRStates", "PRSessions"},
+		"attachFleetPRs":      {"PRSessions"},
+		// The GitHub read, for an owner the App admits: the fleet and the
+		// morning report both read pull-request states through it.
+		"fleetPRReader": {"FleetPRStates"},
 	}
 	// readFleet's own helpers: the source functions it calls on s.
 	wantCalls := []string{"attachFleetEpisodes", "attachFleetInFlight", "attachFleetPRs",

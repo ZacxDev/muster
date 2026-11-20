@@ -50,6 +50,7 @@ var usersReads = map[string]string{
 	"internal/devices PGStore.Authenticate":                readPerson,
 	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,
 	"internal/focus PGStore.Owners":                        readEnabledPerson,
+	"internal/morning PG.Owners":                           readEnabledPerson,       // the morning report's owners: a disabled account gets no report
 	"internal/mirror PGStore.Authenticate":                 readEnabledPersonOrTeam, // a team host's token (2b.2) or an enabled person's; Team says which
 	"internal/mirror PGStore.TokenLive":                    readEnabledPersonOrTeam, // a live connection's recheck: Authenticate's rule
 	"internal/mirror PGStore.CreateTeamToken":              readTeam,                // the CLI's --team mint: the owner must name a team

@@ -89,6 +89,9 @@ var personalOwned = []string{
 	// 0160: the confirm cards in a person's chat with an officer; one
 	// manager's cards are never another's.
 	"officer_chat_cards",
+	// 0161: the morning report; it lists its owner's own sessions, tasks and
+	// questions.
+	"morning_reports",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
