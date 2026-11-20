@@ -691,9 +691,9 @@ func liveRepoBody(link string) string {
 // passes the plugin's check, the owner's approval and the claim with its body
 // byte-for-byte, and a post naming the project bare is filed too. The same
 // officer WITHOUT the standing declaration is refused by the deny-word layer;
-// another deployment name outside the link, an internal host beside it, and
-// an undeclared repository spelling another deployment name are still
-// refused.
+// another deployment name outside the link, an internal host beside it, an
+// undeclared repository spelling another deployment name, and an undeclared
+// repository whose name only begins with the project's are still refused.
 func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	const standing = `,"read_repos":["ZacxDev/muster"],"read_grant":"standing"`
 	words := []string{"muster", "examplecluster"}
@@ -738,6 +738,7 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 		{"examplecluster is out: github.com/ZacxDev/muster", "infrastructure name"},
 		{liveRepoBody("github.com/ZacxDev/muster") + " on " + internalHost, "internal host name"},
 		{liveRepoBody("github.com/ZacxDev/examplecluster"), "infrastructure name"},
+		{liveRepoBody("github.com/ZacxDev/muster-private"), "infrastructure name"},
 	} {
 		if id, out := post(w, bad.body); id != 0 || !strings.Contains(out, bad.want) {
 			t.Errorf("%q: filed %d, %s; want refused naming %q", bad.body, id, out, bad.want)

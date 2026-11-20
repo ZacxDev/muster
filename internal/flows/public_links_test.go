@@ -185,10 +185,11 @@ func TestOutboundBareRepoNameExemptsOnlyThatWord(t *testing.T) {
 }
 
 // TestOutboundBareRepoNameIsOnlyTheStandaloneName (security guard): the
-// exemption is for the project's OWN name standing alone. Prose punctuation
-// beside it keeps it bare; a name-continuing character on either side (a
-// letter or digit, `-`, `_`, `/`, a `.` before a letter or digit) makes it
-// part of another name, which is screened as at base.
+// exemption is for the project's OWN name standing alone, and "alone" is an
+// allowlist: each neighbour is the text's start or end, whitespace, one of
+// , ; ! ? ' ’ " “ ” ( ) [ ], or after the name a `.` or `:` followed by
+// whitespace or the end. Any other neighbour joins it to another name, which
+// is screened as at base.
 func TestOutboundBareRepoNameIsOnlyTheStandaloneName(t *testing.T) {
 	allow := []string{widgetRepo}
 	only := []string{"widget"}
@@ -196,10 +197,13 @@ func TestOutboundBareRepoNameIsOnlyTheStandaloneName(t *testing.T) {
 		"widget has a new logo.",
 		"widget's",
 		"Try widget.",
-		"Try widget...",
-		"...widget",
-		"(widget), widget: widget!",
+		"(widget)",
+		"widget: new logo",
+		"Try widget:",
+		"(widget), widget; widget! widget? [widget]",
 		"widget\u2019s new logo",
+		"\"widget\" and \u201cwidget\u201d",
+		"widget\tnew\nwidget",
 	} {
 		if why := OutboundTextRefusal(text, only, allow); why != "" {
 			t.Errorf("bare %q refused: %s", text, why)
@@ -212,6 +216,19 @@ func TestOutboundBareRepoNameIsOnlyTheStandaloneName(t *testing.T) {
 		"see x.widget",
 		"see a/widget",
 		"see \u00e9widget",
+		"widget\u2013prod",
+		"widget\u2014prod",
+		"widget:5432",
+		"widget+prod",
+		"widget~prod",
+		"ops@widget",
+		"widget\\prod",
+		"widget._prod",
+		"widget\u0301prod",
+		"widget.prod",
+		"Try widget...",
+		"...widget",
+		"see:widget",
 		"see example.org/acme/widget-private",
 		"see github.com/acme/widget-private",
 	} {
@@ -239,6 +256,8 @@ func TestOutboundBareRepoNameIsOnlyTheStandaloneName(t *testing.T) {
 		{"see widgetco", "widgetco"},
 		{"widget2 is up", "widget2"},
 		{"see prod/widget", "prod/widget"},
+		{"widget prod is up", "widget prod"},
+		{"the widget, prod", "widget, prod"},
 	} {
 		if why := OutboundTextRefusal(c.text, []string{"widget", c.word}, allow); why != nameRefusal {
 			t.Errorf("%q with %q denied: %q; want %q", c.text, c.word, why, nameRefusal)

@@ -148,13 +148,13 @@ func AgentTextRefusal(text string, words []string) string {
 //     may spell a deployment name when the deployment declared that
 //     repository public;
 //   - a STANDALONE occurrence of the <repo> of an entry `host/<owner>/<repo>`
-//     (without case; publicRepoNames) is masked before the deny-word scan
-//     (MaskBareNames), so the post may name the public project bare even when
-//     that name is a deny word. Standalone only: the name inside a compound
-//     run (`<repo>-prod`, `<repo>_x`, `<repo>.internal`, `x.<repo>`,
-//     `…/<repo>`) is screened as ever, and so are <owner> and every other
-//     deny word. The pattern screens (hosts, IPs, secrets, infrastructure
-//     words) see the unmasked text.
+//     (without case; publicRepoNames) is masked for the scan of that name
+//     only (MaskBareNames), so the post may name the public project bare even
+//     when that name is a deny word. Standalone is an allowlist of prose
+//     neighbours (proseBeside): the name inside any other run (`<repo>-prod`,
+//     `<repo>:5432`, `x.<repo>`, `…/<repo>`) is screened as ever. <owner>
+//     and every other deny word are scanned against the UNMASKED text, and
+//     so are the pattern screens (hosts, IPs, secrets, infrastructure words).
 //
 // 🔴 Only an outbound draft of a plugin bound to an officer is screened by
 // this; every other agent text keeps AgentTextRefusal, with no allowlist and
@@ -164,7 +164,19 @@ func OutboundTextRefusal(text string, words, publicLinks []string) string {
 	if why := patternRefusal(outboundTextDeny, text); why != "" {
 		return why
 	}
-	return wordRefusal(MaskBareNames(text, publicRepoNames(publicLinks)), words)
+	exempt := publicRepoNames(publicLinks)
+	var names, others []string
+	for _, w := range words {
+		if exempt[strings.ToLower(strings.TrimSpace(w))] {
+			names = append(names, w)
+		} else {
+			others = append(others, w)
+		}
+	}
+	if why := wordRefusal(text, others); why != "" {
+		return why
+	}
+	return wordRefusal(MaskBareNames(text, exempt), names)
 }
 
 func textRefusal(deny []textDeny, text string, words []string) string {

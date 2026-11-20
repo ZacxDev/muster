@@ -833,17 +833,21 @@ out of the text, then screens what is left:
   refused if it spells a deployment name.
 - **The repository's own name may stand alone.** When `<repo>` of an
   allowlist entry `github.com/<owner>/<repo>` is also one of your deny words,
-  each occurrence of it that **stands alone** in the draft (compared without
+  an occurrence of it that **stands alone** in the draft (compared without
   case) is not refused, so a post may say "widget has a new logo." when
-  `acme/widget` is a standing-read repository. Standing alone means no
-  name-continuing character touches it on either side: a letter or digit,
-  `-`, `_`, `/`, or a `.` with a letter or digit beyond it. So
-  `widget-prod`, `prod-widget`, `widget.staging`, `x.widget` and an
-  undeclared `github.com/<owner>/widget-private` are screened as before,
-  while prose punctuation (`widget.` at the end of a sentence, `widget,`,
-  `widget's`, `(widget)`) still counts as the bare name. Only that name is
-  exempt: `<owner>` is still refused (even when it is also a declared
-  repository's name), and so is every other deny word.
+  `acme/widget` is a standing-read repository. Standing alone is an
+  allowlist: each neighbour of the name is the start or end of the text,
+  whitespace, one of `, ; ! ? ' ’ " “ ” ( ) [ ]`, or, after the name, a `.`
+  or `:` followed by whitespace or the end of the text. So `widget.`,
+  `widget's`, `(widget)` and "widget: the new logo" pass. Any other neighbour
+  joins the name to a longer one, which is refused as before: a letter,
+  digit or combining mark, any dash (`widget-prod`, `widget–prod`), `_`,
+  `/`, `@`, `+`, `~`, `\`, a `.` or `:` inside a run (`widget.staging`,
+  `widget:5432`, `x.widget`), and an undeclared
+  `github.com/<owner>/widget-private`. Only that name is exempt, and only
+  for its own check: `<owner>` and every other deny word are checked against
+  the whole text, so a deny word `widget prod` still refuses "widget prod is
+  up".
 - **Everything else is unchanged.** Any other deployment name in the prose
   around the link (another project, a cluster, the owner), an internal host
   name, an IP address, a credential- or token-shaped string or an

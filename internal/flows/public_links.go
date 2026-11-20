@@ -34,14 +34,16 @@ import (
 //   - A REPOSITORY ENTRY's name may also stand alone. An entry of exactly the
 //     shape `host/<owner>/<repo>` declares <repo> public (publicRepoNames), and
 //     each STANDALONE occurrence of <repo> in the draft (without case) is
-//     masked before the deny-word scan (MaskBareNames): "<repo> has a new
-//     logo." passes though <repo> is a deny word. Standalone means no
-//     name-continuing character touches it (continuesName): a letter or digit,
-//     `-`, `_`, `/`, or a `.` with a letter or digit on its far side — so
-//     `<repo>-prod`, `<repo>_x`, `<repo>.internal`, `x.<repo>` and
-//     `…/<repo>-private` are screened as ever, while prose punctuation
-//     (`<repo>.` at a sentence's end, `<repo>,`, `<repo>'s`, `(<repo>)`) is
-//     not a continuation. Only the repository name: never <owner>, never a
+//     masked for the scan of THAT name (MaskBareNames): "<repo> has a new
+//     logo." passes though <repo> is a deny word. Standalone is an ALLOWLIST
+//     (proseBeside): each neighbour is the start or end of the text,
+//     whitespace, one of , ; ! ? ' ’ " “ ” ( ) [ ], or — after the name — a
+//     `.` or `:` followed by whitespace or the end. Anything else joins the
+//     name to a longer one, which is screened as ever: `<repo>-prod`,
+//     `<repo>–prod`, `<repo>.internal`, `<repo>:5432`, `ops@<repo>`,
+//     `…/<repo>-private`. Every OTHER deny word is scanned against the
+//     unmasked text, so `<repo> prod` stays refused when it is a deny word.
+//     Only the repository name: never <owner>, never a
 //     name that is also an entry's owner, never a host-only or deeper entry's
 //     last segment.
 //   - Everything else in the screen is unchanged: an IP address, an internal
@@ -185,15 +187,15 @@ func publicRepoNames(allow []string) map[string]bool {
 }
 
 // MaskBareNames is text with every standalone occurrence of a name in names
-// (lower-case; compared without case) replaced by as many spaces: one that no
-// name-continuing character touches on either side (continuesName).
+// (lower-case; compared without case) replaced by as many spaces: one whose
+// neighbour on each side is prose (proseBeside).
 func MaskBareNames(text string, names map[string]bool) string {
 	for n := range names {
 		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(n))
 		var b strings.Builder
 		last := 0
 		for _, m := range re.FindAllStringIndex(text, -1) {
-			if continuesName(text[:m[0]], true) || continuesName(text[m[1]:], false) {
+			if !proseBeside(text[:m[0]], true) || !proseBeside(text[m[1]:], false) {
 				continue
 			}
 			b.WriteString(text[last:m[0]])
@@ -206,30 +208,32 @@ func MaskBareNames(text string, names map[string]bool) string {
 	return text
 }
 
-// continuesName reports whether the text beside a name continues it into a
-// longer one: side is what precedes the name (before) or what follows it. A
-// letter or digit, `-`, `_` or `/` continues it; so does a `.` whose far
-// side is a letter or digit (`x.<name>`, `<name>.internal`), while a `.`
-// ending a sentence does not.
-func continuesName(side string, before bool) bool {
-	next := func(s string) (rune, string) {
-		if before {
-			r, n := utf8.DecodeLastRuneInString(s)
-			return r, s[:len(s)-n]
-		}
-		r, n := utf8.DecodeRuneInString(s)
-		return r, s[n:]
-	}
+// proseAround are the characters that may stand beside a bare name on either
+// side: prose punctuation that never joins two names.
+const proseAround = ",;!?'\u2019\"\u201c\u201d()[]"
+
+// proseBeside reports whether the text beside a name leaves it standing
+// alone: side is what precedes the name (before) or what follows it. Only an
+// ALLOWLIST does: the start or end of the text, whitespace, a proseAround
+// character, or — after the name only — a `.` or `:` followed by whitespace
+// or the end of the text (a sentence's end, "<name>: the new logo").
+// Anything else — a letter, digit, combining mark, dash of any kind, `.` or
+// `:` inside a run, `@`, `+`, `~`, `\`, `/`, `_` — joins it to a longer name.
+func proseBeside(side string, before bool) bool {
 	if side == "" {
-		return false
-	}
-	r, rest := next(side)
-	switch {
-	case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '/':
 		return true
-	case r == '.' && rest != "":
-		f, _ := next(rest)
-		return unicode.IsLetter(f) || unicode.IsDigit(f)
+	}
+	if before {
+		r, _ := utf8.DecodeLastRuneInString(side)
+		return unicode.IsSpace(r) || strings.ContainsRune(proseAround, r)
+	}
+	r, n := utf8.DecodeRuneInString(side)
+	switch {
+	case unicode.IsSpace(r), strings.ContainsRune(proseAround, r):
+		return true
+	case r == '.', r == ':':
+		f, _ := utf8.DecodeRuneInString(side[n:])
+		return side[n:] == "" || unicode.IsSpace(f)
 	}
 	return false
 }
