@@ -49,8 +49,8 @@ import (
 //
 // A lane muster cannot reach (ccd's 409 busy, 503 not_ready or capacity) is
 // not a failure: the claim is released and the item waits for a later pass —
-// within a bound (chatMaxLaneRefusals). A lane whose account is at its usage
-// limit (ErrChatRateLimited) backs off, and within chatRateLimitedAttempts the
+// within a bound (chatMaxLaneRefusals). A lane whose account is rate-limited (at its usage
+// limit, or a transient 429: ErrChatRateLimited) backs off, and within chatRateLimitedAttempts the
 // member is answered with why (giveUp): a chat is never claimed for ever.
 // ---------------------------------------------------------------------------
 
@@ -491,15 +491,22 @@ var ErrChatLaneBroken = errors.New("officers: the chat's lane cannot take a turn
 // waits for a later pass.
 var ErrChatLaneUnavailable = errors.New("officers: the chat's lane could not take a turn now")
 
-// ErrChatRateLimited is a chat turn the lane's Claude account could not run
-// because it is at its usage limit: ccd's typed `rate_limited` — a 429 for a
-// turn that was typed and failed, or a 409 from a pane parked on the CLI's
-// usage-limit menu, before anything was typed (then wrapped with
-// ErrChatLaneUnavailable too). It does not pass by itself within a pass or
-// two: the runner backs off, and at chatRateLimitedAttempts such turns since
-// the chat's last answer answers the member with ChatRateLimitedReply rather than retry the
-// chat for as long as the limit lasts.
-var ErrChatRateLimited = errors.New("officers: the officer's Claude account is at its usage limit")
+// ErrChatRateLimited is a chat turn the lane's Claude account was
+// rate-limited on: ccd's typed `rate_limited` — a 429 for a turn that was
+// typed and failed, or a 409 from a pane parked on the CLI's usage-limit
+// menu, before anything was typed (then wrapped with ErrChatLaneUnavailable
+// too). The runner backs off, and at chatRateLimitedAttempts such turns since
+// the chat's last answer answers the member (ChatRateLimitedReplyFor) rather
+// than retry the chat for as long as the limit lasts.
+var ErrChatRateLimited = errors.New("officers: the officer's Claude account is rate-limited")
+
+// ErrChatUsageLimit is the ErrChatRateLimited (and always wrapped with it)
+// that the runtime said is the account's USAGE LIMIT (ccd's `usage_limit`:
+// the CLI's limit text, or its usage-limit menu) — not a transient request
+// rate limit, which the CLI types and codes the same. Only this one is
+// answered with ChatRateLimitedReply ("at their usage limit", with the
+// stated reset); any other rate limit gets ChatRequestRateLimitedReply.
+var ErrChatUsageLimit = errors.New("officers: the officer's Claude account is at its usage limit")
 
 // ErrChatLaneBusy is the ErrChatLaneUnavailable that is ccd's 409 `busy`
 // (awaiting_approval included): a turn is running in the lane's CLI. A lane
@@ -647,7 +654,7 @@ type chatBackoff struct {
 // The bounds on a chat that cannot be answered, so it never loops silently:
 //
 //   - chatRateLimitedAttempts: the Nth rate-limited turn (ErrChatRateLimited)
-//     since the chat's last answer is answered with ChatRateLimitedReply. The
+//     since the chat's last answer is answered with why (ChatRateLimitedReplyFor). The
 //     first ones back off (chatBackoffBase, doubling) so an account failover
 //     — which the agent gateway starts on the first `rate_limited` — has
 //     passes to land on before the member is told.
@@ -675,10 +682,32 @@ const (
 	chatMaxBusyWait         = 75 * time.Minute
 )
 
+// ChatRateLimitedReplyFor is the reply for a chat that gave up on rate-limited
+// turns (chatRateLimitedAttempts), chosen by err, the last one: a usage limit
+// (ErrChatUsageLimit) says so, with its stated reset; any other rate limit
+// says only that the officer is being rate-limited, and quotes no reset — a
+// transient limit states none, and must not read as the accounts' limit.
+func ChatRateLimitedReplyFor(err error) string {
+	if errors.Is(err, ErrChatUsageLimit) {
+		return ChatRateLimitedReply(err.Error())
+	}
+	return ChatRequestRateLimitedReply
+}
+
+// ChatRequestRateLimitedReply is the reply posted for a chat whose turns keep
+// coming back rate-limited by something other than the accounts' usage limit
+// (a rate_limited without ErrChatUsageLimit: a transient 429).
+//
+// ⚠ IT NAMES NO WAIT. A ccd from before the usage_limit field sends a typed
+// usage limit unmarked, so a weekly limit can reach this reply too; "ask
+// again later" is true of both, "in a few minutes" would not be.
+const ChatRequestRateLimitedReply = "(The officer is being rate-limited right now. Ask again later.)"
+
 // ChatRateLimitedReply is the reply posted for a chat whose turns keep coming
-// back rate-limited (chatRateLimitedAttempts): the member is told why and,
-// when the CLI stated it, when the limit resets (detail is the failure's
-// text, read for "resets …").
+// back at the account's usage limit (ErrChatUsageLimit,
+// chatRateLimitedAttempts): the member is told why and, when the CLI stated
+// it, when the limit resets (detail is the failure's text, read for
+// "resets …").
 func ChatRateLimitedReply(detail string) string {
 	until := ""
 	if reset := ccpool.ResetPhrase(detail); reset != "" {
@@ -1247,12 +1276,12 @@ const (
 	// ChatUnsupported: the instance's runtime does not say it names a chat
 	// session's MCP calls (ChatLanes.Supports): nothing claimed.
 	ChatUnsupported ChatOutcome = "unsupported"
-	// ChatRateLimited: the lane's Claude account is at its usage limit
+	// ChatRateLimited: the lane's Claude account is rate-limited
 	// (ErrChatRateLimited): released, and the chat backs off.
 	ChatRateLimited ChatOutcome = "rate_limited"
 	// ChatGaveUp: the chat could not be answered within its bound
 	// (chatRateLimitedAttempts, chatMaxLaneRefusals), so the member was
-	// answered with why (ChatRateLimitedReply, ChatLaneUnavailableReply) and
+	// answered with why (ChatRateLimitedReply, ChatRequestRateLimitedReply, ChatLaneUnavailableReply) and
 	// HQ completed the item.
 	ChatGaveUp     ChatOutcome = "gave_up"
 	ChatNothingNew ChatOutcome = "nothing_new"
@@ -1440,13 +1469,13 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 				return ChatLaneBroken
 			case errors.Is(err, ErrChatRateLimited):
 				if limited+1 >= chatRateLimitedAttempts {
-					if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReply(err.Error()), &prev, stop, release, err) {
+					if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReplyFor(err), &prev, stop, release, err) {
 						return ChatGaveUp
 					}
 					return ChatRateLimited
 				}
 				release("lane rate-limited")
-				r.log.Printf("officers: %s: chat %s: instance %s's lane is at its usage limit: %v; it backs off (%d of %d before the member is told)",
+				r.log.Printf("officers: %s: chat %s: instance %s's lane is rate-limited: %v; it backs off (%d of %d before the member is told)",
 					o.label(), chat, o.InstanceLabel(n), err, limited+1, chatRateLimitedAttempts)
 				return ChatRateLimited
 			}
@@ -1464,12 +1493,12 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 		if err != nil && errors.Is(err, ErrChatRateLimited) {
 			// Typed and failed on the limit: the lane has seen them (next).
 			if limited+1 >= chatRateLimitedAttempts {
-				if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReply(err.Error()), &next, stop, release, err) {
+				if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReplyFor(err), &next, stop, release, err) {
 					return ChatGaveUp
 				}
 				return ChatRateLimited
 			}
-			r.log.Printf("officers: %s: chat %s: its turn on instance %s hit the usage limit: %v (released; it backs off, %d of %d before the member is told)",
+			r.log.Printf("officers: %s: chat %s: its turn on instance %s was rate-limited: %v (released; it backs off, %d of %d before the member is told)",
 				o.label(), chat, o.InstanceLabel(n), err, limited+1, chatRateLimitedAttempts)
 			release("turn rate-limited")
 			return ChatRateLimited
@@ -1591,7 +1620,7 @@ func (r *ChatRunner) laneRefusalsExhausted(err error, marks ChatMarks, refused i
 }
 
 // giveUp answers member seq inReplyTo of chat with text — why the officer
-// cannot reply (ChatRateLimitedReply, ChatLaneUnavailableReply) — in place of
+// cannot reply (ChatRateLimitedReply, ChatRequestRateLimitedReply, ChatLaneUnavailableReply) — in place of
 // the lane's reply: HQ takes it as the officer's reply and completes the item,
 // so the chat is no longer claimed every pass. The turn is marked answered
 // (dropTurn) on marks, the lane's marks as they stand, so no later claim asks

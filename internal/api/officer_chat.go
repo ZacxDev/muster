@@ -229,14 +229,21 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 //     connected): officers.ErrChatLaneBroken, unsent;
 //   - a typed turn that failed `rate_limited` (ccd's 429):
 //     officers.ErrChatRateLimited, wrapping err;
+//   - either rate limit ALSO wraps officers.ErrChatUsageLimit when it is the
+//     account's usage limit (chatTurnUsageLimit) — the only one the runner
+//     tells the member is "at their usage limit"; a transient 429 is not;
 //   - anything else: err as it is (nil for a turn that answered).
 func chatTurnError(err error) (error, bool) {
 	limited := chatTurnRateLimited(err)
+	limitErr := officers.ErrChatRateLimited
+	if limited && chatTurnUsageLimit(err) {
+		limitErr = fmt.Errorf("%w: %w", officers.ErrChatRateLimited, officers.ErrChatUsageLimit)
+	}
 	switch unsent := agentgateway.Unsent(err); unsent {
 	case "":
 	case agentgateway.UnsentBusy, agentgateway.UnsentNotReady, agentgateway.UnsentCapacity:
 		if limited {
-			return fmt.Errorf("%w: %w (nothing was typed): %v%s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, err, rateLimitDetail(err)), true
+			return fmt.Errorf("%w: %w (nothing was typed): %v%s", officers.ErrChatLaneUnavailable, limitErr, err, rateLimitDetail(err)), true
 		}
 		// Passes by itself: another turn, a CLI starting, every lane busy.
 		if unsent == agentgateway.UnsentBusy {
@@ -251,7 +258,7 @@ func chatTurnError(err error) (error, bool) {
 		return fmt.Errorf("%w (%s)", officers.ErrChatLaneBroken, unsent), true
 	}
 	if err != nil && limited {
-		return fmt.Errorf("%w: %w%s", officers.ErrChatRateLimited, err, rateLimitDetail(err)), false
+		return fmt.Errorf("%w: %w%s", limitErr, err, rateLimitDetail(err)), false
 	}
 	return err, false
 }
@@ -275,6 +282,25 @@ func rateLimitDetail(err error) string {
 func chatTurnRateLimited(err error) bool {
 	var rt *agents.RuntimeError
 	return errors.As(err, &rt) && rt.Type == ccpool.FailureRateLimited
+}
+
+// chatTurnUsageLimit reports whether err, a chatTurnRateLimited, is the
+// account's USAGE LIMIT rather than a transient request rate limit — read
+// from the typed failure, never its text:
+//
+//   - ccd's `usage_limit` (agents.RuntimeError.UsageLimit), which ccd sets
+//     from the CLI's own limit text or its usage-limit menu
+//     (cmd/ccd classifyAPIError, limitMenuFailure);
+//   - or the 409 itself: ccd answers `rate_limited` with a 409 only for a
+//     pane parked on the usage-limit menu, so a ccd from before the field
+//     still reads as a usage limit there.
+//
+// 🔴 NOT THE CODE: the CLI codes a transient "Request rate limited" 429
+// `rate_limit` exactly like a usage limit, so a code check would tell the
+// member the accounts are at their limit for a passing throttle.
+func chatTurnUsageLimit(err error) bool {
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && (rt.UsageLimit || rt.Status == http.StatusConflict)
 }
 
 // officerChatTurnContext is the context a chat turn on agent a's session sess
