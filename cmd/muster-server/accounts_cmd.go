@@ -170,7 +170,7 @@ func (a *app) logAuthBanner() {
 	l, c := a.logger, a.cfg
 	if api.AuthMode(c.AuthMode) == api.AuthModeGoTrue {
 		l.Printf("auth mode: GOTRUE — %s=gotrue: browser sign-in is per user through muster's GoTrue "+
-			"(cookies muster_at/muster_rt, HttpOnly, SameSite=Lax, ALWAYS Secure), and only on the browser "+
+			"(cookies muster_at/muster_rt, __Host- prefixed on an https deployment, HttpOnly, SameSite=Lax, ALWAYS Secure), and only on the browser "+
 			"listener", envAuthMode)
 	} else {
 		l.Printf("auth mode: PASSWORD — %s=password (the default): one shared operator password, acting "+

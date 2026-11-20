@@ -42,6 +42,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // Statuses. A job moves queued → running → one of the three terminal ones, or
@@ -293,6 +294,13 @@ type Outcome struct {
 	Result string
 	Reason string
 	Error  string
+	// AccountFailure is what the failed turn said about its Claude account
+	// (ccpool.AccountFailure of the runtime's typed failure): rate_limited only
+	// for the account's usage limit, auth_failed, or "". It is what the job
+	// runner fails the worker over on (internal/api failoverJob), so a
+	// transient 429 — Reason rate_limited too — moves nothing. In this process
+	// only: it is not stored.
+	AccountFailure string
 }
 
 // ErrNotFound is Get's answer for an id the caller cannot see.
@@ -400,7 +408,8 @@ func Classify(reply string, err error, deadline bool) Outcome {
 		if rt.Type == "turn_timeout" {
 			status = StatusTimedOut
 		}
-		return Outcome{Status: status, Reason: rt.Type, Error: msg}
+		return Outcome{Status: status, Reason: rt.Type, Error: msg,
+			AccountFailure: ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status)}
 	}
 	return Outcome{Status: StatusFailed, Reason: ReasonTurnFailed, Error: err.Error()}
 }

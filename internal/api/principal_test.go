@@ -163,6 +163,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}/responses/{rid}/raw",
 		"POST /pages/{id}/versions/{v}/submit",
 		"POST /pages/{id}/versions/{v}/upload",
+		// An author's asset, as the owner's view of a version reads it
+		// (page_assets.go).
+		"GET /pages/{id}/versions/{v}/assets/{asset}",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/share",
 		"POST /pages/{id}/share/rotate",
@@ -178,6 +181,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /usage",
 		// The answer-attempt log's page (answers_page.go).
 		"GET /answers",
+		// The morning report's page (morning_report.go).
+		"GET /morning",
+		"GET /morning/{date}",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
@@ -329,6 +335,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		// A session view's Preview button (plugin_chip.go).
 		"GET /ui/mirror/preview-button",
+		// Its panel's Pages tab.
+		"GET /ui/mirror/session-pages",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
 		// Suggested replies (suggest.go): the composer's set and its counts,
@@ -416,6 +424,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/{name}/chat-context",
 		"GET /ui/dispatch-card",
 		"GET /ui/agents/{name}/task",
+		// The agent page's Open button and its Pages tab.
+		"GET /ui/agents/{name}/open-button",
+		"GET /ui/agents/{name}/session-pages",
 		"GET /ui/chief/panel",
 		"GET /ui/chief/threads/search",
 		"GET /ui/chief/fleet",
@@ -540,6 +551,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/usage",
 		"PUT /api/officers/defs/{officer}/schedules/{name}",
 		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		// Scheduled host jobs (hostjobs.go): requireArmedHookToken.
+		"GET /api/host-jobs",
+		"GET /api/host-jobs/{name}/runs",
+		"POST /api/host-jobs/{name}/run",
+		"DELETE /api/host-jobs/{name}",
 		"GET /api/officers/defs/{officer}/contacts",
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
@@ -611,6 +627,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/usage",
 		"PUT /api/officers/defs/{officer}/schedules/{name}",
 		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		// Scheduled host jobs (hostjobs.go): requireArmedHookToken.
+		"GET /api/host-jobs",
+		"GET /api/host-jobs/{name}/runs",
+		"POST /api/host-jobs/{name}/run",
+		"DELETE /api/host-jobs/{name}",
 		"GET /api/officers/defs/{officer}/contacts",
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
@@ -650,16 +671,21 @@ var routeVias = map[authz.Via][]string{
 		// A session's ask attachment, sent by its host (ask_media.go).
 		"POST /mirror/ask-attachments",
 		"DELETE /mirror/ask-attachments/{id}",
+		// A page's asset, sent by the host of the session that made the page
+		// (page_assets.go).
+		"POST /mirror/pages/{id}/assets",
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
-	// A page's SHARE LINK (0116) opens exactly the four share-link routes; the
+	// A page's SHARE LINK (0116) opens exactly the five share-link routes; the
 	// token is in the path (credential rewrites the path's placeholder).
 	authz.ViaPageLink: {
 		"GET /s/{token}",
 		"GET /s/{token}/content",
 		"POST /s/{token}/submit",
 		"POST /s/{token}/upload",
+		// An author's asset the page's current version uses (page_assets.go).
+		"GET /s/{token}/assets/{asset}",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {

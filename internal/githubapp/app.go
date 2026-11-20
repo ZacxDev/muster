@@ -809,6 +809,9 @@ type PRState struct {
 	Merged   bool
 	HeadSHA  string
 	ClosedAt time.Time
+	// Title is the pull request's title as GitHub has it: text its author
+	// wrote, so a reader escapes it and treats it as untrusted.
+	Title string
 }
 
 // prReadMintRequest is the body of the token muster itself uses to read one
@@ -882,6 +885,7 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 			SHA string `json:"sha"`
 		} `json:"head"`
 		ClosedAt *time.Time `json:"closed_at"`
+		Title    string     `json:"title"`
 	}
 	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
 		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
@@ -890,7 +894,7 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 	if r.State != "open" && r.State != "closed" {
 		return PRState{}, fmt.Errorf("GitHub's answer for %s pull request #%d has state %q", repo, n, r.State)
 	}
-	st := PRState{State: r.State, Merged: r.Merged}
+	st := PRState{State: r.State, Merged: r.Merged, Title: r.Title}
 	if validCommitSHA(r.Head.SHA) {
 		st.HeadSHA = r.Head.SHA
 	}

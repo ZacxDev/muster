@@ -179,6 +179,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// The fleet digest card (fleet_digest.go).
 	s.registerFleetDigestRoutes(mux)
 	s.registerFleetCardRoutes(mux)
+	s.registerMorningReportRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -186,6 +187,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
+	// The agent page's Open button and its panel's Pages tab (plugin_chip.go).
+	mux.HandleFunc("GET /ui/agents/{name}/open-button", s.requireSession(s.handleAgentOpenButton))
+	mux.HandleFunc("GET /ui/agents/{name}/session-pages", s.requireSession(s.handleAgentSessionPages))
 	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
 	// card's own refresh, and the live stream's.
 	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))
@@ -1659,6 +1663,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		view.StepUp = s.stepUpView(r)
 		view.StepUp.Why = ui.AgentRotateWhy(view.StepUp.Window)
 	}
+	// The header's Open button and its panel: the agent's pages
+	// (plugin_chip.go); nil with pages off.
+	view.Open = s.agentOpenChips(op.begin("pages"), a)
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
@@ -2530,7 +2537,11 @@ func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKe
 // in which case only the WS translation happens.
 func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) (agents.StreamEmit, *wsChatStream) {
 	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
-	st := newWSChatStream(wsWriter(ctx, c))
+	every := chatStreamHTMLEvery
+	if srv != nil {
+		every = srv.chatStreamEvery()
+	}
+	st := newWSChatStream(wsWriter(ctx, c), every)
 	if srv != nil {
 		// The reply's mentions are linked while it streams (ui/mentions.go).
 		st.mentions = srv.mentionIndex(ctx)

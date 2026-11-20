@@ -31,12 +31,21 @@ type PageRowView struct {
 	// (responses) are counts; Current is the version shown (what its links
 	// show); Live is whether a live link exists.
 	Versions, Current, Pending, Replies int
-	Live                       bool
+	Live                                bool
 	// ShareURL is the page's reusable link when it has one (Share hands it out
 	// at once, and the ⋯ menu then offers Revoke link and New link); Reusable
 	// is whether the server keeps one (PageShareButton).
 	ShareURL string
 	Reusable bool
+	// NoRevoke: the reader may not revoke the page's link (pages.MayRevoke: a
+	// team's page, read by a member who may not), so the ⋯ draws no Revoke
+	// link and no New link. Share stays: any member shares.
+	NoRevoke bool
+	// TeamID and Team mark a TEAM's page (0165), read by a member: the team's
+	// user id and its mark in plain words ("Team: <name>"). 0 and "" for a
+	// person's own page.
+	TeamID int64
+	Team   string
 }
 
 // pageBadges are a row's badges, in order: each only when it says something.
@@ -83,6 +92,10 @@ func PageRow(v PageRowView) g.Node {
 		}
 		meta = append(meta, g.Raw(PlainWhenHTML("", v.Updated, v.Now)))
 	}
+	if v.TeamID > 0 {
+		meta = append([]g.Node{Span(Class("font-semibold text-fg"), g.Attr("data-page-team", strconv.FormatInt(v.TeamID, 10)), g.Text(v.Team)),
+			g.If(len(meta) > 0, g.Text(" · "))}, meta...)
+	}
 	return Li(g.Attr("data-page-id", strconv.FormatInt(v.ID, 10)), Class("flex min-w-0 items-center gap-1 py-1"),
 		A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-row-open", ""),
 			Class("press flex min-h-[44px] min-w-0 flex-1 flex-col gap-1 rounded-lg px-3 py-2 transition hover:bg-s2"),
@@ -101,7 +114,7 @@ func pageRowMenu(v PageRowView) g.Node {
 		A(Href(PageDetailPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-details", ""), Class(pageMenuItem), g.Text("Details")),
 		// Revoke link / New link act on the reusable link: none without a
 		// link key (PageShareMenu's rule).
-		g.If(v.Reusable, pageLinkActions(v.ID, v.ShareURL != "")))
+		g.If(v.Reusable && !v.NoRevoke, pageLinkActions(v.ID, v.ShareURL != "")))
 }
 
 // PageLinkMenu is the page screen's ⋯ beside Share: Revoke link and New link.

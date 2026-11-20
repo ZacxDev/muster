@@ -443,6 +443,11 @@ export const pagesShareConnectPort = port + 407;
 // tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
 // 127.0.0.1) whose instance document and icon the spec controls.
 export const serverSwitcherStubPort = port + 404;
+// tests/team-pages.spec.ts: a team's page read by a member who is not its
+// creator — its own server (pages on, a link key) and the connect listener
+// the key needs. (+463, +464: clear of every block, +462 the highest taken.)
+export const teamPagesPort = port + 463;
+export const teamPagesConnectPort = port + 464;
 // tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
 // desktop width — its own server (plugins on), no mirror host.
 export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/env-ports.test.mjs)
@@ -493,6 +498,15 @@ export const sidebarOfficersConnectPort = port + 441;
 export const featuresMemberMainPort = port + 442;
 export const featuresMemberBrowserPort = port + 443;
 export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
+// The session view's Open button and its Previews | Pages panel
+// (session-open.spec.ts): its own mirror server (plugins and pages on).
+// +457: clear of officerNeedsYou's +445, pluginAutostart's +450 to +452,
+// morningReport's +453 and pagesDeclutter's +455/+456.
+export const sessionOpenPort = port + 457;
+// tests/morning-report.spec.ts: the morning report's page on a phone — its own
+// server with MUSTER_MORNING_REPORT=1 (+453: clear of the blocks above,
+// officerNeedsYouPort's +445 and chiefPropose's +446 to +449).
+export const morningReportPort = port + 453;
 // tests/plugin-autostart.spec.ts: a plugin's auto-start on its /plugins card —
 // its own e2eterm server over the noop driver, its connect listener, and the
 // fake GitHub App it plays (+450 to +452: clear of the blocks above).

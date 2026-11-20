@@ -278,19 +278,17 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// column (nothing below moves), and an overlay at every width.
 				overlayNav(v.Nav, ""),
 				Header(
-					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					// 🔴 ONE ROW THAT NEVER WRAPS (mirrorHeaderMenu): ☰, the title
+					// (flex-1, truncating: it takes what the controls leave), the
+					// asks badge while the window has open asks, the Open button
+					// while there is something to open, the Rendered | Terminal
+					// switch and the ⋯ menu, which holds the secondary actions
+					// (Home, the message index). Measured at 390×844 and 1280×800
+					// by e2e/tests/session-open.spec.ts.
+					Class("flex flex-nowrap items-center gap-2 border-b border-line px-2 py-1.5"),
 					// Polled only without the asks badge, whose live refresh's
 					// asks:changed refreshes it (AttentionLiveScript).
 					overlayNavButton(v.Switcher, v.AsksSrc == ""),
-					A(
-						ID("mv-back"),
-						// Home (the chief, or the session opened last): the Agents list
-						// page this arrow went back to is retired.
-						Href(HomeLeavingMirrorPath(ref)),
-						g.Attr("aria-label", "Home"),
-						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
-						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
-					),
 					Div(
 						// relative: the title button's 44px hit area
 						// (mirrorTitleHitClass) is placed on this column.
@@ -306,26 +304,23 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							// has reported usage, and again after a reset.
 							mirrorContextChip(),
 							mirrorUpdatingChip(),
-							// Below `sm` the Preview button is here, in the second
-							// row, so the title keeps its width (plugin_chip.go).
-							previewButtonSlot(v.Plugins, PreviewInRow),
 						),
 					),
 					// The window's sessions' open attention asks: a count that
 					// opens the Asks page filtered to them (AskerAsksBadge).
 					g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
-					chatIndexButton("mv-log"),
-					// The window's Preview button, while it has something to
-					// preview (plugin_chip.go).
-					previewButtonSlot(v.Plugins, PreviewInHeader),
+					// The session's Open button (previews and pages), while it has
+					// something to open (plugin_chip.go).
+					previewButtonSlot(v.Plugins),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
+					mirrorHeaderMenu(HomeLeavingMirrorPath(ref), "mv-log"),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
 				// The rename offer, when the conversation has moved on from its
 				// name (session_name.go).
 				driftBanner(v.Drift),
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
-				// The Preview button's panel, closed (plugin_chip.go).
+				// The Open button's panel, closed (plugin_chip.go).
 				previewPanel(v.Plugins),
 				// A succession of this session's: the card, its line, the follow
 				// (view_succession.go).

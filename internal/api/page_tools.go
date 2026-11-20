@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -31,12 +32,13 @@ import (
 // security confines every read to the owner as well, so another owner's page
 // and another creator's page read alike: "no such page".
 //
-// 🔴 BY DEFAULT NO TOOL MAKES A LINK LIVE. page_share_request files a PENDING
-// link and an owner card; only the owner's own door approves it
-// (page_share.go). The one exception is the PAGE OWNER'S own opt-in, "Let my
+// 🔴 NO TOOL MAKES A LINK LIVE ON ITS OWN AUTHORITY. page_share_request files a
+// PENDING link and an owner card; only the owner's own door approves it
+// (page_share.go). The one exception is the PAGE OWNER'S own switch, "Let my
 // agents share pages without asking" on Account (notify_preferences
-// .pages_agent_share, off for everyone until they turn it on;
-// pageAgentShareOn): for that owner's pages page_share_request makes the
+// .pages_agent_share — ON for every person until they turn it off, migration
+// 0163; always off for a team owner; pageAgentShareOn): for that owner's pages
+// page_share_request makes the
 // link live at once and the owner is TOLD (a push, the page's card) instead
 // of asked — still only for a page the caller made, under its owner's
 // row-level security (pageShareAuto). The one
@@ -93,7 +95,9 @@ func pageBlocksSchema() map[string]any {
 			"{type:\"approval\", id, label, comment?} — Approve / Decline, optionally with a comment; " +
 			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
-			"Component ids are a letter then letters, digits, _ or -, unique on the page. Images must be inline (data: URIs); " +
+			"Component ids are a letter then letters, digits, _ or -, unique on the page. An image or video at full size is an asset: attach the file with " +
+			"page_asset_upload and write its ref (asset:<id>) where its address goes — ![what it shows](asset:<id>) in markdown, src=\"asset:<id>\" in html; " +
+			"small images may also be inline (data: URIs); " +
 			"the whole page is at most " + strconv.Itoa(pages.MaxVersionBytes>>10) + " KiB.",
 		"items": map[string]any{"type": "object", "required": []string{"type"},
 			"properties": map[string]any{
@@ -175,7 +179,8 @@ func pageToolDefs() []agents.ToolDef {
 // pageToolNames is the page tools' names, for the dispatch.
 func isPageTool(name string) bool {
 	switch name {
-	case pageCreateTool, pageUpdateTool, pageGetTool, pageListTool, pageShareRequestTool, pageResponsesTool, pageLinkRevokeTool:
+	case pageCreateTool, pageUpdateTool, pageGetTool, pageListTool, pageShareRequestTool, pageResponsesTool, pageLinkRevokeTool,
+		pageAssetUploadTool, pageAssetDeleteTool:
 		return true
 	}
 	return false
@@ -193,9 +198,13 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	if !ok {
 		return toolErr("%s is for an agent or a mirrored session", name), true
 	}
+	if c.agent != nil && (name == pageAssetUploadTool || name == pageAssetDeleteTool) {
+		return toolErr("%s", pageAssetsMirrorOnly), true
+	}
 	switch name {
 	case pageCreateTool:
-		return s.toolPageCreate(ctx, creator, arguments), true
+		creator.ByUser = s.teamPageCreator(ctx, c)
+		return s.toolPageCreate(ctx, c, creator, arguments), true
 	case pageUpdateTool:
 		return s.toolPageUpdate(ctx, c, creator, arguments), true
 	case pageGetTool:
@@ -208,6 +217,10 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 		return s.toolPageResponses(ctx, c, creator, arguments), true
 	case pageLinkRevokeTool:
 		return s.toolPageLinkRevoke(ctx, creator, arguments), true
+	case pageAssetUploadTool:
+		return s.toolPageAssetUpload(ctx, c, creator, arguments), true
+	case pageAssetDeleteTool:
+		return s.toolPageAssetDelete(ctx, creator, arguments), true
 	}
 	return "", false
 }
@@ -226,9 +239,46 @@ func pageCreatorOf(c toolCaller) (pages.Creator, bool) {
 		// The session id is the one the mirror MCP request bound to
 		// (mirror_mcp.go: the pane's Claude Code session), recorded on a new
 		// page so its owner can open that session from it (pageSessionLink).
-		return pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}, true
+		// And the tmux window it runs in (its session view lists the window's
+		// pages by it, whatever Claude session made them): none for a caller
+		// with no window (a remote one).
+		cr := pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}
+		if c.mirrorWindow != "" && c.mirrorTmuxSession != "" {
+			cr.MirrorTmuxSession, cr.MirrorWindow = c.mirrorTmuxSession, c.mirrorWindow
+		}
+		return cr, true
 	}
 	return pages.Creator{}, false
+}
+
+// agentStarter is the chief dispatch store's read of who started an agent
+// (plugins.PGStore.AgentStartedBy).
+type agentStarter interface {
+	AgentStartedBy(ctx context.Context, agentID int64) (int64, error)
+}
+
+// teamPageCreator is the PERSON a team agent's new page records as its
+// creator (pages.Creator.ByUser, migration 0165): the person whose say-so
+// started the agent (its chief reservation's requested_by_user), read as the
+// team. 0 — the page records none, and a manager of the team manages it —
+// for any caller that is not a team-owned agent (a person's own page needs
+// none: its owner is its creator), and when no starter is recorded or it
+// cannot be read (logged).
+func (s *Server) teamPageCreator(ctx context.Context, c toolCaller) int64 {
+	p, ok := authz.From(ctx)
+	if c.agent == nil || c.agent.ID <= 0 || !ok || !p.Team || p.UserID != c.agent.OwnerID {
+		return 0
+	}
+	st, ok := s.ext.ChiefDispatch.(agentStarter)
+	if !ok {
+		return 0
+	}
+	person, err := st.AgentStartedBy(ctx, c.agent.ID)
+	if err != nil {
+		s.logger.Printf("pages: team agent %d: read who started it: %v (the page records no creator)", c.agent.ID, err)
+		return 0
+	}
+	return person
 }
 
 // pageToolRefusal is a store error as a tool's error.
@@ -275,11 +325,11 @@ func pageInput(arguments string, needTitle bool) (id int64, title string, blocks
 	return in.PageID, title, blocks, size, ""
 }
 
-// pageNext is what a create or update says to do next.
-func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
+// pageNext is what a create or update says to do next, for caller c.
+func (s *Server) pageNext(ctx context.Context, c toolCaller, p pages.Page) string {
 	id := p.ID
 	how := "your owner is asked, and approves the link"
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	if s.pageShareGoesLive(ctx, c, p.OwnerID) {
 		how = "its link is live at once, and your owner is told"
 	}
 	return "Your owner has been shown it, and can open it signed in at " + s.pageViewURL(id) + ". To let someone else open it, call page_share_request{page_id: " +
@@ -309,7 +359,7 @@ func (s *Server) pagePublished(p pages.Page, byOfficer bool) {
 	})
 }
 
-func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments string) string {
+func (s *Server) toolPageCreate(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
 	_, title, blocks, size, bad := pageInput(arguments, true)
 	if bad != "" {
 		return bad
@@ -323,7 +373,7 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 	}
 	s.pagePublished(p, s.agentIsOfficer(ctx, c.AgentID, p.OwnerID))
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
-		"next": s.pageNext(ctx, p)})
+		"next": s.pageNext(ctx, caller, p)})
 }
 
 func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
@@ -351,7 +401,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator,
 		byOfficer: s.agentIsOfficer(ctx, c.AgentID, p.OwnerID)})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
-		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
+		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, caller, p)})
 }
 
 // pageIDArg reads {page_id}.
@@ -403,7 +453,8 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	versions, verr := s.ext.Pages.Versions(ctx, id)
 	links, lerr := s.ext.Pages.Links(ctx, id)
 	resps, rerr := s.ext.Pages.Responses(ctx, id, 0, 500)
-	if err := errors.Join(verr, lerr, rerr); err != nil {
+	assets, aerr := s.ext.Pages.Assets(ctx, id)
+	if err := errors.Join(verr, lerr, rerr, aerr); err != nil {
 		s.logger.Printf("pages: get %d: %v", id, err)
 		return toolErr("page %d could not be read whole", id)
 	}
@@ -415,8 +466,9 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	for _, l := range links {
 		ls = append(ls, s.pageLinkView(l))
 	}
+	av, abytes := pageAssetsView(assets)
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "current_version": p.CurrentVersion, "versions": vs, "links": ls,
-		"responses": len(resps), "preview_url": s.pageViewURL(p.ID),
+		"responses": len(resps), "assets": av, "asset_bytes": abytes, "preview_url": s.pageViewURL(p.ID),
 		"note": "A link's url is never shown here: page_share_request gave it (a pending link's only once; where links go live at once, page_share_request returns the page's reusable link again). A hash-only link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is the owner's view: your owner's own view of the page, signed in."})
 }
 
@@ -447,8 +499,9 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		return pageToolRefusal("read", in.PageID, err)
 	}
 	// 🔴 THE PAGE OWNER'S OPT-IN, read for p.OwnerID — never the caller's or
-	// the operator's (TestTheOptInIsThePageOwners).
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	// the operator's (TestTheOptInIsThePageOwners) — and never for a caller the
+	// step-up gate covers (pageShareGoesLive).
+	if s.pageShareGoesLive(ctx, c, p.OwnerID) {
 		return s.pageShareAuto(ctx, creator, p, in.Reason)
 	}
 	if s.ext.Attention == nil {
@@ -491,9 +544,52 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
 }
 
-// pageAgentShareOn reports whether owner turned on "Let my agents share pages
-// without asking" (Account → Pages). Off — no store, no row, a failed read
-// (logged) — is the ask flow. ctx acts as owner here (an agent's or a mirrored
+// pageShareGoesLive reports whether caller c's page_share_request for a page
+// of owner's makes the link live at once instead of asking: the owner's own
+// setting is on and owner is not a team (pageAgentShareAllowed) AND c is not a caller the step-up gate
+// covers (host_stepup.go stepUpCoverage: a mirrored session on a machine that
+// runs a host officer or starts agents for the chief, or a remote caller).
+//
+// 🔴 A COVERED CALLER ALWAYS ASKS (operator decision, #847 round 1): its
+// door names the session by a header any process on that machine can set —
+// the host officer, a spawned agent — so the call proves nothing about the
+// owner's own session, and "the owner's agents may share" does not reach it.
+// Only a dispatched agent (no mirror host) and the owner's own sessions on an
+// uncovered machine go live. TestAStepUpCoveredCallerIsAlwaysAsked.
+func (s *Server) pageShareGoesLive(ctx context.Context, c toolCaller, owner int64) bool {
+	if !s.pageAgentShareAllowed(ctx, owner) {
+		return false
+	}
+	if c.asker.MirrorHost == "" && !c.remote {
+		return true
+	}
+	_, _, covered := s.stepUpCoverage(ctx, c.asker.MirrorHost, c)
+	return !covered
+}
+
+// pageAgentShareAllowed reports whether an agent's page_share_request for a
+// page of owner's makes the link live at once (pageShareAuto) instead of
+// asking a person: the owner's own opt-in (pageAgentShareOn), and NEVER for a
+// team.
+//
+// 🔴 A TEAM AGENT NEVER MAKES A LINK LIVE BY ITSELF (operator decision: a
+// team's page goes public only when a person taps — Share on the page, or
+// the share card). No setting reaches it: the opt-in is never read for a
+// team, so a pages_agent_share true on a team's notify_preferences row — by
+// a default or by hand — cannot turn this on. An owner whose account cannot
+// be read is taken for a team (ownerIsTeam): it asks.
+// TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn.
+func (s *Server) pageAgentShareAllowed(ctx context.Context, owner int64) bool {
+	if s.ownerIsTeam(ctx, owner) {
+		return false
+	}
+	return s.pageAgentShareOn(ctx, owner)
+}
+
+// pageAgentShareOn reports whether "Let my agents share pages without asking"
+// (Account → Pages) is on for owner: on unless they turned it off (no row is
+// on for a person; a team is always off — notifypref.PG.PagesAgentShare). No store
+// or a failed read (logged) is the ask flow. ctx acts as owner here (an agent's or a mirrored
 // session's request runs as the agent's owner); the store refuses any other
 // principal, which reads as off.
 func (s *Server) pageAgentShareOn(ctx context.Context, owner int64) bool {

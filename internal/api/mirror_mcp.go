@@ -409,6 +409,9 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	// owner and asking for a link — with the page store and the feature on.
 	if s.pagesOn() {
 		out = append(out, pageToolDefs()...)
+		// The page's images and video (page_assets.go): a mirrored session's
+		// only, for now — its host sends the file from where it is.
+		out = append(out, pageAssetToolDefs()...)
 	}
 	// notify_owner — a session pushing its owner, labelled as itself
 	// (notify_owner.go) — with muster's own push on.
@@ -573,7 +576,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					return toolErr("host %s lists no one window running opencode session %q that it sends to now; a host acts only as its own sessions",
 						t.Host, mirror.SessionIDOf(agentKey))
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window, mirrorTmuxSession: e.Session}
 			} else {
 				// 🔴 THE CLAUDE HEADER NAMES A CLAUDE SESSION ONLY. mirrorSessionOf
 				// also binds an opencode caller's key, so without this an
@@ -587,7 +590,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
 						t.Host, sid, mirrorSessionHeader)
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window, mirrorTmuxSession: e.Session}
 			}
 			// 🔴 A HOST OFFICER INSTANCE FIRST (officer_host.go), on every call
 			// while a host officer is declared: a session bound to one runs only

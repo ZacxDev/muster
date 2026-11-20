@@ -179,6 +179,12 @@ func featureCatalog() []features.Feature {
 			OneLine:     "The chief suggests what to send each session; nothing is sent until you approve it.",
 			Description: "The chief proposes what to send each of your sessions; nothing is sent until you tap Approve on its card in the fleet digest.",
 			Enable:      []features.Var{is(envSessionState, "1"), is(envFleetDigest, "1"), is(envFleetOrchestration, "propose")}, NeedsChief: true},
+		{ID: features.MorningReport, Name: "Morning report",
+			PlainName:   "Morning report",
+			OneLine:     "A notification on mornings after something happened: what's waiting on you, what's done, what's stuck.",
+			Description: "One notification each morning, on days something happened overnight, opening a page of what's waiting on you, what got done, what's stuck and the night's usage.",
+			Enable:      []features.Var{is(envMorningReport, "1")},
+			Settings:    []string{envMorningReportTZ}},
 		{ID: features.AskLog, Name: "Ask log",
 			PlainName:   "Question history",
 			OneLine:     "A record of every question an agent asked you, your answer and how long it took.",
@@ -569,6 +575,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	st[features.SessionState] = pick(ext.Episodes != nil, c.SessionState, "", envSessionState+"=1 but "+noDB, envSessionState+" is unset")
 	st[features.FleetDigest] = pick(ext.FleetDigest, c.FleetDigest, "", envFleetDigest+"=1 but "+noDB, envFleetDigest+" is unset")
 	st[features.FleetOrchestration] = pick(ext.FleetPropose, c.FleetPropose, "", envFleetOrchestration+"=propose but "+noDB, envFleetOrchestration+" is not propose")
+	st[features.MorningReport] = pick(ext.MorningReport != nil, c.MorningReport, "", envMorningReport+"=1 but "+noDB, envMorningReport+" is unset")
 	st[features.AskLog] = pick(ext.AskLog != nil, c.AskLog.On, "", envAskLog+"=1 but "+noDB, envAskLog+" is unset")
 	switch {
 	case ext.Pages != nil && c.PublicURL == "":

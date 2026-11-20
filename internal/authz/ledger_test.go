@@ -188,6 +188,10 @@ var (
 		// global hourly cap and reads the live decisions still in flight; each
 		// decision is then acted on as its own owner (attentionPrincipal).
 		"internal/chiefnudge.sys",
+		// The morning report (migration 0161): which owners get one — enabled
+		// persons' ids only (morning.PG.Owners); each report is then built and
+		// stored as its own owner (attentionPrincipal).
+		"internal/morning.(*PG).Owners",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -314,6 +318,12 @@ var (
 		// owner's running job holds the agent too; each job is then read and run
 		// as its owner (withPrincipalLedger's jobPrincipal).
 		"internal/jobs.(*PGStore).Heads",
+		// Scheduled host jobs (migration 0166): the store's one helper. The
+		// scheduler's compare-and-set of every owner's DUE jobs (FireDue) and
+		// the sweep's move of every owner's running runs whose result is
+		// overdue to lost (LostRuns); each row is handed back with its owner
+		// and acted on as THAT owner (withPrincipalLedger's hostJobPrincipal).
+		"internal/hostjobs.sys",
 		// The ask log (migration 0089): the retention sweep's one helper. It
 		// clears question and answer text past the TTL and deletes rows past
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and
@@ -372,6 +382,11 @@ var (
 		// security confines it to that user's rows. A fixture command, never
 		// linked into a binary, and it refuses any database not ending in _e2e.
 		"e2e/askfix.run",
+		// The morning report's browser fixture (e2e/morningfix): the same, for
+		// one owner's report of a fixed day and one ask. A fixture command,
+		// never linked into a binary, and it refuses any database not ending in
+		// _e2e.
+		"e2e/morningfix.run",
 		// The Asks card feed's browser fixture (e2e/asksfeedfix): the same, for
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
@@ -426,6 +441,12 @@ var (
 		// restart left queued) is read and run as its owner, through
 		// authz.ViaJobQueue, after jobs.PGStore.Heads read the head under System.
 		"internal/api.(*Server).jobPrincipal",
+		// The scheduled host job runner: one owner's host jobs, runs, job
+		// page and Attention item, read and written as that owner — a host's
+		// jobs message, a due fire FireDue moved under System, a host's
+		// job-result, or a run LostRuns moved — through authz.ViaHostJob. A
+		// team (or an account that cannot be read) is refused before it.
+		"internal/api.(*Server).hostJobPrincipal",
 		// The chief's routing-rule proposal (routing_rules.go): the SAME owner,
 		// its door narrowed from a plugin delivery turn's authz.ViaPlugin to
 		// authz.ViaAgent, so the rule store (which refuses every plugin
@@ -492,7 +513,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaHostJob", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaTeamAdmin", "ViaToken", "WithPrincipal",
 	}
 )

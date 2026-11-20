@@ -36,6 +36,7 @@ has its own toggle, and all are on by default:
 | `page` | Someone sent a response through one of your [pages](pages.md)' links: at most one notification per page a minute. |
 | `page_published` | An agent published a new page for you (`page_create`): `Page ready: <title>`, its body `From agent <name>.` or `From session "<name>".`, tagged `page-<id>-ready`; a tap opens your view of it. |
 | `page_shared` | An agent shared one of your pages without asking (your own opt-in, [pages.md](pages.md#when-an-agent-shares)): its own toggle, so muting `page_published` never hides that a page went public. |
+| `morning_report` | Your [morning report](features.md#morning-report): once a day at the server's report time, only on a day something happened overnight. Titled `While you were away`, its body counts only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's or a question's text; tagged `morning-report`, so the next day's replaces it. A tap opens that day's report (`/morning/<date>`), where its open questions are answered in place. Sent at most once per day. |
 | `page_updated` | An agent published a new **version** of one of your pages (`page_update`): `Page updated: <title> (v<N>)`, its body `From agent <name>.` or `From session "<name>".`; a tap opens that version in your view of the page (`/pages/<id>/view?v=<N>`). One tag per page (`page-<id>-updated`), so a newer version replaces the older on the device. At most 6 per 10 minutes from one agent or session ([the sender's cap](#an-agent-notifies-you)); the rest are dropped and logged. Its own toggle, apart from `page_published`, so you can mute an iterating agent's revisions and still hear of a new page. |
 | `agent_notify` | One of your agents sent you a notification with `notify_owner` ([below](#an-agent-notifies-you)). |
 
@@ -453,7 +454,7 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
   own cookie, to that same server's public image route.
 - **Use a separate host name for each server.** Cookies are not port-scoped,
   so two muster servers on different ports of one host share one
-  `muster_session` cookie jar and see each other's sign-in cookie on every
+  cookie jar (`muster_session`, or `__Host-muster_session` on https) and see each other's sign-in cookie on every
   request, with or without the switcher (it adds nothing beyond ordinary
   navigation between them).
 - **A server addressed by IP** may show no logo, only its monogram and label:

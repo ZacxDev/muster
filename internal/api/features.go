@@ -262,6 +262,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Dispatch, chiefRestartToolDef())
 		add(features.TaskRouting, dispatchHoldToolDefs()...)
 		add(features.Pages, pageToolDefs()...)
+		add(features.Pages, pageAssetToolDefs()...)
 		add(features.Push, notifyOwnerToolDef())
 		add(features.Officers, hostOfficerToolDefs()...)
 		add(features.Connectors, connectorToolDefs()...)

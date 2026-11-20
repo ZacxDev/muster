@@ -85,6 +85,8 @@ var notOfficerRouted = map[string]string{
 	"host_dispatch.go Server.fileHeldDispatch -> proposalCardFiled":       "not officer-reachable: the chief's held host dispatch",
 	"host_dispatch_done.go Server.announceHostOutcome -> pushTask":        "not officer-reachable: host dispatches only, not officer spawns",
 	"host_dispatch_reconcile.go Server.orphanWindow -> askFiled":          "not officer-reachable: a host dispatch's orphaned window",
+	"hostjobs.go Server.hostJobReportFailed -> askFiled":                  "not officer-reachable: a host's jobs message muster could not record",
+	"hostjobs.go Server.raiseHostJobNotice -> askFiled":                   "not officer-reachable: a scheduled host job's failed run (a job is a host's declared command, never an officer)",
 	"owner_ask.go Server.raiseCard -> askFiled":                           "not officer-reachable: the chief's ask_owner",
 	"routing_rules.go Server.toolRoutingRulePropose -> proposalCardFiled": "not officer-reachable: the chief's routing_rule_propose",
 	"session_route_notify.go Server.notifyChiefRouted -> goNotify":        "not officer-reachable: the chief's route_to_session",
@@ -99,6 +101,7 @@ var notOfficerRouted = map[string]string{
 	"push_task.go Server.flushCommentedTasks -> pushTask":                 "not officer-reachable: the machine route's task comment (an agent's comment pushes no one)",
 	"push_task.go Server.teamTaskCommented -> pushTask":                   "not officer-reachable: a member's comment typed on a team task's page",
 	"push_task.go Server.notifyAgentRunning -> pushTask":                  "not officer-reachable: an officer instance has no task",
+	"morning_report.go Server.morningReportFor -> goNotify":               "not officer-reachable: muster's own daily job (MorningReportPass) pushes each owner their report; no tool or agent calls it",
 }
 
 // officerGateCalls are the calls that read officerPushes.

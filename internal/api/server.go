@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -283,6 +284,9 @@ type Server struct {
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
+	// jobRateLimitBackoff is the first wait before a job's turn is sent again
+	// after a transient 429 (zero: JobRateLimitBackoff; jobs.go runJobTurn).
+	jobRateLimitBackoff time.Duration
 	// unroutedNow is the unrouted-message sweep's clock (nil: time.Now;
 	// unrouted.go).
 	unroutedNow func() time.Time
@@ -344,6 +348,13 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// chatHTMLEvery is how often, at most, this server's chat streams render
+	// a reply's html (chat_stream.go); zero = chatStreamHTMLEvery. A test sets
+	// it before its socket opens.
+	chatHTMLEvery time.Duration
+	// buildVersion is the build this server reports (Server.version); empty =
+	// BuildVersion. A test sets it instead of reassigning BuildVersion.
+	buildVersion string
 	// turnRoleChecked, test-only (nil in production): called when a member's
 	// turn on a team agent has passed turnActingContext's first role read, so
 	// a test can change the membership between that read and the send.
@@ -459,6 +470,14 @@ type Server struct {
 	// officerStore is the built-in officer backend's store (EnableOfficerStore);
 	// nil while it is off.
 	officerStore *builtin.Store
+	// hostJobs is scheduled host jobs' store (EnableHostJobs, hostjobs.go);
+	// nil while they are off. hostJobsNow is its clock (nil: time.Now; a test
+	// sets it).
+	hostJobs    *hostjobs.Store
+	hostJobsNow func() time.Time
+	// hostJobReports is why a host's last jobs message could not be
+	// recorded, per (owner, host), and its Attention item (hostjobs.go).
+	hostJobReports hostJobReportErrs
 	// officerChats is the operator chats' turns in flight on this replica
 	// (officer_operator_chat.go).
 	officerChats operatorChats
@@ -890,6 +909,8 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET "+ui.NavWaitingPath, s.requireSession(s.handleNavWaiting))
 	// A session view's Preview button (plugin_chip.go), which its slot polls.
 	mux.HandleFunc("GET "+ui.PreviewButtonPath, s.requireSession(s.handlePreviewButton))
+	// Its panel's Pages tab: the window's session's pages.
+	mux.HandleFunc("GET "+ui.SessionPagesPath, s.requireSession(s.handleSessionPages))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
@@ -941,6 +962,8 @@ func (s *Server) registerAll(mux Mux) {
 	// The built-in officer store's admin API (officer_admin.go): 404 while it is off.
 	s.registerOfficerAdminRoutes(mux)
 	s.registerDeclaredOfficerRoutes(mux) // officer_declared.go
+	// Scheduled host jobs (hostjobs.go): 404 while they are off.
+	s.registerHostJobRoutes(mux)
 	s.registerMirrorRoutes(mux)
 	// Suggested replies (suggest.go): the composer's set, its counts and the
 	// per-user toggle.
@@ -1087,7 +1110,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser: p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
+		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -1238,7 +1261,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	uptime := s.now().Sub(s.startedAt).Seconds()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"version": BuildVersion,
+		"version": s.version(),
 		"uptime":  uptime,
 	})
 }
@@ -1351,7 +1374,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// The page judges the stream alive by hearing from it (ui/live.go): a
 	// board where nothing changes sends nothing, so it beats.
-	beat := time.NewTicker(liveHeartbeatEvery())
+	beat := time.NewTicker(socketSettingsOf(r.Context()).heartbeatEvery())
 	defer beat.Stop()
 	for {
 		select {

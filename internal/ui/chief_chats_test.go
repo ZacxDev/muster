@@ -170,9 +170,11 @@ func TestTheChiefHeaderHasTheChatIndexButtonOnly(t *testing.T) {
 		}
 		w := AgentDetailView{ID: 3, Name: "w", FocusHistory: "/ui/focus/history?agent=3"}
 		wh := render(w, compact)
+		// A worker's: New chat alone in either header (its Chat history and
+		// Focus history are ⋯ menu items, historyMenuItems).
 		for _, want := range []string{`aria-label="New chat session"`, `aria-label="Chat history"`, `id="focus-history-open"`} {
-			if !strings.Contains(wh, want) {
-				t.Errorf("compact=%v: a worker's header lost %s", compact, want)
+			if has := strings.Contains(wh, want); has != (want == `aria-label="New chat session"`) {
+				t.Errorf("compact=%v: a worker's header tools carry %s: %v", compact, want, has)
 			}
 		}
 		if strings.Contains(wh, `id="chat-index-open"`) {

@@ -49,8 +49,8 @@ import (
 	"github.com/ZacxDev/muster/internal/atomicfile"
 	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
-	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/opencodehost"
 	"github.com/ZacxDev/muster/internal/previewhost"
 	"github.com/ZacxDev/muster/internal/telemetry"
@@ -79,6 +79,11 @@ var e2eNoSubagents func() bool
 // predates the live work counts and identity colours
 // (mirrorhost.Config.NoWork). nil in every other build.
 var e2eNoWork func() bool
+
+// e2eProcCwd, in a browser-test build, is a process's working directory as
+// the fake host plays it (mirrorhost.MCPProxy.Cwd: where a session's
+// attachments and page assets are read from); nil in every other build.
+var e2eProcCwd func(pid int) (string, bool)
 
 // e2ePreviews, in a browser-test build, is the per-window preview counts the
 // host reports (mirrorhost.Config.Previews) when the spec plays them
@@ -159,6 +164,9 @@ const (
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
+	// envJobsFile: this host's scheduled jobs (mirrorhost's hostjobs.go,
+	// docs/host-jobs.md), read once at start.
+	envJobsFile = "MUSTER_MIRROR_JOBS_FILE"
 )
 
 func main() {
@@ -266,6 +274,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	fs.StringVar(&pf.TokenFile, "preview-token-file", getenv(envPreviewTokenFile), "with -preview: file holding this host's preview gateway token (mpt_…), not readable by group or others ("+envPreviewTokenFile+")")
 	fs.StringVar(&pf.File, "preview-file", or(getenv(envPreviewFile), previewhost.DefaultFile()), "with -preview: previews.json, the allowlist {\"ports\": [\"5173\", \"8000-8099\"], \"offer\": true, \"maxOpen\": 8, \"maxConns\": 64}; ports 1024-65535 only; missing or invalid = previews off ("+envPreviewFile+")")
 	listPreviews := fs.Bool("previews", false, "with -list: print the listener reports this host would offer from -preview-file — one line each: window id, port, process name, session — and dial nothing")
+	jobsFile := fs.String("jobs-file", getenv(envJobsFile), "this host's SCHEDULED JOBS: a JSON file {\"jobs\": [{\"name\": \"smoke\", \"command\": [\"/abs/program\", \"arg\"], \"cron\": \"0 14 * * *\", \"title\": \"…\", \"output\": \"markdown\", \"timeoutSeconds\": 600, \"dir\": \"/abs/dir\"}]}, read once at start. muster fires each on its cron (UTC) and writes its stdout to the job's own page when it changed; it can trigger a declared job by name and nothing else — no command or argument ever comes from muster. The program is an absolute path, run with no shell. Invalid = no jobs, logged and reported to muster, never fatal; empty = none ("+envJobsFile+")")
+	listJobs := fs.Bool("jobs", false, "with -list: validate -jobs-file and print the jobs this host would declare — one line each: name, cron, timeout, output, then the command — and dial nothing")
 	agentSpawnTenantServer := fs.String("agent-spawn-tenant-server", getenv(envAgentSpawnTenantServer), "with -agent-spawn, on a TENANT's mirror (-tmux-socket/-tmux-socket-path naming a non-default tmux server): opt in to spawning on that server. The value must name the SAME server as this mirror's own -tmux-socket (a socket name) or -tmux-socket-path (an absolute path); anything else refuses every spawn. The tenant's tmux server must already be running: this host never starts it. Empty (the default) = spawn on the default tmux server only ("+envAgentSpawnTenantServer+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -335,6 +345,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return printOpenCode(lctx, backend, ocCreds, ocWhy, stdout, stderr)
+	}
+	if *list && *listJobs {
+		return printJobs(*jobsFile, stdout, stderr)
 	}
 	if *list && *listPreviews {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -434,6 +447,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 	}
 
+	// Scheduled jobs: validated whole at boot. 🔴 NEVER FATAL, like the MCP
+	// targets: a bad file declares no job and its reason is logged and sent to
+	// muster (Config.JobsError), which keeps what this host declared before —
+	// so the next fire of a job it can no longer read is refused here, and
+	// that refusal reaches the owner's Attention. Mirroring goes on.
+	jobs, jobsErr := loadJobs(*jobsFile, logger)
+
 	if skipPermsErr != nil {
 		fmt.Fprintf(stderr, "muster-mirror: %s=%q is not a bool (1, t, T, TRUE, true, True, 0, f, F, FALSE, false or False)\n", envAgentSpawnSkipPermissions, getenv(envAgentSpawnSkipPermissions))
 		return 2
@@ -496,6 +516,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		Previews:      previews,
 		Refresh:       refreshOverride(),
 		FakeSpawn:     e2eSpawn, FakeSpawnRuntimes: e2eSpawnRuntimes,
+		Jobs:          jobs, JobsError: jobsErr,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -511,7 +532,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
 		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision,
-			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh}
+			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh, Cwd: e2eProcCwd}
 		// A reconnect to muster (a muster restart or upgrade among them) has
 		// the tool watch re-read the lists at once, so connected sessions are
 		// told of a changed set within seconds, not at the next tick.

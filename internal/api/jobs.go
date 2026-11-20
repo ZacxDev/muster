@@ -1345,14 +1345,23 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: j.Prompt})
 	// Held open for the outcome watchdog while it runs (a long job is working,
 	// not silent), and judged as nothing: a job's reply is its result.
-	reply, err := func() (string, error) {
-		defer s.OutcomeHold(a)()
-		return s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
-	}()
-	if reply != "" {
-		_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
+	var reply string
+	for retry := 0; ; retry++ {
+		var err error
+		reply, err = func() (string, error) {
+			defer s.OutcomeHold(a)()
+			return s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
+		}()
+		if reply != "" {
+			_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
+		}
+		o = jobs.Classify(reply, err, expired())
+		if !transientRateLimit(o) || retry >= JobRateLimitRetries || !s.waitJobRateLimit(ctx, retry) {
+			break
+		}
+		s.logger.Printf("jobs: %d: a transient rate limit on %s (account %s), sent again on the same account (retry %d of %d): %s",
+			j.ID, a.Name, a.CCAccount, retry+1, JobRateLimitRetries, o.Error)
 	}
-	o = jobs.Classify(reply, err, expired())
 	if o.Status != jobs.StatusSucceeded {
 		return o
 	}
@@ -1388,6 +1397,47 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 		return jobs.Failed(jobs.ReasonEmptyReply, "the agent's turn ended with no reply text and the job named no result_path")
 	}
 	return o
+}
+
+// A job's turn that fails with a TRANSIENT rate limit — rate_limited that is
+// not the account's usage limit (jobs.Outcome.AccountFailure empty: no
+// usage_limit mark, not the limit menu's 409) — is sent again on the SAME
+// account up to JobRateLimitRetries times, waiting JobRateLimitBackoff before
+// the first retry and twice as long before each next one (30s, then 60s:
+// the officer chat runner's base, chatBackoffBase). It never marks the account
+// and never fails the worker over (the gateway marks nothing for it, and
+// failoverJob keys on AccountFailure). After the last retry, or when the job's
+// timeout ends a wait, the job fails rate_limited as before.
+//
+// A usage limit is not retried here: failoverJob moves the worker instead.
+const (
+	JobRateLimitRetries = 2
+	JobRateLimitBackoff = 30 * time.Second
+)
+
+// transientRateLimit reports whether o is a failed turn's transient rate
+// limit (see JobRateLimitRetries): ccpool.AccountFailure, through
+// o.AccountFailure, already decided it is not the account's usage limit.
+func transientRateLimit(o jobs.Outcome) bool {
+	return o.Status == jobs.StatusFailed && o.Reason == ccpool.FailureRateLimited && o.AccountFailure == ""
+}
+
+// waitJobRateLimit waits out the backoff before retry+1 of a job's turn after a
+// transient rate limit, and reports false when ctx (the job's timeout) ended
+// first.
+func (s *Server) waitJobRateLimit(ctx context.Context, retry int) bool {
+	wait := s.jobRateLimitBackoff
+	if wait <= 0 {
+		wait = JobRateLimitBackoff
+	}
+	t := time.NewTimer(wait << retry)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // JobModelUnconfirmedError is a model job's error when its turn's answer did

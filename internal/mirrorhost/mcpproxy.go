@@ -159,9 +159,9 @@ type MCPProxy struct {
 	// attachments are refused.
 	OpenCodeDirectory func(id string) (string, bool)
 	// Cwd is process pid's working directory: where a calling Claude Code
-	// session's attention_ask attachments are resolved from
-	// (mcpproxy_attach.go). nil reads this host's own processes (/proc on
-	// Linux, lsof on macOS).
+	// session's attention_ask attachments (mcpproxy_attach.go) and
+	// page_asset_upload's file (mcpproxy_pageasset.go) are resolved from. nil
+	// reads this host's own processes (/proc on Linux, lsof on macOS).
 	Cwd func(pid int) (string, bool)
 
 	// Primary is the primary instance's name (URL, Token): what a call naming
@@ -801,6 +801,11 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 		// uploaded from here and the call carries their ids (mcpproxy_attach.go).
 		var refused string
 		if body, made, refused = p.uploadAskAttachments(r, body, sid, bound); refused != "" {
+			mcpToolError(w, id, refused)
+			return nil, false
+		}
+		// page_asset_upload's file, likewise (mcpproxy_pageasset.go).
+		if body, refused = p.uploadPageAsset(r, body, sid, openCode); refused != "" {
 			mcpToolError(w, id, refused)
 			return nil, false
 		}

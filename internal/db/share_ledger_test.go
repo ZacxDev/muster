@@ -61,6 +61,68 @@ var shareClasses = map[string]shareClass{
 // noMember is a write role no team role reaches (manager is 3).
 const noMember = 4
 
+// pageClass is a team page table's minimum team role to read, to lock for
+// UPDATE (the UPDATE policy's row filter; the guards then narrow what a
+// non-creator may change) and to delete — noMember where no member does.
+type pageClass struct{ read, lock, delete int }
+
+// teamPageTables is the pages tables (migration 0165: a team's pages, seen
+// by its members). Not 0127's uniform classes: every member reads; only the
+// page's creator manages it (muster_page_manager). The planted rows record
+// no creator, so deleting a page falls to a MANAGER of the team; a member
+// locks a page (a response touches its updated_at) and a link (Share, and a
+// share card's answer), each narrowed by its guard; no member writes a
+// version or deletes a response.
+var teamPageTables = map[string]pageClass{
+	"pages":          {1, 1, 3},
+	"page_versions":  {1, noMember, noMember},
+	"page_links":     {1, 1, noMember},
+	"page_responses": {1, noMember, noMember},
+	// 0164's author assets follow their page (0165): every member reads them
+	// (or a member's view draws its images broken); only the page's owner
+	// (its agent) writes one.
+	"page_assets":         {1, noMember, noMember},
+	"page_version_assets": {1, noMember, noMember},
+}
+
+// teamPagePolicies is each team page table's policies, whole as pg_policies
+// prints them: name -> {cmd, USING, WITH CHECK}.
+func teamPagePolicies(tbl string) map[string][3]string {
+	shr := "((" + userArm + ") OR (" + teamArm(1) + ") OR (" + scopeArm + "))"
+	own := "((" + userArm + ") OR (" + scopeArm + "))"
+	out := map[string][3]string{"team_read": {"SELECT", shr, ""}}
+	switch tbl {
+	case "pages":
+		out["page_insert"] = [3]string{"INSERT", "", own}
+		out["page_update"] = [3]string{"UPDATE", shr, shr}
+		out["page_delete"] = [3]string{"DELETE", "muster_page_manager(owner_id, created_by_user)", ""}
+	case "page_links":
+		out["page_insert"] = [3]string{"INSERT", "", shr}
+		out["page_update"] = [3]string{"UPDATE", shr, shr}
+		out["page_delete"] = [3]string{"DELETE", own, ""}
+	case "page_responses":
+		out["page_insert"] = [3]string{"INSERT", "", "((" + userArm + ") OR (" + scopeArm + ") OR (by_owner AND (" + teamArm(1) + ")))"}
+		out["page_update"] = [3]string{"UPDATE", own, own}
+		out["page_delete"] = [3]string{"DELETE", own, ""}
+	default:
+		out["page_insert"] = [3]string{"INSERT", "", own}
+		out["page_update"] = [3]string{"UPDATE", own, own}
+		out["page_delete"] = [3]string{"DELETE", own, ""}
+	}
+	return out
+}
+
+// ownerFixedTables is every table owner_fixed guards: the share-class ones
+// and the team page ones.
+func ownerFixedTables() []string {
+	out := sharedClassTables()
+	for t := range teamPageTables {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // personalOwned is EVERY owned table that is personal — owner_isolation
 // only, no team access — listed explicitly, so a NEW owner_id table is in
 // neither ledger and fails TestEveryOwnedTableHasAShareClass until someone
@@ -69,8 +131,7 @@ var personalOwned = []string{
 	"agent_secrets", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
-	"page_responses", "page_versions", "pages", "pins", "plugin_chief_instructions", "plugin_pair_requests",
+	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "pins", "plugin_chief_instructions", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
 	// 0144: a chief's OpenRouter sessions' spend; the chief is personal.
@@ -89,7 +150,13 @@ var personalOwned = []string{
 	// 0160: the confirm cards in a person's chat with an officer; one
 	// manager's cards are never another's.
 	"officer_chat_cards",
-	// 0161: an officer's auto-restart record; only its owner's loop writes it.
+	// 0161: the morning report; it lists its owner's own sessions, tasks and
+	// questions.
+	"morning_reports",
+	// 0166: scheduled host jobs and their runs; a job writes one of its
+	// owner's personal pages, so a team host's jobs are refused.
+	"host_jobs", "host_job_runs",
+	// 0167: an officer's auto-restart record; only its owner's loop writes it.
 	"officer_auto_restarts",
 }
 
@@ -181,9 +248,15 @@ func unclassified(tables []string) (missing, both []string) {
 			both = append(both, t)
 		}
 	}
+	for t := range teamPageTables {
+		if _, shared := shareClasses[t]; shared || personal[t] {
+			both = append(both, t)
+		}
+	}
 	for _, t := range tables {
 		_, lent := lentOwned[t]
-		if _, shared := shareClasses[t]; !shared && !personal[t] && !lent {
+		_, page := teamPageTables[t]
+		if _, shared := shareClasses[t]; !shared && !personal[t] && !lent && !page {
 			missing = append(missing, t)
 		}
 	}
@@ -307,7 +380,7 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 	if triggers, err = pgx.CollectRows(trows, pgx.RowTo[string]); err != nil {
 		t.Fatal(err)
 	}
-	if want := sharedClassTables(); !slices.Equal(triggers, want) {
+	if want := ownerFixedTables(); !slices.Equal(triggers, want) {
 		t.Errorf("tables with owner_fixed = %v\nwant the share-class tables %v", triggers, want)
 	}
 	for _, tbl := range rlsTables() {
@@ -317,7 +390,18 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 			names = append(names, p.name)
 		}
 		sort.Strings(names)
-		if c, shared := shareClasses[tbl]; shared {
+		if _, page := teamPageTables[tbl]; page {
+			want := teamPagePolicies(tbl)
+			if len(ps) != len(want) {
+				t.Errorf("%s (team pages) has policies %v; want exactly the four of 0165", tbl, names)
+			}
+			for _, p := range ps {
+				w, ok := want[p.name]
+				if !ok || p.cmd != w[0] || p.permissive != "PERMISSIVE" || p.qual != w[1] || p.check != w[2] {
+					t.Errorf("%s policy %s = %s %s USING %q CHECK %q;\nwant PERMISSIVE %s USING %q CHECK %q", tbl, p.name, p.cmd, p.permissive, p.qual, p.check, w[0], w[1], w[2])
+				}
+			}
+		} else if c, shared := shareClasses[tbl]; shared {
 			if strings.Join(names, ",") != "team_delete,team_insert,team_read,team_update" {
 				t.Errorf("%s (shared, read %d write %d) has policies %v; want exactly the four team policies", tbl, c.read, c.write, names)
 				continue
@@ -426,8 +510,10 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		// A lent table with team_owner_read (0133): the team's own rows read
 		// at that role, never written.
 		ownerRead, readsOwn := teamOwnerRead[tbl]
+		// A team page table (0165): read, lock and delete each at its own role.
+		pc, page := teamPageTables[tbl]
 		wantDevice := 0
-		if (shared && level["manager"] >= c.read) || (readsOwn && level["manager"] >= ownerRead) {
+		if (shared && level["manager"] >= c.read) || (readsOwn && level["manager"] >= ownerRead) || (page && level["manager"] >= pc.read) {
 			wantDevice = owned
 		}
 		if got := count(t, device, f.pool, tbl, "WHERE owner_id = $1", team.ID); got != wantDevice {
@@ -436,29 +522,38 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		for role, lvl := range level {
 			ctx := member(t, f, people[role], authz.ViaSession)
 			wantRead, wantWrite := 0, 0
-			if (shared && lvl >= c.read) || (readsOwn && lvl >= ownerRead) {
+			if (shared && lvl >= c.read) || (readsOwn && lvl >= ownerRead) || (page && lvl >= pc.read) {
 				wantRead = owned
 			}
 			if shared && lvl >= c.write {
 				wantWrite = owned
+			}
+			wantLock, wantDelete := wantWrite, wantWrite
+			if page {
+				if lvl >= pc.lock {
+					wantLock = owned
+				}
+				if lvl >= pc.delete {
+					wantDelete = owned
+				}
 			}
 			if got := count(t, ctx, f.pool, tbl, "WHERE owner_id = $1", team.ID); got != wantRead {
 				t.Errorf("READ %s as %s: %d of the team's %d rows; want %d", tbl, role, got, owned, wantRead)
 			}
 			// UPDATE's row filter, without firing a column trigger: SELECT …
 			// FOR UPDATE is admitted by the UPDATE policies' USING.
-			if got := countLocked(t, ctx, f, tbl, team.ID); got != wantWrite {
-				t.Errorf("UPDATE-lock %s as %s: %d of the team's %d rows; want %d", tbl, role, got, owned, wantWrite)
+			if got := countLocked(t, ctx, f, tbl, team.ID); got != wantLock {
+				t.Errorf("UPDATE-lock %s as %s: %d of the team's %d rows; want %d", tbl, role, got, owned, wantLock)
 			}
 			n, err := rolledBack(ctx, f, "DELETE FROM "+tbl+" WHERE owner_id = $1", team.ID)
 			switch {
-			case err != nil && wantWrite > 0 && pgState(err) == "23503":
+			case err != nil && wantDelete > 0 && pgState(err) == "23503":
 				// Admitted by the DELETE policy, then stopped by a child's
 				// foreign key: the row WAS reachable.
 			case err != nil:
 				t.Errorf("DELETE %s as %s: %v", tbl, role, err)
-			case n != int64(wantWrite):
-				t.Errorf("DELETE %s as %s: %d rows; want %d", tbl, role, n, wantWrite)
+			case n != int64(wantDelete):
+				t.Errorf("DELETE %s as %s: %d rows; want %d", tbl, role, n, wantDelete)
 			}
 		}
 	}

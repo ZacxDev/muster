@@ -38,7 +38,9 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -340,6 +342,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/agents/{name}/chat-log":           classParam,
 	"GET /ui/dispatch-card":                    classParam,
 	"GET /ui/agents/{name}/task":               classParam,
+	"GET /ui/agents/{name}/open-button":        classParam, // by name, as the viewer (GetByName, then the pages store)
+	"GET /ui/agents/{name}/session-pages":      classParam,
 	"GET /ui/connectors/{name}/rotate":         classParam,
 	"GET /ui/tasks/{id}/card":                  classParam,
 	"GET /ui/tasks/{id}/edit":                  classParam,
@@ -422,6 +426,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/officers/defs/{officer}/items":                          classAdmin,
 	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
 	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	// Scheduled host jobs (hostjobs.go): requireArmedHookToken, as the caller.
+	"GET /api/host-jobs":                                               classAdmin,
+	"GET /api/host-jobs/{name}/runs":                                   classAdmin,
+	"POST /api/host-jobs/{name}/run":                                   classAdmin,
+	"DELETE /api/host-jobs/{name}":                                     classAdmin,
 	"GET /api/officers/defs/{officer}/usage":                           classAdmin,
 	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
 	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
@@ -483,7 +492,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/mcp": classMirrorHost,
 	// A session's ask attachment, sent by its host (ask_media.go): the host's
 	// token, a session it lists; it names no object.
-	"POST /mirror/ask-attachments": classMirrorHost,
+	"POST /mirror/ask-attachments":   classMirrorHost,
+	"POST /mirror/pages/{id}/assets": classMirrorHost,
 	// …and its take-back (the host owner's own upload, by id, under row-level
 	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
 	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
@@ -551,6 +561,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /rules/{id}/delete":  classParam,
 	"GET /usage":               classList,
 	"GET /answers":             classList,
+	// The morning report (morning_report.go): the caller's own report; a
+	// date names a day, not an object, and is read under row-level security.
+	"GET /morning":        classList,
+	"GET /morning/{date}": classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
@@ -647,8 +661,12 @@ var isolationClasses = map[string]routeClass{
 	// window from a ghost even to A, and the walk holds it to the stricter
 	// rule instead: no identifier of A's in an outsider's answer.
 	"GET /ui/mirror/preview-button": classMirror,
-	"GET /mirror/view/ws":           classMirror,
-	"POST /mirror/view/send":        classMirror,
+	// Its panel's Pages tab: the same address; the pages are the viewer's
+	// own rows (the store's row-level security), and an outsider's request
+	// for A's window answers the empty list, as one for a ghost does.
+	"GET /ui/mirror/session-pages": classMirror,
+	"GET /mirror/view/ws":          classMirror,
+	"POST /mirror/view/send":       classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
 	// Drag-to-scroll: the same address fields, plus `lines`.
@@ -812,6 +830,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /pages/{id}/responses/{rid}/raw":              classParam,
 	"POST /pages/{id}/versions/{v}/submit":             classParam,
 	"POST /pages/{id}/versions/{v}/upload":             classParam,
+	"GET /pages/{id}/versions/{v}/assets/{asset}":      classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
 	"POST /pages/{id}/share":                           classParam,
 	"POST /pages/{id}/share/rotate":                    classParam,
@@ -823,6 +842,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /s/{token}/content":                           classPublic,
 	"POST /s/{token}/submit":                           classPublic,
 	"POST /s/{token}/upload":                           classPublic,
+	"GET /s/{token}/assets/{asset}":                    classPublic,
 
 	// Needs you (officer_needs_you.go): {item} is a refusal of A's officer.
 	"POST /officers/{officer}/refusals/{item}/refile":    classParam,
@@ -836,6 +856,8 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
+	// The morning report: A's newest report names the canary.
+	"GET /morning",
 	// Host officer spawns (phase 3): A's spawn's host is the canary.
 	"GET /officers/spawns",
 	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
@@ -1368,18 +1390,23 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
-	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
+	// A scheduled host job of A's (0166), as A's host would have reported it:
+	// the object GET /api/host-jobs/{name}/runs and its run route name.
+	aHostJob := "isojob-" + w.suffix
+	must(hostjobs.NewPG(pool).Report(ua, w.canary+"-host", []mirror.HostJob{{Name: aHostJob, Cron: "0 6 * * *",
+		Command: []string{"/usr/bin/env", w.canary}}}, time.Now()), "a host job")
+	w.objA = isoObjs{hostJob: aHostJob, ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
 		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, pageResp: aPageResp.ID, team: w.aTeam,
-		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID}
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID, morningDate: isoMorningDate}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{hostJob: "ghostjob", team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
@@ -1387,7 +1414,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
 		page: ghostID, pageLink: ghostID, pageDel: ghostID, pageResp: ghostID,
-		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID}
+		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
+	// The morning report (0161): A's report of isoMorningDate names the canary
+	// in a done line, so A's own page is told from the ghost day's by its body.
+	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
+		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTaskChanged, Label: w.canary + " morning"}}}}); err != nil {
+		t.Fatalf("A's morning report: %v", err)
+	}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1473,10 +1506,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
+	// The morning report (0161): A's report is a real object B must not reach.
+	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
 	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
-	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
+	srv.EnableHostJobs(hostjobs.NewPG(pool))
+	w.router =&isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
 	// password mode (sessionUserOverride below).
@@ -1708,6 +1744,9 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	// morningDate is a day with a morning report (morning_report.go): A's
+	// carries the canary.
+	morningDate string
 	// The built-in officer store (officer_admin.go): a type key, an officer
 	// id (<type>:a) and an item of it.
 	officerType, officer                      string
@@ -1753,6 +1792,8 @@ type isoObjs struct {
 	// A host officer spawn of A's (0125), its host the canary (phase 3's
 	// lend routes).
 	spawn int64
+	// hostJob is the name of A's scheduled host job (0166).
+	hostJob string
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1884,6 +1925,13 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
 	}
+	if strings.HasPrefix(path, "/api/host-jobs/{name}") {
+		name = o.hostJob
+		if method == http.MethodDelete {
+			// forget names its host: A's job's (the canary host), the ghost's.
+			path += "?" + url.Values{"host": {o.mirrorHost}}.Encode()
+		}
+	}
 	if strings.Contains(path, "credentials/claude/{name}") {
 		name = o.ccAccount
 	}
@@ -1894,12 +1942,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1", "{rid}", strconv.FormatInt(o.pageResp, 10),
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
-		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload,
+		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload, "{date}", o.morningDate,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" || path == "/ui/mirror/session-pages" ||
 		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
 		q := url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}
 		if o.mirrorOwner != 0 {
@@ -2183,6 +2231,17 @@ var sideEffectControlled = map[string]string{
 	// host's take-back revokes its owner's upload, and another owner's host
 	// naming that id gets 404 and leaves it live.
 	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
+	// A page's author asset (page_assets.go). The upload route takes a page
+	// THE CALLER MADE (the host whose session is listed), which
+	// the walk's credentials are not; the read names an asset id a version of
+	// the page must use, which the walk cannot name. Each is controlled in its
+	// own test: the author adds, another creator of the same owner and another
+	// owner get 404 (TestOnlyThePagesAuthorAddsAnAsset; another owner's host of
+	// the same name, TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost),
+	// and the owner reads an asset while another owner's session gets 404
+	// (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse).
+	"POST /mirror/pages/{id}/assets":              "needs a listed session of the page's host: controlled in TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost",
+	"GET /pages/{id}/versions/{v}/assets/{asset}": "an asset id the walk cannot name: controlled in TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
 	// so A's own PUT and a PUT naming a ghost both succeed — there is no
 	// "someone else's object" for the status to tell apart. That B's PUT of A's
@@ -2211,10 +2270,11 @@ var sideEffectControlled = map[string]string{
 	// Its control is pages_pg_test.go: the SAME routes with A's live token serve
 	// A's page (and record A's responses), another user's token serves only its
 	// own page, and an unknown, pending, denied or revoked token is that 404.
-	"GET /s/{token}":         "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"GET /s/{token}/content": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/submit": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/upload": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}":                "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/content":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/submit":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/upload":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/assets/{asset}": "a share link: its token is the credential no walker holds; controlled in page_assets_pg_test.go (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse)",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
 	// only (requireServiceToken), which acts as user 1, so no credential of a
 	// member — A's included — opens it, and A's answer is the ghost's 401. Its
@@ -3087,6 +3147,65 @@ func (w *isoWorld) objTeamHost(team int64, teamCanary string) isoObjs {
 
 // mirrorRoutes is the routes of routes that name a mirrored entry
 // (mirrorTeamRoutes, but for the host doors, which take no owner=).
+// teamPageRouteList is every page route ("/pages/{id}…"): the team-page leg
+// of teamRoleWalks.
+func teamPageRouteList(routes []string) []string {
+	var out []string
+	for _, r := range routes {
+		if _, ok := teamPageRoutes[r]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// isoTeamPage is a page the TEAM owns (migration 0165), made by its agent on
+// A's say-so (created_by_user = A), titled with the team's canary, with two
+// versions, a live link and a stranger's response.
+type isoTeamPage struct{ id, link, resp int64 }
+
+func (w *isoWorld) addTeamPage(t *testing.T, team, creator int64, teamCanary string) isoTeamPage {
+	t.Helper()
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team, Role: authz.RoleMember, Via: authz.ViaAgent, Team: true})
+	pgs := pages.NewPG(w.pool)
+	b, n, err := pages.Parse([]byte(`[{"type":"question","id":"q1","label":"team question"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := pages.Creator{AgentID: 990000 + team, Label: "team worker", ByUser: creator}
+	p, _, err := pgs.Create(ctx, c, "team page "+teamCanary, b, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM pages WHERE owner_id = $1`, team)
+	})
+	if _, _, err := pgs.AddVersion(ctx, c, p.ID, "team page "+teamCanary+" v2", b, n); err != nil {
+		t.Fatal(err)
+	}
+	l, err := pgs.CreateLink(ctx, p.ID, pages.LinkLive, "team worker", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := pgs.AddResponse(ctx, l, 2, "q1", pages.KindSubmit, []byte(`{"answer":"stranger"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return isoTeamPage{id: p.ID, link: l.ID, resp: r.ID}
+}
+
+// teamPageState is the team page's managed state, read as System: what no
+// one but its creator may change — its existence, current version and title,
+// and the state of its link (link). A NEW link is not in it: any member's
+// Share makes the page's link, by design.
+func (w *isoWorld) teamPageState(id, link int64) string {
+	var st string
+	_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT p.current_version || '|' || p.title || '|' ||
+		coalesce((SELECT l.state FROM page_links l WHERE l.page_id = p.id AND l.id = $2), 'gone')
+		FROM pages p WHERE p.id = $1`, id, link).Scan(&st)
+	return st
+}
+
 func mirrorRoutes(routes []string) []string {
 	var out []string
 	for _, r := range routes {
@@ -3112,6 +3231,10 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 	// The team's host is online for the whole walk, every route included —
 	// the sidebar's too, which lists it to members only (VisibleHosts).
 	teamHost := w.objTeamHost(team, teamCanary)
+	// The team's page (0165), made on A's say-so: B is never its creator.
+	tPage := w.addTeamPage(t, team, w.a.uid, teamCanary)
+	tPageObjs := w.objA
+	tPageObjs.page, tPageObjs.pageDel, tPageObjs.pageLink, tPageObjs.pageResp = tPage.id, tPage.id, tPage.link, tPage.resp
 	for _, role := range []string{"none", "viewer", "operator", "manager"} {
 		if role == "none" {
 			if err := store.RemoveTeamMember(w.sys, by, team, w.b.uid); err != nil {
@@ -3154,6 +3277,34 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 				}
 			}
 		}
+		// THE TEAM PAGE LEG (0165): every page route, naming the TEAM's page.
+		// A non-member sees it on no route; a member (viewer and up) reads it;
+		// and B — never its creator, a manager included — changes nothing of
+		// what its creator manages (its version, title), and only a manager
+		// revokes its link.
+		pageBefore := w.teamPageState(tPage.id, tPage.link)
+		pageSaw := 0
+		for _, res := range w.walkAs(w.b, tPageObjs, []cred{{sessionUser: w.b.uid}}, teamPageRouteList(routes)) {
+			if strings.Contains(res.body, "team page "+teamCanary) {
+				pageSaw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team PAGE's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && pageSaw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's PAGE on no page route: the team-page leg is not reaching it", role)
+		}
+		// A MANAGER may always revoke a link (0165, operator decision Q1), so
+		// the walk's revoke route takes the manager's link away — and that is
+		// all it changes; every other role changes nothing.
+		want := pageBefore
+		if role == "manager" {
+			want = strings.TrimSuffix(pageBefore, "|live") + "|revoked"
+		}
+		if after := w.teamPageState(tPage.id, tPage.link); after != want || pageBefore == "" || !strings.HasSuffix(pageBefore, "|live") {
+			t.Errorf("MUTATION: B as the team's %s (not the page's creator) left the team's page as %q; want %q (before %q)", role, after, want, pageBefore)
+		}
 		w.checkOutsider(t, "B as the team's "+role, results)
 		w.sameRows(t, "B's walk as the team's "+role, aBefore)
 		saw := 0
@@ -3173,3 +3324,6 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		}
 	}
 }
+
+// isoMorningDate is the day of A's morning report in the isolation walk.
+const isoMorningDate = "2001-02-03"

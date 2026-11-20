@@ -171,6 +171,30 @@ func (s *Service) SetOutcomesNotify(fn func(owner int64, host string, seq uint64
 	s.hub.SetOutcomesNotify(fn)
 }
 
+// SetJobsNotify installs the hub's jobs hook (Hub.SetJobsNotify).
+func (s *Service) SetJobsNotify(fn func(owner int64, host string, r HostJobsReport)) {
+	s.hub.SetJobsNotify(fn)
+}
+
+// SetJobResultNotify installs the hub's job-result hook (Hub.SetJobResultNotify).
+func (s *Service) SetJobResultNotify(fn func(owner int64, host string, r JobResult)) {
+	s.hub.SetJobResultNotify(fn)
+}
+
+// TriggerJob sends owner's host a job-run (Hub.TriggerJob). 🔴 owner is the
+// caller's to have decided — the job's own row, read as that owner — never a
+// request's claim: its callers are internal/api's host job scheduler and its
+// `muster job run`, each acting on a job row it read under owner's principal.
+func (s *Service) TriggerJob(ctx context.Context, owner int64, host string, run int64, job string) error {
+	return s.hub.TriggerJob(ctx, owner, host, run, job)
+}
+
+// HostConnected reports whether owner's host is connected (Hub.HostConnected).
+func (s *Service) HostConnected(owner int64, host string) bool { return s.hub.HostConnected(owner, host) }
+
+// JobsError is owner's host's last jobs-file error (Hub.JobsError).
+func (s *Service) JobsError(owner int64, host string) string { return s.hub.JobsError(owner, host) }
+
 // SpawnAgent asks one of the viewing principal's hosts to start an agent for
 // host dispatch dispatch. See Hub.SpawnAgent.
 func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, req AgentSpawnReq) (AgentSpawned, error) {

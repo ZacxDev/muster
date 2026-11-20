@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/ZacxDev/muster/internal/officers"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -323,6 +326,12 @@ const (
 	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
 	// outside 250ms–5m. A page replaces a stream silent for about two of them.
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
+
+	// The morning report (internal/morning; docs/features.md#morning-report):
+	// on/off, and the zone its fixed 08:00 is read in — a server setting,
+	// since muster stores no time zone per owner yet.
+	envMorningReport   = "MUSTER_MORNING_REPORT"
+	envMorningReportTZ = "MUSTER_MORNING_REPORT_TZ"
 
 	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
 	// asklog_config.go parses them): its switch (off by default), how long
@@ -958,6 +967,12 @@ type config struct {
 	// the owner's tap. It needs FleetDigest (the cards are the digest's).
 	FleetPropose           bool
 	ChiefNudgeAskThreshold float64
+	// MorningReport runs the morning report (MUSTER_MORNING_REPORT=1; off by
+	// default) on the schedule MorningReportAt: 08:00 (morning.ReportHour) in
+	// MUSTER_MORNING_REPORT_TZ (an IANA zone, default America/Chicago — the
+	// operator's decision).
+	MorningReport   bool
+	MorningReportAt morning.Schedule
 
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
 	// postgres connector dials its database through safedial (dialGuard).
@@ -1919,6 +1934,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: it covers %s's host %q, so muster would refuse its own pages (421)",
 			envPluginOrigins, envPublicURL, u.Host)
 	}
+	// 🔴 Unprefixed cookie names beside a same-site plugin origin: that origin
+	// can toss cookies onto muster's host. See sameSitePluginOrigin.
+	if !c.authConfig().HostPrefixedCookies() {
+		if p, ok := sameSitePluginOrigin(origins, c.PublicURL); ok {
+			// The remedy differs by mode: gotrue cookies are always Secure, so
+			// only the URL matters there.
+			needs := "an https " + envPublicURL
+			if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue {
+				needs += " with " + envSecureCookies + " on or unset"
+			}
+			return config{}, fmt.Errorf("invalid %s: %s shares %s's registrable domain, and this deployment's cookies "+
+				"are not __Host- prefixed, so a page there could set cookies muster would read. Prefixed names "+
+				"need %s; or move the plugin to another registrable domain",
+				envPluginOrigins, p, envPublicURL, needs)
+		}
+	}
 	c.PluginOrigins = origins
 
 	if c.ClientAddr, err = clientaddr.New(clientaddr.Config{
@@ -2118,6 +2149,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.FleetPropose = true
 	default:
 		return config{}, fmt.Errorf("invalid %s %q: want off or propose", envFleetOrchestration, v)
+	}
+	c.MorningReport = envFlag(getenv, envMorningReport)
+	if c.MorningReportAt, err = parseMorningReportTZ(getenv(envMorningReportTZ)); err != nil {
+		return config{}, err
 	}
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
@@ -2845,6 +2880,52 @@ func secureCookies(v, publicURL string) bool {
 	return httpsURL(publicURL)
 }
 
+// sameSitePluginOrigin returns the first plugin origin pattern that shares the
+// public URL's REGISTRABLE domain (eTLD+1, by the public suffix list), and
+// whether there is one.
+//
+// 🔴 BY REGISTRABLE DOMAIN, NOT "UNDER MUSTER'S HOST". A browser lets a page set
+// a cookie for any domain between its own host and the registrable domain, so
+// `meet.example.com` can set one for `example.com` that `app.example.com`
+// receives: a same-site sibling tosses cookies exactly as a subdomain does. An
+// IP-address public URL has no registrable domain and compares by exact host
+// (a plugin origin is never an IP, so it never matches). No public URL: no
+// host to compare.
+func sameSitePluginOrigin(origins []plugins.OriginPattern, publicURL string) (plugins.OriginPattern, bool) {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.Hostname() == "" {
+		return plugins.OriginPattern{}, false
+	}
+	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	if net.ParseIP(host) != nil {
+		for _, p := range origins {
+			if !p.Wildcard && p.Host == host {
+				return p, true
+			}
+		}
+		return plugins.OriginPattern{}, false
+	}
+	site := registrableDomain(host)
+	for _, p := range origins {
+		// A wildcard's hosts are all below its zone: same-site when the zone's
+		// registrable domain is muster's, or when muster's registrable domain
+		// is itself below the zone (a zone that is a public suffix).
+		if registrableDomain(p.Host) == site || (p.Wildcard && strings.HasSuffix(site, "."+p.Host)) {
+			return p, true
+		}
+	}
+	return plugins.OriginPattern{}, false
+}
+
+// registrableDomain is host's eTLD+1, or host itself when it has none (a
+// single label, or a host that is itself a public suffix).
+func registrableDomain(host string) string {
+	if d, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		return d
+	}
+	return host
+}
+
 // httpsURL reports whether raw is an https URL with a host.
 func httpsURL(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -3502,4 +3583,24 @@ func hookTokenRefusal(token string) string {
 			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
 	}
 	return ""
+}
+
+// defaultMorningReportTZ is the morning report's default zone (operator
+// decision).
+const defaultMorningReportTZ = "America/Chicago"
+
+// parseMorningReportTZ is the morning report's schedule from
+// MUSTER_MORNING_REPORT_TZ (an IANA zone, "" for the default). Read whether or
+// not the report is on, so a bad value is refused at boot before anyone turns
+// it on.
+func parseMorningReportTZ(tz string) (morning.Schedule, error) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		tz = defaultMorningReportTZ
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return morning.Schedule{}, fmt.Errorf("invalid %s %q: want an IANA time zone such as America/Chicago", envMorningReportTZ, tz)
+	}
+	return morning.In(loc), nil
 }

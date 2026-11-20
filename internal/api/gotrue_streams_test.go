@@ -46,6 +46,13 @@ type streamFixture struct {
 
 func newStreamFixture(t *testing.T) *streamFixture {
 	t.Helper()
+	return newStreamFixtureWith(t, nil)
+}
+
+// newStreamFixtureWith is newStreamFixture whose every request carries set
+// (withSocketSettings); nil is production's.
+func newStreamFixtureWith(t *testing.T, set *socketSettings) *streamFixture {
+	t.Helper()
 	fake := gotruetest.New(t, gtSecret)
 	f := &gtFixture{fake: fake, store: newMemUsers()}
 	f.s = New(sse.New(16), AuthConfig{Mode: AuthModeGoTrue, HookToken: gtHook, PublicURL: "https://muster.example.com"},
@@ -61,6 +68,9 @@ func newStreamFixture(t *testing.T) *streamFixture {
 	f.s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: f.store})
 	f.s.gt.sweepInterval = 50 * time.Millisecond // before the first tracked request starts it
 	h := f.s.Handler()
+	if set != nil {
+		h = withSettingsHandler(h, set)
+	}
 	f.edge, f.machine = BrowserListener(h), h
 	ts := httptest.NewServer(f.edge)
 	t.Cleanup(ts.Close)
@@ -78,7 +88,7 @@ type opened struct {
 }
 
 func cookieHeader(at, rt string) string {
-	return accessCookieName + "=" + at + "; " + refreshCookieName + "=" + rt
+	return "__Host-" + accessCookieName + "=" + at + "; __Host-" + refreshCookieName + "=" + rt // an https gotrue fixture: prefixed
 }
 
 func (f *streamFixture) openSSE(t *testing.T, at, rt string) opened {

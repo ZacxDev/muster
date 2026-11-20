@@ -79,6 +79,20 @@ func (b *boundedWindow) take(key string, now time.Time, window time.Duration, li
 	return true
 }
 
+// spend counts amount for key if the window's total stays within limit, in one
+// step: a budget of units (bytes) rather than of hits. An amount over limit on
+// its own is never spent.
+func (b *boundedWindow) spend(key string, now time.Time, window time.Duration, amount, limit int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	en := b.entryLocked(key, now, window, true)
+	if amount < 0 || en.n+amount > limit {
+		return false
+	}
+	en.n += amount
+	return true
+}
+
 // count returns key's hits in the current window (0 for an unknown key).
 func (b *boundedWindow) count(key string, now time.Time, window time.Duration) int {
 	b.mu.Lock()

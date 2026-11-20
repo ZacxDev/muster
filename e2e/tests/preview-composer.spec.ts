@@ -167,7 +167,7 @@ async function openRendered(page: Page): Promise<void> {
 async function openPanel(doc: Doc): Promise<void> {
   await doc.locator('[data-preview-toggle]:visible').click();
   await expect(doc.locator('#preview-panel')).toBeVisible();
-  await expect(doc.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText('200');
+  await expect(doc.frameLocator('#preview-panel [data-preview-frame]').locator('#fake-redeem')).toHaveText('200');
 }
 
 // rect is an element's box, unrounded.
@@ -278,7 +278,7 @@ test.describe('a phone', () => {
       expect(await onTop(page, sel), `${sel} is on top where it is tapped`).toBe('itself');
     }
     // What the panel covers stays inert (Tab cannot reach it).
-    expect(await inert(page, '#mv-back'), 'the header\'s Home control behind the panel is inert').toBe(true);
+    expect(await inert(page, '#mv-menu-open'), 'the header\'s ⋯ control behind the panel is inert').toBe(true);
     expect(await inert(page, '#mv-log'), 'the conversation behind the panel is inert').toBe(true);
     expect(await inert(page, '#preview-panel'), 'the panel is not').toBe(false);
     expect(await rootFlags(page)).toEqual(['data-preview-bar']);
@@ -365,7 +365,7 @@ test.describe('a phone', () => {
 
     // CLOSED: nothing inert, the layout as it was.
     expect(await rootFlags(page)).toEqual([]);
-    expect(await inert(page, '#mv-back')).toBe(false);
+    expect(await inert(page, '#mv-menu-open')).toBe(false);
     expect(await page.locator('#preview-panel').evaluate((p) => (p as HTMLElement).style.bottom)).toBe('');
   });
 
@@ -390,7 +390,7 @@ test.describe('a phone', () => {
     await expect(input, 'typing reached the palette').toHaveValue('work');
     // What the panel covers in the same box stays inert.
     expect(await inert(page, '#sidebar'), 'the sidebar beside the palette stays inert').toBe(true);
-    expect(await inert(page, '#mv-back'), 'the header\'s Home control stays inert').toBe(true);
+    expect(await inert(page, '#mv-menu-open'), 'the header\'s ⋯ control stays inert').toBe(true);
     await page.keyboard.press('Escape');
     await expect(input).toBeHidden();
     await expect(page.locator('#preview-panel'), 'Escape was the palette\'s').toBeVisible();
@@ -691,7 +691,7 @@ test.describe('full screen in the Android app', () => {
     await expect(panelEl).toBeHidden();
     expect(await rootFlags(page), 'closed: the layout as it was').toEqual([]);
     await expect(page.locator('#mv-compose')).toBeVisible();
-    expect(await inert(page, '#mv-back')).toBe(false);
+    expect(await inert(page, '#mv-menu-open')).toBe(false);
     expect(await back(), 'with nothing open Back is the shell\'s').toBe(false);
     // The chat is in view: the dot has cleared.
     await openPanel(page);

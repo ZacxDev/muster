@@ -219,7 +219,10 @@ func TestTheToolEncoderShowsWhatTheMailWithholds(t *testing.T) {
 // second stall classifier) or SHRINKS (a consumer that stopped using the shared
 // path). Adding the check-in builder is an intended change here, as was adding
 // session state's pass (session_state.go), which reads the same stall facts
-// (stallFacts) and the same classifier (classifyStall).
+// (stallFacts) and the same classifier (classifyStall), and adding the
+// morning report's Stuck section (morning_report.go morningStuck), which reads
+// the same stall facts (stallInputs) so it and the sweep agree on who is
+// stalled.
 func TestTheCollectorAndStallLedger(t *testing.T) {
 	want := map[string]string{
 		"WindowHistory":     "api.collectFleet",
@@ -227,7 +230,7 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		"encodeFleetReport": "api.buildFleetReport",
 		// A fleet close card's tap reads the session's stall facts for §5.2's
 		// refusals (background work, an open ask) — the same facts, never a copy.
-		"stallInputs":     "api.fleetDeliverClose,api.nudgeCandidates",
+		"stallInputs":     "api.fleetDeliverClose,api.morningStuck,api.nudgeCandidates",
 		"stallFacts":      "api.sessionStateOwner,api.stallInputs",
 		"nudgeCandidates": "api.sweepOwnerNudges",
 		// 🔴 THE STALL NUDGES' CANDIDATE RULE (stalledSessions) has exactly two

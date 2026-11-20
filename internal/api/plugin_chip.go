@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
-	"github.com/ZacxDev/muster/internal/authz"
 	"html"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -89,12 +92,15 @@ func viewerFrameSrc(ps []plugins.Plugin) string {
 }
 
 // pluginChips is what the page draws for ps, aimed at e's window, with its
-// counts now.
-func pluginChips(ps []plugins.Plugin, e mirror.SessionView) *ui.PluginChips {
-	if len(ps) == 0 {
+// counts now, and pages — the window's session's pages (sessionPages) — for
+// a pages feature that is on (pagesOn). nil when there is neither a plugin to
+// open nor pages to list.
+func pluginChips(ps []plugins.Plugin, e mirror.SessionView, pagesOn bool, pages int, viewer int64) *ui.PluginChips {
+	if len(ps) == 0 && !pagesOn {
 		return nil
 	}
-	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews}
+	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews,
+		PagesOn: pagesOn, Pages: pages, Viewer: viewer}
 	for _, p := range ps {
 		label := p.Label
 		if label == "" {
@@ -105,27 +111,98 @@ func pluginChips(ps []plugins.Plugin, e mirror.SessionView) *ui.PluginChips {
 	return c
 }
 
-// handlePreviewButton serves GET ui.PreviewButtonPath: the session view's
-// Preview button for the window's counts NOW (ui.PreviewButton), drawn for
-// the slot's `place` (the header row, or the second row below `sm`), nothing
-// when it has nothing to preview. The page's slots poll it.
+// sessionOpenChips is a mirrored window's Open control (pluginChips): its
+// viewer plugins vp, its counts, and its session's pages.
+func (s *Server) sessionOpenChips(ctx context.Context, vp []plugins.Plugin, h mirror.HostView, e mirror.SessionView) *ui.PluginChips {
+	// A team host's window lists no pages (windowPagesRef): its control is
+	// its team's previews alone, as before.
+	on := s.pagesOn() && e.Owner == 0
+	n := 0
+	if on {
+		n = len(s.sessionPages(ctx, windowPagesRef(h, e)))
+	}
+	return pluginChips(vp, e, on, n, draftUser(ctx))
+}
+
+// windowPagesRef is what a mirrored window's pages are listed by: its host,
+// the window itself (its tmux session and window id — the window a page was
+// made in, pages.Creator.MirrorWindow: so a new Claude session in it keeps
+// its earlier pages) and every MCP caller key it runs now
+// (mirror.Window.MCPCallerKeys — pages.Creator.MirrorSession), read from h's
+// report of the window.
 //
-// 🔴 THE SAME TWO GATES AS THE PAGE: the window's counts first (in memory —
-// a window with nothing answers empty without reading the plugin store), then
-// viewerPlugins, so a token revoked since the page loaded takes the button
-// away at the next poll. An unknown window answers empty, never an error the
-// slot would keep its old button through.
+// 🔴 NONE ON A TEAM HOST'S WINDOW (e.Owner != 0): a team window's pages are
+// the TEAM's rows, which row-level security never shows a member (the pages
+// store runs as the viewer, and no team door reads pages), and the viewer's
+// OWN rows are keyed by host NAME — a page from the viewer's own host of the
+// same name is not this window's. So nothing is read, and the tab says the
+// session made none.
+func windowPagesRef(h mirror.HostView, e mirror.SessionView) pages.SessionRef {
+	if e.Owner != 0 || e.Window == "" {
+		return pages.SessionRef{}
+	}
+	for _, w := range h.Windows {
+		if w.ID == e.Window && w.Session == e.Session {
+			return pages.SessionRef{MirrorHost: h.Host, MirrorTmuxSession: w.Session, MirrorWindow: w.ID, MirrorSessions: w.MCPCallerKeys()}
+		}
+	}
+	return pages.SessionRef{}
+}
+
+// sessionPages is the pages session x made that ctx's principal may read
+// (the store's row-level security: the viewer's own), newest first; nil with
+// pages off, for an x that names no session, or on a store error (logged).
+func (s *Server) sessionPages(ctx context.Context, x pages.SessionRef) []pages.Summary {
+	if !s.pagesOn() || !x.Valid() {
+		return nil
+	}
+	list, err := s.ext.Pages.SessionPages(ctx, x)
+	if err != nil {
+		s.logger.Printf("pages: a session's pages: %v", err)
+		return nil
+	}
+	return list
+}
+
+// sessionPagesView is list as the Pages tab draws it: each page's current
+// version, when it was made — its day in words (ui.PlainWhen, the Pages
+// screens' rule: no timestamp in the top layer) — and whether it is shared,
+// a live link of any kind (pages.Summary.LiveLinks), so someone without an
+// account can open it.
+func sessionPagesView(list []pages.Summary) []ui.SessionPage {
+	now := time.Now()
+	out := make([]ui.SessionPage, 0, len(list))
+	for _, p := range list {
+		out = append(out, ui.SessionPage{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Shared: p.LiveLinks > 0, Made: ui.PlainWhen(p.CreatedAt, now)})
+	}
+	return out
+}
+
+// handlePreviewButton serves GET ui.PreviewButtonPath: a mirrored window's
+// Open button for its counts NOW (ui.OpenButton) — its previews while the
+// owner has a live viewer plugin, plus its session's pages — nothing when it
+// has nothing to open. The page's slot polls it.
+//
+// 🔴 THE SAME GATES AS THE PAGE: the previews count only with viewerPlugins
+// (a token revoked since the page loaded takes them away at the next poll);
+// the pages are the viewer's own rows (sessionPages, windowPagesRef — none on
+// a team host's). An unknown window answers empty, never an error the slot
+// would keep its old button through.
 func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	q := r.URL.Query()
-	_, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
-	if !ok || !listed || e.Window == "" || e.Previews.IsZero() {
+	h, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	if !ok || !listed || e.Window == "" {
 		return
 	}
+	var o ui.OpenCounts
 	if onTeamHost(r) {
 		// A TEAM host's window (team sharing 2b.3b): the TEAM's plugins,
 		// never the viewer's; with none, the sentence that says so.
+		if e.Previews.IsZero() {
+			return
+		}
 		ps, member := s.teamViewerPlugins(r.Context(), e.Owner, e.Window)
 		if !member {
 			return
@@ -134,12 +211,89 @@ func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`<p class="text-sm text-fg2" data-team-no-viewer-plugin>` + html.EscapeString(TeamNoViewerPlugin) + `</p>`))
 			return
 		}
-	} else if len(s.viewerPlugins(r.Context(), e.Window)) == 0 {
+		o.Previews = e.Previews
+	} else {
+		if !e.Previews.IsZero() && len(s.viewerPlugins(r.Context(), e.Window)) > 0 {
+			o.Previews = e.Previews
+		}
+		o.Pages = len(s.sessionPages(r.Context(), windowPagesRef(h, e)))
+	}
+	if err := ui.RenderOpenButton(w, o); err != nil {
+		s.logger.Printf("open button: render: %v", err)
+	}
+}
+
+// handleSessionPages serves GET ui.SessionPagesPath: a mirrored window's
+// Pages tab (ui.SessionPagesList) — its session's pages, the viewer's own,
+// newest first. An unknown window, a team host's, and pages off each answer
+// the empty list.
+func (s *Server) handleSessionPages(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	q := r.URL.Query()
+	var list []pages.Summary
+	if h, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window")); ok && listed {
+		list = s.sessionPages(r.Context(), windowPagesRef(h, e))
+	}
+	if err := ui.SessionPagesList(sessionPagesView(list)).Render(w); err != nil {
+		s.logger.Printf("session pages: render: %v", err)
+	}
+}
+
+// agentPagesOf is the agent named by r's {name} — the viewer's own (Agents.
+// GetByName runs under their principal) — and its pages; ok false for none.
+func (s *Server) agentPagesOf(r *http.Request) ([]pages.Summary, bool) {
+	if s.ext.Agents == nil {
+		return nil, false
+	}
+	a, err := s.ext.Agents.GetByName(r.Context(), r.PathValue("name"))
+	if err != nil {
+		return nil, false
+	}
+	return s.sessionPages(r.Context(), pages.SessionRef{AgentID: a.ID}), true
+}
+
+// handleAgentOpenButton serves GET ui.AgentOpenButtonPath: an agent page's
+// Open button — the agent's pages (an agent has no previews) — nothing when
+// it has made none; 404 for an agent the viewer does not see (another
+// owner's reads as a missing one).
+func (s *Server) handleAgentOpenButton(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	list, ok := s.agentPagesOf(r)
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
-	if err := ui.RenderPreviewButton(w, e.Previews, ui.PreviewPlaceOf(q.Get("place"))); err != nil {
-		s.logger.Printf("preview button: render: %v", err)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderOpenButton(w, ui.OpenCounts{Pages: len(list)}); err != nil {
+		s.logger.Printf("open button: render: %v", err)
 	}
+}
+
+// handleAgentSessionPages serves GET ui.AgentSessionPagesPath: an agent
+// page's Pages tab, the agent's pages newest first; 404 for an agent the
+// viewer does not see.
+func (s *Server) handleAgentSessionPages(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	list, ok := s.agentPagesOf(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.SessionPagesList(sessionPagesView(list)).Render(w); err != nil {
+		s.logger.Printf("session pages: render: %v", err)
+	}
+}
+
+// agentOpenChips is an agent page's Open control: the agent's pages, while
+// the pages feature is on; nil otherwise.
+func (s *Server) agentOpenChips(ctx context.Context, a agents.Agent) *ui.PluginChips {
+	if !s.pagesOn() {
+		return nil
+	}
+	n := len(s.sessionPages(ctx, pages.SessionRef{AgentID: a.ID}))
+	return &ui.PluginChips{PagesOn: true, Pages: n, Agent: a.Name, Viewer: draftUser(ctx)}
 }
 
 // TeamNoViewerPlugin is what a team session's Preview says when the team has

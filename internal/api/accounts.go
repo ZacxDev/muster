@@ -593,8 +593,8 @@ type gotrueSession struct {
 // turn a tampered cookie into a working one.
 func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	g := s.gt
-	at := cookieValue(r, accessCookieName)
-	rt := cookieValue(r, refreshCookieName)
+	at := cookieValue(r, s.auth.cookieName(accessCookieName))
+	rt := cookieValue(r, s.auth.cookieName(refreshCookieName))
 	var sess gotrueSession
 	// 🔴 NO SIGNED ACCESS TOKEN, NO REFRESH. A refresh is attempted only for an
 	// access token whose SIGNATURE verified and which has merely expired
@@ -877,7 +877,7 @@ func (s *Server) setGoTrueCookies(w http.ResponseWriter, sess gotrue.Session) {
 		{refreshCookieName, sess.RefreshToken},
 	} {
 		http.SetCookie(w, &http.Cookie{
-			Name: c.name, Value: c.value, Path: "/",
+			Name: s.auth.cookieName(c.name), Value: c.value, Path: "/",
 			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: true,
 			MaxAge: int(gotrueCookieMaxAge / time.Second),
 		})
@@ -887,7 +887,7 @@ func (s *Server) setGoTrueCookies(w http.ResponseWriter, sess gotrue.Session) {
 func (s *Server) clearGoTrueCookies(w http.ResponseWriter) {
 	for _, name := range []string{accessCookieName, refreshCookieName} {
 		http.SetCookie(w, &http.Cookie{
-			Name: name, Value: "", Path: "/",
+			Name: s.auth.cookieName(name), Value: "", Path: "/",
 			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: true, MaxAge: -1,
 		})
 	}

@@ -83,11 +83,13 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pages"
@@ -651,6 +653,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// fleet's action log. Off by default; it needs the digest (config).
 		ext.FleetPropose = cfg.FleetPropose
 		ext.FleetActions = fleet.NewPG(a.pool)
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0161): one
+		// report per owner per day and its push. Off by default; it needs a
+		// database.
+		if cfg.MorningReport {
+			ext.MorningReport = &api.MorningReport{Store: morning.NewPG(a.pool), Schedule: cfg.MorningReportAt}
+		}
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -932,6 +940,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// And its outcome half (host_dispatch_outcome.go): an opencode
 		// dispatch's final reply, and a later turn re-arming a done one.
 		mirrorSvc.SetOutcomesNotify(srv.HostDispatchOutcomes)
+		// Scheduled host jobs (internal/api hostjobs.go): with a database,
+		// each host's declared jobs and each run's result.
+		if a.pool != nil {
+			srv.EnableHostJobs(hostjobs.NewPG(a.pool))
+			mirrorSvc.SetJobsNotify(srv.HostJobsReported)
+			mirrorSvc.SetJobResultNotify(srv.HostJobResult)
+		}
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -984,7 +999,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// 0082), shared by every replica; a cap with no database is
 			// refused.
 			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
-			// The auto-restart's record (migration 0161): its daily cap,
+			// The auto-restart's record (migration 0167): its daily cap,
 			// backoff and held notices survive a rollout.
 			ocfg.Restarts = officers.NewPGRestartStore(a.pool)
 			// A draft officer's review-loop announcements (migration 0119):
@@ -1516,11 +1531,22 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	a.loop(ctx, "a.srv.RunAskLogSweep", func(ctx context.Context) { a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval) })
 	// Host dispatches whose host was not seen for a day end (and free their slot).
 	a.loop(ctx, "a.srv.RunHostDispatchSweep", func(ctx context.Context) { a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval) })
+	// Scheduled host jobs: due crons fired, overdue results called lost
+	// (returns at once while jobs are off). A fire is a compare-and-set on
+	// the job's next fire, so it is never fired twice; but a host is
+	// connected to ONE muster process (the mirror hub is in memory), so with
+	// more than one replica a pod not holding the host's connection would
+	// record it offline. The mirror, and so this, needs one replica.
+	a.loop(ctx, "a.srv.RunHostJobScheduler", func(ctx context.Context) { a.srv.RunHostJobScheduler(ctx, api.HostJobScheduleInterval) })
 	// Task claims whose session ended (its window gone from a reporting host)
 	// are released (returns at once without a mirror).
 	a.loop(ctx, "a.srv.RunClaimSweep", func(ctx context.Context) { a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval) })
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	a.loop(ctx, "a.srv.RunChiefNudgeSweep", func(ctx context.Context) { a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval) })
+	// The morning report (MUSTER_MORNING_REPORT=1; returns at once when off).
+	// Unguarded at replicas > 1: a day's report is one row per owner (the
+	// primary key) and its push one conditional claim, so two pods send once.
+	a.loop(ctx, "a.srv.RunMorningReportSweep", func(ctx context.Context) { a.srv.RunMorningReportSweep(ctx, api.MorningReportInterval) })
 	// The outcome watchdog: a started agent gone quiet is called stuck, once
 	// (returns at once with no outcome store). Unguarded at replicas > 1 like
 	// the sweeps above: each verdict is a conditional write, so two pods apply —
@@ -1839,6 +1865,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
 			"give it its https public URL: without it the session cookie travels with no Secure attribute and any "+
 			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
+	}
+	if a.cfg.authConfig().HostPrefixedCookies() {
+		l.Printf("cookie names: __Host- PREFIXED — %s is https and the cookies are Secure, so a page on "+
+			"any other host (a sibling subdomain included) cannot set a cookie muster reads. Cookies under the old "+
+			"unprefixed names are not read and are expired. A sign-in from a plain-http loopback page is refused "+
+			"with a pointer to %s", envPublicURL, envPublicURL)
+	} else {
+		l.Printf("cookie names: UNPREFIXED — %s is not https, or (password mode) the secure-cookie setting is off. Nothing stops "+
+			"a same-site page setting cookies muster reads, so a %s entry sharing muster's registrable domain "+
+			"refuses to boot", envPublicURL, envPluginOrigins)
 	}
 
 	if a.cfg.HookToken != "" {
@@ -2216,6 +2252,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("fleet proposals: INERT — %s=propose but there is no database", envFleetOrchestration)
 	default:
 		l.Printf("fleet proposals: OFF — %s is not propose", envFleetOrchestration)
+	}
+	switch {
+	case ext.MorningReport != nil:
+		sc := ext.MorningReport.Schedule
+		l.Printf("morning report: ON (%s=1) — one push a day at %02d:%02d %s (%s), only on a day something happened; "+
+			"plan usage %s", envMorningReport, sc.Hour, sc.Minute, sc.Loc, envMorningReportTZ, morningPlanUsageLine(ext))
+	case a.cfg.MorningReport:
+		l.Printf("morning report: INERT — %s=1 but there is no database", envMorningReport)
+	default:
+		l.Printf("morning report: OFF — %s is unset", envMorningReport)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
@@ -2812,4 +2858,13 @@ func declaresKube(list []officers.Officer) bool {
 // model (cfg.FocusModel).
 func focusSummarizer(cfg config, plane *credentials.Plane) *focus.ScaleDown {
 	return &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.FocusModel}
+}
+
+// morningPlanUsageLine says, on the morning report's boot line, whether its
+// plan-usage part has readings to show.
+func morningPlanUsageLine(ext api.Extensions) string {
+	if ext.CCUsage == nil || ext.CCUsageInterval == 0 {
+		return "NOT TRACKED (" + envCCUsagePoll + " is unset; the report says so)"
+	}
+	return "from the usage poll"
 }

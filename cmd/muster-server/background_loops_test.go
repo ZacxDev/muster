@@ -35,6 +35,7 @@ import (
 // Whatever the class, a panic is contained by api.Supervise.
 var backgroundLoops = map[string]string{
 	"a.srv.RunChiefNudgeSweep":       usersOwners,
+	"a.srv.RunMorningReportSweep":    usersOwners, // morning.PG.Owners: enabled persons (EnabledPersonIDs)
 	"a.srv.RunSessionStateSweep":     usersOwners,
 	"a.srv.RunFocusRefresh":          usersOwners,
 	"a.kickoff.Run":                  rowOwners,
@@ -49,6 +50,7 @@ var backgroundLoops = map[string]string{
 	"a.srv.RunRouteTimeouts":         rowOwners,
 	"a.srv.RunAttentionSweep":        rowOwners,
 	"a.srv.RunHostDispatchSweep":     rowOwners,
+	"a.srv.RunHostJobScheduler":      rowOwners,
 	"a.srv.RunClaimSweep":            rowOwners,
 	"a.srv.RunAgentWatchdog":         rowOwners,
 	"a.memo.Run":                     noOwner,

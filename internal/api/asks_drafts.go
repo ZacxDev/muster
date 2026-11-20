@@ -317,8 +317,9 @@ const (
 // served), Nudges when nudges is not "" (its panel: the feature is on), and
 // always Log (logPanel: the ask log's panel, or its placeholder —
 // ask_log_read.go), the tab the request named selected (asksTab) — Open when
-// that tab is not drawn. The panels sit in the swipe area (data-asks-swipe):
-// a sideways swipe there moves one tab (ui/asks_card.go).
+// that tab is not drawn. The panels sit in the swipe area (data-asks-swipe,
+// the shared tab swipe's area over #asks-tabs): a sideways swipe there moves
+// one tab (ui/tab_swipe.go).
 func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
 	top := asksTabOpen
 	switch {
@@ -350,7 +351,7 @@ func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, ar
 	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)
-	nodes := g.Group{t.List, g.Raw(`</div><div class="` + ui.AsksSwipeAreaClass + `" data-asks-swipe>`), t.Panels, g.Raw(`</div></div>`), ui.TabsScript()}
+	nodes := g.Group{t.List, g.Raw(`</div><div class="` + ui.AsksSwipeAreaClass + `" data-asks-swipe ` + ui.TabSwipeAttr + `="asks-tabs">`), t.Panels, g.Raw(`</div></div>`), ui.TabsScript()}
 	if err := nodes.Render(&b); err != nil {
 		s.logger.Printf("asks: render the tabs: %v", err)
 	}

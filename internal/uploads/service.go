@@ -182,6 +182,23 @@ func (s *Service) PutForPage(ctx context.Context, r io.Reader, filename string, 
 	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) }, max, nil, 0)
 }
 
+// PutPageAsset is PutForPage for an asset the page's AUTHOR attaches
+// (internal/pages asset.go): the same prefix, streaming, caps and clean-up,
+// and — as PutChecked — refused (a *RefusedTypeError, before a byte is written
+// to the store) unless allow accepts the type sniffed from its first bytes.
+func (s *Service) PutPageAsset(ctx context.Context, r io.Reader, filename string, pageID, max int64, allow func(contentType string) bool) (Stored, error) {
+	if pageID <= 0 {
+		return Stored{}, fmt.Errorf("uploads: a page's file needs its page")
+	}
+	if allow == nil {
+		return Stored{}, fmt.Errorf("uploads: a page asset needs its type rule")
+	}
+	if max <= 0 || max > s.MaxBytes {
+		max = s.MaxBytes
+	}
+	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) }, max, allow, 0)
+}
+
 // DeletePageFiles deletes every object under page pageID's prefix — by
 // listing the bucket, so an object no row names (an upload that landed while
 // the page was being deleted) goes too.

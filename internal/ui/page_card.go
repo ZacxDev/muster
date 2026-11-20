@@ -128,6 +128,10 @@ type PageCardView struct {
 	// the Share button may fetch it before the click (pageShareJS); without
 	// one every fetch would mint a new link, so it waits for the tap.
 	Reusable bool
+	// NoRevoke: the reader may not revoke the page's link (a team's page,
+	// read by a member who may not: pages.MayRevoke), so the card's ⋯ menu
+	// has no Revoke link and no New link. Share stays: any member shares.
+	NoRevoke bool
 }
 
 // pageToolBase is a tool name's page tool — MUSTER's own only: bare (a
@@ -291,10 +295,14 @@ func pageLinkActions(id int64, live bool) g.Node {
 // live link (live) — there is nothing to revoke or replace before — and the
 // page's own screen. On a server with no link key (reusable false) they are
 // not drawn at all: both act on the page's reusable link, which it never has
-// (a one-off link is revoked on the page's screen).
-func PageShareMenu(id int64, title string, live, reusable bool, menuID string) g.Node {
+// (a one-off link is revoked on the page's screen). Nor are they for a reader
+// who may not revoke the page's link (revoke false, pages.MayRevoke: a team's
+// page, read by a member who is neither its creator nor, while the creator is
+// on the team, a manager; New link is a revoke and a Share, so it goes with
+// Revoke). Page settings is every reader's.
+func PageShareMenu(id int64, title string, live, reusable, revoke bool, menuID string) g.Node {
 	return MoreMenu(menuID, "More for “"+pageCardTitle(title)+"”",
-		g.If(reusable, pageLinkActions(id, live)),
+		g.If(reusable && revoke, pageLinkActions(id, live)),
 		A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(pageMenuItem), g.Text("Page settings")))
 }
 
@@ -349,7 +357,7 @@ func PageCard(v PageCardView, id string) g.Node {
 			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
-			PageShareMenu(v.ID, v.Title, v.Live, v.Reusable, pageCardMenuID(v, id))),
+			PageShareMenu(v.ID, v.Title, v.Live, v.Reusable, !v.NoRevoke, pageCardMenuID(v, id))),
 	)
 }
 

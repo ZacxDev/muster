@@ -1678,7 +1678,7 @@ on a machine can set it, a spawned agent included. So muster does not take
 the owner-authority tools (`attention_answer`, `connector_request_decide`,
 `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`,
 `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
-`agent_destroy`, `chief_restart`) from such a machine as your decision. On a
+`agent_destroy`) from such a machine as your decision. On a
 machine that **starts agents for the chief**, each of them is a **confirmation
 card on your paired phone**, whichever of your sessions the call names, and
 nothing runs until you answer Confirm there (a signed action; a browser answer
@@ -1708,8 +1708,9 @@ agent can read the new token too.
 
 None of these triggers is anything a window can set, so an agent that names
 your pane, clears its own window's tag, or calls muster with this host's token
-directly — from that machine or from anywhere — is gated, with ONE exception,
-below: the reply to a routed message.
+directly — from that machine or from anywhere — is gated, with two
+exceptions: the reply to a routed message (below), and `chief_restart`, which
+is never gated ([its own section](#chief_restart-is-not-gated)).
 
 - **Replies to routed messages are not carded — while no spawned agent runs
   there.** `route_reply` runs at once when it comes from the very session the
@@ -1744,6 +1745,25 @@ started for the chief outright ("a session muster started for the chief
 cannot use it"), read from muster's own record of the host's dispatches (the
 session and window the host's spawn reply named), not from the window's tag.
 No card is filed for such a call.
+
+### `chief_restart` is not gated
+
+`chief_restart` restarts your chief **at once, on every machine**: one that
+starts agents for the chief, one that runs a host officer, and a remote caller
+alike, with `force` or without. It files no confirmation card. This is an
+operator decision, so that a session can restart the chief after a release
+without your phone; the browser's Stop and Start on the chief's agent page are
+likewise not step-up gated.
+
+🔴 **The accepted risk.** On such a machine any process of your user, an agent
+muster started there included (by naming your pane), can restart your chief,
+and with `force` cut off a turn the chief is in. The worst outcome is an
+interrupted chief turn: no data is lost, no other agent is touched (the tool
+restarts only your own chief and takes no agent), and it is what the web Stop
+and Start already allow. Everything else about the tool is unchanged: it is
+refused mid-turn without `force`, refused outright to a session muster recorded
+as one it started for the chief, and it waits for the new pod
+([chief.md](chief.md#restarting-the-chief)).
 
 ### Starting agents on a tenant's tmux server
 
@@ -1804,6 +1824,15 @@ MUSTER_MIRROR_AGENT_SPAWN_REPOS=acme-org/widgets
 A `muster-mirror@<tenant>` unit also needs `-agent-spawn-tenant-server`
 ([above](#starting-agents-on-a-tenants-tmux-server)). To turn it off, drop either and
 restart: a window already running keeps running, with its worktree.
+
+## Scheduled jobs (`-jobs-file`)
+
+A host can run fixed commands on a cron and post their output to a page:
+**scheduled host jobs**, declared in the host's own jobs file and never by
+muster, which only fires them, records their runs and raises an Attention
+item when one fails. They need neither `-interactive` nor `-agent-spawn`, and
+declaring them does not step up the host's mirror door. The whole guide is
+[host-jobs.md](host-jobs.md).
 
 ## Several muster instances
 
@@ -2005,9 +2034,11 @@ the admin tools above. The call is also refused:
 - when its session is not a Claude session id.
 
 **An owner-authority tool always needs the owner's phone.** These are
-`attention_answer`, `agent_destroy`, `chief_restart`, `connector_request_decide`,
+`attention_answer`, `agent_destroy`, `connector_request_decide`,
 `plugin_draft_decide`, `plugin_request_decide` and `dispatch_approve` (the
-step-up ledger, `hostStepUpTools`). That instance cannot see whether the
+step-up ledger, `hostStepUpTools`). `chief_restart` is not one of them: a
+remote caller's restart runs at once, as a local one's does
+([below](#chief_restart-is-not-gated)). That instance cannot see whether the
 caller's machine runs a host officer, because officers are declared on the
 muster the host is mirrored to. So every such call from a remote caller files a
 step-up confirmation card and runs nothing until the owner confirms it from

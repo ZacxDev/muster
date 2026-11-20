@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"html"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -70,9 +72,15 @@ func SetContentHeaders(h http.Header) {
 
 // ShellCSP is the shell's Content-Security-Policy for a script nonce: its one
 // script, its own styles, the brand logo, and frames of this origin only.
-func ShellCSP(nonce string) string {
+func ShellCSP(nonce string) string { return shellCSP(nonce, "'none'") }
+
+// EmbedShellCSP is ShellCSP for the OWNER's view framed in a session's panel
+// (ShellView.Embed): the same policy, but muster's own origin may frame it.
+func EmbedShellCSP(nonce string) string { return shellCSP(nonce, "'self'") }
+
+func shellCSP(nonce, ancestors string) string {
 	return "default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; img-src 'self'; frame-src 'self'; " +
-		"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		"connect-src 'self'; frame-ancestors " + ancestors + "; base-uri 'none'; form-action 'none'"
 }
 
 // ShellHeaders is every header the shell is served with, for nonce.
@@ -88,9 +96,30 @@ func ShellHeaders(nonce string) map[string]string {
 	}
 }
 
+// EmbedShellHeaders is ShellHeaders for the owner's view framed in a
+// session's panel: EmbedShellCSP and X-Frame-Options SAMEORIGIN, every other
+// header the same.
+//
+// 🔴 ONLY THE OWNER'S OWN VIEW IS EVER SERVED SO (/pages/{id}/view?embed=1,
+// signed in): a share link's shell (/s/{token}) is the page a stranger opens,
+// and stays frame-ancestors 'none' — no page of any origin frames it.
+func EmbedShellHeaders(nonce string) map[string]string {
+	h := ShellHeaders(nonce)
+	h["Content-Security-Policy"] = EmbedShellCSP(nonce)
+	h["X-Frame-Options"] = "SAMEORIGIN"
+	return h
+}
+
 // SetShellHeaders sets ShellHeaders on h.
 func SetShellHeaders(h http.Header, nonce string) {
 	for k, v := range ShellHeaders(nonce) {
+		h.Set(k, v)
+	}
+}
+
+// SetEmbedShellHeaders sets EmbedShellHeaders on h.
+func SetEmbedShellHeaders(h http.Header, nonce string) {
+	for k, v := range EmbedShellHeaders(nonce) {
 		h.Set(k, v)
 	}
 }
@@ -110,7 +139,20 @@ type RenderOptions struct {
 	// Uploads: the server can store files. Without it an upload block is drawn
 	// disabled, saying so.
 	Uploads bool
+	// UploadsOff, when set, is what a disabled upload block says instead of
+	// "File uploads are not available on this server." (a team member's own
+	// view of a team's page: TeamUploadsOff).
+	UploadsOff string
+	// Assets are the author's assets the version refers to (Store.VersionAssets):
+	// what the SDK asks the shell for, and how a markdown block's
+	// ![alt](asset:<id>) is drawn (an <img>, or a <video> for a video). A
+	// reference to anything else is left as it was written.
+	Assets []Asset
 }
+
+// TeamUploadsOff is what an upload block says in a team member's own view of
+// a TEAM's page: files are not taken from a team page's view yet (0165).
+const TeamUploadsOff = "Files can't be sent from a team page yet."
 
 // Content is the content document of version v: muster's base styles, the
 // SDK, then every block. It is served with ContentHeaders. A link's viewer
@@ -133,7 +175,11 @@ func Content(v Version, o RenderOptions) string {
 		blocks.WriteString(renderBlock(blk, o))
 		blocks.WriteString("\n")
 	}
-	b.WriteString(sdkScript(v, blocks.String()))
+	ids := make([]string, 0, len(o.Assets))
+	for _, a := range o.Assets {
+		ids = append(ids, a.PublicID)
+	}
+	b.WriteString(sdkScript(v, blocks.String(), ids))
 	b.WriteString("</script></head>\n<body><main class=\"mp\"></main></body></html>\n")
 	return b.String()
 }
@@ -153,7 +199,7 @@ func renderBlock(b Block, o RenderOptions) string {
 	switch b.Type {
 	case BlockMarkdown:
 		if o.Markdown != nil {
-			return `<section class="mp-block mp-markdown">` + o.Markdown(b.Text) + `</section>`
+			return `<section class="mp-block mp-markdown">` + markdownWithAssets(b.Text, o) + `</section>`
 		}
 		return `<section class="mp-block mp-markdown"><pre>` + esc(b.Text) + `</pre></section>`
 	case BlockHTML:
@@ -197,8 +243,12 @@ func renderBlock(b Block, o RenderOptions) string {
 			multi = " multiple"
 		}
 		if !o.Uploads {
+			off := "File uploads are not available on this server."
+			if o.UploadsOff != "" {
+				off = o.UploadsOff
+			}
 			return open + `<form data-muster-form><label for="` + id + `-f">` + esc(b.Label) + `</label><input type="file" id="` + id +
-				`-f" name="file" disabled><p class="mp-status" role="status" data-muster-status>File uploads are not available on this server.</p></form></section>`
+				`-f" name="file" disabled><p class="mp-status" role="status" data-muster-status>` + esc(off) + `</p></form></section>`
 		}
 		return open + `<form data-muster-form><label for="` + id + `-f">` + esc(b.Label) + `</label><input type="file" id="` + id +
 			`-f" name="file" required` + multi + `><button type="submit">` + esc(submitLabel(b, "Upload")) + `</button>` + status + `</form></section>`
@@ -219,6 +269,106 @@ func req(r bool) string {
 		return " required"
 	}
 	return ""
+}
+
+// assetPlaceholder begins an asset's placeholder in the page's markup until
+// its bytes arrive (sdkScript): a 1x1 transparent GIF the page's policy
+// allows (img-src data:), then a fragment the SDK appends the asset's id to,
+// so each asset's elements can be found again.
+const assetPlaceholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7#muster-asset-"
+
+// markdownAssetImage is a markdown image whose address is an asset reference:
+// ![alt](asset:<id>). The renderer (o.Markdown) draws no image of its own.
+var markdownAssetImage = regexp.MustCompile(`!\[([^\]\n]{0,200})\]\(asset:([A-Za-z0-9_-]{22})\)`)
+
+// markdownWithAssets is markdown text through o.Markdown, with each
+// ![alt](asset:<id>) naming one of o.Assets drawn as that asset: an <img>, or a
+// <video controls> for a video, its src the reference itself (the SDK puts the
+// asset's blob: URL in its place, sdkScript). Any other image syntax is the
+// renderer's to draw as text.
+//
+// 🔴 THE RENDERER STILL ESCAPES EVERY AUTHOR CHARACTER: each such image is
+// swapped for a placeholder (letters and digits around a per-render random
+// nonce, which no markdown rule changes and no author can predict) before the
+// text is rendered, and the placeholder for muster's own tag after; the alt
+// text is escaped here.
+func markdownWithAssets(text string, o RenderOptions) string {
+	kinds := map[string]string{}
+	for _, a := range o.Assets {
+		kinds[a.PublicID] = a.ContentType
+	}
+	if len(kinds) == 0 || !strings.Contains(text, "](asset:") {
+		return o.Markdown(text)
+	}
+	nonce := make([]byte, 9)
+	_, _ = rand.Read(nonce)
+	mark := "MUSTERASSET" + strings.ToUpper(hex.EncodeToString(nonce))
+	var tags, literals []string
+	text = markdownAssetImage.ReplaceAllStringFunc(text, func(m string) string {
+		sub := markdownAssetImage.FindStringSubmatch(m)
+		ct, ok := kinds[sub[2]]
+		if !ok {
+			return m
+		}
+		alt, src := html.EscapeString(sub[1]), AssetScheme+sub[2]
+		tag := `<img src="` + src + `" alt="` + alt + `">`
+		if IsVideo(ct) {
+			tag = `<video src="` + src + `" controls playsinline preload="metadata" aria-label="` + alt + `"></video>`
+		}
+		tags, literals = append(tags, tag), append(literals, html.EscapeString(m))
+		return mark + "N" + strconv.Itoa(len(tags)-1) + "X"
+	})
+	return spliceAssets(o.Markdown(text), mark, tags, literals)
+}
+
+// placeholderAt matches a placeholder's number at the start of what follows
+// its mark.
+var placeholderAt = regexp.MustCompile(`^N([0-9]+)X`)
+
+// spliceAssets puts tags[i] where placeholder i is TEXT in out, the
+// renderer's HTML — and literals[i] (the markdown as written, escaped) where
+// it is not: inside a tag (an attribute: a link's address that held the
+// image syntax) or inside a code span or block, which shows its markdown as
+// it was written. A tag spliced into either would break the markup (or turn
+// code into an image).
+//
+// out is the renderer's own HTML, every author character escaped, so a "<"
+// in it always begins one of the renderer's tags: the walk can trust it.
+func spliceAssets(out, mark string, tags, literals []string) string {
+	var b strings.Builder
+	inTag, code := false, 0
+	for i := 0; i < len(out); {
+		if strings.HasPrefix(out[i:], mark) {
+			if m := placeholderAt.FindStringSubmatch(out[i+len(mark):]); m != nil {
+				if n, err := strconv.Atoi(m[1]); err == nil && n < len(tags) {
+					if inTag || code > 0 {
+						b.WriteString(literals[n])
+					} else {
+						b.WriteString(tags[n])
+					}
+					i += len(mark) + len(m[0])
+					continue
+				}
+			}
+		}
+		c := out[i]
+		switch {
+		case !inTag && c == '<':
+			inTag = true
+			rest := out[i:]
+			switch {
+			case strings.HasPrefix(rest, "<code") || strings.HasPrefix(rest, "<pre"):
+				code++
+			case (strings.HasPrefix(rest, "</code") || strings.HasPrefix(rest, "</pre")) && code > 0:
+				code--
+			}
+		case inTag && c == '>':
+			inTag = false
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
 }
 
 func renderField(component string, f Field) string {
@@ -296,20 +446,54 @@ func jsString(s string) string {
 // What the page sends is NOT checked here: in the owner's view the SHELL
 // shows it to the owner and posts it only on their own tap (ShellScript);
 // through a link it is recorded, as it always was.
-func sdkScript(v Version, blocks string) string {
+func sdkScript(v Version, blocks string, assets []string) string {
+	ids, _ := json.Marshal(assets)
+	if assets == nil {
+		ids = []byte("[]")
+	}
 	return `(function(){"use strict";
 var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
- DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,
+ DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,BL=W.Blob,COU=URL.createObjectURL,
+ QSA=Document.prototype.querySelectorAll,SA=Element.prototype.setAttribute,RA=Element.prototype.removeAttribute,GA=Element.prototype.getAttribute,ML=HTMLMediaElement.prototype.load,
+ gTag=gd(Element.prototype,"tagName"),gPar=gd(Node.prototype,"parentNode"),
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
  gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
- BLOCKS=` + jsString(blocks) + `,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+ BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,PH=` + jsString(assetPlaceholder) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 function later(){R(ST,W,[show,0]);}
+// RENDER FIRST, FILL IN (asset.go). The page goes in at once, each asset:<id>
+// in its markup a placeholder (PH+id: a 1x1 transparent image, drawn as a
+// box by data-muster-asset, contentCSS); load asks the shell for each asset
+// the version refers to (the frame has no network: the shell fetches it) and,
+// as each Blob arrives, fill puts a blob: URL of it in every src or poster
+// still holding its placeholder. One that fails keeps the placeholder,
+// marked failed. A page's own script reading one before it arrives sees the
+// placeholder; the element's own load (or loadedmetadata) follows the swap.
+function ph(a){return PH+a;}
+function els(a){return R(QSA,D,['[src="'+ph(a)+'"],[poster="'+ph(a)+'"]']);}
+function mark(a,state){var l=els(a);for(var i=0;i<l.length;i++)R(SA,l[i],["data-muster-asset",state]);}
+function fill(a){
+ var u=urls[a],l=els(a);if(!u)return;
+ for(var i=0;i<l.length;i++){var e=l[i],t=R(gTag,e,[]);
+  if(R(GA,e,["poster"])===ph(a))R(SA,e,["poster",u]);
+  if(R(GA,e,["src"])===ph(a))R(SA,e,["src",u]);
+  R(RA,e,["data-muster-asset"]);
+  if(t==="SOURCE"){var p=R(gPar,e,[]);if(p instanceof HTMLMediaElement)R(ML,p,[]);}}
+}
+function load(){
+ if(loading)return;loading=true;
+ ASSETS.forEach(function(a){send("asset",a,null,function(ok,x){
+  if(ok&&x instanceof BL){try{urls[a]=R(COU,URL,[x]);}catch(e){}}
+  if(!shown)return;if(urls[a])fill(a);else mark(a,"failed");
+ });});
+}
 function show(){
  if(shown)return;var m=D.querySelector("main.mp");
  if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}
+ ASSETS.forEach(function(a){BLOCKS=BLOCKS.split("asset:"+a).join(ph(a));});
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+ ASSETS.forEach(function(a){if(urls[a])fill(a);else mark(a,"loading");});
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
@@ -322,7 +506,7 @@ function answer(ev){
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);var d=R(gData,ev,[]);
- if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();load();}
 },true]);
 // Only the browser's own scroll of the document reports: not a dispatched
 // "scroll" (isTrusted is unforgeable), not an inner element's.
@@ -338,7 +522,7 @@ if(PARENT===W)show();else hello();
 function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
- R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
+ R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
  R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"No answer came back. Try again.");}},` + sdkWaitMs + `]);
 }
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
@@ -437,7 +621,8 @@ border:1px solid var(--edge);border-radius:8px;padding:10px;min-height:44px}
 button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font-weight:600;cursor:pointer;align-self:flex-start}
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
-.mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
+.mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}
+[data-muster-asset]{display:block;width:100%;aspect-ratio:16/9;background:var(--line);border-radius:8px;object-fit:contain}`
 
 // The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
 // which fills the window; the content document leaves room for it at its top
@@ -495,6 +680,11 @@ type ShellView struct {
 	// relay sends their session, and the header draws the version chip. nil
 	// for a link's viewer, who gets the same header without it.
 	Owner *OwnerChrome
+	// Embed: the owner's view framed in a session's panel (?embed=1, served
+	// with EmbedShellHeaders): the popover's links to muster's own screens
+	// (Page details, Made by) open in a new tab (the panel's frame grants no
+	// top navigation, ui.SessionPageSandbox).
+	Embed bool
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the version
@@ -654,11 +844,14 @@ func Shell(v ShellView) string {
 			}
 			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
 		}
-		made := ""
-		if o.SessionHref != "" {
-			made = `<a href="` + esc(o.SessionHref) + `" data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		made, top := "", ""
+		if v.Embed {
+			top = ` target="_blank" rel="noopener"`
 		}
-		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
+		if o.SessionHref != "" {
+			made = `<a href="` + esc(o.SessionHref) + `"` + top + ` data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		}
+		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `"` + top + ` data-page-details>Page details</a></div>
 <div id="action-toasts" aria-live="polite"></div>
 <div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
 <p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
@@ -825,6 +1018,15 @@ function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
  if(!base)return reply(false,"nothing can be sent from here");
+ // An asset the version refers to (asset.go): a READ, fetched here — the
+ // frame has no network — by the route under base (the link's token, or the
+ // owner's session), and handed back as a Blob. No confirm: nothing is sent.
+ if(d.op==="asset"){
+  if(!only(d,["muster","id","op","asset"])||typeof d.asset!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(d.asset))return reply(false,"muster does not take that");
+  return fetch(base+"/assets/"+d.asset,{credentials:` + creds + `,referrerPolicy:` + refpol + `}).then(function(r){
+   if(!r.ok)throw new Error("muster answered "+r.status);return r.blob();
+  }).then(function(b){reply(true,b);},function(){reply(false,"the asset could not be loaded");});
+ }
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",what,summary,run,i;
  if(d.op==="submit"){
   if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");

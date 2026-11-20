@@ -556,6 +556,18 @@ type Msg struct {
 	// time (previews.go).
 	Previews map[string]WindowPreviews `json:"previews,omitempty"`
 
+	// ---- scheduled host jobs (hostjobs.go) ----
+
+	// Jobs (jobs) is the host's whole declared job list (empty is a list
+	// too); JobsError (jobs) why its jobs file could not be read, and then
+	// Jobs says nothing.
+	Jobs      []HostJob `json:"jobs,omitempty"`
+	JobsError string    `json:"jobsError,omitempty"`
+	// JobRun (job-run) is which declared job to run, as which run.
+	JobRun *JobRunReq `json:"jobRun,omitempty"`
+	// JobResult (job-result) is how a run ended.
+	JobResult *JobResult `json:"jobResult,omitempty"`
+
 	// ---- tracing (internal/telemetry) ----
 
 	// Traceparent (every request muster sends a host: open, watch, paste,

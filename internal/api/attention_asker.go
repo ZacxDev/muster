@@ -293,12 +293,17 @@ func attentionReturnPage(r *http.Request) (string, bool) {
 	if v == "" || safeReturnTo(v) != v {
 		return "", false
 	}
-	return v, askPageReturn.MatchString(v) || officerPageReturn.MatchString(v)
+	return v, askPageReturn.MatchString(v) || officerPageReturn.MatchString(v) ||
+		morningReturn.MatchString(v)
 }
 
 // askPageReturn is an ask page's own address (attention_ask_page.go), a page
 // that draws the answer form.
 var askPageReturn = regexp.MustCompile(`^` + askPagePrefix + `[1-9][0-9]{0,18}$`)
+
+// morningReturn is a morning report's page (morning_report.go): its open
+// questions are the queue's own cards, so it draws the answer form too.
+var morningReturn = regexp.MustCompile(`^` + morningPathPrefix + `[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 
 // attentionFormFailed answers a refused answer or dismissal: given on a page
 // attentionReturnPage names, that page again with a notice saying why;

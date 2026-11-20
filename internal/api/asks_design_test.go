@@ -409,7 +409,7 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 		t.Errorf("draftDecidedLink(9) = %q", got)
 	}
 	// The panels are the swipe area.
-	if !strings.Contains(out, `<div class="`+ui.AsksSwipeAreaClass+`" data-asks-swipe><div id="asks-tabs-panel-open"`) {
+	if !strings.Contains(out, `<div class="`+ui.AsksSwipeAreaClass+`" data-asks-swipe data-tab-swipe="asks-tabs"><div id="asks-tabs-panel-open"`) {
 		t.Errorf("the panels are not in the swipe area:\n%s", out)
 	}
 }
