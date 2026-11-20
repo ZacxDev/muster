@@ -33,7 +33,9 @@ import (
 //
 // 🔴 SO ON SUCH A MACHINE EVERY OWNER-AUTHORITY TOOL IS A REQUEST, NOT A
 // DECISION. hostStepUpGate files a CONFIRMATION CARD to the owner — one card
-// per decision, naming the tool and its exact arguments — and runs nothing.
+// per decision: what it does and why on its face (for a draft, the post
+// itself), the tool and its exact arguments in its Details
+// (host_stepup_card.go) — and runs nothing.
 // The decision runs only when the owner answers that card "Confirm" from
 // their paired phone: a SIGNED ACTION (device_actions.go), whose challenge is
 // single use, lives two minutes and is bound to that card's id and the sha256
@@ -361,7 +363,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 		if !ok {
 			return toolErr("%s: the held dispatch could not be read, so nothing was asked of your owner; check the hold_id dispatch_request returned", name), true
 		}
-		held = "\n\nThe held start: " + sum
+		held = sum
 	}
 	// why is the reason the card gives: this machine's officers, that it
 	// starts agents for the chief, or — a remote caller — that this muster
@@ -381,13 +383,16 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 			"attention store to ask through; decide it in muster's web UI", name, host, strings.ToLower(why[:1])+why[1:]), true
 	}
 	sum := sha256.Sum256([]byte(name + "\x00" + args))
-	question := fmt.Sprintf("A session on %s (%s) asks to %s: %s %s%s\n\n%s, and its sessions are named by a header "+
-		"any process there can set — so this needs you. Confirm on your paired phone to let it happen (a signed action; a browser answer is refused), "+
-		"or decide it in muster's web UI instead. [%s]",
-		host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, mirror.OneLine(strings.TrimSpace(args), 600), held, why, hex.EncodeToString(sum[:6]))
+	// The card's parts (host_stepup_card.go): its title, why and preview on
+	// its face, the boilerplate in its Details. Its question is built from
+	// them (attention.Clean), the one text the push, the page and the
+	// phone's prompt read.
+	details := stepUpDetails(host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, args, why, hex.EncodeToString(sum[:6]))
+	card := s.stepUpCardFor(ctx, host, c, name, args, what, held, details)
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, p.UserID), attention.New{
-		Asker:    attention.Asker{System: true, Label: hostDecisionLabel},
-		Question: question, Options: []string{hostDecisionConfirm, hostDecisionRefuse},
+		Asker:   attention.Asker{System: true, Label: hostDecisionLabel},
+		StepUp:  card,
+		Options: []string{hostDecisionConfirm, hostDecisionRefuse},
 	})
 	if err != nil {
 		s.logger.Printf("step-up: file a card for %s from %s/%s: %v", name, host, c.asker.MirrorSession, err)
@@ -618,10 +623,9 @@ func (s *Server) stepUpHoldSummary(ctx context.Context, args string) (string, bo
 }
 
 // stepUpPromptShown is how many characters of a held start's instructions a
-// dispatch_approve card shows. The card is an attention question, capped at
-// attention.MaxQuestionRunes (4,000); the rest of the card (the request
-// line, the call's arguments, the reason, the hold's summary) takes up to
-// about 1,500, so 1,500 here keeps the card under the cap. A held prompt may
+// dispatch_approve card shows. They are its preview, with the hold's summary,
+// which a card holds up to attention.MaxStepUpPreviewRunes (2,600) of;
+// 1,500 here keeps the summary and the block under it. A held prompt may
 // be up to chiefPromptMax (8 KiB), more than any card can carry, so a longer
 // one is shown as an EXCERPT and the card says so.
 const stepUpPromptShown = 1500

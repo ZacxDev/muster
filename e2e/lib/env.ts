@@ -448,6 +448,10 @@ export const serverSwitcherStubPort = port + 404;
 // the key needs. (+463, +464: clear of every block, +462 the highest taken.)
 export const teamPagesPort = port + 463;
 export const teamPagesConnectPort = port + 464;
+// tests/stepup-card-page.spec.ts: a step-up confirmation card's page at a
+// phone width — its own server (+465: clear of every block, +464 the highest
+// taken).
+export const stepupCardPagePort = port + 465;
 // tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
 // desktop width — its own server (plugins on), no mirror host.
 export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/env-ports.test.mjs)

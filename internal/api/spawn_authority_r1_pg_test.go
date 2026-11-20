@@ -156,7 +156,7 @@ func approveCard(t *testing.T, prompt string) string {
 		t.Fatal(err)
 	}
 	for _, a := range asks {
-		if a.Asker.Label == hostDecisionLabel && strings.Contains(a.Question, dispatchApproveTool) {
+		if a.Asker.Label == hostDecisionLabel && a.StepUp != nil && a.StepUp.Tool == dispatchApproveTool {
 			return a.Question
 		}
 	}

@@ -1736,6 +1736,50 @@ is never gated ([its own section](#chief_restart-is-not-gated)).
   `plugin_requests_list`, `plugin_outbound_batch_get`) answer your own
   sessions at once.
 
+#### What a card shows
+
+A card leads with what is about to happen and why, and folds the rest away.
+
+- **The title** is the action, short: **Post to X?** (or *Reply on …*,
+  *Send a DM on …*, *Send this reply on …*) for a draft's approval,
+  **Reject this draft?** for a rejection, and a short action for every other
+  tool (*Start this agent?*, *Answer an ask as you?*, *Destroy an agent?* …).
+  It is the notification's title.
+- **The why** is one line. For a draft that a builtin officer filed for an
+  item, it is the item: the officer's type name and the item's summary or
+  subject ("Marketing: rebrand announcement"). Otherwise it is the session
+  that asked ("Asked by work:1"). A rejection says *Reject this draft*,
+  with the reason when one was given. Who asked is a small label under it.
+- **The preview.** For `plugin_draft_decide`: the venue, the post's exact
+  text and its media, read from the draft the call names. For
+  `dispatch_approve`: the held start and its instructions block (above).
+  For every other tool: one plain sentence built from its arguments, never
+  their JSON. A preview longer than 2,600 characters is cut and labelled as an
+  excerpt.
+- **Details**, collapsed on the card's page and absent from the notification:
+  the machine, the session, the tool and its exact arguments, why the phone is
+  needed, and the call's hash. They are stored with the card
+  (`attention_asks.step_up`, [schema](schema.md)).
+
+The notification's body is the why and the start of the post. The card's text
+(what the page shows and the phone's prompt confirms, below) is the title, the
+why, the preview and a media line ("With 1 image"). All three are built from
+the same stored parts.
+
+🔴 **A draft card shows only the draft its decision is bound to.** The
+preview is read from the draft the call names (its id), and shown only when
+that draft's body SHA-256 is the call's `body_sha256` and its media's are the
+call's `media_sha256`, in order. Otherwise (or when the draft cannot be read)
+the card shows nothing of the draft. It reads **This draft changed since it
+was asked** and tells you to refuse. A Confirm of it decides nothing anyway,
+because the decision refuses the mismatch. A draft's body cannot change, and
+its uploaded media can only be added to, so what the card shows stays what
+the decision names. The post is officer-written text: the page draws it
+escaped, as text.
+
+A card filed by an older muster has no stored parts and shows its full text
+as before.
+
 #### Confirming a card from its notification
 
 A card is an [ask](attention.md) whose two options are **Confirm** and
@@ -1745,10 +1789,10 @@ and one tap decides it without opening muster:
 1. Tap **Confirm** (or **Refuse**) on the notification. A locked phone asks
    for the unlock first.
 2. The phone asks muster for a one-time challenge for that answer on that
-   card. muster's answer carries the **card's own text** (`confirms`: the
-   machine, the session, what it asks to do and its exact arguments, and why
-   it needs you), read from the pending decision itself, so what the phone
-   shows is what a Confirm runs.
+   card. muster's answer carries the **card's own text** (`confirms`: its
+   title, why and preview, [above](#what-a-card-shows), with no boilerplate),
+   read from the pending decision itself, so what the phone shows is what the
+   card was filed with.
 3. The phone's step-up prompt names the answer ("Confirm this request?" or
    "Refuse this request?") and shows that text; your fingerprint (or PIN, for
    a key that takes one) signs the challenge with the phone's step-up key.
@@ -1769,7 +1813,7 @@ opens muster. The `confirms` text is display, never authority: muster still
 decides only by the signature.
 
 ⚠ The prompt shows at most the first 1,000 characters of the card. A held
-start's card (`dispatch_approve`) can be longer than that: refuse it from the
+start's card (`dispatch_approve`), or a long post's, can be longer than that: refuse it from the
 notification, or open the card, when the prompt does not show all of what it
 starts.
 

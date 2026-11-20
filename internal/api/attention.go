@@ -289,6 +289,11 @@ type attentionItem struct {
 	// own unrouted-message ask: unroutedPushText; a reply draft's
 	// draftPushBody); the page shows Text.
 	pushText string
+	// stepUp is a step-up confirmation card's parts (attention.Ask.StepUp,
+	// migration 0171), nil for every other ask and for a card filed before
+	// 0171: its push title is its Title and its push body its why and the
+	// start of its preview (stepUpPushText) — never its Details.
+	stepUp *attention.StepUpCard
 	// Context is what a builtin officer's ask is about (attention.Ask's,
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
@@ -518,6 +523,11 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 		if a.Context != nil {
 			it.Context = a.Context
 			it.pushText = officerContextPushText(a.Context, a.Question)
+		}
+		// A step-up card: its title, why and preview (host_stepup_card.go).
+		if a.StepUp != nil {
+			it.stepUp = a.StepUp
+			it.pushText = stepUpPushText(a.StepUp)
 		}
 	}
 	switch {
@@ -1111,6 +1121,10 @@ const sessionPushTitle = "A session is waiting on you"
 // question (the source is a title, plained once at the sink, goNotify); a
 // waiting session's fixed sessionPushTitle.
 func attentionPushTitle(it attentionItem) string {
+	if it.stepUp != nil && it.Kind == attentionKindAsk {
+		// A step-up card names what it asks to do ("Post to X?").
+		return it.stepUp.Title
+	}
 	switch it.Kind {
 	case attentionKindSession:
 		return sessionPushTitle
@@ -1120,6 +1134,19 @@ func attentionPushTitle(it attentionItem) string {
 		return itemWho(it) + noticePushTitleSuffix
 	}
 	return itemWho(it) + askPushTitleSuffix
+}
+
+// stepUpPushText is step-up card c's push body before its cut: its why, then
+// its preview (a post's text), on one line. Never its Details.
+func stepUpPushText(c *attention.StepUpCard) string {
+	parts := []string{c.Why}
+	if c.Preview != "" {
+		parts = append(parts, c.Preview)
+	}
+	if l := c.MediaLine(); l != "" && c.Preview == "" {
+		parts = append(parts, l)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // askPushTitleSuffix follows the asker in an ask's or a held question's
@@ -1135,6 +1162,10 @@ const askPushTitleSuffix = " is asking"
 // before notifyName's decorated one. "" (the title as it is) for no window, or
 // for an ask, question or notice with no human name.
 func attentionCodenameTitle(it attentionItem) (title, keep string) {
+	if it.stepUp != nil && it.Kind == attentionKindAsk {
+		// A step-up card is muster's own: no window to name.
+		return "", ""
+	}
 	switch it.Kind {
 	case attentionKindSession:
 		return codenameLed(sessionPushTitle, it.at)
@@ -1212,6 +1243,11 @@ func attentionPushBody(it attentionItem) string {
 			body = "Waiting: " + tool + " · " + textplain.TitleKeeping(it.Source, it.target)
 		}
 		return push.CutClusters(mirror.OneLine(body, 1<<20), attentionPushBodyMax)
+	}
+	if it.stepUp != nil && it.Kind == attentionKindAsk {
+		// A step-up card: its why and the start of its preview, no options
+		// line (Confirm and Refuse are the notification's own buttons).
+		return push.CutClusters(pushLine(it.pushText), attentionPushBodyMax)
 	}
 	opts := ""
 	listed := it.Options

@@ -119,9 +119,10 @@ func TestAStepUpCardIsConfirmedFromItsNotification(t *testing.T) {
 
 	// The challenge: the card's text, exactly as filed, for Confirm and for
 	// Refuse alike.
-	question := r.status(t, r.uid, card).Question
-	if !strings.Contains(question, attentionAnswerTool) || !strings.Contains(question, hostOffHost) {
-		t.Fatalf("fixture: the card's question %q does not name its tool and host", question)
+	filed := r.status(t, r.uid, card)
+	question := filed.Question
+	if filed.StepUp == nil || filed.StepUp.Tool != attentionAnswerTool || !strings.Contains(filed.StepUp.Details, hostOffHost) {
+		t.Fatalf("fixture: the card %+v does not name its tool and host", filed.StepUp)
 	}
 	refuse := hostDecisionRefuse
 	if _, _, present, got := r.challengeConfirms(t, r.tok, actionAskAnswer, card, &refuse); !present || got != question {
