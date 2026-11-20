@@ -60,7 +60,7 @@ agreed.
   for the whole server and every person gets the tab, with no per-person
   token. The token acts as nobody, and acts for a person only within
   8 hours of a hand-off that person's own browser made
-  ([design](#core-seam-server-installed-app-plugins); its forks are open).
+  ([design](#core-seam-server-installed-app-plugins); its forks are answered, decision 20).
 - **Two core hardenings gate go-live** of the subdomain: a central origin
   check for every cookie-authenticated write (PR 1g; today many such routes
   check none, so any sibling subdomain can forge them), and `__Host-` cookie
@@ -566,8 +566,9 @@ closes a gap that exists today on any deployment with a sibling host
 
 ### Core seam: server-installed app plugins
 
-**Core PR 1h. Proposed; nothing here is built, and the
-[forks below](#1h-forks-for-the-operator) are open.** Where this section says
+**Core PR 1h. Proposed; nothing here is built. The
+[ten forks below](#1h-forks-for-the-operator) are answered: the operator
+accepted every recommendation (decision 20).** Where this section says
 how muster works today it cites `file:line` at commit `8ccee8ddc`.
 
 **The operator's intent.** Meetings is for every user of a hosted muster,
@@ -659,9 +660,11 @@ everywhere.
 
 #### The server token: what it is
 
-The same `mpl_` shape, so every existing "a plugin token opens
-`/plugin/v1/*` only" refusal (`refusePluginTokenElsewhere`) covers it with no
-change. `Authenticate` (`internal/plugins/store.go:600`) gains its second
+The same `mpl_` shape, so the "a plugin token opens `/plugin/v1/*` only"
+rule still recognises it on every other door. `refusePluginTokenElsewhere`
+needs **one change**: its exemption must cover `ViaServerPlugin` as well as
+`ViaPlugin`, or it refuses every act-for request
+([below](#who-each-route-acts-as)). `Authenticate` (`internal/plugins/store.go:600`) gains its second
 arm: a live row with `scope = 'server'` authenticates with no user join and
 comes back marked `Scope: server`, `OwnerID: 0`.
 
@@ -725,12 +728,34 @@ borrow `installed_by`.
     and `:213`) becomes the **request principal's `UserID`** for both
     kinds. For a personal token that is `p.OwnerID`, unchanged. For a server
     token `p.OwnerID` is `0`, and the principal is the grant's person.
-  - Every other `p.OwnerID` read reachable from a served route (there is
-    none today beyond notify) is classed in the same test.
-- **The pin.** A test walks every non-test `.go` file for `authz.ViaPlugin`
-  and `p.OwnerID` / `pluginFromContext(…).OwnerID` and asserts the set of
-  sites, failing when it grows or shrinks. A new site must then decide what
-  a server token does there.
+  - **`/self`** (`internal/api/plugins.go:332-335`) copies `p.OwnerID` and
+    defaults `owner_kind` to `"person"`. It branches on the row's scope:
+    for a server row it writes `owner_id: null`, `owner_login: null` and
+    `owner_kind: "server"` ([below](#self-for-a-server-token)), never
+    `"person"` with owner `0`.
+  - **The mint's per-minute cap and prune** (`internal/plugins/handoffs.go:178-191`)
+    count and delete `plugin_handoffs` rows `WHERE owner_id = p.OwnerID`,
+    which is `0` for a server row: every person minting for a server app
+    would share **one** bucket, owned by nobody, and nobody's old rows
+    would be pruned. Both are keyed on **the minting person** (the request
+    principal's `UserID`) for both kinds. For a personal plugin that is the
+    same number, because the row is read under `ownedByPrincipal`. The
+    insert's `owner_id` is that same value.
+  - **Auto-start** (`internal/api/plugin_autostart.go:136`,
+    `owner != p.OwnerID`) is **unreachable** for a server app: auto-start
+    needs `messages`, `plugins_server_caps` forbids `messages` on a server
+    row, and `serverPluginRoutes` serves no route that reaches it. Pinned
+    by a test that inserts a server row with `messages` (refused by the
+    CHECK) and one that walks `serverPluginRoutes` and finds no served
+    route whose handler reaches `autostartStart`.
+- **The pin is structural, not a grep.** `Plugin.OwnerID` becomes
+  unexported, and the only way to read it is
+  `func (p Plugin) PersonalOwner() (int64, bool)`, which answers `(0, false)`
+  for a server row. So every read site must handle the server case to
+  compile. Beside it, an enumerated ledger of `PersonalOwner` and
+  `authz.ViaPlugin` call sites (from the Go AST, not a text search) fails
+  when the set grows or shrinks. A new site must then decide what a server
+  token does there.
 
 **What it can never do:** read anything of any person's (no read route is
 served); learn that a person exists before that person opens the tab; name a
@@ -820,9 +845,13 @@ under that person's row-level security.
 
 The check, exactly, as one statement under `authz.System` (a System-ledger
 entry), keyed on the authenticated app's id and never on anything else the
-request says. 🔴 **The predicate is one Go constant, `serverGrantLive`,** and
-`owners/check` ([below](#self-for-a-server-token)) uses the same constant,
-so the two can never disagree about who is live:
+request says. 🔴 **The gate is one store function, `LiveServerGrants(ctx, app, origins,
+subjects)`,** and both act-for (with one subject) and `owners/check`
+([below](#self-for-a-server-token)) call it, so the two can never disagree
+about who is live. It first checks the app row's origin and entry URL
+against the **current** `MUSTER_PLUGIN_ORIGINS` (`ValidViewerLink`; a retired
+origin answers no subject at all), then runs one SQL statement built on the
+constant `serverGrantLive`:
 
 ```sql
 -- serverGrantLive: g = plugin_server_users, p = plugins, u = users
@@ -858,12 +887,11 @@ with at-or-before refused, the rule the paired-device query and the send
 queue already use. (The Go helper is `atOrBefore`; the SQL form is the
 paired-device query's.)
 
-The app's origin and entry URL must also still pass the current
-`MUSTER_PLUGIN_ORIGINS`. Then:
+Then:
 
 - **No row:** `404 {"error": "no such person for this app"}`, **one body for
   every reason** (unknown subject, another app's subject, expired, hidden,
-  disabled, signed out everywhere since the redeem). So the route is no
+  disabled, signed out everywhere since the sign-in, a retired origin). So the route is no
   oracle for whether a person exists or what became of them.
 - **A row:** the request proceeds as `owner_id`. The principal comes from
   **the row**, never from the header, and a header carrying a number is
@@ -904,11 +932,22 @@ plugin or the person filed). So for a server token:
   (plugin_id, owner_id, key, task_id)`, `UNIQUE (plugin_id, owner_id, key)`,
   owned by `owner_id` (forced row-level security), gets a row whenever the
   app creates a task. Create and comment resolve `key` **through the ledger
-  only**: `(this app, the acting person, key)` → `task_id`, and that task
-  must still be live. A key with no ledger row behaves exactly as a key no
-  task carries. With `create` a new task is filed and ledgered, under an
-  advisory lock on `(app, person, key)` so two retries file one. With a
-  bare `comment` the answer is the same `404` as for a key nobody holds.
+  only**: `(this app, the acting person, key)` → `task_id`. That task must
+  be **the open task** by the personal path's own rule, `openOnly`
+  (`internal/notes/pgstore.go:832-835`): live (not dismissed), not
+  complete, and not tagged `superseded-by:`. A key with no ledger row, or
+  whose ledgered task is no longer open, behaves exactly as a key no task
+  carries:
+  - with `create`, a new task is filed, and the ledger row is **upserted**:
+    inserted, or **re-pointed** at the new task when the earlier one was
+    completed, dismissed or merged away. All of this happens under an
+    advisory lock on `(app, person, key)`, so two retries file one task;
+  - with a bare `comment`, the answer is today's
+    `200 {"id": null, "created": false, "commented": false}`
+    ([plugins.md](../plugins.md#post-pluginv1tasks-one-task-per-upstream-record)).
+    It is the same answer whether no task carries the key at all, or only a
+    task this app did not file carries it. Nothing is written.
+
   So a task the person or another plugin tagged with the same key is never
   found, never commented on, and never revealed. A personal token's lookup
   is unchanged.
@@ -980,10 +1019,57 @@ a minute per app.
   sequence with personal plugins (fork 1). `/apps/{id}`, the push tag
   `app-<id>-<ref>` and its tap URL need no second namespace.
 
+#### The Android path for a server app
+
+`/enter` refuses a top-level load ([threat model](#threat-model)), so the
+personal-app path, where the card's **Open** navigates to the plugin's URL
+and the app hands it to a Custom Tab, cannot serve a server app. Sending
+**muster's** `/apps/{id}` out instead does not work with today's app either.
+`muster-android` keeps muster's own origin inside its WebView (`OriginPolicy.kt`),
+and its bridge has no message that opens a URL outside it: the round-2
+audit found only `pair`, `open-notification-settings`, `back-claim` and
+`touch-start`. Navigating to `/apps/{id}` would therefore stay in the
+WebView, where `window.musterApp` is present, so the card would be drawn
+again: a loop.
+
+- **A new bridge message, `open-external`** (a muster-android PR, row
+  **A1** in the [phased plan](#phased-plan)), posted by the main frame:
+  `{"type": "open-external", "url": "https://<muster host>/apps/<id>"}`.
+  The app accepts it only when the URL's origin is **exactly** muster's (the
+  `OriginPolicy` origin) and its path is `/apps/<digits>`, with an optional
+  `?ref=` matching the ref rule. Anything else is ignored and logged. It
+  opens the URL with an `ACTION_VIEW` intent in the **system browser**
+  (Chrome, or a Custom Tab, which shares Chrome's cookies), never in the
+  WebView. That browser frames the plugin as a desktop browser does, so
+  `/enter` gets `Sec-Fetch-Dest: iframe`. A person not signed in to muster
+  in that browser signs in there first. The app advertises the message it
+  supports (the A1 PR defines how, for example a list of message types on
+  `window.musterApp`), and muster's page reads that, never an app version
+  string.
+- **The card, for a server app**, where `window.musterApp` exists: "<label>
+  opens in your browser" and **Open**. Open posts `open-external` for this
+  page's own URL and does nothing else. It mints no code and never
+  navigates the WebView, so there is no loop.
+- **An app too old for `open-external`:** the card has no Open button. It
+  says "Open <muster host>/apps/<id> in your browser to use <label>", with
+  **Copy link**. Nothing navigates, so there is no loop.
+- **Personal app plugins are unchanged:** their card still navigates
+  top-level to the minted plugin URL, which the app sends to a Custom Tab,
+  because a personal plugin's `/enter` does not carry the server app's
+  `Sec-Fetch-Dest` rule.
+- **New tab is not drawn for a server app.** The header's **New tab**
+  button (`internal/ui/app_page.go:153`) is rendered only for a personal app
+  plugin. A server app's page has no top-level way into the plugin from a
+  desktop browser.
+
 #### Revocation, uninstall and the alive poll
 
 - **Uninstall** sets `revoked_at` and deletes the app's `plugin_server_users`
-  rows and its unspent codes, in one transaction. From then on the token is
+  rows, its `plugin_server_tasks` rows (the tasks themselves stay in each
+  person's list, with the comments the app wrote) and its unspent codes, in
+  one transaction. Revocation is an `UPDATE`, so these deletes are explicit:
+  the `ON DELETE CASCADE` foreign keys below fire only if the row itself is
+  ever deleted. From then on the token is
   `401` on every route; every person's tab is gone on their next render;
   every open `/apps/{id}` page's 30 s alive poll answers `404` and removes its
   frame, which ends any camera, microphone or screen capture in it. This is
@@ -1046,8 +1132,17 @@ a minute per app.
   `now()`; NULL on a row only Hide created), `granted_at` (display only),
   `act_until`, `hidden_at`, `UNIQUE (plugin_id, owner_id)` and
   `UNIQUE (plugin_id, subject)`.
-- **`plugin_server_tasks`**: `plugin_id`, `owner_id`, `key`, `task_id`,
+- **`plugin_server_tasks`**: `plugin_id` (→ `plugins (id)`, `ON DELETE
+  CASCADE`), `owner_id` (→ `users (id)`), `key`, `task_id` (→ `notes (id)`,
+  `ON DELETE CASCADE`: a deleted task takes its ledger row with it), and
   `UNIQUE (plugin_id, owner_id, key)` ([tasks](#tasks-for-a-server-app)).
+  The task FK is the **simple** one, as `0053_session_routes_task.sql`
+  uses: a composite `(task_id, owner_id)` onto `notes (id, owner_id)` would
+  depend on `notes_id_owner_key`, which 0006's body drops and re-adds
+  whenever it is re-run. So the store checks, at every ledger write, that
+  the task's `owner_id` is the ledger row's. A re-point (`UPDATE … SET
+  task_id`) is the upsert's `ON CONFLICT (plugin_id, owner_id, key) DO
+  UPDATE`.
 - **Both new tables are owned:** forced row-level security under an
   owner-only policy in 0015's `owner_isolation` shape. They are **not** in
   0127's team list, because a team never owns one. So a person's Account →
@@ -1140,10 +1235,16 @@ its link inside the attacker's account. Closed in the plugin
 unless `Sec-Fetch-Dest: iframe`**, and owner pages carry `frame-ancestors
 <muster's origin>`. Only muster's own page may frame `/enter`, and muster
 frames it only with a code it just minted for the signed-in person. A
-top-level navigation (`Sec-Fetch-Dest: document`), a request from another
-site's frame (refused by `frame-ancestors`), and a client that sends no
-`Sec-Fetch-Dest` are all refused. This drops two top-level entries for a
-server app: **New tab**, and the Android **Open in browser** card (fork 10).
+top-level navigation (`Sec-Fetch-Dest: document`) and a client that sends
+no `Sec-Fetch-Dest` are refused by `/enter` itself. Another site can still
+frame `/enter` and get `Sec-Fetch-Dest: iframe`; the request arrives and
+the code is redeemed, but `frame-ancestors` makes the browser **refuse to
+render** the response, so the victim never sees or uses the session it
+created. This drops the top-level entries for a server app: **New tab** is
+not drawn, and in the Android app the plugin URL is never opened top
+level. Its card instead opens **muster's own `/apps/{id}`** in the system
+browser, which frames the plugin as any browser does (fork 10,
+[the Android path](#the-android-path-for-a-server-app)).
 
 #### 1h tests
 
@@ -1167,13 +1268,16 @@ the mutation that must turn it red, and each is watched red before it counts.
   once against act-for (`POST /plugin/v1/notify`) and once against
   `owners/check`. Its rows: `act_until` passed, hidden, a Hide-only row
   (`signin_at` NULL), disabled, signed out everywhere after the sign-in,
-  `sessions_not_before` moved past the sign-in, app uninstalled, origin
-  retired, and a team row. Each alone is `404` on act-for and **absent from
+  `sessions_not_before` moved past the sign-in, origin retired, and a team
+  row. Each alone is `404` on act-for and **absent from
   `live`** on `owners/check`. The all-open row is `202` and present. Times
   are pinned: the boundary case redeems at `t0` and calls at
   `t0 + 8 h − 1 s` (pass) and `t0 + 8 h` (fail), with `t0` not on an hour
   boundary. *Red if:* any one predicate is dropped (one mutant per line of
-  `serverGrantLive`, each caught on both routes).
+  `serverGrantLive`, and one for the origin check in `LiveServerGrants`,
+  each caught on both routes). **Uninstalled is not a row of this table:**
+  an uninstalled app's token is `401` at the door on both routes, before
+  any grant is read, and a separate case asserts that `401`.
 - 🔴 **Minted before the sign-out, redeemed after.** A session signs in at
   `s0` and mints a code. Sign out everywhere follows at `s0 + 5 s`. The
   code is redeemed at `s0 + 10 s`, after the sign-out, **as if on another
@@ -1189,11 +1293,14 @@ the mutation that must turn it red, and each is watched red before it counts.
 - **The redeem re-checks.** A person hidden, and a person disabled,
   **between the mint and the redeem**, each get a redeem `404`, and the
   code is spent. *Red if:* the redeem trusts the mint's checks.
-- **One predicate, pinned structurally.** A test asserts that the act-for
-  query and the `owners/check` query are each built from the
-  `serverGrantLive` constant, and that no other SQL string in the package
-  carries `act_until`. So a second, drifting copy of the predicate cannot
-  appear. The behavioural table above is the other half: a structural check
+- **One gate, pinned structurally.** The **gate queries** are pinned, not
+  every mention of `act_until`: the upserts (redeem, Hide) and the Account →
+  Apps display read legitimately mention it. A test asserts that the set
+  of callers of `LiveServerGrants` is exactly the act-for door and the
+  `owners/check` handler (from the Go AST), that `serverGrantLive` is
+  referenced only inside `LiveServerGrants`, and that no other function
+  decides "may this app act for this subject". So a second, drifting
+  copy of the gate cannot appear. The behavioural table above is the other half: a structural check
   alone would type-check past a wrong argument.
 - **The door runs first.** A spy handler records no call on any act-for
   refusal, and no store call happens but the lookup.
@@ -1233,11 +1340,21 @@ the mutation that must turn it red, and each is watched red before it counts.
   plugin-`OwnerID` read sites is pinned, failing when it grows or shrinks.
 - **Tasks only through the ledger.** A task the person filed with key
   `meetings:x`, and one another plugin filed with it, are each invisible to
-  the server app: a `comment` on `meetings:x` is `404` and appends nothing
-  to either task, and a `create` files a **new** task and ledgers it. The
-  server app's own task under that key takes its comment (the positive
-  control). *Red if:* the server path calls `FindLiveByTag` across the
-  person's tasks.
+  the server app. A bare `comment` on `meetings:x` answers
+  `200 {"id": null, "created": false, "commented": false}`, the **same
+  body** as for a key no task carries at all (asserted byte for byte), and
+  appends nothing to either task. A `create` files a **new** task and
+  ledgers it. The server app's own task under that key takes its comment
+  (the positive control). *Red if:* the server path calls `FindLiveByTag`
+  across the person's tasks, or answers the not-ledgered case differently
+  from the unknown-key case.
+- **Re-filing re-points.** The app's ledgered task for `meetings:x` is
+  completed; then dismissed; then merged away (`superseded-by:`). After
+  each, a `create` files a new task and the ledger row now names it, and a
+  `comment` lands on the new task, never the old one. *Red if:* the ledger
+  uses "live" in place of `openOnly` (the completed case comments on a
+  closed task), or inserts instead of upserting (the second create
+  conflicts).
 - **Task caps.** The 61st write in an hour for one `(app, person)` is
   `429`, and another person's 1st still passes. The app's 601st write in an
   hour, spread over 11 people, is `429`. A repeat answered from the stored
@@ -1289,6 +1406,21 @@ the mutation that must turn it red, and each is watched red before it counts.
   and the Account → Apps routes; the 1g route ledger classes the admin and
   Account writes `cookie` and `owners/check` `bearer-only`; the nav ledger
   lists `/admin/apps`.
+- **The mint's cap is per person.** Two people mint for one server app: 60
+  mints by A in a minute make A's 61st `429`, and B's 1st still mints. A's
+  rows older than a day are pruned by A's next mint and B's are not. The
+  code rows carry each minter's `owner_id`, never `0`. *Red if:* the cap
+  or the prune stays keyed on the plugin row's owner (B's 1st is refused).
+- **New tab and the Android card.** A server app's `/apps/{id}` renders no
+  `data-app-newtab` button, and a personal app's still does (the positive
+  control). With `window.musterApp` advertising `open-external`, the card's
+  Open posts exactly one `open-external` with this page's URL, mints
+  nothing and does not navigate. Without it, the card has no Open, shows the
+  copy-link text, and the page makes no navigation in 5 s (the no-loop
+  case). In `muster-android` (A1): `open-external` with a foreign origin, a
+  path other than `/apps/<digits>`, or a userinfo URL is ignored. With
+  muster's own `/apps/7` it fires one `ACTION_VIEW` intent and loads nothing
+  in the WebView.
 - **Playwright, `plugin-server-app.spec.ts`:** an admin installs the stub
   app (step-up dialog included). Two people in two browser contexts each see
   the tab without anyone restarting the stub, and the stub reports two
@@ -1334,9 +1466,19 @@ keys `owners` on muster's `owner_id`. Under 1h:
   ([threat model](#threat-model)). A request with `document`, any other
   value, or no `Sec-Fetch-Dest` header gets a plain page saying "Open
   Meetings from muster", and the code is **not** redeemed, so it stays
-  spendable by the frame it was minted for. **New tab** and the Android
-  top-level **Open** therefore do not reach a server app's `/enter` (fork
-  10). Tests: `/enter` with `Sec-Fetch-Dest: document`, with `empty`, and
+  spendable by the frame it was minted for. muster draws no top-level
+  entry for a server app (no New tab; the Android card opens muster's own
+  page in the browser: [the Android path](#the-android-path-for-a-server-app),
+  fork 10), so no muster path is refused by it.
+  `frame-ancestors` does not stop the request. It makes the browser refuse
+  to **render** `/enter`'s response in any frame but muster's page, so a
+  hostile site that frames `/enter` causes a redeem the victim never sees.
+  ⚠ **Measured in Chromium only.** That `Sec-Fetch-Dest: iframe` arrives on
+  a framed load was measured in Chromium; Firefox and Safari are owed in
+  2d's browser runs. **Safari and iOS before 16.4 send no `Sec-Fetch-*`
+  headers**, so on them `/enter` refuses every load: a dead end, not a
+  hole. The page they get says "This browser is too old for Meetings.
+  Update it, or open muster in a current browser." Tests: `/enter` with `Sec-Fetch-Dest: document`, with `empty`, and
   with none, is each refused and makes no redeem call to the fake muster.
   With `iframe` it redeems (the positive control). And a real-browser case
   (Playwright) loads `/enter` top-level and in muster's frame: top-level is
@@ -1365,8 +1507,8 @@ keys `owners` on muster's `owner_id`. Under 1h:
 
 #### 1h forks for the operator
 
-Each one is open. The design above follows the recommendation, and nothing is
-built until these are answered.
+**All ten are answered: the operator accepted every recommendation**
+(decision 20). Each is kept here with its alternatives, for the record.
 
 1. **Where a server app lives.** (a) A `plugins` row with `scope = 'server'`
    and no owner, as above; or (b) its own table and token door.
@@ -1428,11 +1570,14 @@ built until these are answered.
 10. **Top-level entry for a server app**, given `/enter`'s
     `Sec-Fetch-Dest: iframe` rule *(security)*. (a) A server app has **no
     New tab**, and in the Android app the card opens **muster's own**
-    `/apps/{id}` in the system browser, which then frames the plugin as a
-    desktop browser does (a person not signed in there signs in first). (b)
-    Keep a top-level `/enter`, behind a plugin-drawn "Continue as
-    <display name>?" confirm. **Recommend (a).** A confirm only asks the
-    victim to spot a wrong name; it does not close the CSRF.
+    `/apps/{id}` in the system browser through a new bridge message,
+    `open-external` (muster-android PR A1), which then frames the plugin as
+    a desktop browser does (a person not signed in there signs in first).
+    An app without the message shows a copy-link card, with no loop
+    ([the Android path](#the-android-path-for-a-server-app)). (b) Keep a
+    top-level `/enter`, behind a plugin-drawn "Continue as <display name>?"
+    confirm. **Recommend (a).** A confirm only asks the victim to spot a
+    wrong name; it does not close the CSRF.
 
 Decision 14 is unchanged: team-owned meeting tabs, with a shared archive,
 are still later work. Under 1h every team member gets the tab as a person.
@@ -1523,7 +1668,11 @@ camera and microphone in-app at most, never screen share.
   Custom Tab, where the browser grants camera and microphone the ordinary way
   and the plugin can use a first-party cookie. The code is single use and
   lives 60 s, so the hand-off in a Custom Tab is no wider than **New tab** in
-  a browser. No app change is needed for v1.
+  a browser. No app change is needed for v1 **for a personal app plugin**.
+  A server-installed app (core PR 1h) needs one: its `/enter` refuses a
+  top-level load, so its card sends muster's own page to the browser
+  through the new `open-external` bridge message (muster-android PR A1;
+  [the Android path](#the-android-path-for-a-server-app)).
 - **Later (optional phase 7): in-app calls.** The main frame (muster's
   origin, already the only origin the bridge accepts) posts
   `{"type": "app-origins", "origins": ["https://meet.<muster host>"]}` on
@@ -2561,7 +2710,8 @@ with the test plan's tests included.
 | | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
 | | 1d: the `tasks` capability (decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
 | | 1e: knock notification (decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md, **and the new paired-device TLS push sink for e2e** ([knock push spec](#the-knock-push-spec)). **Needs 1a** (the `app` capability) **and 1b** (the `?ref=` page) | muster | L |
-| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–10 open): migration 0171 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id` and `signed_in_at`, `plugin_server_users` with the sign-in time, `plugin_server_tasks`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and the one `serverGrantLive` predicate, `ViaServerPlugin` at every `ViaPlugin` branch site, per-person notify keys and the per-app ceiling, server tasks through the ledger with their caps, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
+| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–10 answered, every recommendation accepted, decision 20): migration 0171 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id` and `signed_in_at`, `plugin_server_users` with the sign-in time, `plugin_server_tasks`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and the one `serverGrantLive` predicate, `ViaServerPlugin` at every `ViaPlugin` branch site, per-person notify keys and the per-app ceiling, server tasks through the ledger with their caps, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, no New tab for a server app and its Android card (`open-external`, with the copy-link fallback), the mint's cap and prune keyed on the minting person, `PersonalOwner()`, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
+| | A1: **`open-external` bridge message** ([the Android path](#the-android-path-for-a-server-app)): the main frame's `{"type": "open-external", "url"}`, accepted only for muster's exact origin and `/apps/<digits>`, opened with `ACTION_VIEW` in the system browser and never in the WebView; the app advertises that it supports it; its unit tests. **A dependency of 1h's Android path**, not of 1h's merge: without it an app shows the copy-link card | muster-android | S |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link. **After 1h:** one server token in place of the comma-separated list ([what changes](#what-changes-in-the-plugins-phase-2a)), S | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
 | | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress, the TURN/TLS-only LiveKit config, Egress `cpu_cost`s, and the **`meet-turn` route** ([operator steps](#deployment)), then the owed real-network S1 run | muster-meetings + operator | M |
@@ -2587,7 +2737,7 @@ part that changes muster for everyone. **Order and gates:**
   `MUSTER_PLUGIN_ORIGINS` on a live muster until a release carrying **both**
   is deployed there.
 - **1a → 1b → 1c** in sequence; **1d** is independent of all of them; **1e
-  needs 1a and 1b**; **1h needs 1a, 1b, 1d and 1e**, and its forks answered.
+  needs 1a and 1b**; **1h needs 1a, 1b, 1d and 1e** (its forks are answered, decision 20), and its Android Open button needs **A1** in a released muster-android; before that the card is the copy-link fallback.
 - On the plugin side, 2b's knock calls need 1e, and 6a needs 1d. **2a's move
   to one server token** ([what changes](#what-changes-in-the-plugins-phase-2a))
   needs 1h; until it lands, 2a runs on per-person tokens as it does today.
@@ -3151,14 +3301,14 @@ positive control):
    default variant (S6). Its latency was not tested, and action items run on
    10 s windows. Worth measuring it in the action-item evaluation as a third
    candidate, or keep the default variant only?
-2. **Server-installed app plugins (core PR 1h):** ten forks, four of them
-   (2, 3, 5 and 10) security forks, listed with recommendations in
-   [1h forks for the operator](#1h-forks-for-the-operator).
+2. ~~**Server-installed app plugins (core PR 1h):** ten forks.~~ Answered:
+   every recommendation in [1h forks for the operator](#1h-forks-for-the-operator)
+   accepted (decision 20).
 
 ## Decisions
 
 Decisions 1–5 are from the operator's brief. Decisions 17–18 followed the
-phase-0 spikes, and 19 the dictation benchmark that superseded S4. Decisions 6–16 are the operator's answers
+phase-0 spikes, and 19 the dictation benchmark that superseded S4. Decision 20 is the operator's acceptance of every 1h recommendation. Decisions 6–16 are the operator's answers
 to the open questions, given **2026-11-20**. All are binding on this
 design.
 
@@ -3225,3 +3375,13 @@ design.
     en 0.6B,** not Kyutai; the Kyutai deployment is being retired. Chosen on
     the dictation benchmark in [choosing the model](#choosing-the-streaming-stt-model).
     faster-whisper large-v3-turbo is the named fallback model.
+20. **(operator) Core PR 1h, server-installed app plugins: every
+    recommendation in [1h forks for the operator](#1h-forks-for-the-operator)
+    is accepted,** forks 1–10. That is: a `plugins` row with
+    `scope = 'server'` and no owner; a pairwise subject and the display
+    name; an 8-hour grant cut by the minting sign-in's cutoffs; Hide on
+    Account → Apps; a fresh step-up for install and rotate; the admin page
+    and CLI, with no bearer API; Rotate keeps subjects and uninstall is
+    final; one server token for meetings; a personal plugin at a server
+    app's entry URL refused; and no top-level entry, with `open-external`
+    on Android.
