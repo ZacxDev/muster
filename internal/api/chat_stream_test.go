@@ -308,7 +308,11 @@ func deltaServer(t *testing.T, f http.Handler) (*Server, *httptest.Server, *send
 func TestTheChatSocketSendsRenderedHTMLForASentMessageAndItsReply(t *testing.T) {
 	f := deltaCCD{deltas: []string{"see **bo", "ld** and https://example.com/foo_", " then x_ and café_x_.txt <script>"}}
 	s, ts, store := deltaServer(t, f)
-	s.chatHTMLEvery = time.Hour // one html at the first delta, the rest at the end
+	// DECORATIVE HERE: the three deltas arrive inside production's 100 ms
+	// window too, so an hour and the default draw the same messages and this
+	// test cannot see the setting. TestAChatStreamRendersAtItsServersInterval
+	// is what covers the server-to-stream wiring.
+	s.chatHTMLEvery = time.Hour
 	c, ctx := dialChat(t, s, ts)
 	sendChat(t, ctx, c, "please **look** at <b>x</b>")
 	msgs := readUntilEnd(t, ctx, c)
