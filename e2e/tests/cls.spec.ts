@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Browser, BrowserContext, Page } from '@playwright/test';
+import { Browser, BrowserContext, Page, chromium } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import {
-  baseURL, clsChipPort, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
+  baseURL, clsAppEdgePort, clsAppPort, clsAppStubPort, clsChipPort, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
   clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, hookToken, onboardingPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -14,6 +14,7 @@ import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { createAgent } from '../lib/seed';
 import { landedHome } from '../lib/nav';
+import { APP_ENTRY, APP_ZONE, AppStub, appStubArgs } from '../lib/appstub';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -27,7 +28,7 @@ import { landedHome } from '../lib/nav';
 // changes the golden, and this spec then fails until the route is classified:
 // a new page cannot ship unmeasured by being forgotten.
 //
-type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in';
+type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in' | 'app';
 // `ready` is what the page is FOR, asserted visible after the measurement: a
 // page that failed to draw its content shifts nothing, and must not pass as
 // still. (The share sheet once did exactly that: opened empty, measured 0.)
@@ -109,6 +110,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // Account → Teams (account_teams.go, team sharing phase 2b.1): the admin's
   // teams and each one's notify switch, or the empty state when it has none.
   'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
+  // An app tab's page (app_page.go), on its own server with the stub app
+  // plugin framed (lib/appstub.ts; APP: the plugin minted for the measurement).
+  // Ready once the minted frame is in: the measurement includes the swap.
+  'GET /apps/{id}': { where: 'app', url: 'APP', ready: `[data-app-frame][src^="${APP_ENTRY}?muster_code="]` },
 };
 const NOT_A_PAGE: Record<string, string> = {
   // The morning report is off on every server here (404); its page's layout
@@ -179,10 +184,6 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
   'GET /s/{token}/assets/{asset}': 'a file download (an author\'s image or video the shell hands its frame)',
-  // An app tab's page frames a plugin's entry URL, which needs the stub app
-  // plugin on an https test origin (meetings PR 1c); until then it is not
-  // measured here.
-  'GET /apps/{id}': 'measured by plugin-app.spec.ts (PR 1c)',
 };
 
 const BAR = 0.01;
@@ -982,6 +983,78 @@ test.describe('the session views with a live preview', () => {
       } finally {
         await ctx.close();
       }
+    }
+    expect(bad).toEqual([]);
+  });
+});
+
+// --- AN APP TAB'S PAGE (internal/ui/app_page.go): its own server (plugins and
+// MUSTER_PLUGIN_ORIGINS on, the stub's zone) and the stub app plugin
+// plugin-app.spec.ts frames (lib/appstub.ts, behind the previews specs' TLS
+// edge), media off: what is measured is muster's page — the header, the mint
+// at load and the frame swapped in — not the stub's. Its own browser, because
+// the stub's zone resolves to the edge only by a launch flag; the app plugin
+// is minted through the real /plugins form and removed after.
+test.describe("the app tab's page", () => {
+  let aserver: Running | undefined;
+  const aorigin = `http://localhost:${clsAppPort}`;
+  const astub = new AppStub(aorigin, clsAppStubPort, clsAppEdgePort, false);
+  let appName = '';
+  test.beforeAll(async () => {
+    test.setTimeout(120_000);
+    await astub.start();
+    aserver = await startServer(versionA, clsAppPort, { MUSTER_PLUGINS: '1', MUSTER_PLUGIN_ORIGINS: APP_ZONE });
+  });
+  test.afterAll(async () => {
+    if (appName) pluginfix('rmplugin', '1', appName);
+    await aserver?.stop();
+    await astub.stop();
+  });
+
+  test(`GET /apps/{id} with its frame loaded shifts less than ${BAR}, at both sizes`, async () => {
+    test.setTimeout(120_000);
+    const browser = await chromium.launch({ args: appStubArgs(clsAppEdgePort) });
+    const bad: string[] = [];
+    try {
+      for (const vp of viewports) {
+        const ctx = await browser.newContext({ ...vp.use, ignoreHTTPSErrors: true, storageState: { cookies: [], origins: [] } });
+        try {
+          const page = await ctx.newPage();
+          await signIn(page, aorigin);
+          if (!appName) {
+            appName = 'e2e-clsapp-' + Date.now().toString(36);
+            const form = new URLSearchParams({ name: appName, label: 'Example app', data_scope: 'example', origin: APP_ZONE, entry_url: APP_ENTRY,
+              app_label: 'Example app', app_icon: 'video' });
+            form.append('capability', 'app');
+            const r = await page.request.post(aorigin + '/plugins', {
+              headers: { Origin: aorigin, 'Content-Type': 'application/x-www-form-urlencoded' }, data: form.toString() });
+            const html = await r.text();
+            expect(r.status(), 'the app plugin was minted').toBe(200);
+            const token = /id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]+)</.exec(html)?.[1] ?? '';
+            const self = await page.request.get(aorigin + '/plugin/v1/self', { headers: { Authorization: `Bearer ${token}` } });
+            const id = String(((await self.json()) as { plugin_id: number }).plugin_id);
+            astub.tokens.set(id, token);
+          }
+          const appID = [...astub.tokens.keys()][0];
+          await page.addInitScript(clsInit);
+          for (const [route, p] of Object.entries(PAGES)) {
+            if (p.where !== 'app') continue;
+            const url = p.url === 'APP' ? `/apps/${appID}` : p.url;
+            const before = astub.entries.length;
+            const r = await measure(page, aorigin + url, p.ready);
+            // The state measured: the frame reached the stub and its code redeemed.
+            await expect.poll(() => astub.entries.length, { message: `${route}: the frame reached the stub` }).toBeGreaterThan(before);
+            expect(astub.entries[astub.entries.length - 1].status, `${route}: the frame's code redeemed`).toBe(200);
+            await expect(page.frameLocator('[data-app-frame]').locator('#stub-app'), `${route}: the stub page is drawn in the frame`).toBeVisible();
+            console.log(`[cls ${vp.name}] ${route} ${r.total}`);
+            if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
+          }
+        } finally {
+          await ctx.close();
+        }
+      }
+    } finally {
+      await browser.close();
     }
     expect(bad).toEqual([]);
   });
