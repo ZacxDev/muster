@@ -3,7 +3,7 @@
 **Status: proposed. Nothing here is built.** The operator's decisions are
 recorded under [decisions](#decisions). Everything else is the recommended
 design. The operator answered the first round of open questions on
-2026-11-20 (recorded as decisions 6–15); what is still open is under
+2026-11-20 (recorded as decisions 6–16); what is still open is under
 [open questions](#open-questions). Where
 this page says how muster works today, it cites `file:line` at commit
 `5fd6f7632`, and the code is the authority ([decisions.md](../decisions.md)).
@@ -391,6 +391,44 @@ DELETE /plugin/v1/notify/<ref>
 - muster still calls nothing: the plugin calls muster, and muster's own push
   sender does the rest.
 
+### Core seam: `__Host-` cookie names
+
+Decision 16. **Must land before `meet.<muster host>` is live.** It is not
+specific to meetings, and it hardens every deployment against any subdomain.
+
+| today (`file:line`) | becomes |
+|---|---|
+| `muster_session` (`internal/api/auth.go:20`) | `__Host-muster_session` |
+| `muster_at`, `muster_rt` (`internal/api/accounts.go:63-64`) | `__Host-muster_at`, `__Host-muster_rt` |
+| `muster_device` (`internal/api/known_device.go:37`) | `__Host-muster_device` |
+| `muster_push_device` (`internal/api/push_routes.go:49`) | `__Host-muster_push_device` |
+
+- **What the prefix buys.** A browser stores a `__Host-` cookie only if it is
+  `Secure`, has `Path=/` and has **no** `Domain`. A page on a subdomain can
+  therefore never set one that muster would read. muster's cookies already
+  meet all three, except on the loopback-http page below.
+- **The loopback exception.** On a page muster serves itself over plain http
+  on loopback, `Secure` is dropped (`passwordCookieSecure`,
+  `internal/api/login.go:237`, for WebKit). A `__Host-` cookie without `Secure` is refused,
+  so there the **old name** is kept. The name is chosen by the same predicate
+  that chooses `Secure`, in one function (`cookieName(base, secure)`), and the
+  reader accepts only the name for the request's mode. An https deployment
+  never reads an unprefixed name.
+- **One sign-in for everyone.** Old names are not read after the upgrade, so
+  every browser is signed out once. On its first response after the upgrade,
+  muster also expires each old-named cookie (`Max-Age=-1`), so no stale
+  copy lingers. The known-device cookie is lost too. Until a browser signs in once more,
+  it lacks that cookie's exemption: while the wrong-password limit is
+  tripped, a browser with no known-device cookie is refused
+  ([testing.md](../testing.md) states the rule).
+  The release notes say so.
+- **Paired phones and push** are unaffected: the app's device credential is
+  not a cookie. The push-device cookie only links a browser to its
+  subscription. Losing it means the account page asks that browser to enable
+  notifications again, and the old subscription stays until removed.
+- **e2e helpers** that read or set cookies by name (`e2e/lib/signin.ts`) move
+  to the new names in the same PR.
+
 ### The frame, exactly
 
 ```html
@@ -562,12 +600,12 @@ separate process on its own host. The finding is pinned by a test,
   list muster at all, and the plugin calls muster server-to-server only.
 - **Cookie tossing.** A page on `meet.<muster host>` *can* set a cookie with
   `Domain=<muster host>`, which muster would then receive beside its own.
-  muster's cookie names carry no `__Host-` prefix, so the plugin could plant
-  a `muster_session` of its choosing (a sign-in-CSRF shape). The plugin is
-  the operator's own first-party code, deployed in the tenant, and serves no
-  HTML a guest wrote (names are escaped text; the guest page's CSP has no
-  `unsafe-inline`), so this is accepted for v1. The hardening is
-  [open question 1](#open-questions).
+  Today muster's cookie names carry no `__Host-` prefix, so a page there
+  could plant a `muster_session` of its choosing (a sign-in-CSRF shape).
+  **Closed before the subdomain goes live** (decision 16): core PR **1f**
+  renames every muster cookie with the `__Host-` prefix, and a browser refuses
+  any `__Host-` cookie that carries a `Domain`, so no subdomain can set one
+  ([the rename](#core-seam-__host--cookie-names)).
 - HSTS on muster has no `includeSubDomains` (`internal/api/middleware.go:243-246`), so it
   neither helps nor hinders; the meetings hosts serve HTTPS only.
 
@@ -1046,8 +1084,9 @@ top of the past meeting. Not regenerated automatically.
 - **Same-site with muster.** `meet.<muster host>` is a different origin but
   the same site. muster's cookies are host-only and `HttpOnly`, and its
   state-changing routes check the full-host origin, so the plugin's pages
-  can neither read nor use the owner's muster session; cookie tossing is the
-  accepted residual ([origins](#origins-and-hosts), [open question 1](#open-questions)).
+  can neither read nor use the owner's muster session, and after PR 1f
+  ([`__Host-` names](#core-seam-__host--cookie-names)) it cannot plant one
+  either.
 - **Knock pushes** carry muster's text only, never a guest's name, are
   capped per meeting and per plugin, and open muster's own page.
 - **muster's own surface widens in exactly three places,** all on
@@ -1131,6 +1170,7 @@ with the test plan's tests included.
 | | 1b: hand-off `app` target (with `ref`) and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card | muster | L |
 | | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger, the host-only cookie golden | muster | M |
 | | 1d: the `tasks` capability (new, decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
+| | 1f: **`__Host-` cookie names (decision 16): must merge and be released before `meet.<muster host>` goes live.** Rename, the loopback exception, expiring the old names, e2e helpers, release note | muster | M |
 | | 1e: knock notification (new, decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md | muster | M |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
@@ -1147,8 +1187,11 @@ with the test plan's tests included.
 | **7: in-app calls on Android (optional)** | the `app-origins` bridge message and the camera grant | muster, muster-android | M |
 
 Core first because every later PR stands on it, and because it is the only
-part that changes muster for everyone. The 2026-11-20 decisions add two core
-PRs (1d, S; 1e, M), about 3–4 engineer-days in all; no plugin PR changes size
+part that changes muster for everyone. The 2026-11-20 decisions add three core
+PRs (1d, S; 1e, M; 1f, M), about 5–7 engineer-days in all. **1f gates
+phase 2c's go-live**: the plugin may be developed and tested before 1f, but
+`meet.<muster host>` is not added to DNS or `MUSTER_PLUGIN_ORIGINS` on a live
+muster until a release carrying 1f is deployed there; no plugin PR changes size
 (in-tenant hosting simplifies 2c's DNS and certificates rather than adding
 to it). 1d and 1e are independent of 1b and can go in parallel; 2b's knock
 calls need 1e, and 6a needs 1d. The plugin's phases 2–5 can each ship
@@ -1220,6 +1263,19 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   known-device and push-device paths: each has no `Domain` attribute and is
   `HttpOnly`. *Red if:* a `Domain` is added to any one of the five literals
   (one mutation each). An invariant guard: no cookie violates it today.
+- **`__Host-` names (PR 1f).** On an https test server, every `Set-Cookie`
+  muster emits on the five paths is named `__Host-…`, is `Secure`, has
+  `Path=/` and no `Domain` (pinned whole strings). *Red if:* one literal keeps
+  its old name, or gains a `Domain`. A request carrying only an old-named
+  valid session is treated as signed out and its response expires the old
+  name (red if the old name is still read). On the loopback-http page the
+  old name is used and read, and the `__Host-` name is not (red if the
+  prefix is applied there: WebKit would drop it and loopback sign-in would
+  break). Playwright: a browser with an old-named session cookie lands on
+  `/login`, signs in once and is signed in afterwards; a cookie
+  `__Host-muster_session` set by a page on a sibling host with
+  `Domain=<host>` is refused by Chromium and muster sees no session (the
+  browser-side control that the prefix does what this design relies on).
 - **Sibling subdomain refused.** A `POST` to a state-changing route with a
   valid session cookie and `Origin: https://meet.example.test` (a sibling of
   the test server's host) is refused by `requireSameOrigin`; the same request
@@ -1437,28 +1493,20 @@ positive control):
 | core frame | add `allow-top-navigation`, widen `allow` to `*` | "the frame, exactly" |
 | core CSP / Permissions-Policy | emit on every page | the two goldens |
 | core purpose | read purpose from the request | "purpose from the target" |
-| core cookies | add `Domain` to the session cookie | "host-only cookies" |
+| core cookies | add `Domain` to the session cookie | "host-only cookies" and "`__Host-` names" |
+| core cookie names | read the old name on https | "`__Host-` names" |
 | core `tasks` | admit `tasks` on `POST /plugin/v1/messages` | "`tasks` capability" |
 | core knock | take the push body from the request | "knock notification" |
 | AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
 ## Open questions
 
-1. **`__Host-` cookie prefix.** Hosting the plugin on a subdomain of muster's
-   host makes cookie tossing possible: a page on `meet.<muster host>` can set
-   a `Domain=<muster host>` cookie named like muster's, which muster would
-   read ([origins](#origins-and-hosts)). Renaming muster's cookies to
-   `__Host-muster_session` (and the others) makes browsers refuse any such
-   cookie. It is a small core change, but it signs everyone out once (old
-   names are no longer read) and touches every cookie path. Accepted as a
-   residual for v1 because the plugin is the operator's own code; recommended
-   as its own core PR before any third-party `app` plugin is hosted on a
-   subdomain. Do it now, later, or not at all?
+None open. Every question so far has been answered (decisions 6–16).
 
 ## Decisions
 
-Decisions 1–5 are from the operator's brief. Decisions 6–15 are the operator's answers
-to the first round of open questions, given **2026-11-20**. All are binding on this
+Decisions 1–5 are from the operator's brief. Decisions 6–16 are the operator's answers
+to the open questions, given **2026-11-20**. All are binding on this
 design.
 
 1. **The tab is a new core capability, `app`,** generic, entered through the
@@ -1505,3 +1553,8 @@ design.
 14. **(2026-11-20, operator) No team-owned meeting tabs in v1;** they are
     later work.
 15. **(2026-11-20, operator) v1 is English only.**
+16. **(2026-11-20, operator) muster's cookies are renamed with the
+    `__Host-` prefix before meetings ships.** It is one small core PR (1f)
+    with its tests, and everyone signs in again once. It must be released and
+    deployed before `meet.<muster host>` goes live
+    ([design](#core-seam-__host--cookie-names)).
