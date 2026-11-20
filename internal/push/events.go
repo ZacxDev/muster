@@ -40,6 +40,11 @@ const (
 	// EventAgentNotify: one of the owner's agents sent them a notification
 	// of its own (the notify_owner tool, internal/api/notify_owner.go).
 	EventAgentNotify = "agent_notify"
+	// EventApp: one of the owner's `app` plugins asked muster to tell them
+	// something from the fixed set whose text muster writes (POST
+	// /plugin/v1/notify, internal/api/plugin_notify.go): v1's one kind is a
+	// knock, someone waiting to join a meeting.
+	EventApp = "app"
 )
 
 // Event is one toggle.
@@ -65,6 +70,7 @@ var Events = []Event{
 	{EventMorningReport, "Your morning report: what happened while you were away"},
 	{EventPageUpdated, "An agent published a new version of one of your pages"},
 	{EventAgentNotify, "An agent sent you a notification"},
+	{EventApp, "An app needs you"},
 }
 
 // KnownEvent reports whether name is in Events.

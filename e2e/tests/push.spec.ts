@@ -214,7 +214,7 @@ test('Enable subscribes with the server key and the device appears on the accoun
 
   await page.goto(origin + '/account');
   await expect(page.locator('[data-testid="push-device"]')).toHaveCount(1);
-  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(15); // every push.Events toggle, on by default (morning_report: the morning report; plugin: PR C; attention: the attention queue; agent_outcome: a started agent finished, failed or went quiet; page: a response through a shareable page's link; page_published: an agent published a page; page_shared: an agent shared one without asking; page_updated: a new version of a page; agent_notify: an agent's notify_owner)
+  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(16); // every push.Events toggle, on by default (app: an app plugin's knock, meetings PR 1e; morning_report: the morning report; plugin: PR C; attention: the attention queue; agent_outcome: a started agent finished, failed or went quiet; page: a response through a shareable page's link; page_published: an agent published a page; page_shared: an agent shared one without asking; page_updated: a new version of a page; agent_notify: an agent's notify_owner)
 });
 
 test('a subscription made with an old VAPID key is replaced with one on the current key', async ({ page }) => {

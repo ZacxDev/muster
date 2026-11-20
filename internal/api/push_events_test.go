@@ -338,7 +338,7 @@ func TestThePreferencesFormSavesUncheckedAsMuted(t *testing.T) {
 	}
 	got, _ := store.Muted(context.Background(), 7)
 	sort.Strings(got)
-	want := []string{push.EventAgent, push.EventAgentNotify, push.EventAgentOutcome, push.EventAttention, push.EventComment, push.EventCreated, push.EventMorningReport, push.EventPage, push.EventPagePublished, push.EventPageShared, push.EventPageUpdated, push.EventPlugin, push.EventResolved}
+	want := []string{push.EventAgent, push.EventAgentNotify, push.EventAgentOutcome, push.EventApp, push.EventAttention, push.EventComment, push.EventCreated, push.EventMorningReport, push.EventPage, push.EventPagePublished, push.EventPageShared, push.EventPageUpdated, push.EventPlugin, push.EventResolved}
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("muted = %v, want %v", got, want)
