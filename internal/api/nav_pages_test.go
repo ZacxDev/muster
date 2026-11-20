@@ -72,6 +72,8 @@ var apiBareWriters = map[string]string{
 		"link, a sign-in that is not configured, a sign-out that did not finish (its session is already revoked): " +
 		"every nav link would answer with the sign-in form. A signed-in reader's notice has the nav " +
 		"(TestANoticeHasTheNavOnlyForASignedInReader)",
+	"refuseLoopbackSignIn": "the sign-in-at-the-public-URL page a loopback http sign-in gets on a __Host- " +
+		"deployment: its reader cannot be signed in here (cookie_names.go)",
 	"plainNotFound": "the not-found page, swapped in for Go's bare 404 text: it runs outside every route's sign-in " +
 		"check, so it cannot know who is reading, and names nothing a signed-out visitor should not see " +
 		"(TestABrowserNeverSeesGosBareNotFoundText)",

@@ -48,7 +48,7 @@ func (c AuthConfig) deviceSecret() []byte {
 // knownDevice reports whether r carries a device cookie this server signed,
 // unexpired, under the current operator password.
 func (s *Server) knownDevice(r *http.Request) bool {
-	ck, err := r.Cookie(knownDeviceCookieName)
+	ck, err := r.Cookie(s.auth.cookieName(knownDeviceCookieName))
 	if err != nil || ck.Value == "" {
 		return false
 	}
@@ -59,7 +59,7 @@ func (s *Server) knownDevice(r *http.Request) bool {
 // setKnownDeviceCookie marks the browser that just proved the password.
 func (s *Server) setKnownDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     knownDeviceCookieName,
+		Name:     s.auth.cookieName(knownDeviceCookieName),
 		Value:    auth.SignSession(s.auth.deviceSecret(), time.Now(), knownDeviceTTL),
 		Path:     "/",
 		HttpOnly: true,
@@ -79,7 +79,14 @@ const loginRateGlobalBurst = 100
 //
 // A request is from a KNOWN device when it carries a valid device cookie, or —
 // for the SIGN-IN only (sessionIsKnown) — a valid session cookie (that session
-// already proved the current password).
+// already proved the current password) — and either counts only on a
+// SAME-ORIGIN request (isSameOrigin).
+//
+// 🔴 WHY THE EXEMPTION NEEDS THE ORIGIN. SameSite=Lax attaches both cookies to
+// a POST from any same-site page, and a known device is never refused before
+// the compare, so without the check a sibling page in such a browser could post
+// wrong passwords past the refusal (blind, but unthrottled). muster's own
+// sign-in and step-up forms always send their own Origin.
 //
 // 🔴 NEVER A SESSION AT THE STEP-UP CONFIRM. Step-up exists for the case where
 // the session itself is in the wrong hands; a session proving "known device"
@@ -99,7 +106,8 @@ const loginRateGlobalBurst = 100
 // signed-in browsers are unaffected either way.
 func (s *Server) passwordGate(r *http.Request, password string, now time.Time, sessionIsKnown bool) (ok, refused, throttled bool) {
 	ip := clientIP(r)
-	if !s.knownDevice(r) && !(sessionIsKnown && s.hasValidSession(r)) {
+	known := s.knownDevice(r) || (sessionIsKnown && s.hasValidSession(r))
+	if !(known && s.isSameOrigin(r)) {
 		addrOver := s.loginRateAddr.count(ip, now, loginRateWindow) >= loginRateBurst
 		if addrOver || s.loginRate.over(now, loginRateGlobalBurst, loginRateWindow) {
 			s.loginRefusedLog.do(now, func(suppressed int) {

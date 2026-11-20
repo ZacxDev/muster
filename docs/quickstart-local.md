@@ -216,6 +216,12 @@ network between your devices, with a real certificate for this machine's name.
 3. Put that address in the `.env` beside `docker-compose.yml`
    (`MUSTER_PUBLIC_URL=https://…`) and run `docker compose up -d --wait` again.
 4. Open the address on your phone, sign in, and add muster to the home screen.
+5. On this machine, use that address from now on too. With an `https`
+   address muster gives its cookies [`__Host-` names](auth.md#cookie-names),
+   which WebKit does not keep over plain http. So a sign-in at
+   `http://localhost:8105` gets a page with a link to the `https` address,
+   and you sign in there once. Browsers that were already signed in are
+   signed out once as well.
 
 To connect another machine's sessions too, follow [INSTALL.md](../INSTALL.md)
 on it: it joins this server over the same HTTPS address.

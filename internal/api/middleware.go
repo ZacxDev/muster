@@ -67,7 +67,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	// Outermost: every layer below, and every handler, reads the address this
 	// resolves (clientIP / clientaddr.Of), whichever listener it arrived on.
 	return s.ext.ClientAddr.WithLog(s.logger.Printf).Middleware(
-		s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(s.plainNotFound(next))), hstsFor(s.auth.PublicURL)))))
+		s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(s.hostCookieNames(s.plainNotFound(next)))), hstsFor(s.auth.PublicURL)))))
 }
 
 // PluginOriginHostRefusal is the 421 body for a request whose Host is under

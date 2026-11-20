@@ -1838,6 +1838,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"give it its https public URL: without it the session cookie travels with no Secure attribute and any "+
 			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
 	}
+	if a.cfg.authConfig().HostPrefixedCookies() {
+		l.Printf("cookie names: __Host- PREFIXED — %s is https and the cookies are Secure, so a page on "+
+			"any other host (a sibling subdomain included) cannot set a cookie muster reads. Cookies under the old "+
+			"unprefixed names are not read and are expired. A sign-in from a plain-http loopback page is refused "+
+			"with a pointer to %s", envPublicURL, envPublicURL)
+	} else {
+		l.Printf("cookie names: UNPREFIXED — %s is not https, or (password mode) the secure-cookie setting is off. Nothing stops "+
+			"a same-site page setting cookies muster reads, so a %s entry sharing muster's registrable domain "+
+			"refuses to boot", envPublicURL, envPluginOrigins)
+	}
 
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
