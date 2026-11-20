@@ -29,8 +29,8 @@ type RoleReader interface {
 // The messages a member sees for a kind they have no credential for. One
 // spelling each, shared by the dispatch form, the refusal and the tests.
 const (
-	NeedClaude     = "Add your Claude setup token in Account → Credentials to use Claude Code agents."
-	NeedOpenRouter = "Add your OpenRouter key in Account → Credentials to use Standard agents."
+	NeedClaude     = "Add your Claude setup token in Account → Your AI accounts to use Claude Code agents."
+	NeedOpenRouter = "Add your OpenRouter key in Account → Your AI accounts to use Standard agents."
 	// TeamNoGateway is a team's gateway-kind refusal (team sharing phase 4):
 	// a team's agents are Claude Code agents on the server pool.
 	TeamNoGateway = "A team's agents are Claude Code agents; Standard agents are not available to a team."

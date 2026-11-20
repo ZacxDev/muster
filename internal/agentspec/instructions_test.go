@@ -352,7 +352,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefLiveReads",
 			text: chiefLiveReads,
-			want: "783e3e0b5a8fef0abf423065d3d811b45e042ee5e41ba7ff560f02c986f6b30f",
+			want: "ca767ed721f991242453e668513f721528caa6e4571c93d80c62ac1ad9c4c67f",
 			min:  150,
 		},
 		{

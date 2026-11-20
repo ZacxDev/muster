@@ -93,14 +93,14 @@ test('mint a personal API token on the page, use it, revoke it → 401 (real GoT
 
   // 2. Account → API tokens.
   await page.goto(browserURL + '/account');
-  await Promise.all([page.waitForURL(browserURL + '/account/tokens'), page.getByRole('link', { name: 'API tokens' }).click()]);
-  await expect(page.getByRole('heading', { name: 'API tokens' })).toBeVisible();
-  await expect(page.getByText('No tokens yet.')).toBeVisible();
+  await Promise.all([page.waitForURL(browserURL + '/account/tokens'), page.getByRole('link', { name: 'Access keys (for apps and scripts)' }).click()]);
+  await expect(page.getByRole('heading', { name: 'Access keys' })).toBeVisible();
+  await expect(page.getByText('No access keys yet.')).toBeVisible();
 
   // 3. Mint. The token is on THIS page, once.
   const name = `e2e laptop ${stamp}`;
   await page.fill('#token-name', name);
-  await page.getByRole('button', { name: 'Create token' }).click();
+  await page.getByRole('button', { name: 'Create access key' }).click();
   const minted = page.locator('#minted-token');
   await expect(minted).toBeVisible();
   const token = await minted.inputValue();

@@ -412,10 +412,10 @@ func handoverText(parts []agents.TurnPart, err error) string {
 }
 
 // handleChiefChatContext serves GET /ui/agents/{name}/chat-context?session=N:
-// the chief chat's context chip (ui.RenderChiefContextChip), from the latest
+// the ⋯ menu's memory line (ui.RenderChiefMemoryLine), from the latest
 // chief_turn_usage row of THAT session that reported usage — input + cache
-// read + cache write, the chip's Claude derivation — of the model's window
-// (modelContextWindow). Nothing (an empty 200) before any turn reported usage.
+// read + cache write. Nothing (an empty 200) before any turn reported usage,
+// and while it is at or below ui.ChiefMemoryShowAbove.
 func (s *Server) handleChiefChatContext(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -443,9 +443,8 @@ func (s *Server) handleChiefChatContext(w http.ResponseWriter, r *http.Request) 
 	if !found {
 		return
 	}
-	window := s.modelContextWindow(ctx, c.model)
-	if err := ui.RenderChiefContextChip(w, ui.ChiefContextView(c.tokens, window, c.model)); err != nil {
-		s.logger.Printf("chief chats: render context chip: %v", err)
+	if err := ui.RenderChiefMemoryLine(w, c.tokens); err != nil {
+		s.logger.Printf("chief chats: render the memory line: %v", err)
 	}
 }
 
@@ -525,39 +524,4 @@ func (s *Server) chatContext(ctx context.Context, sess agents.ChatSession) (sess
 		return sessionContextFill{}, false
 	}
 	return sessionContextFill{tokens: c.Tokens, model: c.Model, at: c.At}, true
-}
-
-// modelContextWindow is model's context window in tokens, where muster knows
-// it, 0 where it does not (the chip then shows the count alone, untinted):
-//
-//   - a Claude model — an alias, a claude-* id, "claude" — by
-//     agents.ClaudeContextWindow (Claude Code reports no window);
-//   - an OpenRouter model ("openrouter/<id>") by its catalogue entry's
-//     context_length (CatalogModel.ContextLength), read from the process's one
-//     catalogue cache with a short bound, so a cold cache costs the chip, not
-//     the page (the chip loads on its own request).
-//
-// The only other place muster knows windows is a mirrored opencode session's
-// own provider list (internal/opencodehost ContextLimit), which is not the
-// chief's.
-func (s *Server) modelContextWindow(ctx context.Context, model string) int64 {
-	if w := agents.ClaudeContextWindow(model); w > 0 {
-		return w
-	}
-	id, ok := strings.CutPrefix(model, "openrouter/")
-	if !ok || s.ext.ModelCatalog == nil {
-		return 0
-	}
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	list, err := s.ext.ModelCatalog.Models(cctx)
-	if err != nil {
-		return 0
-	}
-	for _, m := range list {
-		if m.ID == id {
-			return m.ContextLength
-		}
-	}
-	return 0
 }

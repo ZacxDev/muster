@@ -884,12 +884,12 @@ Two endpoints help with personal tokens:
   reaches answers **403** before it runs: the task, agent and flow APIs, the
   token API, and `GET /api/whoami` too (the summary's own 200, 401 or 403
   says whether the token works). Give a status bar this kind.
-- **Create agents** (`agent-create`): [`POST /api/agents`](provisioner.md#creating-an-agent-without-the-chief)
+- **Start agents only** (`agent-create`): [`POST /api/agents`](provisioner.md#creating-an-agent-without-the-chief)
   and **nothing else** (every other route answers **403**). It is also the
   only token that reaches that route: a **full-access token is refused there**,
   so the CLI's ordinary token cannot create agents. `muster agent create`
   reads it from `MUSTER_AGENT_CREATE_TOKEN`.
-- **Account usage only** (`account-usage`): [`GET /api/cc-accounts/usage`](jobs.md#get-apicc-accountsusage),
+- **Read Claude usage only** (`account-usage`): [`GET /api/cc-accounts/usage`](jobs.md#get-apicc-accountsusage),
   your Claude accounts' utilization and who used them, and **nothing else**
   (every other route answers **403**). Give it to a service that should read
   that and hold nothing else. A full-access token reaches the route too.

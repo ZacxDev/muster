@@ -197,9 +197,8 @@ func TestAdminTeamsSaysWhatATeamShares(t *testing.T) {
 	}
 	const shares = "A team owns shared work, and its members see it by role: viewers read, operators also file, " +
 		"comment and chat, managers also run the team&#39;s chief and agents. A team has its own tasks, a team chief " +
-		"(set up by a manager on the team&#39;s Chief page), the agents its chief starts, its officers, and its hosts&#39; " +
-		"sessions. Its agents run on the server&#39;s Claude pool only when the team is listed in MUSTER_TEAMS_ON_SERVER_POOL, " +
-		"and work in your repositories only when it is listed in MUSTER_TEAMS_ON_GITHUB_APP; each team&#39;s line below says which."
+		"(set up by a manager on the team&#39;s Chief page), the agents its chief starts, its officers, and its computers&#39; " +
+		"sessions. Each team&#39;s line below says whether its agents can run and work in your repositories."
 	if !strings.Contains(body, shares) && !strings.Contains(body, strings.ReplaceAll(shares, "&#39;", "'")) {
 		t.Errorf("/admin/teams does not say what a team shares, verbatim")
 	}
@@ -212,11 +211,15 @@ func TestAdminTeamsSaysWhatATeamShares(t *testing.T) {
 		got, _, _ := strings.Cut(after, `</p>`)
 		return got
 	}
-	if got, want := line(tw.team), "Claude: on the server pool. GitHub App: listed; a manager approves each repository."; got != want {
+	if got, want := line(tw.team), "Agents: run on the server&#39;s Claude accounts · GitHub: connected; a manager approves each repository"; got != want {
 		t.Errorf("the listed team's line = %q; want %q", got, want)
 	}
-	if got, want := line(other), "Claude: not on the server pool, so its agents cannot run. GitHub App: not listed, so its agents work in no repository."; got != want {
+	if got, want := line(other), "Agents: can&#39;t run — the team isn&#39;t given the server&#39;s Claude accounts · GitHub: not allowed for this team"; got != want {
 		t.Errorf("the unlisted team's line = %q; want %q", got, want)
+	}
+	// The server's own terms are in each line's ⓘ (the jargon audit's F109).
+	if !strings.Contains(body, `data-info-code="">Claude: not on the server pool, so its agents cannot run. GitHub App: not listed, so its agents work in no repository.</code>`) {
+		t.Error("the unlisted team's ⓘ does not hold the server's own terms")
 	}
 }
 
@@ -252,10 +255,10 @@ func TestAdminTeamsSaysAListedTeamHasNoPoolToRunOn(t *testing.T) {
 		got, _, _ := strings.Cut(after, `</p>`)
 		return got
 	}
-	if got, want := line(tw.team), "Claude: listed on the server pool, but this server has no Claude pool configured, so its agents cannot run. GitHub App: none is configured."; got != want {
+	if got, want := line(tw.team), "Agents: can&#39;t run — this server has no Claude accounts set up · GitHub: not connected"; got != want {
 		t.Errorf("the listed team's line = %q; want %q", got, want)
 	}
-	if got, want := line(other), "Claude: not on the server pool, so its agents cannot run. GitHub App: none is configured."; got != want {
+	if got, want := line(other), "Agents: can&#39;t run — the team isn&#39;t given the server&#39;s Claude accounts · GitHub: not connected"; got != want {
 		t.Errorf("the unlisted team's line = %q; want %q", got, want)
 	}
 }

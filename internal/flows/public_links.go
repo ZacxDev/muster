@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // PUBLIC LINKS IN AN OFFICER'S OUTBOUND DRAFT (OutboundTextRefusal).
@@ -29,9 +31,25 @@ import (
 //     deeper path: `/blob/main/<name>`) stays in the text and is screened like
 //     every other word. A link the allowlist does not name — another repository
 //     of the same owner included — is not exempt at all.
+//   - A REPOSITORY ENTRY's name may also stand alone. An entry of exactly the
+//     shape `host/<owner>/<repo>` declares <repo> public (publicRepoNames), and
+//     each STANDALONE occurrence of <repo> in the draft (without case) is
+//     masked for the scan of THAT name (MaskBareNames): "<repo> has a new
+//     logo." passes though <repo> is a deny word. Standalone is an ALLOWLIST
+//     (proseBeside): each neighbour is the start or end of the text,
+//     whitespace, one of , ; ! ? ' ’ " “ ” ( ) [ ], or — after the name — a
+//     `.` or `:` followed by whitespace or the end. Anything else joins the
+//     name to a longer one, which is screened as ever: `<repo>-prod`,
+//     `<repo>–prod`, `<repo>.internal`, `<repo>:5432`, `ops@<repo>`,
+//     `…/<repo>-private`. Every OTHER deny word is scanned against the
+//     unmasked text, so `<repo> prod` stays refused when it is a deny word.
+//     Only the repository name: never <owner>, never a
+//     name that is also an entry's owner, never a host-only or deeper entry's
+//     last segment.
 //   - Everything else in the screen is unchanged: an IP address, an internal
 //     host name, a credential- or token-shaped string, an infrastructure word
-//     or a deployment name anywhere OUTSIDE an allowlisted link is refused.
+//     or any other deployment name anywhere OUTSIDE an allowlisted link is
+//     refused.
 
 var (
 	// publicLinkRE is an allowlist entry, after parsePublicLink took off a
@@ -139,6 +157,85 @@ func StripPublicLinks(text string, allow []string) string {
 	}
 	b.WriteString(text[last:])
 	return b.String()
+}
+
+// publicRepoNames are the repository names allow declares public, lower-case:
+// the <repo> of each entry (parsePublicLink) of exactly the shape
+// `host/<owner>/<repo>`, a `.git` suffix dropped — less any name that is also
+// an entry's <owner>, so an owner name is never exempt. An entry that does not
+// parse, or has another number of path segments, declares none.
+func publicRepoNames(allow []string) map[string]bool {
+	names, owners := map[string]bool{}, map[string]bool{}
+	for _, a := range allow {
+		p, err := parsePublicLink(a)
+		if err != nil {
+			continue
+		}
+		segs := strings.Split(p, "/")[1:]
+		if len(segs) != 2 {
+			continue
+		}
+		owners[strings.ToLower(segs[0])] = true
+		if n := strings.TrimSuffix(strings.ToLower(segs[1]), ".git"); n != "" {
+			names[n] = true
+		}
+	}
+	for o := range owners {
+		delete(names, o)
+	}
+	return names
+}
+
+// MaskBareNames is text with every standalone occurrence of a name in names
+// (lower-case; compared without case) replaced by as many spaces: one whose
+// neighbour on each side is prose (proseBeside).
+func MaskBareNames(text string, names map[string]bool) string {
+	for n := range names {
+		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(n))
+		var b strings.Builder
+		last := 0
+		for _, m := range re.FindAllStringIndex(text, -1) {
+			if !proseBeside(text[:m[0]], true) || !proseBeside(text[m[1]:], false) {
+				continue
+			}
+			b.WriteString(text[last:m[0]])
+			b.WriteString(strings.Repeat(" ", m[1]-m[0]))
+			last = m[1]
+		}
+		b.WriteString(text[last:])
+		text = b.String()
+	}
+	return text
+}
+
+// proseAround are the characters that may stand beside a bare name on either
+// side: prose punctuation that never joins two names.
+const proseAround = ",;!?'\u2019\"\u201c\u201d()[]"
+
+// proseBeside reports whether the text beside a name leaves it standing
+// alone: side is what precedes the name (before) or what follows it. Only an
+// ALLOWLIST does: the start or end of the text, whitespace, a proseAround
+// character, or — after the name only — a `.` or `:` followed by whitespace
+// or the end of the text (a sentence's end, "<name>: the new logo").
+// Anything else — a letter, digit, combining mark, dash of any kind, `.` or
+// `:` inside a run, `@`, `+`, `~`, `\`, `/`, `_` — joins it to a longer name.
+func proseBeside(side string, before bool) bool {
+	if side == "" {
+		return true
+	}
+	if before {
+		r, _ := utf8.DecodeLastRuneInString(side)
+		return unicode.IsSpace(r) || strings.ContainsRune(proseAround, r)
+	}
+	r, n := utf8.DecodeRuneInString(side)
+	switch {
+	case unicode.IsSpace(r), strings.ContainsRune(proseAround, r):
+		return true
+	case r == '.', r == ':':
+		f, _ := utf8.DecodeRuneInString(side[n:])
+		return side[n:] == "" || unicode.IsSpace(f)
+	}
+	return false
 }
 
 // segmentIs reports whether link segment got is allowlist segment want,

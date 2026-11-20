@@ -123,15 +123,11 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 				t.Errorf("%s: the thread list still carries %s", c.kind, banned)
 			}
 		}
+		// No token chip in the panel's title bar (operator decision,
+		// #871): the page says it in its ⋯ menu, when it is high.
 		bar := renderString(t, chiefPanelActions(p))
-		if !strings.Contains(bar, `hx-get="`+ChiefContextPath("chiefy", c.bar.SessionID)+`"`) {
-			t.Errorf("%s: the panel's title bar has no context chip slot for its own chat", c.kind)
-		}
-		// The slot names its own target: in the panel an inherited
-		// hx-target="this" (#chief-panel-body) swapped the chip's answer over
-		// the whole chat (caught by the e2e suite).
-		if !regexp.MustCompile(`<span id="` + chiefContextID + `"[^>]*hx-target="this"`).MatchString(bar) {
-			t.Errorf("%s: the chip slot has no hx-target of its own", c.kind)
+		if strings.Contains(bar, ChiefContextPath("chiefy", c.bar.SessionID)) || strings.Contains(bar, `id="`+chiefContextID+`"`) {
+			t.Errorf("%s: the panel's title bar still carries the context chip slot: %s", c.kind, bar)
 		}
 	}
 }
@@ -426,38 +422,48 @@ func TestASharedRoomsStripOnlySwitches(t *testing.T) {
 	}
 }
 
-// TestTheChiefContextChipIsInTheHeader: the chief chat's context chip slot is
-// in the page HEADER — under the title in a claude-code chief's folded row, in
-// a gateway chief's second row — loading its own chat's chip, refreshed when a
-// turn of the chief starts or ends or a reply is stored, and its own target. A
-// worker's header has none.
-func TestTheChiefContextChipIsInTheHeader(t *testing.T) {
+// TestTheChiefHeaderHasNoTokenChipButItsMenuHasTheMemorySlot: the raw
+// token-count chip is gone from the chief page's header (operator decision,
+// #871) — outside the ⋯ menu the header has no slot at all — and the ⋯
+// menu holds the memory line's slot instead: loading its own chat's line,
+// refreshed when a turn of the chief starts or ends or a reply is stored, its
+// own target. Claude-code (folded) and gateway chiefs alike. A worker's header
+// has none.
+func TestTheChiefHeaderHasNoTokenChipButItsMenuHasTheMemorySlot(t *testing.T) {
 	for _, kind := range []string{"claude-code", "gateway"} {
 		for _, c := range chiefKinds {
 			v := chiefChatView(ChatSurfacePage, c.bar, nil)
 			v.Kind = kind
+			v.Card = AgentCardView{ID: 42, Name: "chiefy", IsChief: true}
 			head := renderString(t, agentDetailHeader(v))
 			if !strings.HasPrefix(head, "<header") {
 				t.Fatalf("%s: not a header: %.80s", kind, head)
 			}
-			slot := regexp.MustCompile(`<span id="` + chiefContextID + `"[^>]*>`).FindString(head)
+			menu := regexp.MustCompile(`(?s)<div id="` + AgentMenuID + `".*`).FindString(head)
+			if menu == "" {
+				t.Fatalf("%s %s: no ⋯ menu in the header", kind, c.kind)
+			}
+			outside := strings.TrimSuffix(head, menu)
+			for _, banned := range []string{`id="` + chiefContextID + `"`, "data-chief-context-row", "chief-context-chip", "data-ctx-count"} {
+				if strings.Contains(outside, banned) {
+					t.Errorf("%s %s: the header (outside its ⋯ menu) carries %s", kind, c.kind, banned)
+				}
+			}
+			slot := regexp.MustCompile(`<div id="` + chiefContextID + `"[^>]*>`).FindString(menu)
 			if slot == "" {
-				t.Errorf("%s %s: no context chip slot in the header", kind, c.kind)
+				t.Errorf("%s %s: no memory slot in the ⋯ menu", kind, c.kind)
 				continue
 			}
 			for _, want := range []string{`hx-get="` + ChiefContextPath("chiefy", c.bar.SessionID) + `"`, `hx-target="this"`,
-				"sse:chat.turn[", "sse:chat.reply[", "load"} {
+				"sse:chat.turn[", "sse:chat.reply[", "load", "empty:hidden"} {
 				if !strings.Contains(slot, want) {
 					t.Errorf("%s %s: the slot lacks %s: %s", kind, c.kind, want, slot)
 				}
 			}
-			if !strings.Contains(head, `data-chief-context-row=""`) {
-				t.Errorf("%s %s: no context row", kind, c.kind)
-			}
 		}
-		w := renderString(t, agentDetailHeader(AgentDetailView{ID: 3, Name: "w", Kind: kind}))
+		w := renderString(t, agentDetailHeader(AgentDetailView{ID: 3, Name: "w", Kind: kind, Card: AgentCardView{ID: 3, Name: "w"}}))
 		if strings.Contains(w, chiefContextID) {
-			t.Errorf("%s: a worker's header has the chief's context chip", kind)
+			t.Errorf("%s: a worker's header has the chief's memory slot", kind)
 		}
 	}
 }
@@ -527,46 +533,39 @@ func TestTheComposerIsFocusedOnlyWhenTheServerAsks(t *testing.T) {
 	}
 }
 
-// TestTheChiefContextChipTints: the chief's chip is #601's contextView — model
-// then used/window, amber from 70%, red from 90%, untinted below and with no
-// window — drawn on the server. contextView tints on the ROUNDED share (one
-// number for the detail and the tint), so the edges are the tokens where the
-// rounded share reaches 70 and 90: 139,000 and 179,000 of 200,000, one token
-// either side.
-func TestTheChiefContextChipTints(t *testing.T) {
+// TestTheMemoryLineShowsOnlyAboveTheThreshold: the ⋯ menu's line says
+// "Memory used: <n>k" in plain words only past ChiefMemoryShowAbove (350k):
+// at 350,612 tokens it is there ("351k": rounded, not cut), at 349,876 it is
+// not. Neither fixture equals the threshold or a round thousand, so a mutant
+// moving the threshold, dropping the check or cutting instead of rounding
+// moves one of them.
+func TestTheMemoryLineShowsOnlyAboveTheThreshold(t *testing.T) {
 	for _, c := range []struct {
-		tokens, window int64
-		level, count   string
+		tokens int64
+		want   string // "" = nothing drawn
 	}{
-		{138_999, 200_000, "", "139k/200k"},
-		{139_000, 200_000, ContextLevelWarn, "139k/200k"},
-		{178_999, 200_000, ContextLevelWarn, "179k/200k"},
-		{179_000, 200_000, ContextLevelDanger, "179k/200k"},
-		{179_000, 0, "", "179k"},
+		{350_612, "Memory used: 351k"},
+		{362_480, "Memory used: 362k"},
+		{349_876, ""},
+		{45_000, ""},
 	} {
-		v := ChiefContextView(c.tokens, c.window, "claude-sonnet-4-6")
 		var b bytes.Buffer
-		if err := RenderChiefContextChip(&b, v); err != nil {
+		if err := RenderChiefMemoryLine(&b, c.tokens); err != nil {
 			t.Fatal(err)
 		}
 		html := b.String()
-		if !regexp.MustCompile(`data-ctx-count=""[^>]*>` + regexp.QuoteMeta(c.count) + `<`).MatchString(html) {
-			t.Errorf("%d/%d: count, want %s in %s", c.tokens, c.window, c.count, html)
+		if c.want == "" {
+			if html != "" {
+				t.Errorf("%d tokens: drew %q, want nothing", c.tokens, html)
+			}
+			continue
 		}
-		gotLevel := regexp.MustCompile(`data-level="([a-z]+)"`).FindStringSubmatch(html)
-		if (c.level == "") != (gotLevel == nil) || (gotLevel != nil && gotLevel[1] != c.level) {
-			t.Errorf("%d/%d: level %v, want %q", c.tokens, c.window, gotLevel, c.level)
+		if !strings.Contains(html, ChiefMemoryAttr+`="`) || !strings.Contains(html, ">"+c.want+"<") {
+			t.Errorf("%d tokens: drew %q, want the line %q", c.tokens, html, c.want)
 		}
-		if !regexp.MustCompile(`data-ctx-name=""[^>]*>claude-sonnet-4-6<`).MatchString(html) {
-			t.Errorf("the chip does not name the model first: %s", html)
+		if strings.Contains(html, "token") || strings.Contains(html, "context") {
+			t.Errorf("%d tokens: the line is not in plain words: %q", c.tokens, html)
 		}
-		if !strings.Contains(html, `popovertarget="`+chiefContextPopID+`"`) || !strings.Contains(html, `data-ctx-detail=""`) {
-			t.Errorf("no full detail on tap: %s", html)
-		}
-	}
-	var b bytes.Buffer
-	if err := RenderChiefContextChip(&b, nil); err != nil || b.Len() != 0 {
-		t.Errorf("no readout draws %q (%v), want nothing", b.String(), err)
 	}
 }
 

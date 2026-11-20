@@ -831,13 +831,31 @@ out of the text, then screens what is left:
   A link the allowlist does not name is not exempt at all, including another
   repository of the same owner (`github.com/<owner>/muster-private`): it is
   refused if it spells a deployment name.
-- **Everything else is unchanged.** A deployment name in the prose around the
-  link ("muster is out: …"), an internal host name, an IP address, a
-  credential- or token-shaped string or an infrastructure word is refused as
-  before.
+- **The repository's own name may stand alone.** When `<repo>` of an
+  allowlist entry `github.com/<owner>/<repo>` is also one of your deny words,
+  an occurrence of it that **stands alone** in the draft (compared without
+  case) is not refused, so a post may say "widget has a new logo." when
+  `acme/widget` is a standing-read repository. Standing alone is an
+  allowlist: each neighbour of the name is the start or end of the text,
+  whitespace, one of `, ; ! ? ' ’ " “ ” ( ) [ ]`, or, after the name, a `.`
+  or `:` followed by whitespace or the end of the text. So `widget.`,
+  `widget's`, `(widget)` and "widget: the new logo" pass. Any other neighbour
+  joins the name to a longer one, which is refused as before: a letter,
+  digit or combining mark, any dash (`widget-prod`, `widget–prod`), `_`,
+  `/`, `@`, `+`, `~`, `\`, a `.` or `:` inside a run (`widget.staging`,
+  `widget:5432`, `x.widget`), and an undeclared
+  `github.com/<owner>/widget-private`. Only that name is exempt, and only
+  for its own check: `<owner>` and every other deny word are checked against
+  the whole text, so a deny word `widget prod` still refuses "widget prod is
+  up".
+- **Everything else is unchanged.** Any other deployment name in the prose
+  around the link (another project, a cluster, the owner), an internal host
+  name, an IP address, a credential- or token-shaped string or an
+  infrastructure word is refused as before.
 
 The allowlist only widens the outbound screen. A reply your chief drafts,
-and a browser flow's text, have none.
+and a browser flow's text, have none — they refuse the repository's name
+too.
 
 #### `GET /plugin/v1/drafts/checks` for an outbound draft
 

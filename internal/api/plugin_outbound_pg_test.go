@@ -689,9 +689,11 @@ func liveRepoBody(link string) string {
 // the project's name), an officer whose standing-read repositories include
 // ZacxDev/muster files a post linking to it — https and bare — and the draft
 // passes the plugin's check, the owner's approval and the claim with its body
-// byte-for-byte. The same officer WITHOUT the standing declaration is refused
-// by the deny-word layer; a deployment name outside the link, an internal
-// host beside it, and an undeclared repository are still refused.
+// byte-for-byte, and a post naming the project bare is filed too. The same
+// officer WITHOUT the standing declaration is refused by the deny-word layer;
+// another deployment name outside the link, an internal host beside it, an
+// undeclared repository spelling another deployment name, and an undeclared
+// repository whose name only begins with the project's are still refused.
 func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	const standing = `,"read_repos":["ZacxDev/muster"],"read_grant":"standing"`
 	words := []string{"muster", "examplecluster"}
@@ -727,10 +729,15 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 			t.Fatalf("%s: result: %d %s", link, rec.Code, rec.Body.String())
 		}
 	}
+	// The declared repository's name is no secret: it may stand alone.
+	if id, out := post(w, "muster has a new logo"); id == 0 {
+		t.Errorf("the declared repository's bare name: %s", out)
+	}
 	internalHost := "store.example." + "lan"
 	for _, bad := range []struct{ body, want string }{
-		{"muster is out: github.com/ZacxDev/muster", "infrastructure name"},
+		{"examplecluster is out: github.com/ZacxDev/muster", "infrastructure name"},
 		{liveRepoBody("github.com/ZacxDev/muster") + " on " + internalHost, "internal host name"},
+		{liveRepoBody("github.com/ZacxDev/examplecluster"), "infrastructure name"},
 		{liveRepoBody("github.com/ZacxDev/muster-private"), "infrastructure name"},
 	} {
 		if id, out := post(w, bad.body); id != 0 || !strings.Contains(out, bad.want) {
@@ -741,8 +748,10 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	// (A host-runtime officer, #649, has no allowlist: MUSTER_OFFICERS refuses
 	// read_repos on "runtime": "host".)
 	noStanding := newOutboundWorldWith(t, true, outboundFixture{denyWords: words})
-	if id, out := post(noStanding, liveRepoBody("https://github.com/ZacxDev/muster")); id != 0 || !strings.Contains(out, "infrastructure name") {
-		t.Errorf("an officer that declares no standing read: filed %d, %s; want the infrastructure-name refusal", id, out)
+	for _, body := range []string{liveRepoBody("https://github.com/ZacxDev/muster"), "muster has a new logo"} {
+		if id, out := post(noStanding, body); id != 0 || !strings.Contains(out, "infrastructure name") {
+			t.Errorf("an officer that declares no standing read, %q: filed %d, %s; want the infrastructure-name refusal", body, id, out)
+		}
 	}
 	// read_repos under the per-instance approval (no read_grant) may be
 	// private: they are NOT a declaration that the repository is public.

@@ -249,8 +249,8 @@ func TestTheMintPageOffersABarSummaryToken(t *testing.T) {
 	for _, want := range []string{
 		`<input type="radio" name="scope" value="full" checked class="h-5 w-5">` + "\nFull access</label>",
 		`<input type="radio" name="scope" value="summary" class="h-5 w-5">` + "\nBar summary only (can read the Attention summary and nothing else)</label>",
-		`data-token-scope="summary">Bar summary only · created`,
-		`data-token-scope="full">Full access · created`,
+		`data-token-scope="summary">Bar summary only · <time`,
+		`data-token-scope="full">Full access · <time`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the token page does not carry %q", want)

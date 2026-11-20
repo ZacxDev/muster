@@ -248,7 +248,7 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 		"ChatStreamHTML <- api.wsChatStream.sendHTMLLocked",
 		"chatMessageBody <- ui.ChatMessageHTML",
 		"chatMessageBody <- ui.ChatStreamHTML",
-		"chatMessageBody <- ui.chatBubble",
+		"chatMessageBody <- ui.chatBubbleUnfolded",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the callers of the chat's renderer changed:\n got:\n  %s\nwant:\n  %s",

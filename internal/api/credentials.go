@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -157,19 +158,37 @@ const (
 	credCard   = `class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line"`
 )
 
+// CredentialsOff is the AI accounts page's line on a server with no
+// credential store.
+const CredentialsOff = "Saving AI accounts isn't turned on for this server yet."
+
+// CredentialsTitle is the page's heading and title, and the Account page's
+// link to it (the jargon audit's F081: it said "Credentials (Claude,
+// OpenRouter)").
+const CredentialsTitle = "Your AI accounts"
+
 func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code int, notice, problem string) {
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col gap-4" data-credentials-page>`)
-	b.WriteString(`<section ` + credCard + `><h1 class="text-balance text-base font-semibold text-fg">Credentials</h1>`)
+	b.WriteString(`<section ` + credCard + `><h1 class="text-balance text-base font-semibold text-fg">` + CredentialsTitle + `</h1>`)
 	if notice != "" {
 		b.WriteString(`<p role="status" class="text-sm text-fg">` + html.EscapeString(notice) + `</p>`)
 	}
 	b.WriteString(problemNode(problem))
 	switch {
 	case s.ext.Credentials == nil:
-		b.WriteString(`<p class="text-sm text-fg2" data-credentials-off>This server has no credential store configured, so credentials cannot be added here. ` +
-			`The operator turns it on by setting ` + credentialStoreVariable(s) + ` in .env and restarting muster — ` +
-			`<a href="` + ui.FeatureHref(features.Connectors) + `" class="text-accent underline">Features → ` + features.ConnectorsName + `</a>.</p></section>`)
+		// The plain line, and the key and the restart in the admin's ⓘ (the
+		// jargon audit's F090); only an admin gets the link to its setup.
+		admin := authz.IsAdmin(r.Context())
+		words, link := CredentialsOff, ""
+		if admin {
+			link = `<a href="` + ui.FeatureHref(features.Connectors) + `" class="text-sm text-accent underline">Features → ` + features.ConnectorsName + `</a>`
+		} else {
+			words += " Your admin can turn it on."
+		}
+		b.WriteString(`<div class="flex items-center gap-1"><p class="text-sm text-fg2" data-credentials-off>` + html.EscapeString(words) + `</p>` +
+			ui.InfoSheetHTML(ui.SetupSheet("credentials-setup", "How to turn on saving AI accounts",
+				"Set this in the server's .env and restart muster:", credentialStoreVariable(s), admin)) + `</div>` + link + `</section>`)
 	case s.ext.Credentials.UsesEnvironment(r.Context(), callerID(r.Context())):
 		b.WriteString(`<p class="text-sm text-fg2" data-credentials-environment>Your agents use the credentials this server is configured with (its Claude accounts and OpenRouter key). There is nothing to add here.</p></section>`)
 	default:
@@ -178,7 +197,7 @@ func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code 
 	}
 	s.writeCCUsageSection(&b, r)
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
-	s.writeNavDocument(w, r, code, "Credentials", ui.NavAccount, true, b.String())
+	s.writeNavDocument(w, r, code, CredentialsTitle, ui.NavAccount, true, b.String())
 }
 
 func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {
@@ -239,7 +258,7 @@ func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {
 // members' credentials); the bare name when no registry is installed.
 func credentialStoreVariable(s *Server) string {
 	if f, ok := s.feature(features.Connectors); ok && len(f.Enable) > 0 {
-		return html.EscapeString(f.Enable[0].Name)
+		return f.Enable[0].Name
 	}
 	return "the connector encryption key"
 }

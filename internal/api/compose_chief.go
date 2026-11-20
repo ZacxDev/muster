@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -336,11 +337,30 @@ func (s *Server) composeChiefKindAccount(ctx context.Context, p dispatchParams) 
 	return agents.KindClaudeCode, ComposeChiefAccount, nil
 }
 
-// ChiefNotSetUp is the Account page's text where the chief cannot run: no
-// Compose chief runtime and no agent provisioner. It is the enable step.
-const ChiefNotSetUp = "Not available on this install yet. To turn it on, add COMPOSE_PROFILES=chief, " +
-	"MUSTER_CHIEF_RUNTIME=compose and MUSTER_CONNECTOR_ENCRYPTION_KEY to .env, run docker compose up -d --wait, " +
-	"and come back here (docs/features.md#chief). Everything else works without it."
+// ChiefNotSetUp is the Account page's text where the chief cannot run (no
+// Compose chief runtime and no agent provisioner), for an admin;
+// ChiefNotSetUpAsk is a member's. The enable step — ChiefSetupLead and
+// ChiefSetupCode — is in the admin's ⓘ beside it, never in the top layer
+// (the jargon audit's F086).
+const (
+	ChiefNotSetUp    = "Not set up on this server yet."
+	ChiefNotSetUpAsk = "Not set up on this server yet — your admin can turn it on."
+	ChiefSetupLead   = "Add these lines to the server's .env, run the command, and come back here (docs/features.md#chief). " +
+		"Everything else works without it."
+	ChiefSetupCode = "COMPOSE_PROFILES=chief\nMUSTER_CHIEF_RUNTIME=compose\nMUSTER_CONNECTOR_ENCRYPTION_KEY=<32 random bytes>\n\ndocker compose up -d --wait"
+)
+
+// chiefNotSetUpHTML is the unavailable chief's line and its setup ⓘ, for the
+// viewer: the admin's sheet holds the enable step, anyone else's says to ask.
+func chiefNotSetUpHTML(admin bool) string {
+	words := ChiefNotSetUp
+	if !admin {
+		words = ChiefNotSetUpAsk
+	}
+	return `<div class="flex items-center gap-1"><p id="chief-state" data-state="unavailable" class="text-sm text-fg">` + words + `</p>` +
+		ui.InfoSheetHTML(ui.SetupSheet("chief-setup", "How to turn on the chief", ChiefSetupLead, ChiefSetupCode, admin)) + `</div>
+`
+}
 
 // The Account page's lines about the Compose chief, below its switch.
 const (
