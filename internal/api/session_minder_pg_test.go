@@ -219,6 +219,238 @@ func TestASessionMinderThatCannotRunSuppressesNothing(t *testing.T) {
 	}
 }
 
+// minderHost is the named host a pinned minder runs on in the tests below:
+// not the fixture's "ws" (where the stopped session is), so dropping it
+// leaves the stop itself in view.
+const minderHost = "minderbox"
+
+// newMinderRigOnHost is the minder fixture whose officer runtime runs host
+// officers only (no pods: a provisioner would let the chief's pod placement
+// stand in), with a second host of the operator's, minderHost, listed by the
+// mirror hub — connected when online.
+func newMinderRigOnHost(t *testing.T, online bool) *minderRig {
+	t.Helper()
+	f := newStateFixture(t, true)
+	r := &minderRig{stateFixture: f, store: builtin.NewStore(f.pool)}
+	f.srv.EnableOfficerStore(r.store)
+	if _, err := f.srv.EnableOfficers(OfficersConfig{Builtin: r.store, HostSpawns: officers.NewMemHostSpawnStore()}); err != nil {
+		t.Fatal(err)
+	}
+	r.setMinderHost(online)
+	return r
+}
+
+// setMinderHost lists minderHost on the hub, connected or not (an
+// interactive host when connected).
+func (r *minderRig) setMinderHost(online bool) { r.setMinderHostView(online, online) }
+
+// setMinderHostView lists minderHost with Online and Interactive set apart, so
+// a test can tell which of the two the minder's rule reads.
+func (r *minderRig) setMinderHostView(online, interactive bool) {
+	r.mirror.mu.Lock()
+	defer r.mirror.mu.Unlock()
+	r.mirror.others = []mirror.HostView{{Host: minderHost, Online: online, Interactive: interactive}}
+}
+
+// declareOnHost declares owner's Session minder pinned to host ("runtime":
+// "host"), switched on, then runs the roster load.
+func (r *minderRig) declareOnHost(t *testing.T, owner int64, id, host string) {
+	t.Helper()
+	pol, err := json.Marshal(map[string]any{"capabilities": []string{builtin.CapSessionMinder}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slug := "minder" + strconv.FormatInt(time.Now().UnixNano()%1_000_000_000, 36)
+	if _, err := r.store.CreateDeclared(asUser(owner), owner, builtin.DeclaredWrite{TypeName: "Session minder", Charter: "Mind my sessions.",
+		Policy: pol, Enabled: true, Mode: "shadow", Fields: officers.Declaration{ID: id, Owner: owner, Runtime: officers.RuntimeHost, Host: host}},
+		[]string{slug}); err != nil {
+		t.Fatalf("declare %s on %s for %d: %v", id, host, owner, err)
+	}
+	t.Cleanup(func() { _, _ = r.store.DeleteDeclared(asUser(owner), owner, id) })
+	if err := r.srv.reloadDeclaredOfficers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestASessionMinderOnAnOfflineHostSuppressesNothing: a Session minder pinned
+// to a named host is IN THE ROSTER whether or not that host is connected (the
+// runtime rule only asks whether this muster runs host officers). While the
+// host is connected it minds — the chief decides nothing and the minder gets
+// the stop. Once the host drops, nothing is minding: the very next sweep
+// decides the stop (the nudges are back), and the minder is fed nothing more.
+// CONTROL for the pod path: TestASessionMinderTurnsTheChiefsNudgesOffForItsOwner
+// (a minder in pods, no host involved) still suppresses.
+func TestASessionMinderOnAnOfflineHostSuppressesNothing(t *testing.T) {
+	r := newMinderRigOnHost(t, true)
+	r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	o, ok := r.srv.officerRT.reg.ForOwner(authz.OperatorUserID, minderID)
+	if !ok || !o.OnHost() || o.Host != minderHost {
+		st, _ := r.srv.officerRT.declaredView(authz.OperatorUserID, minderID)
+		t.Fatalf("fixture: the minder should be in the roster on %s; got in=%v %+v (reason %q)", minderHost, ok, o, st.reason)
+	}
+	r.statePass(t)
+	if n := r.pass(t); n != 0 {
+		t.Fatalf("SUPPRESSION: a minder on a CONNECTED host let the chief decide %d stop(s)", n)
+	}
+	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID); len(got) != 1 {
+		t.Fatalf("the minder's items on a connected host: %+v; want the one stop", got)
+	}
+
+	r.setMinderHost(false)
+	if _, ok := r.srv.officerRT.reg.ForOwner(authz.OperatorUserID, minderID); !ok {
+		t.Fatal("fixture: the minder left the roster when its host dropped; the case under test is one still IN it")
+	}
+	if n := r.pass(t); n != 1 {
+		t.Fatalf("OFFLINE HOST: a Session minder whose host %s is not connected kept the chief's nudges off: decided %d, want 1", minderHost, n)
+	}
+}
+
+// TestASessionMinderOnAnOfflineHostIsNotFed: pinned to a host that is not
+// connected from the start, the minder takes nothing — the chief decides the
+// stop and the minder's queue stays empty.
+func TestASessionMinderOnAnOfflineHostIsNotFed(t *testing.T) {
+	r := newMinderRigOnHost(t, false)
+	r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	if _, ok := r.srv.officerRT.reg.ForOwner(authz.OperatorUserID, minderID); !ok {
+		t.Fatal("fixture: the minder should be in the roster with its host offline")
+	}
+	r.statePass(t)
+	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID); len(got) != 0 {
+		t.Fatalf("a minder on an offline host was fed stops: %+v", got)
+	}
+	if n := r.pass(t); n != 1 {
+		t.Fatalf("OFFLINE HOST: decided %d, want 1", n)
+	}
+}
+
+// TestTheMindersHostIsReadByOnlineNotInteractive: "connected" is the hub's
+// Online, not Interactive — a connected host that takes no input still runs
+// the minder (it suppresses); ...Offline: a host listed Interactive but not
+// Online does not (the chief decides).
+func TestTheMindersHostIsReadByOnlineNotInteractive(t *testing.T) {
+	r := newMinderRigOnHost(t, true)
+	r.setMinderHostView(true, false)
+	r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	r.statePass(t)
+	if n := r.pass(t); n != 0 {
+		t.Fatalf("ONLINE, NOT INTERACTIVE: a minder on a connected host let the chief decide %d stop(s)", n)
+	}
+}
+
+// TestTheMindersHostIsReadByOnlineNotInteractiveOffline is its other half.
+func TestTheMindersHostIsReadByOnlineNotInteractiveOffline(t *testing.T) {
+	off := newMinderRigOnHost(t, false)
+	off.setMinderHostView(false, true)
+	off.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	off.statePass(t)
+	if n := off.pass(t); n != 1 {
+		t.Fatalf("INTERACTIVE, NOT ONLINE: a minder on a disconnected host kept the chief's nudges off: decided %d, want 1", n)
+	}
+}
+
+// minderItemStatus puts the operator's minder item id in status — the minder
+// having acted on it: done through the store's ResolveItem; waiting or
+// claimed (with a lease d past the fixture's clock) straight in the table.
+func (r *minderRig) minderItemStatus(t *testing.T, id int64, status string, d time.Duration) {
+	t.Helper()
+	if status == "done" {
+		if _, err := r.store.ResolveItem(asUser(authz.OperatorUserID), authz.OperatorUserID, minderID, id, "done", "asked its owner", r.srv.now()); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	var lease *time.Time
+	if status == "claimed" {
+		at := r.srv.now().Add(d)
+		lease = &at
+	}
+	if _, err := r.pool.Exec(authz.System(context.Background()), `UPDATE officer_items SET status = $2, claimed_by = CASE WHEN $2 = 'claimed' THEN 'officer-instance-1' END,
+		claimed_at = CASE WHEN $2 = 'claimed' THEN now() END, lease_expires_at = $3 WHERE id = $1`, id, status, lease); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAStopFedToAMinderIsClosedWhenTheChiefTakesIt: a stop fed to the minder
+// while its host was connected, still OPEN in its queue when the host drops,
+// is judged by the chief — and the minder's item for it is closed first
+// (no_action), so the minder, back, never acts on the stop the chief took.
+func TestAStopFedToAMinderIsClosedWhenTheChiefTakesIt(t *testing.T) {
+	r := newMinderRigOnHost(t, true)
+	r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	r.statePass(t)
+	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID); len(got) != 1 || got[0].Status != "open" {
+		t.Fatalf("fixture: the minder's items %+v; want the one stop, open", got)
+	}
+	r.setMinderHost(false)
+	if n := r.pass(t); n != 1 {
+		t.Fatalf("the chief decided %d, want 1 (the minder is offline)", n)
+	}
+	got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID)
+	if len(got) != 1 || got[0].Status != "done" {
+		t.Fatalf("TWO JUDGES: the chief judged the stop and the minder's item for it is %+v; want it closed (done)", got)
+	}
+}
+
+// TestAStopTheMinderActedOnIsNotJudgedByTheChief: a stop the minder already
+// acted on — finished, waiting on its owner, or claimed under a live lease —
+// stays the minder's when its host drops: the chief does not judge it.
+// CONTROL: TestAStopFedToAMinderIsClosedWhenTheChiefTakesIt, the same stop
+// still open, is judged.
+func TestAStopTheMinderActedOnIsNotJudgedByTheChief(t *testing.T) {
+	for _, status := range []string{"done", "waiting", "claimed"} {
+		t.Run(status, func(t *testing.T) {
+			r := newMinderRigOnHost(t, true)
+			r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+			r.statePass(t)
+			got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID)
+			if len(got) != 1 {
+				t.Fatalf("fixture: the minder's items %+v; want the one stop", got)
+			}
+			r.minderItemStatus(t, got[0].ID, status, 10*time.Minute)
+			r.setMinderHost(false)
+			if n := r.pass(t); n != 0 {
+				t.Fatalf("TWO JUDGES: the minder's item for the stop is %s, and the chief judged it too: decided %d, want 0", status, n)
+			}
+			if checks, _ := r.gw.seen(); len(checks) != 0 {
+				t.Fatalf("TWO JUDGES: the chief was asked about a stop the minder holds (%s): %v", status, checks)
+			}
+		})
+	}
+}
+
+// TestAMinderIsFedAnUnjudgedStopWhenItsHostReturns is the CONTROL for
+// TestAMinderIsNotFedAStopTheChiefJudged: the same stop, NOT judged while the
+// host was offline, is fed to the minder once it is back.
+func TestAMinderIsFedAnUnjudgedStopWhenItsHostReturns(t *testing.T) {
+	ctl := newMinderRigOnHost(t, false)
+	ctl.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	ctl.statePass(t)
+	ctl.setMinderHost(true)
+	ctl.advance(30 * time.Second)
+	ctl.statePass(t)
+	if got := minderItems(t, ctl.stateFixture, authz.OperatorUserID, minderID); len(got) != 1 {
+		t.Fatalf("control: an unjudged stop after the host came back: items %+v; want 1", got)
+	}
+}
+
+// TestAMinderIsNotFedAStopTheChiefJudged: the chief judged a stop while the
+// minder's host was offline; when the host comes back the state pass does not
+// feed that stop to the minder as well.
+func TestAMinderIsNotFedAStopTheChiefJudged(t *testing.T) {
+	r := newMinderRigOnHost(t, false)
+	r.declareOnHost(t, authz.OperatorUserID, minderID, minderHost)
+	r.statePass(t)
+	if n := r.pass(t); n != 1 {
+		t.Fatalf("fixture: the chief decided %d, want 1 (the minder is offline)", n)
+	}
+	r.setMinderHost(true)
+	r.advance(30 * time.Second)
+	r.statePass(t)
+	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID); len(got) != 0 {
+		t.Fatalf("TWO JUDGES: the reconnected minder was fed a stop the chief already judged: %+v", got)
+	}
+}
+
 // TestASessionMinderWithoutSessionStateSuppressesNothing: with session state
 // off nothing can feed the minder, so it takes nothing away — the chief still
 // decides the stop (a minder that cannot mind never silences).

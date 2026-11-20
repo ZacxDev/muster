@@ -316,11 +316,14 @@ func LooksLikeToken(token string) bool { return strings.HasPrefix(token, TokenPr
 var nameRE = regexp.MustCompile(nameAndScopeShape)
 var scopeRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$`)
 
+// NameRule is what a plugin name must be, as its refusal says it.
+const NameRule = "Use up to 40 lowercase letters, numbers and dashes, not starting or ending with a dash."
+
 // ValidName checks a plugin's slug: lower-case letters, digits and hyphens,
 // 1–40 characters, not starting or ending with a hyphen (the 0015 CHECK).
 func ValidName(name string) error {
 	if !nameRE.MatchString(name) {
-		return invalid("a plugin name is 1-40 lower-case letters, digits and hyphens, not starting or ending with a hyphen")
+		return invalid(NameRule)
 	}
 	return nil
 }

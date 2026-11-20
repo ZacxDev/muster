@@ -180,6 +180,15 @@ func liveStatusIndexed(a agents.Agent, idx map[string]*provision.Instance) strin
 
 // liveStatus composes one agent's displayed status, fetching live state itself.
 // Use it on a single-agent path; do NOT use it in a loop.
+//
+// 🔴 IT READS a's INSTANCE ONLY, NEVER THE WHOLE FLEET. The agent page's status
+// icon polls it every 10s (handleAgentStatusIcon), and it used to read every
+// instance the backend has to look up one: on the Kubernetes driver's
+// least-privilege layout that is three requests per agent namespace per poll,
+// per open page. With an InstanceReader it is one by-name read of a; a
+// provisioner without one still answers through the whole-fleet index
+// (instancesOfWithin). The status is the same either way: InstancesOf answers
+// what List would have said about a.
 func (s *Server) liveStatus(ctx context.Context, a agents.Agent) string {
-	return liveStatusIndexed(a, s.instanceIndex(ctx))
+	return liveStatusIndexed(a, s.instancesOfWithin(ctx, []agents.Agent{a}, 0))
 }

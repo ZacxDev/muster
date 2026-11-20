@@ -89,6 +89,10 @@ func (s *Server) registerAdminRoutes(mux Mux) {
 // adminPagesServed reports whether this server has what the admin pages need.
 func (s *Server) adminPagesServed() bool { return s.gt != nil && s.gt.Accounts != nil }
 
+// AdminNoAccounts is what /admin/* says on a server with no account store:
+// everyone signs in with the one shared password.
+const AdminNoAccounts = "This server uses one shared password, so there are no accounts to manage."
+
 // AdminOnlyRefusal is what a non-admin principal gets from /admin/*.
 const AdminOnlyRefusal = "this page is for admins"
 
@@ -100,8 +104,11 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !s.adminPagesServed() {
-			s.renderNotice(w, r, http.StatusServiceUnavailable, "Account management is not configured",
-				"This server has no GoTrue configured (MUSTER_GOTRUE_URL), so it cannot manage accounts.")
+			// Only an admin reaches this (refuseNonAdmin above), so the
+			// setup is in the sheet unwithheld (the jargon audit's F095).
+			s.renderNotice(w, r, http.StatusServiceUnavailable, "No accounts to manage", AdminNoAccounts,
+				ui.SetupSheet("admin-accounts-setup", "How to turn on separate accounts",
+					"Separate accounts need a sign-in service (GoTrue); the server reads its address from:", "MUSTER_GOTRUE_URL", true))
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
@@ -232,7 +239,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 		}
 		b.WriteString(`<li class="flex flex-col gap-2 rounded-lg border border-line px-3 py-3" data-user-id="` + id + `" data-user-email="` + html.EscapeString(u.Email) + `">
 <div class="flex flex-wrap items-baseline gap-2"><span class="font-semibold text-fg">` + html.EscapeString(name) + `</span>
-<span class="text-xs text-fg2">#` + id + ` · <span data-user-role>` + html.EscapeString(string(role)) + `</span> · <span data-user-state>` + state + `</span></span></div>`)
+<span class="text-xs text-fg2"><span data-user-role>` + html.EscapeString(string(role)) + `</span> · <span data-user-state>` + state + `</span></span></div>`)
 		if u.DisplayName != "" && u.Email != "" {
 			b.WriteString(`<p class="text-sm text-fg2">` + html.EscapeString(u.DisplayName) + `</p>`)
 		}
@@ -260,10 +267,23 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 	}
 	b.WriteString(`</ul></section>`)
 	if entries, err := s.gt.Accounts.RecentAudit(ctx, 25); err == nil && len(entries) > 0 {
-		b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Recent account activity</h2><ul class="flex flex-col gap-1 text-sm text-fg2" id="admin-audit">`)
+		people := auditPeople{me: me, users: map[int64]string{}}
+		var teamIDs []int64
+		for _, u := range list {
+			people.users[u.ID] = personLabel(u.Email, u.DisplayName, u.ID)
+		}
 		for _, e := range entries {
-			b.WriteString(`<li><span class="text-fg">` + html.EscapeString(e.Action) + `</span> ` + html.EscapeString(e.Object) +
-				` · by user ` + strconv.FormatInt(e.UserID, 10) + ` (` + html.EscapeString(e.Via) + `) · ` + fmtTime(e.At) + `</li>`)
+			if k, v, ok := strings.Cut(e.Object, ":"); ok && k == "team" {
+				if tid, err := strconv.ParseInt(v, 10, 64); err == nil {
+					teamIDs = append(teamIDs, tid)
+				}
+			}
+		}
+		people.teams = s.teamNames(ctx, teamIDs)
+		b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Recent account activity</h2><ul class="flex flex-col gap-1 text-sm text-fg2" id="admin-audit">`)
+		now := s.now()
+		for _, e := range entries {
+			b.WriteString(`<li>` + auditLineHTML(e, people, now) + `</li>`)
 		}
 		b.WriteString(`</ul></section>`)
 	}
@@ -434,6 +454,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 	b.WriteString(`</select><button type="submit" class="` + adminButton + `">Create link</button></form>`)
 	b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Invites</h2><ul class="flex flex-col gap-3" id="admin-invites">`)
 	now := s.now()
+	me := authz.MustFrom(ctx).UserID
 	if len(list) == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No invites yet.</li>`)
 	}
@@ -444,10 +465,15 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 		if who == "" {
 			who = "anyone with the link"
 		}
+		// Who made it and when, in words (the jargon audit's F120).
+		maker := inv.CreatedByEmail
+		if inv.CreatedBy == me {
+			maker = "you"
+		}
 		b.WriteString(`<li class="flex flex-col gap-1 rounded-lg border border-line px-3 py-3" data-invite-id="` + id + `" data-invite-state="` + string(st) + `">
 <div class="flex flex-wrap items-baseline gap-2"><span class="font-semibold text-fg">` + html.EscapeString(who) + `</span>
 <span class="text-xs text-fg2">` + html.EscapeString(string(inv.Role)) + ` · ` + string(st) + `</span></div>
-<p class="text-xs text-fg2">created ` + fmtTime(inv.CreatedAt) + ` by ` + html.EscapeString(inv.CreatedByEmail) + ` · expires ` + fmtTime(inv.ExpiresAt) + `</p>`)
+<p class="text-xs text-fg2">` + ui.PlainWhenHTML("Made ", inv.CreatedAt, now) + ` by ` + html.EscapeString(maker) + ` · ` + ui.PlainWhenHTML("expires ", inv.ExpiresAt, now) + `</p>`)
 		if st == users.InviteRedeemed {
 			b.WriteString(`<p class="text-xs text-fg2">redeemed by ` + html.EscapeString(inv.RedeemedByEmail) + `</p>`)
 		}

@@ -1831,6 +1831,11 @@ const passTimeout = 2 * time.Minute
 // (muster_officer_pass_oldest_wait_seconds, muster_officer_pass_start_lag_seconds).
 const maxConcurrentPasses = 4
 
+// MaxConcurrentPasses is maxConcurrentPasses, for what sizes a budget the
+// passes share (the officer fleet-read test in internal/api models its
+// rate-limiter waits on it).
+const MaxConcurrentPasses = maxConcurrentPasses
+
 // passCandidate is a due officer Run has not started a pass for, waiting
 // since since: its nextAt, or — for a zero nextAt (a first pass, or one Due
 // asked for) — the tick Run first saw it due.

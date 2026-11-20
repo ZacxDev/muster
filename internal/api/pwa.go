@@ -73,7 +73,7 @@ type WebManifest struct {
 //     every phone treat the next version as a second app.
 //   - no `orientation`. The old portrait lock also locked tablets and foldables.
 //   - theme_color/background_color are ui.ThemeColorDark — the same constant the
-//     theme-color meta reads, itself pinned to input.css's --mu-bg — so the
+//     theme-color meta reads, itself pinned to tokens.css's --mu-bg — so the
 //     splash screen, the status bar and the page cannot disagree.
 //   - share_target is GET. Behind the forward-auth edge a POST is answered 303
 //     with its body dropped; a GET's query survives the login round trip (and

@@ -51,6 +51,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
 | [Fleet proposals](#fleet-orchestration) | the chief proposes what to send each of your stopped sessions; each is a card in the fleet digest, sent only when you tap Approve | the fleet digest | off | 1 line |
+| [Morning report](#morning-report) | one notification each morning, on days something happened overnight, opening a page of the questions waiting on you (answer them there), what got done, what is stuck and the night's usage | a database; for merged pull requests, session routing + PR mail routing and the GitHub App; for plan usage, the usage poll | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -552,6 +553,66 @@ while its pull request's CI ran (the GitHub App's checks read)
 - **Check:** `fleet proposals: ON (MUSTER_FLEET_ORCHESTRATION=propose) — …`;
   off, the line reads `fleet proposals: OFF — MUSTER_FLEET_ORCHESTRATION is not
   propose`.
+
+### Morning report
+
+"While you were away": once a day, at 08:00 in one zone the server sets
+(America/Chicago by default), you get **one** notification — only on a day
+something happened overnight — that opens a page with four parts:
+
+1. **Waiting on you**: every question still open for you — the chief's, your
+   sessions' and your agents' — as the Asks page's own cards, so you answer
+   one right there, each with how long it has left ("Answer within 3h").
+   Only your own questions are listed, never a team's.
+2. **Done overnight**: pull requests your sessions created that merged, by
+   their titles; and complete tasks that changed overnight, said as exactly
+   that ("Complete task, changed overnight"), since muster keeps no time a
+   task was finished.
+3. **Stuck**: sessions idle with nothing running, or stopped on an error
+   (the same rule the chief's stall nudges use), and agents you started that
+   failed overnight.
+4. **Usage and cost**: how long your chief worked overnight; each Claude
+   plan's latest usage reading ("Claude plan 1: this 5-hour period 37% used");
+   and the chief's OpenRouter cost on the last whole UTC day, where its
+   OpenRouter sessions are on. A part with no source says so in plain words
+   ("Usage isn't tracked on this server", "Cost isn't tracked for Claude
+   plans"); an admin sees the setting behind it in the ⓘ.
+
+It is **read-only**: it reads muster's own records and never nudges, sends,
+asks or changes a task. No model is called. The notification carries counts
+only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's
+or a question's text.
+
+- **Overnight** is from one report time to the next: a question asked a
+  minute after 08:00 is tomorrow's news.
+- **The notification's count** of questions is every question still open,
+  old ones included; only a question asked overnight makes a day send it.
+- **Quiet days:** no notification when no question was asked overnight, no
+  pull request merged, nothing got newly stuck, and every pull request was
+  checked. The day's page still exists and says so. Shown but never enough on
+  their own to send it: a question asked before the night (asks wait up to a
+  day), a session stuck since before the night, a task that only changed, and
+  usage. A pull request whose state could not be read, or more recent pull
+  requests than one report checks (30), always sends it, saying so.
+- **Once a day:** each report is recorded per person per day, so a restart
+  never sends it twice. A server that was down at the report time sends it up
+  to 2 hours late, and skips the day after that.
+- **Needs:** a database. Merged pull requests need
+  [session routing](#session-routing) and [PR mail routing](#pr-mail-routing)
+  for the pull requests your sessions created, and the [GitHub App](#github-app)
+  for whether they merged; without them the page says so. Plan usage needs
+  `MUSTER_CC_USAGE_POLL=1`; cost needs the chief's OpenRouter sessions.
+- **Known limits:** plan usage is the latest reading, not a sum over the
+  night. Only the chief's working time is recorded; other agents' hours are
+  not. OpenRouter cost is booked per UTC day, so the report shows the last
+  whole UTC day before 08:00 (the day it falls in is still running, and the
+  next report shows it); each day is counted once.
+- **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the zone of its 08:00
+  is `MUSTER_MORNING_REPORT_TZ` (an IANA zone).
+- **Turning it off:** unset it. No report is written and `/morning` answers 404.
+- **Check:** `morning report: ON (MUSTER_MORNING_REPORT=1) — one push a day at
+  08:00 America/Chicago …`; off, the line reads `morning report: OFF —
+  MUSTER_MORNING_REPORT is unset`.
 
 ### Ask log
 

@@ -106,7 +106,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	kind, label := askFeedBadge(slot[0])
 	// WHO ASKS is named as the feed's card names it (attentionTitle): the
 	// session's name — never its tmux address, which is the card's ⓘ
-	// (asksCardContextSlot) — and on which computer.
+	// (asksCardContextRow) — and on which computer.
 	source, place, _ := attentionTitle(slot[0])
 	// A notice (attention.KindNotice) is drawn as one: no options, no answer
 	// box, only its session and Dismiss.
@@ -118,6 +118,15 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if place != "" && place != source {
 		verb += " · " + esc(place)
 	}
+	// The footer's links (askContextLinkList), known now: a lone ⓘ (no context
+	// words beside it) goes there, after them, as on the feed's card
+	// (asksCardContextRow), instead of on an empty row of its own.
+	links := s.askContextLinkList(r.Context(), a, it)
+	inner, info := asksCardContextInner(slot[0], now), attentionPlaceSheetHTML(slot[0], slot[0].Key)
+	if inner == "" && info != "" && len(links) > 0 {
+		links = append(links, info)
+		info = ""
+	}
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
@@ -125,7 +134,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 <div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p></div>
 ` + officerNoteLabelHTML(a.Context) + `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
-` + asksCardContextSlot(slot[0], now) + asksCardMediaSlot(slot[0]))
+` + asksCardContextRow(inner, info) + asksCardMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
 	// What a builtin officer's ask is about, apart from its note.
@@ -140,8 +149,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	b.WriteString(`<div id="ask-live" class="flex min-w-0 flex-col gap-4" aria-live="polite">` + live + `</div>
 `)
 	// The footer: the way to the session and the task, then Dismiss.
-	if links := s.askContextLinks(r.Context(), a, it); links != "" {
-		b.WriteString(links)
+	if len(links) > 0 {
+		b.WriteString(`<div class="` + ui.AsksCardFooterClass + ` gap-x-4 border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n")
 	}
 	if a.Status == attention.Open {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" data-ask-dismiss-form>
@@ -162,10 +171,10 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
 
-// askContextLinks is the ask's way to its context: the asking session's or
-// agent's page (attentionSessionPath, the rule the tap used to follow), and the
-// task it is about; "" for none.
-func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attentionItem) string {
+// askContextLinkList is the ask's way to its context, the ask page's footer
+// links: the asking session's or agent's page (attentionSessionPath, the rule
+// the tap used to follow), and the task it is about; none for neither.
+func (s *Server) askContextLinkList(ctx context.Context, a attention.Ask, it attentionItem) []string {
 	esc := html.EscapeString
 	cls := ui.AsksCardLinkClass
 	var links []string
@@ -177,10 +186,7 @@ func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attent
 	if a.TaskID > 0 {
 		links = append(links, `<a href="/tasks/`+strconv.FormatInt(a.TaskID, 10)+`" class="`+cls+`" data-ask-task>Open task #`+strconv.FormatInt(a.TaskID, 10)+`</a>`)
 	}
-	if len(links) == 0 {
-		return ""
-	}
-	return `<div class="` + ui.AsksCardFooterClass + ` gap-x-4 border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n"
+	return links
 }
 
 // askLiveHTML is the ask page's live region: an open ask's options and

@@ -388,6 +388,10 @@ type Extensions struct {
 	// database): the digest keeps no "since you last looked" baseline and no
 	// Fleet chat.
 	Fleet fleet.Store
+	// MorningReport is the morning report (MUSTER_MORNING_REPORT=1;
+	// morning_report.go): its store and the server's report time. nil (the
+	// default, or no database): no job runs and /morning answers 404.
+	MorningReport *MorningReport
 	// FleetPRStates is the GitHub App's pull-request read the fleet reader
 	// asks for each session's pull requests' state (fleet_read.go), behind its
 	// own two-minute cache — only for an owner the App admits
@@ -564,6 +568,16 @@ type JobWorkspace interface {
 	// is not there is not an error. removed is false (with a nil error) for a
 	// tracked file, which is left in place.
 	RemoveUntrackedWorkspaceFile(ctx context.Context, a agents.Agent, rel string) (removed bool, err error)
+}
+
+// JobWorktreeSweeper is the optional part of a JobWorkspace that removes the
+// job worktrees and refs earlier jobs left behind (*agentprovision.Adapter
+// implements it). A JobWorkspace without it gets no sweep.
+type JobWorktreeSweeper interface {
+	// SweepJobWorktrees removes every job worktree of a's checkout and every
+	// refs/muster-jobs/* ref, returning what it removed. The runner calls it
+	// only while a's current job still reads running, so none is in use.
+	SweepJobWorktrees(ctx context.Context, a agents.Agent) ([]string, error)
 }
 
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken

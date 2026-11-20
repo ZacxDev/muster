@@ -9,18 +9,15 @@ import { coarse, pickView } from '../lib/switcher';
 // THE SESSION PAGE'S COMPOSER CHANGES, on the shared server's dispatched agent
 // pages (a real browser, the seeded agents):
 //
-//   1. "Hide until next ask" on the asks block (ui/attention.go): hides it in
-//      THIS view and sends NOTHING — no request at all, so neither the queue's
-//      answer/dismiss route nor the session is reached, and the ask stays open
-//      on /attention. A "N waiting" chip reopens it. A NEW ask brings it back by
-//      itself; one that only leaves keeps it hidden; the hide survives a reload.
+//   1. After a boosted navigation and Back, the page's controls still work —
+//      the switcher's view menu and the header's asks badge's live count.
 //   2. The session switcher below the input (ui/switcher.go): server-rendered
 //      with the page, Recent / Pins / All picked from the menu the button on its left opens, the
 //      choice kept across loads, each entry a real navigation, the page's own
 //      session left out of Recent and marked in All, and never wider than the
 //      page at 390px.
 //   3. No layout shift (< 0.01) on the page with the bar in each view and with
-//      a hidden ask restored, at a phone and a desktop size.
+//      an open ask (the header's badge), at a phone and a desktop size.
 //
 // The seeded agents are every spec's: what this asserts is about the asks,
 // visits and pins it makes itself, and it removes them.
@@ -29,8 +26,8 @@ const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
 const BAR = 0.01;
-const block = (page: Page) => page.locator('#asker-asks');
-const chip = (page: Page) => page.locator('#asker-asks-chip');
+// The header's asks badge (ui.AskerAsksBadge): drawn while the agent has asks open.
+const badge = (page: Page) => page.locator('header [data-asker-asks-link]');
 const bar = (page: Page) => page.locator('#session-switcher');
 const row = (page: Page, view: string) => bar(page).locator(`[data-switcher-list="${view}"]`);
 // An agent's entry links its page with the session the list saw (ui.AgentListHref:
@@ -72,79 +69,19 @@ test.afterEach(async ({ page }) => {
   pinned = '';
 });
 
-// 🔴 A REGRESSION TEST: at the base there is no hide button (the block can only
-// be answered or dismissed, both of which post).
-test('"Hide until next ask" hides the asks here without sending anything; a new ask brings them back; the chip reopens them', async ({ page }) => {
-  const q1 = fix('ask', '1', 'docs-sweeper', 'Publish the docs build?');
-  asks.push(q1);
-  await openAgent(page, 'docs-sweeper');
-  await expect(block(page).locator(`#ask-${q1}`)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-
-  // Every request the page makes from the tap on: there must be none at all.
-  const sent: string[] = [];
-  page.on('request', (r) => {
-    if (r.resourceType() !== 'eventsource') sent.push(`${r.method()} ${new URL(r.url()).pathname}`);
-  });
-  const hide = block(page).getByRole('button', { name: 'Hide until next ask' });
-  expect((await hide.boundingBox())!.height, 'the hide is a 44px target').toBeGreaterThanOrEqual(44);
-  await hide.click();
-  await expect(block(page)).toBeHidden();
-  await expect(chip(page)).toBeVisible();
-  await expect(chip(page)).toHaveText('1 waiting');
-  expect((await chip(page).boundingBox())!.height, 'the chip is a 44px target').toBeGreaterThanOrEqual(44);
-  await page.waitForTimeout(500);
-  expect(sent, 'the hide made no request (no answer, no dismiss, nothing to the session)').toEqual([]);
-  // Still open in the queue.
-  expect(await (await page.request.get('/attention')).text(), 'the ask stays in the Asks queue').toContain(`id="ask-${q1}"`);
-
-  // Kept across a reload: hidden from the first paint, the chip in its place.
-  await page.reload();
-  await expect(chip(page)).toHaveText('1 waiting');
-  await expect(block(page)).toBeHidden();
-  await expect(block(page).locator(`#ask-${q1}`), 'the block still holds the ask (it is hidden, not removed)').toHaveCount(1);
-
-  // A NEW ask, arriving live (the block's own refresh): the block is back.
-  const q2 = fix('ask', '1', 'docs-sweeper', 'And tag the release?');
-  asks.push(q2);
-  await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
-  await expect(block(page).locator(`#ask-${q2}`)).toBeVisible();
-  await expect(block(page)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-
-  // Hidden again; then one ask LEAVES (answered elsewhere): still hidden, the
-  // count follows.
-  await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-  await expect(chip(page)).toHaveText('2 waiting');
-  fix('rmask', '1', q2);
-  asks.splice(asks.indexOf(q2), 1);
-  await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
-  await expect(block(page).locator(`#ask-${q2}`)).toHaveCount(0);
-  await expect(block(page)).toBeHidden();
-  await expect(chip(page)).toHaveText('1 waiting');
-
-  // The chip reopens it, and that is remembered too.
-  await chip(page).click();
-  await expect(block(page)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-  await page.reload();
-  await expect(block(page).locator(`#ask-${q1}`)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-  expect(sent.filter((s) => !s.startsWith('GET ')), 'nothing but page loads and the block\'s own refreshes').toEqual([]);
-});
-
-// 🔴 A REGRESSION TEST: AFTER BACK, EVERYTHING STILL WORKS. htmx's history
-// snapshot of the page carries the DOM as it was — so a double-bind guard
-// written as an ATTRIBUTE came back already "bound", the re-run scripts bailed,
-// and the Hide button, the chip and the view toggle were all dead. The guards
-// are JS properties now (a snapshot does not carry them).
-test('after a boosted navigation and Back, the chip, Hide, a new ask and the view toggle all still work', async ({ page }) => {
+// AFTER BACK, EVERYTHING STILL WORKS. htmx's history snapshot of the page
+// carries the DOM as it was — so a double-bind guard written as an ATTRIBUTE
+// came back already "bound", the re-run scripts bailed, and the page's
+// controls were dead (the guards are JS properties now). After a boosted
+// navigation and Back: the view menu works, and the header's asks badge still
+// follows the queue (its refresh sits in the chat pane's SSE section,
+// ui.askerAsksRefresh).
+test('after a boosted navigation and Back, the view toggle and the asks badge\'s live count still work', async ({ page }) => {
   const q1 = fix('ask', '1', 'docs-sweeper', 'Back-button probe?');
   asks.push(q1);
   await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} }).catch(() => undefined);
   await openAgent(page, 'docs-sweeper');
-  await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-  await expect(chip(page)).toHaveText('1 waiting');
+  await expect(badge(page)).toHaveAttribute('data-count', '1');
   // A boosted navigation (the sidebar's own link), then Back.
   await page.evaluate(() => (document.querySelector('.sidebar-tab[data-tab="tasks"]') as HTMLElement).click());
   await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
@@ -160,62 +97,11 @@ test('after a boosted navigation and Back, the chip, Hide, a new ask and the vie
   await expect(row(page, 'pins')).toBeVisible();
   await pickView(page, 'recent');
   await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
-  // The chip reopens; Hide hides again.
-  await expect(chip(page)).toHaveText('1 waiting');
-  await chip(page).click();
-  await expect(block(page)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-  await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-  await expect(block(page)).toBeHidden();
-  await expect(chip(page)).toHaveText('1 waiting');
-  // A new ask, arriving by the block's own refresh, brings it back.
+  // A new ask, arriving by the queue's event: the badge counts it.
   const q2 = fix('ask', '1', 'docs-sweeper', 'And after Back?');
   asks.push(q2);
-  await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
-  await expect(block(page).locator(`#ask-${q2}`)).toBeVisible();
-  await expect(chip(page)).toBeHidden();
-});
-
-// 🔴 A REGRESSION TEST: two tabs each hiding asks must not overwrite each
-// other's hidden ids — a write merges with what is stored NOW, not with a copy
-// read earlier — and a hide in one tab applies in the other at once (the
-// `storage` event).
-test('hidden asks merge across tabs, and a hide in one tab applies in the other', async ({ page }) => {
-  const q1 = fix('ask', '1', 'docs-sweeper', 'Tab probe one?');
-  asks.push(q1);
-  await openAgent(page, 'docs-sweeper');
-  await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
-  const other = await page.context().newPage();
-  try {
-    // Tab B on the same page; tab A hides — B follows at once.
-    await other.goto('/agents/docs-sweeper');
-    await page.reload();
-    await expect(block(other).locator(`#ask-${q1}`)).toBeVisible();
-    await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-    await expect(chip(page)).toHaveText('1 waiting');
-    await expect(block(other), 'the hide applied in the other tab (storage event)').toBeHidden();
-    await expect(chip(other)).toHaveText('1 waiting');
-
-    // Tab B moves to ANOTHER agent and hides its ask there; tab A, which
-    // already read the list, then hides a new ask of its own. A's write must
-    // keep B's id.
-    const qb = fix('ask', '1', 'release-helper', 'Tab probe, the other agent?');
-    asks.push(qb);
-    await other.goto('/agents/release-helper');
-    await expect(block(other).locator(`#ask-${qb}`)).toBeVisible();
-    await block(other).getByRole('button', { name: 'Hide until next ask' }).click();
-    await expect(chip(other)).toBeVisible();
-    const q2 = fix('ask', '1', 'docs-sweeper', 'Tab probe two?');
-    asks.push(q2);
-    await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
-    await expect(block(page).locator(`#ask-${q2}`)).toBeVisible();
-    await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('muster.asks.hidden.v1') || '[]'));
-    expect(stored, 'every tab\'s hidden ids are kept').toEqual(expect.arrayContaining([`ask-${q1}`, `ask-${qb}`, `ask-${q2}`]));
-  } finally {
-    await other.close();
-    await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
-  }
+  await page.evaluate(() => (window as any).htmx.trigger(document.querySelector('[data-asker-asks-refresh]'), 'sse:attention_queue.changed'));
+  await expect(badge(page)).toHaveAttribute('data-count', '2');
 });
 
 // 🔴 A REGRESSION TEST: at the base there is no #session-switcher.
@@ -400,14 +286,14 @@ test.describe('phone 390×844, the compact bar', () => {
 });
 
 // LAYOUT SHIFT: the agent page with the bar, loaded in each view (the stored
-// choice applied before paint) and with a hidden ask restored, at both sizes.
+// choice applied before paint) and with an open ask (its header badge), at both sizes.
 //
 // ⚠ ON notes-tidy, AN AGENT WITH NO TRANSCRIPT, ON PURPOSE. docs-sweeper's page
 // shifts by itself at load on main (289986e7: 0.00469 at 1280×800 in 3 of 4
 // cls.spec runs, sources #task-banner and the transcript's bubbles, inside
 // #chat-log — none of it this bar), and with the bar's 45px taken from the
 // log that pre-existing shift read up to 0.010 here. This test measures the
-// bar and the asks block; a page without a transcript keeps main's own shift
+// bar and the asks badge; a page without a transcript keeps main's own shift
 // out of the number, and cls.spec still measures docs-sweeper's page whole.
 for (const vp of [
   { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
@@ -415,7 +301,7 @@ for (const vp of [
 ]) {
   test.describe(vp.name, () => {
     test.use(vp.use);
-    test(`the agent page with the switcher, in every view and with hidden asks, shifts less than ${BAR}`, async ({ page }) => {
+    test(`the agent page with the switcher, in every view and with an open ask, shifts less than ${BAR}`, async ({ page }) => {
       test.setTimeout(120_000);
       await page.addInitScript(clsInit);
       // A recent entry and a pin, so no view is empty.
@@ -431,18 +317,14 @@ for (const vp of [
         await expect(row(page, view), `${view} is the row drawn`).toBeVisible();
         await expect(row(page, view).locator('[data-switcher-entry]').first()).toBeVisible();
       }
-      // A hidden ask restored on load.
+      // An open ask: the header's badge, drawn with the page.
       const q = fix('ask', '1', 'notes-tidy', 'Layout probe?');
       asks.push(q);
       await page.goto('/agents/notes-tidy');
-      await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
-      await expect(chip(page)).toBeVisible();
-      await page.goto('/agents/notes-tidy');
       await settle(page);
-      results['a hidden ask restored'] = await readCls(page);
-      await expect(chip(page)).toHaveText('1 waiting');
-      await expect(block(page)).toBeHidden();
-      await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); localStorage.removeItem('muster.asks.hidden.v1'); } catch (e) {} });
+      results['an open ask (its badge)'] = await readCls(page);
+      await expect(badge(page)).toHaveAttribute('data-count', '1');
+      await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
       // 🔴 THE POSITIVE CONTROL, on this same page: a block pushed in above the
       // transcript with no input MUST read above the bar, or the zeros above
       // are an instrument that sees nothing.

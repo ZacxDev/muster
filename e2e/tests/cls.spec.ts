@@ -111,6 +111,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
 };
 const NOT_A_PAGE: Record<string, string> = {
+  // The morning report is off on every server here (404); its page's layout
+  // shift is measured where it is on, in morning-report.spec.ts.
+  'GET /morning': 'measured in morning-report.spec.ts (the report is off on these servers)',
+  'GET /morning/{date}': 'measured in morning-report.spec.ts (the report is off on these servers)',
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
   'GET /agent/approvals/{id}': 'agent API (JSON)',
   'GET /agent/connectors': 'agent API (JSON)',
@@ -152,7 +156,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /account/devices/live': 'an htmx partial (Account → Devices\' list, re-fetched live)',
   'GET /attention/drafts': 'JSON (the Asks page\'s Reply drafts lists, re-fetched live)',
   'GET /attention/log': 'an HTML fragment (the Asks page\'s Log tab panel, fetched when the tab is opened)',
-  'GET /attention/asker': 'an HTML fragment (a session page\'s asks block, re-fetched live)',
+  'GET /attention/asker': 'an HTML fragment (a session page\'s asks badge, re-fetched live)',
   'GET /attention/open/{key}': 'a redirect (a notification\'s tap, resolved to its session or its Asks item)',
   'GET /notify/open': 'a redirect (an agent\'s notification tap to an allowlisted address, re-checked on every tap; no document of its own)',
   'GET /static/': 'static files',

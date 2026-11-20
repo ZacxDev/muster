@@ -182,7 +182,7 @@ test('a manager with a stale sign-in mints on the team hosts page by confirming 
     await page.goto(browserURL + route);
     await expect(page.locator('#team-host-tokens-none')).toBeVisible();
     await page.fill('#team-host-name', 'teamux-host');
-    await page.getByRole('button', { name: 'Mint a token' }).click();
+    await page.getByRole('button', { name: 'Create connection key' }).click();
     await confirm(page, 'Minting, revoking or replacing a team host needs a sign-in');
     await expect(page.locator('#team-host-token'), 'the held mint submitted once confirmed').toBeVisible();
     await expect(page.locator('#team-host-tokens li[data-token-id]')).toHaveCount(1);

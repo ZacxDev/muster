@@ -451,8 +451,12 @@ func TestPagesDrawTheBrandAndFallBack(t *testing.T) {
 	defaults := func(when string) {
 		t.Helper()
 		page := shell()
-		if strings.Contains(page, "data-brand-logo") || strings.Count(page, `<img data-brand-mark="" src="/static/icons/lockup-horizontal.svg?v=`) != 2 {
-			t.Errorf("%s: the shell does not draw the lockup alone, in the header and the sidebar", when)
+		if strings.Contains(page, "data-brand-logo") || strings.Count(page, `<img data-brand-mark="" src="/static/icons/lockup-horizontal.svg?v=`) != 1 {
+			t.Errorf("%s: the shell does not draw the lockup alone, in the header", when)
+		}
+		// The sidebar's server switcher draws muster's square mark.
+		if strings.Count(page, `<img data-server-mark="" data-server-picture="" src="/static/icons/favicon.svg?v=`) != 1 {
+			t.Errorf("%s: the sidebar's switcher does not draw muster's square mark", when)
 		}
 		if !strings.Contains(page, `rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png`) || strings.Contains(page, "/brand/") {
 			t.Errorf("%s: the shell's favicon is not muster's", when)

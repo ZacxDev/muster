@@ -127,9 +127,13 @@ const (
 	// ReapSlack is how long past a running job's own deadline (started_at +
 	// timeout_s) the reaper waits before failing it. A live runner is done by
 	// then: the job's context ends the checkout, the turn and the read at the
-	// deadline, and recording the outcome is a few bounded write attempts
-	// (internal/api's jobFinishAttempts × jobFinishTimeout, well under a minute).
-	// The rest is margin for clock skew between the processes and the database.
+	// deadline, and what runs after it is bounded on contexts of its own, in
+	// internal/api: the worktree's removal (jobWorktreeRemoveTimeout, 30 s), the
+	// sweep of left-behind worktrees with its re-read of the job
+	// (jobWorktreeSweepTimeout, 2 min), and recording the outcome
+	// (jobFinishAttempts × jobFinishTimeout plus the pauses, ~32 s) — about 3 of
+	// the 5 minutes. The rest is margin for clock skew between the processes and
+	// the database. Lengthening any of those bounds eats that margin.
 	ReapSlack = 5 * time.Minute
 	// MaxQueueWait is how long a job may stay queued (from created_at) before the
 	// reaper fails it. A queued job waits for the jobs ahead of it on the same

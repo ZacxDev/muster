@@ -151,6 +151,12 @@ type AgentDetailView struct {
 	// FocusComposer: the server asks for the cursor in #chat-input on arrival
 	// (the side chat route's answer: ComposerFocusParam, chief_chats.go).
 	FocusComposer bool
+	// UnfoldNewest: the conversation is the chief's, and its NEWEST reply is
+	// drawn whole — never folded under "Show more" (data-clamp-never,
+	// bubble_clamp.go); older replies fold as before (operator decision,
+	// #871). Set by internal/api withChatLogLive, so the page, the
+	// panel and the chat-log refetch agree.
+	UnfoldNewest bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -192,9 +198,10 @@ type AgentDetailView struct {
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
-	// Asks is the agent's OPEN attention asks as the queue draws them, with
-	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
-	// is that block's fragment URL, "" when the queue is not served (no block).
+	// Asks is the header's asks badge (AskerAsksBadgeHTML: the count of the
+	// agent's OPEN attention asks, linking to the Asks page filtered to them;
+	// internal/api attention_asker.go), "" for none; AsksSrc is the badge's
+	// fragment URL, "" when the queue is not served (no badge).
 	Asks    string
 	AsksSrc string
 	// Switcher is the session switcher below the chat form (switcher.go), on
@@ -210,8 +217,8 @@ type AgentDetailView struct {
 	Card AgentCardView
 	// StepUp is the "Confirm it's you" dialog the page's step-up gated forms
 	// ask with before they submit (StepUpFormScript): the ⋯ menu's Rotate
-	// credentials (agentRotateConfirm), a team card in the asks block. The
-	// server sets it only for a page that can draw such a form. nil: none.
+	// credentials (agentRotateConfirm). The server sets it only for a page
+	// that can draw such a form. nil: none.
 	StepUp *StepUpView
 }
 
@@ -432,6 +439,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				agentTitle(v),
 				// The viewer's tags on the agent (session_tags.go), after the title.
 				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
+				// The agent's open asks, a count that opens the Asks page
+				// filtered to them (AskerAsksBadge), as the folded header's.
+				g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
@@ -456,10 +466,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
-				// A chief chat's context chip (chief_chats.go): in this row, as a
-				// mirrored session's is in its header's second row.
-				chiefHeaderContext(v.ChiefChat, "shrink-0"),
-				agentMenuSlot(v.Card),
+				// A chief's ⋯ says how much memory its chat uses, when that is
+				// high (chiefMemorySlot).
+				agentMenuSlotWith(v.Card, gatewayChiefMemory(v)),
 				agentModelControl(v),
 			),
 		),
@@ -932,11 +941,23 @@ func agentModelControl(v AgentDetailView) g.Node {
 // drawn once with the page — the strip's refresh never replaces it (its
 // Start/Stop follows the strip's status by a stylesheet rule); nothing for a
 // view with no card.
-func agentMenuSlot(a AgentCardView) g.Node {
+func agentMenuSlot(a AgentCardView) g.Node { return agentMenuSlotWith(a, nil) }
+
+// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none).
+func agentMenuSlotWith(a AgentCardView, extra g.Node) g.Node {
 	if a.ID == 0 {
 		return nil
 	}
-	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenu(a))
+	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(a, "start", extra))
+}
+
+// gatewayChiefMemory is a gateway chief's ⋯ menu's memory slot (its only
+// extra item); nil off a chief's chat page.
+func gatewayChiefMemory(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
+		return nil
+	}
+	return chiefMemorySlot(v.ChiefChat.AgentName, v.ChiefChat.SessionID, true)
 }
 
 // ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
@@ -970,12 +991,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// WHAT PINS THE COMPOSER ABOVE THE BAR (an operator report: with questions
 		// waiting, the message bar was pushed down under the bottom bar). The bar
 		// is absolute in the padding; the column's in-flow content — the
-		// transcript, the asks block, the composer last — is laid out in the
-		// content box above it, so the composer's box ends at the bar's top. The
-		// form used to carry the padding itself, which put the bar inside the
-		// form's own box and let an overgrown column carry the composer down
-		// under it. With the asks block shrinking (askerAsksSection) and the
-		// transcript's floor (#chat-log), the content never outgrows the column.
+		// transcript, the composer last — is laid out in the content box above
+		// it, so the composer's box ends at the bar's top. The form used to carry
+		// the padding itself, which put the bar inside the form's own box and let
+		// an overgrown column carry the composer down under it. (The asks block
+		// that grew the column is gone: the asks are a badge in the header.)
 		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative "+switcherRoom(false))),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
@@ -989,9 +1009,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
 		// header (chiefPageStrip), and nothing there opens a drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
-		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
-		// session does, with the chip in its header (foldedHeader); see below.
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// The header's asks badge's live refresh, which must sit INSIDE this
+		// SSE section (askerAsksRefresh). No asks block: the asks are the
+		// header's badge, answered on the Asks page.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", askerAsksRefresh(v.AsksSrc)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
@@ -1008,12 +1029,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// other session (an operator report). py-1 keeps a focus ring at the
 			// scroll edge from being clipped; the column's own gutter is the sides'.
 			//
-			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. Beside it the
-			// asks block shrinks (askerAsksSection) and the composer does not, so
-			// what is left after the composer and this floor is all the asks block
-			// can take — the conversation keeps a strip on screen however many
-			// questions wait, and the column's in-flow content never outgrows it
-			// (which is what slid the composer under the switcher).
+			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. The
+			// conversation keeps a strip on screen whatever else the column holds
+			// (a notice, the drift banner), and the column's in-flow content never
+			// outgrows it (which is what slid the composer under the switcher,
+			// when an asks block shared the column).
 			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-[7.5rem] [&[data-cg-unlaid]>*]:invisible"),
 			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
 			// can paint mid-document — under load, between any two tags — and a
@@ -1061,11 +1081,6 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// when what it would draw is still exactly this.
 			chatLogVersioned(v),
 		),
-		// A claude-code agent's asks: between the transcript and the composer, where a
-		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
-		// question never sits between the header and the conversation. Its
-		// "N waiting" chip is the header's badge (askerAsksBadge).
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -1493,6 +1508,14 @@ func chatLogInner(v AgentDetailView) g.Node {
 	// group once the whole transcript is laid out (groupToolRuns, tool_groups.go).
 	items := make([]logItem, 0, len(v.Messages)+2)
 	paired := map[int]bool{} // tool_result rows already drawn with their call
+	newest := -1             // the chief's newest reply: never folded
+	if v.UnfoldNewest {
+		newest = newestReply(v.Messages)
+	}
+	// answered is the answers of the latest "From <session>" cards, while the
+	// chief's turn after them is drawn: its relay of an answer is collapsed
+	// (dedupRelay). Any other user row ends it.
+	var answered []string
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
 		switch m.Kind {
@@ -1550,9 +1573,20 @@ func chatLogInner(v AgentDetailView) g.Node {
 			// person's bubble — a "From <session>" card (routed_card.go).
 			if cards, ok := v.RouteAnswers[m.ID]; ok && m.ID > 0 && m.Role == "user" && !m.Typed && len(cards) > 0 {
 				items = append(items, logItem{node: routeAnswerRow(m, cards)})
+				answered = answered[:0]
+				for _, c := range cards {
+					answered = append(answered, c.Body)
+				}
 				continue
 			}
-			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
+			content := m.Content
+			switch {
+			case m.Role == "user":
+				answered = nil
+			case len(answered) > 0:
+				content = dedupRelay(content, answered)
+			}
+			items = append(items, logItem{node: chatBubbleUnfolded(m.Role, content, m.ID, v.Mentions, i == newest)})
 		}
 	}
 	msgs := groupToolRuns(items)
@@ -1979,7 +2013,7 @@ func relayRow(m ChatLine) g.Node {
 		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
 		Summary(
 			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
-			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("✉")),
+			routedIconNode(routedIconMessage),
 			Span(Class("shrink-0 font-mono text-muted"), g.Text("plugin")),
 			Span(g.Attr("data-relay-label", ""), Class("min-w-0 truncate"), g.Text(label)),
 		),
@@ -1991,7 +2025,14 @@ func relayRow(m ChatLine) g.Node {
 }
 
 func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
+	return chatBubbleUnfolded(role, content, id, mx, false)
+}
+
+// chatBubbleUnfolded is chatBubble, drawn never folded when whole is set (the
+// chief's newest reply: data-clamp-never, bubble_clamp.go).
+func chatBubbleUnfolded(role, content string, id int64, mx *MentionIndex, whole bool) g.Node {
 	return chatBubbleOf(role,
+		g.If(whole, g.Attr("data-clamp-never", "")),
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
 		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
@@ -2107,10 +2148,10 @@ func toolChip(call ChatLine, result *ChatLine, id string, bare bool, extra ...g.
 		body = append(body, sheet)
 	}
 	if strings.TrimSpace(call.Content) != "" {
-		body = append(body, toolPre("args", call.Content))
+		body = append(body, toolPre(ToolInputLabel, call.Content))
 	}
 	if result != nil && strings.TrimSpace(result.Content) != "" {
-		body = append(body, toolPre("result", result.Content))
+		body = append(body, toolPre(ToolOutputLabel, result.Content))
 	}
 	// The name truncates past half the row (a long MCP tool name), so the
 	// context badge and the status always fit beside it at a phone's width.
@@ -2178,6 +2219,14 @@ func toolChipState(result *ChatLine) string {
 		return toolStateError
 	}
 }
+
+// The labels over an opened tool row's two blocks: what the tool was given
+// and what it gave back, in words — never "args" and "result" (the jargon
+// audit's F020). The live stream's pre() calls read these same constants.
+const (
+	ToolInputLabel  = "Input"
+	ToolOutputLabel = "Output"
+)
 
 // toolPre is one labeled, scrollable code block inside a persisted tool chip
 // (matching the live stream's pre()). Long output is truncated in the DOM.
@@ -2621,7 +2670,7 @@ func agentChatScript(name string) g.Node {
         break;
       case 'tool_call': {
         var c = toolChip(msg.id, msg.name, msg.target, msg.label);
-        if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
+        if (!c.args && msg.args) { c.args = pre('` + ToolInputLabel + `', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool
         // calls look out of order vs the narration).
@@ -2640,7 +2689,7 @@ func agentChatScript(name string) g.Node {
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
         if (window.musterToolGroups) window.musterToolGroups.refresh(r.details);
         if (r.result) r.result.remove();
-        r.result = pre('result', clip(msg.output));
+        r.result = pre('` + ToolOutputLabel + `', clip(msg.output));
         r.body.appendChild(r.result);
         text = null;
         scroll();

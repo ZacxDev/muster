@@ -10,6 +10,7 @@ import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRoute
 import { serverBinary, startServer, Running } from '../lib/server';
 import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { withMCPSession } from '../lib/localmcp';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
 // page_share.go; docs/pages.md):
@@ -159,7 +160,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
       const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
       const r = await fetch(localMCP, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        headers: await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
       last = await r.text();
@@ -441,12 +442,8 @@ test('a 400,000-byte page_update through the host MCP endpoint returns a version
     expect(body.length, 'fixture size').toBe(n);
     return body;
   };
-  const post = (body: string) =>
-    fetch(localMCP, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
-      body,
-    });
+  const headers = await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX });
+  const post = (body: string) => fetch(localMCP, { method: 'POST', headers, body });
 
   const ok = await post(sized(400_000));
   const okText = await ok.text();
@@ -1242,6 +1239,82 @@ for (const vp of ROUND_VIEWPORTS) {
         await sp.goto((await shared.json()).url as string);
         await expect(sp.frameLocator('iframe#page').locator('main')).toContainText('made here');
         await expect(sp.locator('[data-page-session]')).toHaveCount(0);
+      } finally {
+        await stranger.close();
+      }
+    });
+  });
+}
+
+// THE PAGE IS IN THE APP'S THEME (internal/pages render.go Content and Shell,
+// content_theme.css): the page's own top bar is the app header's ground, and
+// in the frame a markdown page's ground is the app's background, its
+// table cells are ruled in the palette's line colour, and its links are the
+// app's accent, for the owner and for a link's viewer.
+//
+// The expected colours are the palette's, written out from web/css/tokens.css,
+// and cross-checked against the app's own document in the same browser. The
+// app has ONE theme (dark: every document carries class="dark" and the theme
+// head forces it), so the page is checked in that one; a link's viewer whose
+// device prefers light still gets it.
+//
+// MUSTER_E2E_PAGES_SHOTS=<dir> saves the owner's view there.
+const THEME = {
+  dark: { bg: 'rgb(17, 15, 28)', accent: 'rgb(228, 181, 86)', line: 'rgb(47, 42, 72)', text: 'rgb(238, 235, 247)' },
+} as const;
+const THEMED_MD =
+  '## Prices\n\nEach plan, per seat:\n\n| Plan | Price | Notes |\n| --- | --- | --- |\n| Basic | 4 | [what is in it](https://example.com/basic) |\n| Team | 9 | everything in Basic |\n';
+
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, a markdown page is drawn in the app's theme: its ground, its table's rules and its links`, async ({ browser }) => {
+    const made = await call('page_create', { title: 'Themed ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: THEMED_MD }] });
+    expect(made.isError, JSON.stringify(made.body)).toBe(false);
+    const id = made.body.page_id as number;
+    const look = (f: ReturnType<Page['frameLocator']>) =>
+      f.locator('table').evaluate((tbl) => {
+        const td = tbl.querySelector('td')!;
+        const a = tbl.querySelector('a')!;
+        const c = getComputedStyle(td);
+        return {
+          bg: getComputedStyle(document.body).backgroundColor,
+          border: [c.borderTopWidth, c.borderTopStyle, c.borderTopColor, c.borderLeftWidth, c.borderLeftStyle],
+          link: getComputedStyle(a).color,
+        };
+      });
+    await asOwner(browser, vp, async (page) => {
+      // Control: the app's own ground and header, from the app's own document.
+      await page.goto(origin + '/pages');
+      const appDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+      const appHeader = await page.locator('header').first().evaluate((h) => getComputedStyle(h).backgroundColor);
+      expect(appHeader, "control: the app's header is drawn on its dark ground").toBe(THEME.dark.bg);
+      expect(appDark, "control: the app's dark ground is the palette's").toBe(THEME.dark.bg);
+
+      await page.goto(origin + `/pages/${id}/view`);
+      const frame = page.frameLocator('iframe#page');
+      await expect(frame.locator('td').first()).toHaveText('Basic');
+      await shot(page, `theme-${vp.name}-dark`);
+      // The page's own top bar is the app's header: its ground and its rule.
+      const bar = await page.locator('header[data-page-brand]').evaluate((h) => {
+        const c = getComputedStyle(h);
+        return { bg: c.backgroundColor, rule: c.borderBottomColor, text: getComputedStyle(h.querySelector('[data-page-title]')!).color };
+      });
+      expect(bar.bg, "the page's top bar is the app header's ground, not white").toBe(appHeader);
+      expect(bar.rule, "the top bar's rule is the palette's line").toBe(THEME.dark.line);
+      expect(bar.text, "the top bar's title is the palette's text").toBe(THEME.dark.text);
+      const dark = await look(frame);
+      expect(dark.bg, "the frame's ground is the app's dark background").toBe(THEME.dark.bg);
+      expect(dark.border, 'a table cell is ruled: 1px solid, in the line colour').toEqual(['1px', 'solid', THEME.dark.line, '1px', 'solid']);
+      expect(dark.link, "a link is the app's accent").toBe(THEME.dark.accent);
+
+      // A link's viewer, on a device that prefers light, sees the same document.
+      const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch, colorScheme: 'light' });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        const sf = sp.frameLocator('iframe#page');
+        await expect(sf.locator('td').first()).toHaveText('Basic');
+        expect(await look(sf), "a link's viewer on a light-scheme device: the same theme").toEqual(dark);
       } finally {
         await stranger.close();
       }

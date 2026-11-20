@@ -90,6 +90,20 @@ TAILWIND ?= npx --yes tailwindcss@3
 # page's entry, internal/api/attention_ask_page.go, the only file writing it.
 CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance gap-x-4
 
+# The pages content document's twin of app.css (web/css/page-content.css,
+# tailwind.pages.config.js): the same palette and theme, only the utilities
+# the markdown renderer writes, scoped under .mp-markdown. Built and checked
+# beside app.css by the two targets below, the same two ways.
+#
+# Its controls: `.mp-markdown .list-decimal` proves the one content entry
+# (internal/ui/markdown.go) still matches AND the scoping is on (an unscoped
+# build writes `.list-decimal` with no prefix); `--mu-accent:` proves the
+# palette import (web/css/tokens.css) still lands in it.
+PAGE_CSS_OUT := internal/pages/content_theme.css
+PAGE_CSS_IN := web/css/page-content.css
+PAGE_CSS_CONFIG := tailwind.pages.config.js
+PAGE_CSS_REQUIRED := .mp-markdown__.list-decimal --mu-accent:
+
 help:
 	@echo "muster:"
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
@@ -274,6 +288,7 @@ icons:
 css:
 	mkdir -p $(dir $(CSS_OUT))
 	$(TAILWIND) -i $(CSS_IN) -o $(CSS_OUT) --minify
+	$(TAILWIND) -c $(PAGE_CSS_CONFIG) -i $(PAGE_CSS_IN) -o $(PAGE_CSS_OUT) --minify
 
 # 🔴 TAILWIND CANNOT FAIL THE WAY YOU NEED IT TO, SO THIS TARGET FAILS FOR IT.
 #
@@ -317,7 +332,22 @@ css-check:
 	  echo "css-check: $(CSS_OUT) is STALE — the views have changed since it was built."; \
 	  echo "  Run 'make css' and commit the result."; \
 	  exit 1; }; \
-	echo "css-check: $$(wc -c < $(CSS_OUT)) bytes, all $(words $(CSS_REQUIRED_CLASSES)) control classes present, committed copy matches"
+	echo "css-check: $$(wc -c < $(CSS_OUT)) bytes, all $(words $(CSS_REQUIRED_CLASSES)) control classes present, committed copy matches"; \
+	$(TAILWIND) -c $(PAGE_CSS_CONFIG) -i $(PAGE_CSS_IN) -o "$$tmp/page.css" --minify >/dev/null 2>&1; \
+	test -s "$$tmp/page.css" || { echo "css-check: the pages build produced an EMPTY stylesheet"; exit 1; }; \
+	for c in $(PAGE_CSS_REQUIRED); do \
+	  c="$${c//__/ }"; \
+	  grep -qF -- "$$c" "$$tmp/page.css" || { \
+	    echo "css-check: '$$c' is MISSING from the pages stylesheet."; \
+	    echo "  Check $(PAGE_CSS_CONFIG) and $(PAGE_CSS_IN)."; \
+	    exit 1; }; \
+	done; \
+	test -f $(PAGE_CSS_OUT) || { echo "css-check: $(PAGE_CSS_OUT) is not committed — run 'make css'"; exit 1; }; \
+	cmp -s "$$tmp/page.css" $(PAGE_CSS_OUT) || { \
+	  echo "css-check: $(PAGE_CSS_OUT) is STALE — the markdown renderer or the palette changed since it was built."; \
+	  echo "  Run 'make css' and commit the result."; \
+	  exit 1; }; \
+	echo "css-check: $$(wc -c < $(PAGE_CSS_OUT)) bytes, all $(words $(PAGE_CSS_REQUIRED)) pages controls present, committed copy matches"
 
 # 🔴 THE VERB SET, ASSERTED AGAINST A BINARY RATHER THAN AGAINST THE SOURCE.
 # cmd/muster/tree_test.go pins the same twelve verbs by walking the cobra tree in

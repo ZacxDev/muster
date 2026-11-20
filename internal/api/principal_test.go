@@ -178,13 +178,16 @@ var routeVias = map[authz.Via][]string{
 		"GET /usage",
 		// The answer-attempt log's page (answers_page.go).
 		"GET /answers",
+		// The morning report's page (morning_report.go).
+		"GET /morning",
+		"GET /morning/{date}",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
 		"GET /attention/drafts",
 		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
 		"GET /attention/log",
-		// A session page's asks block (attention_asker.go).
+		// A session page's asks badge (attention_asker.go).
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
