@@ -109,6 +109,8 @@ var teamHostTools = map[string]teamHostRule{
 	pageShareRequestTool: teamRefused(whyPage),
 	pageResponsesTool:    teamRefused(whyPage),
 	pageLinkRevokeTool:   teamRefused(whyPage),
+	pageAssetUploadTool:  teamRefused(whyPage),
+	pageAssetDeleteTool:  teamRefused(whyPage),
 	// A host instance's connector tools (G3).
 	"connectors_list":     teamRefused(whyConnectorG3),
 	"connector_request":   teamRefused(whyConnectorG3),

@@ -1,5 +1,7 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -48,6 +50,9 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pages-'));
 const tr = path.join(dir, sid + '.jsonl');
 const fakeTMUX = '/tmp/muster-e2e-fake-tmux/default,1,0';
 const mcpSecretFile = path.join(dir, 'mcp-secret');
+// The mirrored session's working directory: where page_asset_upload's files
+// are read from (MUSTER_MIRROR_E2E_CLAUDE_CWD plays its process's cwd).
+const workDir = path.join(dir, 'work');
 const localMCP = `http://127.0.0.1:${pagesMirrorMCPPort}/mcp`;
 const ACCESS = 'e2e-pages-s3-access-not-real';
 const BRAND = 'Example Studio ' + stamp;
@@ -112,6 +117,7 @@ test.beforeAll(async () => {
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'make a page for the client' } }) + '\n');
+  fs.mkdirSync(workDir, { recursive: true });
   const windows = path.join(dir, 'windows');
   fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
   mirrorProc = spawn(mirrorBin, [], {
@@ -125,6 +131,7 @@ test.beforeAll(async () => {
       MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
       MUSTER_MIRROR_MCP_LISTEN: `127.0.0.1:${pagesMirrorMCPPort}`,
       MUSTER_MIRROR_MCP_SECRET_FILE: mcpSecretFile,
+      MUSTER_MIRROR_E2E_CLAUDE_CWD: workDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -398,6 +405,202 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   const gone = await sp.goto(url);
   expect(gone?.status()).toBe(404);
   await stranger.close();
+});
+
+// --- A PAGE'S IMAGE AND VIDEO (internal/pages asset.go; docs/pages.md "Images
+// and video") — #833's closing condition, through a mirrored session's REAL
+// path: the session's page_asset_upload names two files in its working
+// directory, a 2 MB+ PNG and a 2 MB+ WebM; the host's real muster-mirror reads
+// them there and sends them to muster (never inside the MCP body); a version
+// uses both refs; and both render in the OWNER's view and through a share
+// link a stranger opens: the image decoded (naturalWidth > 0), the video's
+// metadata loaded (readyState >= 1). The frame's sandbox is unchanged: the
+// shell fetches each asset and hands it to the frame as a Blob.
+
+// crc32 is PNG's chunk checksum.
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(b: Buffer): number {
+  let c = 0xffffffff;
+  for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const td = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td));
+  return Buffer.concat([len, td, crc]);
+}
+// noisePNG is a w×h truecolour PNG of random pixels: random bytes do not
+// compress, so it is about 3·w·h bytes — a real, decodable image that big.
+function noisePNG(w: number, h: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolour
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) crypto.randomFillSync(raw, y * (w * 3 + 1) + 1, w * 3); // filter byte 0, then noise
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), pngChunk('IHDR', ihdr), pngChunk('IDAT', zlib.deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
+}
+
+// recordWebM records a canvas of noise in the browser (MediaRecorder, VP8)
+// until the recording passes minBytes: a real WebM Chromium can play back.
+async function recordWebM(p: Page, minBytes: number): Promise<Buffer> {
+  const b64 = await p.evaluate(async (min) => {
+    const c = document.createElement('canvas');
+    c.width = 640;
+    c.height = 360;
+    const g = c.getContext('2d')!;
+    const img = g.createImageData(c.width, c.height);
+    // window.crypto, spelled so: this function's text runs in the page, where
+    // the spec's own crypto import does not exist.
+    const rnd = window.crypto;
+    const draw = () => {
+      for (let i = 0; i < img.data.length; i += 65536) rnd.getRandomValues(new Uint8Array(img.data.buffer, i, Math.min(65536, img.data.length - i)));
+      for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;
+      g.putImageData(img, 0, 0);
+    };
+    draw();
+    const rec = new MediaRecorder(c.captureStream(30), { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: 8_000_000 });
+    const parts: Blob[] = [];
+    let size = 0;
+    const done = new Promise<void>((res) => (rec.onstop = () => res()));
+    rec.ondataavailable = (e) => {
+      parts.push(e.data);
+      size += e.data.size;
+      if (size >= min && rec.state === 'recording') rec.stop();
+    };
+    const tick = setInterval(draw, 33);
+    rec.start(250);
+    setTimeout(() => rec.state === 'recording' && rec.stop(), 30_000);
+    await done;
+    clearInterval(tick);
+    const buf = new Uint8Array(await new Blob(parts, { type: 'video/webm' }).arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 32768) s += String.fromCharCode(...buf.subarray(i, i + 32768));
+    return btoa(s);
+  }, minBytes);
+  return Buffer.from(b64, 'base64');
+}
+
+const TWO_MB = 2 * 1024 * 1024;
+
+// rendered waits for the frame's image to decode and its video's metadata to
+// load, as the browser reports them.
+async function expectRendered(p: Page, where: string) {
+  const frame = p.frameLocator('iframe#page');
+  const still = frame.locator('.mp-markdown img');
+  const reel = frame.locator('video#reel');
+  await expect(still, `${where}: the image`).toHaveCount(1);
+  await expect(reel, `${where}: the video`).toHaveCount(1);
+  await expect.poll(() => still.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth), { message: `${where}: the image decodes`, timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(() => reel.evaluate((v: HTMLVideoElement) => v.readyState), { message: `${where}: the video's metadata loads`, timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+  // Each src is a blob: URL the frame made of the shell's Blob — never the
+  // asset: reference, never a network address.
+  expect(await still.getAttribute('src')).toMatch(/^blob:/);
+  expect(await reel.getAttribute('src')).toMatch(/^blob:/);
+}
+
+test('a mirrored session attaches a 2 MB image and a 2 MB video from its working directory, and both render for the owner and through a link', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  await signIn(page, origin);
+  await page.goto(origin + '/pages');
+  const still = noisePNG(900, 900);
+  const reel = await recordWebM(page, TWO_MB + 256 * 1024);
+  expect(still.length, 'the image is 2 MB or more').toBeGreaterThanOrEqual(TWO_MB);
+  expect(reel.length, 'the video is 2 MB or more').toBeGreaterThanOrEqual(TWO_MB);
+  fs.writeFileSync(path.join(workDir, 'review-still.png'), still);
+  fs.writeFileSync(path.join(workDir, 'review-reel.webm'), reel);
+
+  const created = await call('page_create', { title: 'Creative review ' + stamp, blocks: [{ type: 'markdown', text: 'Media coming.' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const refs: Record<string, string> = {};
+  for (const [file, type] of [['review-still.png', 'image/png'], ['review-reel.webm', 'video/webm']] as const) {
+    const up = await call('page_asset_upload', { page_id: pageID, path: file });
+    expect(up.isError, JSON.stringify(up.body)).toBe(false);
+    expect(up.body.type).toBe(type);
+    expect(up.body.size).toBe(fs.statSync(path.join(workDir, file)).size);
+    refs[file] = up.body.ref as string;
+    expect(refs[file]).toMatch(/^asset:[A-Za-z0-9_-]{22}$/);
+  }
+  const upd = await call('page_update', {
+    page_id: pageID,
+    blocks: [
+      { type: 'markdown', text: '# The options\n\n![The still](' + refs['review-still.png'] + ')' },
+      { type: 'html', html: `<video id="reel" src="${refs['review-reel.webm']}" muted playsinline controls></video>` },
+    ],
+  });
+  expect(upd.isError, JSON.stringify(upd.body)).toBe(false);
+
+  // The owner's own view.
+  await page.goto(origin + `/pages/${pageID}/view`);
+  await expectRendered(page, "the owner's view");
+
+  // A link, approved by the owner on Asks, opened by a stranger.
+  const req = await call('page_share_request', { page_id: pageID, reason: 'to pick a creative' });
+  expect(req.isError, JSON.stringify(req.body)).toBe(false);
+  const url = req.body.url as string;
+  await page.goto(origin + '/attention');
+  const card = page.locator(`#ask-${req.body.ask_id as number}`);
+  await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
+  const stranger = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const sp = await stranger.newPage();
+  expect((await sp.goto(url))?.status()).toBe(200);
+  await expectRendered(sp, 'the share link');
+  await stranger.close();
+});
+
+// RENDER FIRST, FILL IN (asset.go): the page's text is on screen while an
+// asset is still on its way — its element a placeholder box marked
+// data-muster-asset="loading" — and the asset then renders in place. The
+// asset's response is HELD (the shell's fetch, on muster's own origin, is the
+// one that goes through this route) until the text has been seen.
+test('a page renders at once and fills in an asset when it arrives', async ({ page }) => {
+  test.setTimeout(120_000);
+  await signIn(page, origin);
+  fs.writeFileSync(path.join(workDir, 'slow-still.png'), noisePNG(400, 300));
+  const created = await call('page_create', { title: 'Slow media ' + stamp, blocks: [{ type: 'markdown', text: 'Media coming.' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const up = await call('page_asset_upload', { page_id: pageID, path: 'slow-still.png' });
+  expect(up.isError, JSON.stringify(up.body)).toBe(false);
+  const upd = await call('page_update', {
+    page_id: pageID,
+    blocks: [{ type: 'markdown', text: '# Visible before the media\n\n![The still](' + (up.body.ref as string) + ')' }],
+  });
+  expect(upd.isError, JSON.stringify(upd.body)).toBe(false);
+
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let asked = 0;
+  await page.route('**/assets/**', async (route) => {
+    asked++;
+    await held;
+    await route.continue();
+  });
+  await page.goto(origin + `/pages/${pageID}/view`);
+  const frame = page.frameLocator('iframe#page');
+  // The text, while the asset is held: the page did not wait for it.
+  await expect(frame.locator('h1')).toHaveText('Visible before the media');
+  await expect.poll(() => asked, 'the shell asked for the asset').toBe(1);
+  const still = frame.locator('.mp-markdown img');
+  await expect(still).toHaveAttribute('data-muster-asset', 'loading');
+  expect(await still.getAttribute('src')).toMatch(/^data:image\/gif;base64,.*#muster-asset-[A-Za-z0-9_-]{22}$/);
+  // The placeholder is a box, not a 1px dot: no jump to nothing.
+  expect((await still.boundingBox())!.height).toBeGreaterThan(50);
+  // Released: it renders in place.
+  release();
+  await expect.poll(() => still.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth), { timeout: 30_000 }).toBe(400);
+  expect(await still.getAttribute('src')).toMatch(/^blob:/);
+  await expect(still).not.toHaveAttribute('data-muster-asset', /.*/);
+  await page.unroute('**/assets/**');
 });
 
 // The owner's two Pages screens settle without layout shift (cls.spec.ts

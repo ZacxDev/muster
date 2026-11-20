@@ -50,6 +50,7 @@ bearer-only POST /llm/v1/messages
 bearer-only POST /mcp
 bearer-only POST /mirror/ask-attachments
 bearer-only POST /mirror/mcp
+bearer-only POST /mirror/pages/{id}/assets
 bearer-only POST /plugin/v1/drafts/claim
 bearer-only POST /plugin/v1/drafts/{id}/check
 bearer-only POST /plugin/v1/drafts/{id}/media

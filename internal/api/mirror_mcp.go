@@ -409,6 +409,9 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	// owner and asking for a link — with the page store and the feature on.
 	if s.pagesOn() {
 		out = append(out, pageToolDefs()...)
+		// The page's images and video (page_assets.go): a mirrored session's
+		// only, for now — its host sends the file from where it is.
+		out = append(out, pageAssetToolDefs()...)
 	}
 	// notify_owner — a session pushing its owner, labelled as itself
 	// (notify_owner.go) — with muster's own push on.

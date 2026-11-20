@@ -124,6 +124,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - fleet_actions (0158, the fleet's action log).
 //   - officer_chat_cards (0160, the confirm cards an officer asked for in a person's chat with it).
 //   - morning_reports (0161, one morning report per user per day).
+//   - page_assets, page_version_assets (0164, a page's author assets and the versions using them).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -156,7 +157,8 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"officer_seen",
 	"officer_cap_raises", "fleet_actions",
 	"officer_chat_cards",
-	"morning_reports"}
+	"morning_reports",
+	"page_assets", "page_version_assets"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -267,6 +269,15 @@ var wantForeignKeys = []string{
 	"page_responses|page_responses_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"page_responses|page_responses_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
 	"page_responses|page_responses_link_fkey|FOREIGN KEY (link_id, owner_id) REFERENCES page_links(id, owner_id) ON DELETE CASCADE",
+	// 0164: an asset names its page, and a version's reference its version
+	// and its asset, by the composite key — so none names another owner's,
+	// and a reference names only its OWN page's asset (NO ACTION: a version
+	// keeps its asset).
+	"page_assets|page_assets_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_assets|page_assets_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
+	"page_version_assets|page_version_assets_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_version_assets|page_version_assets_version_fkey|FOREIGN KEY (page_id, version, owner_id) REFERENCES page_versions(page_id, version, owner_id) ON DELETE CASCADE",
+	"page_version_assets|page_version_assets_asset_fkey|FOREIGN KEY (page_id, asset_id, owner_id) REFERENCES page_assets(page_id, public_id, owner_id)",
 	// 0118: the built-in officer backend's rows are their owner's; an officer
 	// names its type, and an item or a schedule its officer, by the composite
 	// key, so none can name another owner's.

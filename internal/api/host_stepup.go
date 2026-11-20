@@ -127,6 +127,8 @@ var hostStepUpExempt = map[string]string{
 	pageShareRequestTool:      "on a machine this gate covers it always asks the owner for a link, whatever their pages setting says (pageShareGoesLive), so their tap decides",
 	pageResponsesTool:         "a read of the session's own page",
 	pageLinkRevokeTool:        "revokes a link of the session's own page",
+	pageAssetUploadTool:       "an image or video for the session's own page (shown once a version of it uses it)",
+	pageAssetDeleteTool:       "deletes an asset of the session's own page that no version uses",
 	notifyOwnerTool:           "tells the owner something, labelled as the session; it decides nothing",
 	"connectors_list":         "a host instance's own (hostOfficerMirrorTool)",
 	"connector_request":       "a host instance's own (hostOfficerMirrorTool)",

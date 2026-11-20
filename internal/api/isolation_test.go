@@ -486,7 +486,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/mcp": classMirrorHost,
 	// A session's ask attachment, sent by its host (ask_media.go): the host's
 	// token, a session it lists; it names no object.
-	"POST /mirror/ask-attachments": classMirrorHost,
+	"POST /mirror/ask-attachments":   classMirrorHost,
+	"POST /mirror/pages/{id}/assets": classMirrorHost,
 	// …and its take-back (the host owner's own upload, by id, under row-level
 	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
 	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
@@ -823,6 +824,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /pages/{id}/responses/{rid}/raw":              classParam,
 	"POST /pages/{id}/versions/{v}/submit":             classParam,
 	"POST /pages/{id}/versions/{v}/upload":             classParam,
+	"GET /pages/{id}/versions/{v}/assets/{asset}":      classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
 	"POST /pages/{id}/share":                           classParam,
 	"POST /pages/{id}/share/rotate":                    classParam,
@@ -834,6 +836,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /s/{token}/content":                           classPublic,
 	"POST /s/{token}/submit":                           classPublic,
 	"POST /s/{token}/upload":                           classPublic,
+	"GET /s/{token}/assets/{asset}":                    classPublic,
 
 	// Needs you (officer_needs_you.go): {item} is a refusal of A's officer.
 	"POST /officers/{officer}/refusals/{item}/refile":    classParam,
@@ -2207,6 +2210,17 @@ var sideEffectControlled = map[string]string{
 	// host's take-back revokes its owner's upload, and another owner's host
 	// naming that id gets 404 and leaves it live.
 	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
+	// A page's author asset (page_assets.go). The upload route takes a page
+	// THE CALLER MADE (the host whose session is listed), which
+	// the walk's credentials are not; the read names an asset id a version of
+	// the page must use, which the walk cannot name. Each is controlled in its
+	// own test: the author adds, another creator of the same owner and another
+	// owner get 404 (TestOnlyThePagesAuthorAddsAnAsset; another owner's host of
+	// the same name, TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost),
+	// and the owner reads an asset while another owner's session gets 404
+	// (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse).
+	"POST /mirror/pages/{id}/assets":              "needs a listed session of the page's host: controlled in TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost",
+	"GET /pages/{id}/versions/{v}/assets/{asset}": "an asset id the walk cannot name: controlled in TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
 	// so A's own PUT and a PUT naming a ghost both succeed — there is no
 	// "someone else's object" for the status to tell apart. That B's PUT of A's
@@ -2235,10 +2249,11 @@ var sideEffectControlled = map[string]string{
 	// Its control is pages_pg_test.go: the SAME routes with A's live token serve
 	// A's page (and record A's responses), another user's token serves only its
 	// own page, and an unknown, pending, denied or revoked token is that 404.
-	"GET /s/{token}":         "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"GET /s/{token}/content": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/submit": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
-	"POST /s/{token}/upload": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}":                "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/content":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/submit":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/upload":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/assets/{asset}": "a share link: its token is the credential no walker holds; controlled in page_assets_pg_test.go (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse)",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
 	// only (requireServiceToken), which acts as user 1, so no credential of a
 	// member — A's included — opens it, and A's answer is the ghost's 401. Its

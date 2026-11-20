@@ -53,6 +53,7 @@ var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
 	"pluginMessageRouteToolDefs": pluginMessageRouteToolDefs,
 	"dispatchHoldToolDefs":       dispatchHoldToolDefs,
 	"pageToolDefs":               pageToolDefs,
+	"pageAssetToolDefs":          pageAssetToolDefs,
 	"agentReportDoneToolDef":     func() []agents.ToolDef { return []agents.ToolDef{agentReportDoneToolDef()} },
 	"hostOfficerToolDefs":        hostOfficerToolDefs,
 	"connectorToolDefs":          connectorToolDefs,
@@ -128,7 +129,7 @@ func TestEveryMirrorToolIsClassifiedForTheStepUp(t *testing.T) {
 		chiefAskTool, chiefRestartTool, "connector_request", "connector_status", "connectors_list", connectorRequestsListTool,
 		dispatchRequestTool, internalHTTPToolName, notifyOwnerTool, officers.ToolAskPerson, officers.ToolBrief, officers.ToolClaim,
 		officers.ToolComplete, officers.ToolContactGet, officers.ToolContactNote, officers.ToolContactsList, officers.ToolHeartbeat,
-		officers.ToolItems, officers.ToolPostDraft, officers.ToolRelease, pageCreateTool, pageGetTool, pageLinkRevokeTool,
+		officers.ToolItems, officers.ToolPostDraft, officers.ToolRelease, pageAssetDeleteTool, pageAssetUploadTool, pageCreateTool, pageGetTool, pageLinkRevokeTool,
 		pageListTool, pageResponsesTool, pageShareRequestTool, pageUpdateTool, pluginDraftsListTool, pluginMessagesListTool,
 		pluginOutboundBatchGetTool, pluginRequestsListTool, postgresQueryToolName, taskCommentTool, taskGetTool,
 		taskSetStatusTool, tasksListTool, trackTaskTool}

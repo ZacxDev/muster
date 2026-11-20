@@ -49,8 +49,8 @@ import (
 	"github.com/ZacxDev/muster/internal/atomicfile"
 	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
-	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/opencodehost"
 	"github.com/ZacxDev/muster/internal/previewhost"
 	"github.com/ZacxDev/muster/internal/telemetry"
@@ -79,6 +79,11 @@ var e2eNoSubagents func() bool
 // predates the live work counts and identity colours
 // (mirrorhost.Config.NoWork). nil in every other build.
 var e2eNoWork func() bool
+
+// e2eProcCwd, in a browser-test build, is a process's working directory as
+// the fake host plays it (mirrorhost.MCPProxy.Cwd: where a session's
+// attachments and page assets are read from); nil in every other build.
+var e2eProcCwd func(pid int) (string, bool)
 
 // e2ePreviews, in a browser-test build, is the per-window preview counts the
 // host reports (mirrorhost.Config.Previews) when the spec plays them
@@ -511,7 +516,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
 		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision,
-			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh}
+			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh, Cwd: e2eProcCwd}
 		// A reconnect to muster (a muster restart or upgrade among them) has
 		// the tool watch re-read the lists at once, so connected sessions are
 		// told of a changed set within seconds, not at the next tick.

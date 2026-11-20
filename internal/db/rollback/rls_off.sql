@@ -335,6 +335,16 @@ BEGIN
         ALTER TABLE public.officer_chat_cards DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_chat_cards ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0164 (page_assets, page_version_assets), when this schema has them; same
+    -- reason as 0011.
+    IF to_regclass('public.page_assets') IS NOT NULL THEN
+        ALTER TABLE public.page_assets NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_assets DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_assets ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_version_assets NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_version_assets DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_version_assets ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;

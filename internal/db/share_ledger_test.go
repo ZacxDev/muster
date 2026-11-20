@@ -92,6 +92,9 @@ var personalOwned = []string{
 	// 0161: the morning report; it lists its owner's own sessions, tasks and
 	// questions.
 	"morning_reports",
+	// 0164: a page's author assets and which versions use them; a page is
+	// personal (its siblings above), so are they.
+	"page_assets", "page_version_assets",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
