@@ -160,9 +160,9 @@ called by its technical id everywhere, as before.
 
 ### Show tmux sessions
 
-A per-user switch, **Account → Notifications → Show tmux sessions** ("Adds
-each session's tmux codename (like mango:1 @ atlas) to notifications and the
-session lists"), off for every user until they turn it on (stored in
+A per-user switch, **Account → Notifications → Show technical session names**
+("Adds each session's technical name to notifications and the session lists";
+its ⓘ shows an example, `mango:1 @ atlas`), off for every user until they turn it on (stored in
 `notify_preferences`, migration 0094; no row is off). On, a session called by
 its human name is also shown by the window as muster named it before sessions
 had names — the host's label for it and the host, or, when the host sent no
@@ -222,8 +222,8 @@ text and every pill is byte for byte what it was before the switch existed.
 
 ### Tmux name first in push titles
 
-A per-user switch, **Account → Notifications → Start notification titles
-with the tmux name**, off until the user turns it on
+A per-user switch, **Account → Notifications → Start notifications with the
+computer and session name**, off until the user turns it on
 (`notify_preferences.codename_first`, migration 0117; no row is off), makes
 every push title about a tmux window START with that window's codename and
 host, compact — the host's label for the window (its tmux `session:window`
@@ -466,13 +466,13 @@ history row adds nothing, so a session that is summarized again without moving
 does not fill its history.
 
 You can scroll back through it:
-- on a mirrored session's rendered view, the "Your messages" sheet (the list
-  icon in the header) has two tabs, **Your messages** and **What it worked on**.
-  The arrow keys move between them, and the tab you pick is remembered for that
-  window in the browser;
-- on a dispatched agent's page, the target icon in the header opens a
-  **What it worked on** dialog. That page has no "Your messages" sheet, so the
-  history is a dialog of its own rather than a tab.
+- on a mirrored session's rendered view, the "Your messages" sheet (the
+  header's **⋯** menu, **Messages and what it worked on**) has two tabs, **Your
+  messages** and **What it worked on**. The arrow keys move between them, and the
+  tab you pick is remembered for that window in the browser;
+- on a dispatched agent's page, **What it worked on** in the header's **⋯** menu
+  opens a dialog. That page has no "Your messages" sheet, so the history is a
+  dialog of its own rather than a tab.
 
 Both list the newest first, 20 at a time, and load older pages as you scroll
 (or with **Load older**). Pages come from `GET /ui/focus/history`, which reads

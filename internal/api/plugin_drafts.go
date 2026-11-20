@@ -166,9 +166,10 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var in struct {
-		OK          *bool  `json:"ok"`
-		ExternalRef string `json:"external_ref"`
-		Detail      string `json:"detail"`
+		OK          *bool           `json:"ok"`
+		ExternalRef string          `json:"external_ref"`
+		Detail      string          `json:"detail"`
+		RetryAt     json.RawMessage `json:"retry_at"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.OK == nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"ok": true|false, "external_ref", "detail"}`})
@@ -181,10 +182,10 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		s.draftStatusMoved(p.OwnerID, d.ID)
 		if fresh && d.Status == plugins.DraftFailed {
 			// Once, on the result that made it failed: a repeat changes nothing.
-			s.draftRefused(r.Context(), p, d, true)
+			s.draftRefused(r.Context(), p, d, true, parseRetryAt(in.RetryAt))
 		}
 		if fresh && d.Status == plugins.DraftSent {
-			s.outboundSettled(r.Context(), p.OwnerID, d, settledByPlugin)
+			s.outboundSettled(r.Context(), p.OwnerID, d, settledByPlugin, nil)
 		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
@@ -270,8 +271,9 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var in struct {
-		Sendable *bool  `json:"sendable"`
-		Detail   string `json:"detail"`
+		Sendable *bool           `json:"sendable"`
+		Detail   string          `json:"detail"`
+		RetryAt  json.RawMessage `json:"retry_at"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.Sendable == nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"sendable": true|false, "detail"}`})
@@ -296,7 +298,7 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 			s.draftFiled(p.OwnerID, d)
 		}
 		if fresh && d.RefusedByCheck() {
-			s.draftRefused(r.Context(), p, d, false)
+			s.draftRefused(r.Context(), p, d, false, parseRetryAt(in.RetryAt))
 		}
 		s.draftStatusMoved(p.OwnerID, d.ID)
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
@@ -338,7 +340,10 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 //   - unless another reply to the message was sent or is on its way
 //     (plugins.RefusalAnsweredElsewhere): then the store left the route as it
 //     was, and only the owner is pushed, saying so.
-func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+//
+// retryAt is the refusal's optional retry_at (parseRetryAt): when the plugin
+// says the draft could go, carried into an officer's draft.refused item.
+func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool, retryAt *time.Time) {
 	// 🔴 WHAT FOLLOWS IS WHAT THE STORE DECIDED (d.Refusal), in the transaction
 	// that recorded the refusal — never a second read, which could describe
 	// something else, or fail and drop the hand-back.
@@ -354,7 +359,7 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 		// (plugin_outbound.go) — at once, or, past the bound, HELD until one
 		// of its open ones is finished — and the owner's push says which.
 		where := refusalToOfficer
-		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin) {
+		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin, retryAt) {
 			where = refusalOfficerHeld
 		}
 		s.notifyDraftRefused(p, d, where)
@@ -373,6 +378,25 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 		s.notifyDraftRefused(p, d, refusalToChief)
 		s.noteDraftRefusedToChief(ctx, p, d, sending)
 	}
+}
+
+// parseRetryAt is a refusal's optional `retry_at`: an RFC 3339 time at which
+// the plugin says the draft could go (a cadence refusal: "the X slot is used
+// today, next at 00:00 UTC"), in UTC to the second. Absent, null, not a
+// string, or not RFC 3339 is nil — IGNORED, never a refusal of the result:
+// the field is advice for the owner's Re-file, and a plugin that spells it
+// wrong must not lose the refusal it reports.
+func parseRetryAt(raw json.RawMessage) *time.Time {
+	var v string
+	if len(raw) == 0 || json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+	if err != nil {
+		return nil
+	}
+	t = t.UTC().Truncate(time.Second)
+	return &t
 }
 
 // Where a refused reply goes, as its push says (draftRefusedPushBody).
@@ -635,6 +659,12 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 			return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
 		}
 	}
+	// 🔴 AN OFFICER NEVER DECIDES ITS OWN WORK (officer_own_state.go): before
+	// the store, whatever the draft (a team's refusal above names the team
+	// rule first; this one covers every other officer caller).
+	if msg := officerDeciderRefusal(ctx); msg != "" {
+		return plugins.Draft{}, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
+	}
 	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
 	if err != nil {
 		r := draftDecisionRefusal(d, err, dec.Approve)
@@ -658,7 +688,7 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 			// entry, its item is finished quietly — nothing to redraft.
 			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
 		} else {
-			s.outboundSettled(ctx, d.OwnerID, d, settledByOwner)
+			s.outboundSettled(ctx, d.OwnerID, d, settledByOwner, nil)
 		}
 	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
@@ -843,6 +873,21 @@ func draftExpiryText(d plugins.Draft, now time.Time) string {
 	return "expires in " + strconv.Itoa(int(left/(24*time.Hour))) + "d"
 }
 
+// draftWho is who a draft card says drafted it: an officer's draft by the
+// officer's display name, else "Your officer" (officerWords: never its id or
+// its agent's slug — the jargon audit's U-25); anyone else's by its agent's
+// display name, else its name.
+func draftWho(c plugins.DraftCard) string {
+	if o := c.Draft.Officer; o != nil && *o != "" {
+		w := officerWords(c)
+		return strings.ToUpper(w[:1]) + w[1:]
+	}
+	if c.AgentDisplay != "" {
+		return c.AgentDisplay
+	}
+	return c.Draft.AgentName
+}
+
 // draftKindLabel is a draft card's kind badge: a reply, or an officer's post.
 func draftKindLabel(d plugins.Draft) string {
 	if d.IsOutbound() {
@@ -884,10 +929,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	d, m := c.Draft, c.Message
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
-	who := c.AgentDisplay
-	if who == "" {
-		who = d.AgentName
-	}
+	who := draftWho(c)
 	var b strings.Builder
 	age := ""
 	if !d.CreatedAt.IsZero() {

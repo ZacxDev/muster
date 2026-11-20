@@ -6,9 +6,9 @@ form fields, files, an approval, or whatever its own script sends. You are
 shown it at once — a card in the chat and a push — and it is private until it
 has a live **share link**; anyone with a live link can open it without a
 muster account. Sharing is one tap (**Share**), and an agent's own share
-request waits for your approval unless you turned on **Let my agents share
-pages without asking** — your own choice, on your Account page, off until you
-turn it on ([below](#when-an-agent-shares)). What viewers send comes back to
+request goes live at once unless you turned off **Let my agents share pages
+without asking** — your own choice, on your Account page, on until you turn
+it off; off, the request waits for your approval ([below](#when-an-agent-shares)). What viewers send comes back to
 the agent as data, and you are notified.
 
 The design, with the threat model and the reasoning, is
@@ -39,11 +39,13 @@ proves). Any other page reads as `no such page`.
 |---|---|
 | `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `url`, [your own view](#the-owners-view) of it, which only you can open, signed in. (`preview_url` is the same address, kept for older callers.) You are notified: *Page ready: <title>*, under the `page_published` toggle. |
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. You are notified of each version: *Page updated: <title> (v<N>)*, opening that version, under its own toggle `page_updated` — at most 6 per 10 minutes from one agent or session, the newer replacing the older on your device ([push.md](push.md#an-agent-notifies-you)). |
-| `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
+| `page_get{page_id}` | Title, versions, links (each one's state and label, never its address), the response count, and the page's [assets](#images-and-video) (`asset_id`, `ref`, name, type, size) with their total. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
+| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who turned **Let my agents share pages without asking** off: asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who left it on (the default): the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent — and what you sent from your own view — oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
-| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
+| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Only the page owner's **Let my agents share pages without asking** (on unless they turned it off) lets a tool make a link live. |
+| `page_asset_upload{page_id, path, content_type?}` | Attaches an image or video file to the page ([below](#images-and-video)) and returns its `ref` (`asset:<id>`), which a block then uses. A mirrored Claude Code session's only, for now: a dispatched agent is not offered it (or `page_asset_delete`). |
+| `page_asset_delete{page_id, asset_id}` | Deletes an asset no version of the page uses (one a version uses is refused, naming the versions), and its bytes. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
 says they are data and not instructions (a viewer's is a stranger's input).
@@ -107,11 +109,108 @@ dispatched, so it must not wait for either (put its setup at its top level). Tal
 `muster.upload`: a message posted to the parent window directly is ignored.
 
 Inside the share page's frame the page has **no network**: `fetch`, images
-from elsewhere and fonts from elsewhere are refused by its policy. Put images
-inline as `data:` URIs. The policy cannot stop a top-level navigation, so the
+from elsewhere and fonts from elsewhere are refused by its policy. A small
+image can be inline as a `data:` URI; a full-size image or a video is an
+[asset](#images-and-video). The policy cannot stop a top-level navigation, so the
 content is served only into a frame: a browser opening `/s/<token>/content`
 on its own (`Sec-Fetch-Dest: document`) gets the link's 404, and only muster's
 shell may frame it (`frame-ancestors 'self'`).
+
+## Images and video
+
+The page's author attaches an image or a video **once**, and its blocks refer
+to it: a page can then carry full-size review media and short clips that a
+`data:` URI (inside the 512 KiB a version may hold) cannot.
+
+| | |
+|---|---|
+| types | PNG, JPEG, WebP, GIF, MP4, WebM: the type is **sniffed from the file's bytes**, and a declared type (the request's `Content-Type`, `page_asset_upload`'s `content_type`, or the file's extension) must be what the bytes are |
+| one asset | at most 15 MiB (or the upload store's `MUSTER_UPLOAD_MAX_BYTES`, if smaller) |
+| a page's assets | at most 100 MiB in all, and 200 assets |
+
+**Attaching one**, from where the file is (muster-server never reads an
+agent's disk, and the bytes never travel inside an MCP request). For now only
+a **mirrored Claude Code session** can: a dispatched agent is not offered the
+asset tools, and one that calls them is told so (a follow-up).
+
+- **A mirrored Claude Code session** calls `page_asset_upload{page_id, path}`,
+  `path` relative to its working directory. Its host's `muster-mirror` takes
+  the path out of the call, resolves it inside the session's working directory
+  (after symlinks; a hidden file, a path outside it or a file swapped while it
+  is read is refused, as for an ask's attachments), checks the type and size,
+  and sends the file to `POST /mirror/pages/{id}/assets` with the host's
+  mirror token and the calling session; the call goes on to muster with the
+  asset's id, and answers its `ref`. An older `muster-mirror` forwards the path
+  and muster answers that the host must be updated.
+
+Muster checks the bytes again whatever sent them, and only the page's
+**author** may add one: the route acts for the host that made the page; any
+other page — another owner's, or the same owner's made by an agent or another
+host — answers 404.
+A refused file stores nothing; the two caps refuse with their own codes,
+`asset_too_large` (the one asset's) and `page_assets_full` (the page's),
+before a byte is read when the length is known.
+
+**Using one:** attach after `page_create` (a new page has no assets yet), then
+publish a version whose blocks use the `ref`:
+
+- markdown: `![what it shows](asset:<id>)` draws the image, or a video player
+  for a video;
+- html: `<img src="asset:<id>">`, `<video src="asset:<id>" controls>`, or the
+  reference anywhere in the page's own script.
+
+A version may refer only to its own page's assets: naming another page's (or
+one that does not exist) refuses the version, naming it.
+
+**How it is shown.** The frame's policy is not widened: the page still has no
+network. Muster's own shell — on muster's origin, outside the frame — fetches
+each asset the version uses, through a link's token (`GET
+/s/<token>/assets/<id>`, no credentials) or the owner's session (`GET
+/pages/{id}/versions/{v}/assets/<id>`), and hands the bytes to the frame on
+its private channel; the frame makes a `blob:` URL of each.
+
+**The page renders at once.** Its markup goes in straight away, each
+`asset:<id>` replaced by a **placeholder** — a `data:` URL of a 1×1
+transparent image ending `#muster-asset-<id>` — on an element marked
+`data-muster-asset="loading"`, drawn as a 16:9 box at the full width. As each
+asset arrives, every `src` or `poster` still holding its placeholder is set to
+the asset's `blob:` URL and the mark is removed (a `<source>`'s video is
+reloaded), so the element's own `load` or `loadedmetadata` follows. An image of
+another shape than 16:9 moves the layout once, when it arrives. One that
+could not be loaded keeps its placeholder, marked `data-muster-asset="failed"`.
+⚠ **A page's own script that reads an asset before it arrives sees the
+placeholder**, not the asset: wait for the element's `load`
+(`loadedmetadata` for a video), or read its `src` again after. An element the
+script creates with the reference AFTER that asset has arrived keeps the
+placeholder: create media from the markup, or before the page's `load`.
+
+**Cached.** An asset's id never names other bytes, so each response is
+`Cache-Control: private, max-age=31536000, immutable`, and the shell's fetch
+uses the browser's cache: a repeat view does not fetch it again. Through a
+link, each viewer's reads are capped (per link and client address, so one
+viewer never throttles another), and so are the bytes all of a link's viewers
+draw together ([Limits](#limits)); either answers 429 with `Retry-After`, in
+its own words.
+
+⚠ **On plain HTTP, an asset the owner's view cached outlives signing out.**
+It is cached in that browser for up to a year (`private`: no shared cache
+keeps it). Signing out sends `Clear-Site-Data: "cache"`, which empties it —
+but a browser honours that only on a secure origin (HTTPS, or localhost), so
+on a muster served over plain HTTP the owner's cached media stays in that
+browser after sign-out. On a shared computer, serve muster over HTTPS, or
+clear the browser's cache.
+
+**Who can read one:** exactly who can read the page. A link serves only an
+asset its page's **current** version uses (a revoked link serves none); the
+owner's view serves an asset the version it shows uses. Another owner, and a
+link of another page, get the one 404. Each response is served as every
+uploaded file is ([uploads.md](uploads.md#serving-uploaded-files)), and
+`Cross-Origin-Resource-Policy: same-origin`.
+
+**How long it lives:** while any version of the page uses it — an older
+version keeps its assets, which the owner's view of that version still shows
+— and `page_asset_delete` refuses one in use. Deleting the page deletes every
+asset with it (their bytes are under the page's own prefix, [below](#files)).
 
 ## Share links
 
@@ -155,10 +254,10 @@ one-off live link, so a press or a tab-through would leave links nobody holds
 there the tap alone makes the link. If the tap still beats the fetch, the link is copied in the same
 tap and the sheet is tried when it arrives; if the browser refuses it, the
 toast says the link is copied, and the next tap shares at once. The Pages
-screens draw the address on the button already. A server without the key says
-so on the page's screen in words (*Sharing isn't set up on this server*); the
-setting it needs is in the ⓘ beside that line, for an admin only (anyone else
-is told to ask their admin).
+screens draw the address on the button already. On a server without the key,
+the ⓘ beside Share on the page's screen says so (*Sharing isn't set up on this
+server*) and what Share does there; the setting it needs is in that ⓘ for an
+admin only (anyone else is told to ask their admin).
 
 **Older links** — every link made before reusable links existed, an agent's
 link you approved on Asks, and every link made on a server without the key —
@@ -175,12 +274,21 @@ session.
 
 What an agent's `page_share_request` does is **the page owner's own choice**,
 the switch **Let my agents share pages without asking** in the Pages section of
-their Account page. It is per user, off for every user until they turn it on,
-and only they can flip it (a signed-in, same-origin write of their own row;
-no agent or session token reaches it). It is not a server setting.
+their Account page. It is per user, **on for every user until they turn it
+off**, and only they can flip it (a signed-in, same-origin write of their own
+row; no agent or session token reaches it). It is not a server setting. A
+choice already saved is kept: a user who had it off (including one whose
+preferences row was written, off, before the default changed) stays off until
+they turn it on. A team's pages, if a team-owned agent makes one, ALWAYS get the ask
+flow, whatever is stored: nobody signs in as a team, so nobody could turn it
+off for one. And a session on a machine the [step-up gate](design/officers-on-hosts.md)
+covers — one that runs a host officer or starts agents for the chief, or a
+session mirrored to another muster — ALWAYS asks, even with the switch on: any
+process on such a machine can name your session, so its request proves
+nothing about who sent it.
 
-- **Off** (everyone's default) — the agent asks, and you approve, below.
-- **On** — for your pages the link goes **live at once**, and the agent is given
+- **Off** — the agent asks, and you approve, below.
+- **On** (everyone's default) — for your pages the link goes **live at once**, and the agent is given
   its address: the page's reusable link (the one you may already have shared,
   or a new one the agent made), or, without the key, a new hash-only link. No
   question is filed. 🔴 **No one approves it**: anything the agent publishes is
@@ -263,7 +371,8 @@ answer.*). A viewer through a link sees no bar: what they send is recorded
 as before, turned into JSON the same way.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
-version, when it was made and which is current (the one links show); tapping
+version, when it was made in words (*today at 9:14*, in your own time zone)
+and which is current (the one links show); tapping
 one views it. Under the list are **Share** (the same Share as everywhere else)
 and **Page details**, the page's screen. On a phone the list is a sheet from
 the bottom; Escape, a tap outside or the chip closes it.
@@ -282,31 +391,74 @@ viewer never does.
 
 `/pages/{id}/preview`, the view's former address, redirects to it.
 
+## A session's pages
+
+When you look at a session, the pages it made are a tap away. The session's
+header has one **Open** button (an icon and a count on a phone) that counts
+its [previews](previews.md#what-you-do) and its pages together, and opens a
+panel with two tabs, **Previews** and **Pages** (swipe between them on a
+phone). It is drawn whenever the session has either. Pages need no viewer
+plugin. The panel opens on the tab that has something; when both do, on the
+one you used last on this browser.
+
+The **Pages** tab lists the pages the session **created**, newest first, each
+with its current version and whether it has a live link. Tap one to read it in
+the panel (your own view of it, with its version chip), or **Open full page**
+for `/pages/{id}/view`.
+
+Which session made a page:
+
+- **A dispatched agent's** pages are on its page (`/agents/{name}`): the
+  pages its tools made.
+- **A mirrored window's** pages are every page made **in that window** on
+  that machine (its tmux window), whichever Claude Code (or opencode)
+  session made it, so a `/clear`, a restart or a resume in the window keeps
+  them. muster records the session and the window a page came from when the
+  page is made. The window also lists the pages made by the session running
+  in it now, wherever that session made them.
+- A window on another machine is never the same window, even with the same
+  name. A tmux server restart reuses window ids, so a new window can match
+  an old one of the same tmux session name on the same machine.
+- **A page a mirrored session made before muster recorded sessions** has no
+  session or window to match, so it is listed under no window. A page made
+  after muster recorded sessions but before it recorded windows is listed
+  only while its session runs in the window. Both are still on the Pages
+  screen.
+- Only your own pages are listed. A team session's window lists none: a
+  team's pages are the team's, and its members do not see them.
+
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest
-activity first, with their counts, each with **Share** and **⋯**. A page's
-screen (`/pages/{id}`) has:
+activity first. Each row is the page's title, who made it and when it last
+changed (*today at 9:14*, in your own time zone), and a badge only for what
+is there: the version (**v3**, when there is more than
+one), **Live** (it has a live link), **2 waiting** (links waiting for your
+approval) and **3 replies** (responses). Tapping a row opens [your own
+view](#the-owners-view) of the page; its **⋯** holds **Share**, **Details**
+(the page's screen) and, when the page has its Share link, **Revoke link** and
+**New link**. What the screen is for is behind the **ⓘ** beside its heading.
 
-- **Share**: **Share** and ⋯ — and on a phone, where Share opens the share
-  sheet, **Copy link** (the same link, always to the clipboard; elsewhere
-  Share itself copies). The page's reusable link (when it has one) is in the
-  ⓘ beside them, with its own Copy; it appears there on the first Share and
-  goes on Revoke — the screen never spells an address.
+A page's screen (`/pages/{id}`) has, under the title, who made it and the
+version shown:
 
-- **Open the page**: [your own view](#the-owners-view) of it.
-- **Links**: each link's state, who asked, when it was made in words
-  (*Made today at 9:14*, in your own time zone), whether it is the page's
-  Share link or an earlier one, and Revoke. Its ⓘ holds its exact label —
-  when it was made (UTC) and the first 8 hex digits of its token's hash
-  (`created 2026-11-11 14:02 UTC · 3fa9c2e1`), which tells links apart and
-  opens nothing. (There is no separate "make a link" button: Share and ⋯ → New link
-  make every link.)
-- **Versions**: each version, when it was made, **View** (your view of it),
-  and **Show this version** (a rollback: the version becomes current, every
-  link shows it, nothing is deleted). Its ⓘ holds its exact time and size.
-- **Responses**: everything viewers sent and you sent from your view (marked
-  *Sent by you*), newest first, each as labelled fields named by the page's
+- **Open** — [your own view](#the-owners-view) of the page — and **Share**. When
+  the page has its Share link, a **⋯** beside them has **Revoke link** and
+  **New link**. The screen never spells an address.
+- **Links**, only when the page has one. Each live or waiting link: its state,
+  who asked, when it was made in words (*Made today at 9:14*; the exact time
+  is its tooltip), whether it is the page's Share link or an earlier one,
+  **Copy** on the page's Share link (the one link whose address muster
+  keeps, on any device), and **Revoke**. Revoked and declined links are
+  folded under **Past links (n)**. (There is no separate "make a link"
+  button: Share and ⋯ → New link make every link.)
+- **Versions**, only when there is more than one: one row per version, newest
+  first (*v2 · current · today at 9:14*; its exact time and size are the
+  time's tooltip); tapping a row views that version. An older version's
+  **⋯** has **Make current** (a rollback: the version becomes current, every
+  link shows it, nothing is deleted).
+- **Responses**, only when there is one: everything viewers sent and you sent
+  from your view (marked *Sent by you*), newest first, each as labelled fields named by the page's
   own form (the version it was sent through): a form's field labels, a
   question's *Answer*, a choice's *Chose*, an approval's *Decision* and
   *Comment*; what a page's own script sent, by its keys (followed four levels
@@ -322,7 +474,10 @@ screen (`/pages/{id}`) has:
   (`/pages/{id}/responses/{rid}/raw`, a JSON attachment) when it is longer. A
   response too large to keep is refused with a 413 in plain words.
 
-- **Delete this page**: deletes the page, every version, link and response,
+- **Delete this page** (its ⓘ says what it removes) asks in place: it
+  becomes *Delete this page and its responses?* with **Delete** and
+  **Cancel** (Escape cancels too). Delete deletes the page, every
+  version, link and response,
   and every file sent through it. It cannot be undone. From its first step
   the page takes no new link (an agent's share or a Share is refused), so
   nothing goes live while it is being deleted; a delete that fails leaves it
@@ -331,13 +486,78 @@ screen (`/pages/{id}`) has:
 Both screens show live links (the Share buttons carry them), so they load no
 front-end telemetry, and the page's screen is never cached.
 
+## A team's pages
+
+A page a [team's](auth.md#teams) agent makes belongs to the team. Everyone on
+the team (viewer and up) sees it:
+
+- **In Pages**, beside your own pages, marked **Team: <name>**.
+- **On its screen and its view**, where you can answer its questions and
+  forms. What you send is recorded as **yours**: the page's screen says
+  *Sent by <your name>* to everyone else on the team, and *Sent by you* to
+  you. Everyone's responses from the page's own view count together toward
+  its cap (1,000 per page, the same as one link's), not 1,000 each. Files
+  can't be sent from a team page yet: a file field there says so. The
+  page's own [images and video](#images-and-video) are shown to everyone on
+  the team, as the page is.
+- **Share** works for anyone on the team: one tap makes the page's link
+  public, or shows it again if it already has one. The link's row names who
+  tapped.
+
+**The page's creator manages it**: the person who started the team agent that
+made it (the person whose say-so the team chief's start was). Only they see,
+and can use, **Delete this page** and **Make current** (an older version's ⋯). Anyone else on the
+team gets a 403 from those routes: *this is a team's page: only the person who
+started the agent that made it can delete it or change its version (a manager
+of the team can when that person has left the team)*. The creator keeps this
+whatever their role on the team: a creator made a viewer still manages the
+page they started. Leaving the team is what ends it.
+
+**A manager of the team steps in**:
+
+- When the page records no creator (its agent's start named nobody, like the
+  team chief itself), or its creator has **left the team**, any manager of the
+  team manages it instead. Otherwise nobody could ever delete it.
+- A manager can **always revoke** the page's links (a link's **Revoke**, and
+  ⋯ **Revoke link**) and make a **New link** (a revoke and a Share, both
+  theirs), even while the creator is on the team, so a mistaken Share is
+  undone at once. Anyone else is refused: *only the person who started the
+  agent that made it, or a manager of the team, can revoke its links or make
+  a new one*.
+
+**A team agent never makes a link live by itself.** Its `page_share_request`
+always files a pending link and a card, whatever any setting says. *Let my
+agents share pages without asking* is never read for a team. Anyone on the
+team answers the card on Asks, in a browser or on a paired phone; answering
+it is the same act as Share. The card records who answered.
+
+Your own pages stay yours: nobody on your teams sees them, and a team's
+pages are seen only through a signed-in browser or paired phone (never a
+personal API token or your agents), like every team row. A member who leaves
+the team stops seeing its pages on their next request.
+
+Postgres holds every statement to these rules (migration 0165): the read
+policies, the creator check (`muster_page_manager`), and guards that let
+anyone else on the team do only three things. They can touch a page's
+*updated* time when they answer. They can make a live link (Share). They can
+move a pending link to live or denied (the card). A manager can also revoke a
+link. Only the page's owner (its agent) names the card that decides a link.
+A member's answer to the card is recorded by `muster_answer_team_page_card`,
+because a viewer may not write the team's asks otherwise. That function
+answers only an agent's link's card, and only with one of the card's own
+options. For the same reason, a creator or manager's revoke withdraws the
+link's card through `muster_cancel_team_page_card`, and their delete revokes
+the page's file rows (under `pages/<id>/`) through
+`muster_revoke_team_page_uploads`. Each of these functions answers one kind
+of row, and only the application role may call it.
+
 ## In the chat
 
 When an agent calls `page_create`, `page_update` or `page_share_request`, its
 chat draws a **page card** under the tool's row: the title, what happened (a
 new page, a new version, shared, or waiting for you), **Open** — [your own
-view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
-link, New link, Page settings). It is drawn in a dispatched agent's chat (its
+view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Page
+settings; Revoke link and New link too while the page has a live link). It is drawn in a dispatched agent's chat (its
 stored transcript and its live stream) and in a mirrored Claude Code
 session's view. The card never holds a link's address: Share asks muster for
 the page's current link on each tap, so a card from an hour ago never copies
@@ -353,7 +573,8 @@ view draws an empty placeholder that fills itself from muster.)
 
 ## Files
 
-A file sent through a page's link is stored in the uploads bucket under the
+A file sent through a page's link — and the author's [assets](#images-and-video)
+— is stored in the uploads bucket under the
 page's own prefix, `pages/<page id>/<random id>` — **not** under `uploads/`,
 whose lifecycle rule expires objects after days. It is kept until its page is
 deleted, and deleting the page deletes it (the files go first: if one cannot be
@@ -409,7 +630,8 @@ it is opened directly: its script is never muster's, cannot read a muster
 cookie, and its requests carry `Origin: null`. It reaches muster only by
 posting a message to the frame's parent; the parent (muster's own script)
 checks the message came from its own frame and calls `POST /s/<token>/submit`
-or `/upload` with no credentials. Those routes, and the two `GET`s, read no
+or `/upload` with no credentials. Those routes, and the three `GET`s (the
+shell, the content and an [asset](#images-and-video)), read no
 cookie: the token is their only credential. (In [your own
 view](#the-owners-view) the parent posts to `/pages/{id}/versions/{v}/submit`
 or `/upload` instead, with your session, same-origin, as every write of
@@ -434,7 +656,7 @@ serves every upload: to the owner, as an attachment (images inline), under a
   6 per 10 minutes from one agent or session, and each replaces the page's last
   one on your device ([push.md](push.md#an-agent-notifies-you)).
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
-  asking (you opted in) — a new link, or the one you had already shared (the
+  asking (the switch is on) — a new link, or the one you had already shared (the
   push says which) — opening the page's screen, where Revoke is.
 
 They are three toggles on Account → Notifications: **An agent published a page
@@ -472,9 +694,13 @@ means a push service accepted it, not that the device showed it.
 | responses per link | 1000, files included |
 | files per link | 50, each at most `MUSTER_UPLOAD_MAX_BYTES` |
 | a page's files in all | `MUSTER_PAGES_UPLOAD_BYTES` (500 MiB) |
+| one author asset | 15 MiB; PNG, JPEG, WebP, GIF, MP4 or WebM |
+| a page's author assets | 100 MiB and 200 assets in all |
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
 | uploads per link | 10 a minute |
+| asset reads per link and viewer (client address) | 600 a minute (a repeat view reads from the browser's cache) |
+| asset bytes per link, all viewers | 2 GiB a minute |
 | failed link lookups per client address | 60 a minute, then 429 |
 | one MCP request (`page_create` / `page_update`) | 1088 KiB: the blocks as sent, up to 1 MiB (twice the stored 512 KiB, for an encoder that escapes more than muster's), plus 64 KiB for the rest |
 | one MCP request (any other tool or method) | 64 KiB |
@@ -490,13 +716,27 @@ request over 64 KiB with its old `{"error":"the request is too large"}`: a
 page over 64 KiB from a mirrored session needs the host's `muster-mirror`
 updated as well as the server.
 
+The other way round, a current `muster-mirror` in front of a muster older
+than v0.239.0: that muster reads at most 64 KiB per request and answers a
+larger one with a bare JSON-RPC `-32700 could not read the request`. The
+host proxy replaces that answer with one that names the muster, the
+request's size and both limits (`muster at <host> could not read this MCP
+request of N bytes: it reads at most 64 KiB per request, so it is probably
+older than v0.239.0 …`). The fix is to upgrade that muster. Every muster the
+host reaches counts, including any extra instance in its MCP targets file
+([mirroring.md](mirroring.md#several-muster-instances)). A `markdown` block
+holds at most 64 KiB on any version, so a probe of one large `markdown` block
+is refused by the page tool even when the transport is fine. Use `html`
+blocks to test a large page.
+
 ## Telemetry
 
-`muster_page_link_requests_total{route,outcome}` (`served`, `not_found`,
+`muster_page_link_requests_total{route,outcome}` (`route` is `shell`,
+`content`, `submit`, `upload` or `asset`; `served`, `not_found`,
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner who opted in) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner whose switch is on) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 
@@ -505,4 +745,9 @@ updated as well as the server.
   block in it), the contract a mirrored session already has for answers, and
   you are pushed.
 - **Require the viewer's email** per link.
-- **Page assets** uploaded once and referenced; today images are `data:` URIs.
+- **An asset from an opencode session**: a mirrored opencode session is not
+  offered the page tools.
+- **Streaming an asset**: the shell fetches each asset whole, so a video
+  does not start before it has arrived (the rest of the page shows meanwhile).
+- **An asset from a dispatched agent**: the asset tools are a mirrored
+  session's only, for now.

@@ -84,6 +84,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/cichecks"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 )
@@ -808,6 +809,9 @@ type PRState struct {
 	Merged   bool
 	HeadSHA  string
 	ClosedAt time.Time
+	// Title is the pull request's title as GitHub has it: text its author
+	// wrote, so a reader escapes it and treats it as untrusted.
+	Title string
 }
 
 // prReadMintRequest is the body of the token muster itself uses to read one
@@ -830,7 +834,14 @@ var ErrMintBusy = errors.New("githubapp: another token is being minted; not wait
 // a mint in progress (up to the HTTP client's timeout) would otherwise outlast
 // the caller's deadline, so a busy lock is ErrMintBusy at once.
 func (a *App) prReadToken(ctx context.Context, owner, name string) (string, error) {
-	key := tokenKey{repo: "pr-read:" + strings.ToLower(owner+"/"+name)}
+	return a.scopedReadToken(ctx, owner, name, "pr-read:", prReadMintRequest(name), "minting a pull-request read token for "+owner+"/"+name)
+}
+
+// scopedReadToken is prReadToken's shape for any of muster's own one-repository
+// read tokens (the pull-request read, the CI read): cached under prefix+repo,
+// minted with req, never waiting for the mint lock.
+func (a *App) scopedReadToken(ctx context.Context, owner, name, prefix string, req map[string]any, op string) (string, error) {
+	key := tokenKey{repo: prefix + strings.ToLower(owner+"/"+name)}
 	if t, ok := a.cached(key); ok {
 		return t, nil
 	}
@@ -845,7 +856,7 @@ func (a *App) prReadToken(ctx context.Context, owner, name string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	t, err := a.mint(ctx, inst, prReadMintRequest(name), "minting a pull-request read token for "+owner+"/"+name)
+	t, err := a.mint(ctx, inst, req, op)
 	if err != nil {
 		return "", err
 	}
@@ -874,6 +885,7 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 			SHA string `json:"sha"`
 		} `json:"head"`
 		ClosedAt *time.Time `json:"closed_at"`
+		Title    string     `json:"title"`
 	}
 	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
 		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
@@ -882,7 +894,7 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 	if r.State != "open" && r.State != "closed" {
 		return PRState{}, fmt.Errorf("GitHub's answer for %s pull request #%d has state %q", repo, n, r.State)
 	}
-	st := PRState{State: r.State, Merged: r.Merged}
+	st := PRState{State: r.State, Merged: r.Merged, Title: r.Title}
 	if validCommitSHA(r.Head.SHA) {
 		st.HeadSHA = r.Head.SHA
 	}
@@ -890,6 +902,103 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 		st.ClosedAt = r.ClosedAt.UTC()
 	}
 	return st, nil
+}
+
+// ciReadMintRequest is the body of the token muster itself uses to read one
+// repository's CI (CommitChecks): that repository only, metadata, checks and
+// commit statuses READ — the two the App's registration already has
+// (docs/github-app.md's table). A token of its own, not prReadMintRequest's:
+// an App registered without them then loses only the CI read (every check
+// unknown), never the pull-request state read beside it. Never injected into
+// an agent's request.
+func ciReadMintRequest(name string) map[string]any {
+	return map[string]any{"repositories": []string{name},
+		"permissions": map[string]string{"metadata": "read", "checks": "read", "statuses": "read"}}
+}
+
+// ciPages bounds CommitChecks' reads: 100 statuses and 100 check runs a page,
+// so at most 2,000 of each. A commit with exactly that many is read whole (a
+// full last page is followed by one probe of the next, whose items are never
+// kept); one with more is read as TRUNCATED (cichecks.Checks.Truncated):
+// pending, never done or green. ⚠ The fleet's whole read shares ONE deadline
+// (fleet_answers.go fleetCIRead: fleetPRReadTimeout, 4 s), so a commit near the
+// cap may not finish its pages in time: it then reads as unknown — no card —
+// never as green. Both ways fail closed.
+const ciPages = 20
+
+// CommitChecks reads commit sha of repo's CI — its commit statuses (the
+// latest per context) and its check runs (every attempt) — with a token
+// limited to that repository and checks + statuses read (ciReadMintRequest):
+// muster's own server-side read (the fleet's CI read), never handed to an
+// agent. Every failure is an error, which the caller reads as "unknown". It
+// never waits on the mint lock (ErrMintBusy), as PullRequestState does not.
+func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Checks, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !validCommitSHA(sha) {
+		return cichecks.Checks{}, fmt.Errorf("%q at %q is not owner/name and a commit", repo, sha)
+	}
+	tok, err := a.scopedReadToken(ctx, owner, name, "ci-read:", ciReadMintRequest(name), "minting a CI read token for "+owner+"/"+name)
+	if err != nil {
+		return cichecks.Checks{}, err
+	}
+	base := a.cfg.BaseURL + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/commits/" + sha
+	out := cichecks.Checks{Statuses: map[string]cichecks.Status{}}
+	for page := 1; ; page++ {
+		var r struct {
+			Statuses []struct {
+				Context   string    `json:"context"`
+				State     string    `json:"state"`
+				UpdatedAt time.Time `json:"updated_at"`
+			} `json:"statuses"`
+		}
+		if err := a.do(ctx, http.MethodGet, base+"/status?per_page=100&page="+strconv.Itoa(page), "token "+tok, nil, &r,
+			"reading the commit statuses of "+repo+" "+sha[:12], owner); err != nil {
+			return cichecks.Checks{}, err
+		}
+		if page > ciPages {
+			// The probe past a full last page: anything here is unread.
+			out.Truncated = out.Truncated || len(r.Statuses) > 0
+			break
+		}
+		for _, st := range r.Statuses {
+			if _, seen := out.Statuses[st.Context]; !seen {
+				out.Statuses[st.Context] = cichecks.Status{State: st.State, UpdatedAt: st.UpdatedAt.UTC()}
+			}
+		}
+		if len(r.Statuses) < 100 {
+			break
+		}
+	}
+	for page := 1; ; page++ {
+		var r struct {
+			CheckRuns []struct {
+				ID          int64      `json:"id"`
+				Name        string     `json:"name"`
+				Status      string     `json:"status"`
+				Conclusion  string     `json:"conclusion"`
+				CompletedAt *time.Time `json:"completed_at"`
+			} `json:"check_runs"`
+		}
+		if err := a.do(ctx, http.MethodGet, base+"/check-runs?filter=all&per_page=100&page="+strconv.Itoa(page), "token "+tok, nil, &r,
+			"reading the check runs of "+repo+" "+sha[:12], owner); err != nil {
+			return cichecks.Checks{}, err
+		}
+		if page > ciPages {
+			out.Truncated = out.Truncated || len(r.CheckRuns) > 0
+			break
+		}
+		for _, c := range r.CheckRuns {
+			run := cichecks.Run{ID: c.ID, Name: c.Name, Status: c.Status, Conclusion: c.Conclusion}
+			if c.CompletedAt != nil {
+				run.CompletedAt = c.CompletedAt.UTC()
+			}
+			out.Runs = append(out.Runs, run)
+		}
+		if len(r.CheckRuns) < 100 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // validCommitSHA reports whether s is a full hex commit id (40 for SHA-1, 64

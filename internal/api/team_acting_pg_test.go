@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -126,10 +127,14 @@ const (
 	// refusedToolless: turnPrincipal answers false — the turn goes toolless.
 	refusedToolless = "false: a team's gateway turn goes toolless (no team gateway agents in phase 4)"
 	// refusedHostJobNoTeam: hostJobPrincipal answers false — a team host's
-	// jobs are refused (a job writes a page, and pages are personal).
-	refusedHostJobNoTeam = "false: a team host's jobs are refused (pages are personal)"
+	// jobs are refused (a job writes a personal page).
+	refusedHostJobNoTeam = "false: a team host's jobs are refused (a job writes a personal page)"
 	// refusedStepUpNoTeam: stepUpPrincipal panics with stepUpTeamRefusal.
 	refusedStepUpNoTeam = "panics: a team has no phone, and a team host files no step-up card"
+	// refusedChatNoTeam: chatPersonPrincipal answers false — an operator
+	// chat is a PERSON's (officers.OperatorChatID), and a team chats with
+	// nothing.
+	refusedChatNoTeam = "false: an operator chat is a person's; a team acts in none"
 )
 
 // perOwnerSites is EVERY function in this package that calls
@@ -245,6 +250,16 @@ var perOwnerSites = map[string]perOwnerSite{
 	"teamPreviewPrincipal": {actsAsTeam: true, via: authz.ViaPlugin,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.teamPreviewPrincipal(ctx, team)
+		}},
+	// An officer's acting tool in a person's chat with it acts as that
+	// person (officer_own_state.go), never as a team.
+	"chatPersonPrincipal": {refusal: refusedChatNoTeam,
+		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
+			out, ok := s.chatPersonPrincipal(ctx, officers.Officer{ID: "marketing:example", Owner: team}, team)
+			if ok {
+				return out
+			}
+			return nil
 		}},
 	"stepUpPrincipal": {refusal: refusedStepUpNoTeam,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
@@ -409,7 +424,7 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 					if msg != "step-up: a team has no phone, and a team host files no step-up card (teamHostTools refuses every owner-authority tool)" {
 						t.Fatalf("%s with a team owner: panic %q, ctx %v; want the step-up runner's own refusal", name, msg, ctx)
 					}
-				case refusedToolless, refusedHostJobNoTeam:
+				case refusedToolless, refusedChatNoTeam, refusedHostJobNoTeam:
 					if msg != "" || ctx != nil {
 						t.Fatalf("%s with a team-owned agent: panic %q, ok %v; want false, no panic", name, msg, ctx != nil)
 					}

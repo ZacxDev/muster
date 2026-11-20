@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -348,7 +349,9 @@ type nudgeCandidate struct {
 // minds (sessionMinderOf, session_minder.go): its candidates are that
 // officer's items, so the owner is never nudged twice for one stop.
 func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFlight map[string]bool, p *nudgePass) {
-	if s.sessionMinderOf(octx, o.ID) != "" {
+	// 🔴 ONE JUDGE PER OWNER (stopJudgeOf): a Session minder's or the fleet's
+	// owner is not nudged.
+	if s.stopJudgeOf(octx, o.ID) != judgeChief {
 		return
 	}
 	chief, err := s.chiefAgent(octx)
@@ -359,6 +362,12 @@ func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFl
 	for i, c := range cands {
 		if p.budget <= 0 || octx.Err() != nil {
 			return
+		}
+		// 🔴 ONE JUDGE PER STOP: a stop a session minder was fed before it
+		// stopped running is the minder's if it acted on it, else closed in
+		// its queue before the chief judges it (chiefTakesStop).
+		if !s.chiefTakesStop(octx, o.ID, c) {
+			continue
 		}
 		decided, stop, refused := s.decideNudge(octx, o, chief, c, p)
 		if decided {
@@ -442,7 +451,13 @@ func (s *Server) stalledSessions(octx context.Context, facts []nudgeCandidate) [
 // episodeVerdict pushes past episodeChiefWait), never judged again. The
 // partial unique index chief_nudges_one_per_episode (0078) holds the same line
 // across passes and replicas.
+//
+// With the chief's nudges off (no decision store) the chief has judged
+// nothing: false — the session minder's feed asks this too (session_minder.go).
 func (s *Server) nudgeEpisodeJudged(octx context.Context, id int64) bool {
+	if s.ext.ChiefNudges == nil {
+		return false
+	}
 	_, decided, err := s.ext.ChiefNudges.ForEpisode(octx, id)
 	return err != nil || decided
 }
@@ -979,7 +994,7 @@ func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudg
 // is never the owner's authority, however the transcript was read.
 // mirror.OfficerSpawnPreface opens a host officer instance's first message (its
 // kickoff), muster's text as well.
-var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface}
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface, fleet.HeaderPrefix}
 
 // injectedBodyReader is the send queue's read of what muster itself queued
 // (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.

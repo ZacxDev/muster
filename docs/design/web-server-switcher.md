@@ -57,9 +57,9 @@ exactly as if the person had typed its address.
     script can read it. It needs no CORS and no server change. The tag has
     no `crossorigin` attribute, so it is not a CORS request, and it has
     `referrerpolicy="no-referrer"`. A 404, or a server that is down, leaves
-    the colour and the label. Logos are requested only while the list is on
+    its monogram and its label. Logos are requested only while the list is on
     screen;
-  - **the label** is the person's own, else the host. Another server's
+  - **the label** is the person's own, else the host name. Another server's
     display name is not shown: reading it would need the cross-origin read
     this decision removes. (The server in view still shows its own name,
     which its page already has.);
@@ -80,7 +80,7 @@ exactly as if the person had typed its address.
   - **an IP address**: a CSP host wildcard (`https://*:*`) does not match an
     IP address in browsers that follow the CSP spec, so a server addressed
     by IP (other than the two loopback sources listed) may show no logo,
-    only its colour and label.
+    only its monogram and label.
 - **The list is per origin**, so a server added on A is not on B's list. The
   switch carries one thing across: A's own origin, in the URL fragment of the
   navigation (`#muster-from=<A's origin>`; a fragment is never sent to a
@@ -136,12 +136,65 @@ prevents it later.
 ## Where it sits in the web layout
 
 Android draws a bar above the page. The web app's equivalent place is the
-sidebar, under its brand row: the sidebar is on every signed-in page, a rail
-on a wide screen and a slide-out (the menu button) on a phone. The row is the
-server in view: its colour, its label, a chevron. It opens a menu: the
-servers (the one in view marked current), **Add server**, **Manage servers**.
-It is drawn by the server at a fixed height, and the script only fills it in,
-so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
+sidebar's top row: the sidebar is on every signed-in page, a rail on a wide
+screen and a slide-out (the menu button) on a phone.
+
+**One row, the logo only** (operator decision, "One row: the logo is the
+switcher", on the ask to make the switcher smaller and less cluttered). The
+sidebar used to open with two rows: the brand (logo and name) with search and
+close, and under it the server row (colour, name, chevron). They are one row
+now:
+
+- the server in view's **picture is the button**, with a small chevron, then
+  search (and close, where the sidebar is a slide-out). The picture is the
+  server's logo; with no logo, a **monogram** of its name; with no branding at
+  all, muster's compact square mark (the brand pack's `favicon.svg`, in the
+  same 28 px slot as a logo; operator decision on round 0, Q1: not the
+  horizontal lockup). No name and no address is drawn in the row: the name is
+  the button's accessible name ("Switch server, current: <name>") and its
+  tooltip;
+- the row draws the picture alone: **no colour dot** (round 0, D2). The
+  server's colour, the Android app's colour for it, stays in the open list as
+  a small badge on each entry's picture, where it tells two entries with the
+  same picture apart;
+- the row is the old brand row's height (68 px, lining up with the content
+  header's border) and is a 44 px target;
+- the button opens the menu whether or not other servers are known: **Add
+  server** lives there.
+
+The menu lists the servers (the one in view marked **In view**), each as its
+picture (logo, else monogram) and its name, then **Add server** and **Manage
+servers**. It shows **no address**, except where two entries have the same
+name (compared without case): only those show their host under the name, so
+they can still be told apart. Manage servers rows show the label too, with
+the exact address behind each row's ⓘ (Copy).
+
+A **monogram** is the first character of each of the first two words of the
+name, on a palette colour picked by the name's FNV-1a hash: the same name is
+the same monogram everywhere. It shows wherever a logo is absent or fails to
+load.
+
+The server draws the row's monogram before the script runs (Go
+`serverMonogram`), and the script draws the menu's (`monogram`). The rule asks
+**no Unicode table**, because the two languages' tables differ: Go's are
+Unicode 15.0 and a browser's are newer, and Go upper-cases with the simple
+mapping where JavaScript uses the full one. So:
+- words split on fixed separator ranges: controls, ASCII and Latin-1
+  punctuation and symbols, General Punctuation, and the ideographic space;
+- a first character is upper-cased only when it and its one-code-point
+  uppercase both lie in Latin, Greek or Cyrillic (U+0000–U+024F,
+  U+0370–U+04FF). Anything else, an emoji or a CJK character for example, is
+  kept as it is.
+
+Both implementations are held to a table of literal cases
+(`internal/ui/testdata/server-monograms.json`), and to the monogram of every
+code point from U+0000 to U+04FF. That second table was generated apart from
+both, from Python's full case mapping
+(`internal/ui/testdata/server-monogram-letters.json`).
+
+The row is drawn by the server at a fixed size, and the script only fills it
+in (its colours, letters and name), so it moves nothing when it loads (the
+layout-shift gate, `cls.spec.ts`).
 
 ## Rules of the list
 
@@ -158,10 +211,31 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   list (a hash of the origin picks the palette slot; a clash takes the next
   free slot, in origin order), so a server keeps its colour from one list to
   the next when the lists hold the same servers.
-- The label is the person's own, else the host (and the port when it is not
-  the default). The server in view's own entry falls back to its own display
-  name before its host. A label is at most 64 characters, with control and
-  text-direction characters removed, and is drawn as text, never markup.
+- The label is the person's own, else the host name, with no scheme and no
+  port — the port only when another server on the list has the same host
+  name, to tell the two apart. The server in view's own entry falls back to
+  its own display name, then "This server", never its address. A label is at
+  most 64 characters, with control and text-direction characters removed,
+  and is drawn as text, never markup.
+- A row shows the label only. The exact address is behind the ⓘ on each
+  Manage servers row (the shared details sheet), with Copy. The one
+  exception is the menu: where two entries' labels collide (case aside),
+  each shows its host under it, so the two can be told apart.
+- A typed address must look like one: a host that is not DNS labels
+  (letters, digits, `-`, `_`) or an IP is refused ("That doesn't look like a
+  server address."). One word with no dot, no port and no scheme (other than
+  `localhost`) is refused with "That doesn't look like a server address. If
+  it is one, add https:// in front of it." (`acme:40001` and
+  `https://acme` are accepted). This is checked by servers.js itself,
+  not left to the browser's URL parser: Chromium's percent-encodes a space in
+  a host where the standard refuses it, which once listed "not a server" as
+  `https://not%20a%20server`.
+- A trailing dot on a host is dropped, so `atlas.example.` and
+  `atlas.example` are one server.
+- 🔴 A SAVED entry is never lost to a typing rule newer than it: on load, a
+  trailing-dot entry is migrated to its dot-less form with its label, and a
+  host the typing rules would refuse is kept. Only junk (a space or `%` in the
+  host) is dropped.
 - Another server's logo is `<origin>/brand/icon-192.png`, built from the
   stored origin alone, requested only while the list is shown.
 
@@ -169,13 +243,13 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
 
 | | Android 0.2.0 | web (this design) |
 |---|---|---|
-| see which server is in view | bar above the page: colour, label | sidebar row: colour, label (on a phone, inside the menu) |
+| see which server is in view | bar above the page: colour, label | the sidebar's top row: the server's logo (or monogram, or muster's square mark) alone; its colour is in the list; the name is the button's accessible name and tooltip (on a phone, inside the menu) |
 | switch | instant, each server's WebView kept | a page load of the other server's origin |
 | separate sign-ins | per-server WebView profile | per-origin by the browser, always |
 | add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |
 | the list | one list for the app | one list **per server, per browser**; a switch offers to add the server it names (also through a sign-in) |
 | the other server's name | from its `GET /api/instance` | **not shown**: the label is yours, else the host (no cross-origin read, by operator decision) |
-| the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); colour and label when it has none |
+| the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); a monogram of its label when it has none |
 | notifications from every server | yes, one UnifiedPush instance each | yes, if notifications were turned on **on each server** (Web Push is per origin); each arrives with that server's icon |
 | a notification's tap opens its server | yes, and switches the bar | yes: the server's own service worker opens its own page |
 | label on a notification | server label as subtext | not added: the icon (the server's logo) is the cue |
@@ -205,7 +279,9 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   no credentials, origin only), dedupe, the cap, colours, labels, an entry
   keeping only its origin and label, the logo path built from the origin
   alone, and a source check that the script makes no request of its own (no
-  fetch, XHR, beacon, socket or event stream).
+  fetch, XHR, beacon, socket or event stream); the monogram (against the
+  literal table Go is held to as well), which names collide, and the row
+  button's name.
 - `internal/api`: `GET /api/instance` and `/brand/*` send no
   `Access-Control-Allow-Origin` (404, 200, 304); the unversioned icon path is
   served revalidated; `connect-src` is `'self'` and `img-src` adds exactly
@@ -224,7 +300,19 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   - a crafted hand-off: neutral copy, the full origin, focus on Not now,
     nothing stored, and Enter dismisses;
   - a switch to a server you are not signed in to: the offer survives the
-    sign-in, and it is read once.
+    sign-in, and it is read once;
+  - one row (at 375 px and 1280 px): the picture button, search and close
+    side by side, 68 px tall, no text in it; a tap opens the list, which
+    shows names and no address; a server with no logo shows its monogram;
+    two servers with the same name show their addresses, and only they;
+    switching from either size.
+- `e2e/tests/branding.spec.ts`: the row is the instance's logo, alone; a logo
+  that fails to load gives way to the monogram; a name with no logo is its
+  monogram.
 - `internal/ui` and `internal/api`: the sign-in page keeps the hand-off under
-  the key `servers.js` reads; the row button is announced once; the offer's
-  copy claims no origin.
+  the key `servers.js` reads; the row button is announced once, by its
+  aria-label; the row for each branding state (logo, name only, logo only,
+  none), pinned by literal; the sidebar's top is one row; a menu entry's
+  address starts hidden; the monogram against the literal table; the
+  stylesheet's server colours are the script's palette, and black letters
+  read on each at 4.5:1 or more; the offer's copy claims no origin.

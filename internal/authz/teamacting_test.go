@@ -43,7 +43,7 @@ var actsAsTeam = map[Via]bool{
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
 	ViaKickoff: false, ViaAgentMessage: false,
 	// The scheduled host job runner: NOT a team door. A team host's jobs are
-	// refused (a job writes a page, and pages are personal) and internal/api's
+	// refused (a job writes a personal page) and internal/api's
 	// hostJobPrincipal refuses a team first; WithPrincipal's panic here is
 	// the second guard.
 	ViaHostJob: false,

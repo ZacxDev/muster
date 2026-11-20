@@ -71,6 +71,15 @@ func (s *Server) handleTeamOfficersPage(w http.ResponseWriter, r *http.Request) 
 	s.renderTeamOfficers(w, r, team, role, http.StatusOK, "")
 }
 
+// teamOfficersLeadHTML is the Team officers page's lead: who sees and
+// changes them, in words, and the server setting that makes an officer the
+// team's in an ⓘ — an admin's (the jargon audit's F117).
+func teamOfficersLeadHTML(admin bool) string {
+	return `<div class="flex items-center gap-1"><p class="text-sm text-fg2">Officers this team owns: every member sees them, a manager changes them.</p>` +
+		ui.InfoSheetHTML(ui.SetupSheet("team-officers-setup", "How an officer runs as the team",
+			"An officer runs as the team when its owner in this server setting is the team:", "MUSTER_OFFICERS", admin)) + `</div>`
+}
+
 func (s *Server) renderTeamOfficers(w http.ResponseWriter, r *http.Request, team int64, role authz.TeamRole, code int, problem string) {
 	ctx := r.Context()
 	types, err := s.officerStore.ListTypes(ctx, team)
@@ -95,7 +104,7 @@ func (s *Server) renderTeamOfficers(w http.ResponseWriter, r *http.Request, team
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Team officers</h1>
-<p class="text-sm text-fg2">Officers this team owns: every member sees them, a manager changes them. An officer runs as the team when its owner in MUSTER_OFFICERS is this team.</p>
+` + teamOfficersLeadHTML(authz.IsAdmin(r.Context())) + `
 <ul class="flex flex-col gap-3" id="team-officer-types">`)
 	for _, t := range types {
 		b.WriteString(`<li class="flex flex-col gap-2" data-type-key="` + html.EscapeString(t.Key) + `" data-charter-version="` + strconv.Itoa(t.CharterVersion) + `">

@@ -452,6 +452,10 @@ func ruleActionText(r plugins.Rule) string {
 	return "settle: " + r.SettleReason
 }
 
+// RoutingRulesLead is the Routing rules page's lead, in words (the jargon
+// audit's F067).
+const RoutingRulesLead = "Rules handle routine plugin messages without asking your chief. Your chief suggests them; you approve each one."
+
 // renderRulesPage writes /rules: every rule of the owner's, newest first.
 func (s *Server) renderRulesPage(w http.ResponseWriter, r *http.Request, code int, problem string) {
 	var list []plugins.Rule
@@ -466,7 +470,7 @@ func (s *Server) renderRulesPage(w http.ResponseWriter, r *http.Request, code in
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="rules-page">
 <h1 class="text-balance text-base font-semibold text-fg">Routing rules</h1>
-<p class="text-sm text-fg2">A routing rule places a plugin message without your chief: it routes the message to one session, or settles it, and logs it in your chief's chat. Your chief proposes a rule; it runs only once you approve its card, and only on messages that arrive after that.</p>
+<p class="text-sm text-fg2">` + RoutingRulesLead + `</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<ul class="flex flex-col gap-2" data-testid="rules">

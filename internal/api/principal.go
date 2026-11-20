@@ -198,6 +198,13 @@ const AccountUnreadableRefusal = "your account could not be read just now; retry
 // admit attaches p to the request and hands it to next. See the file header:
 // it is the only way a wrapper may call next.
 func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, p authz.Principal) {
+	// 🔴 A browser session's write must come from muster's own pages: the
+	// central origin check (cross_origin.go), first, so a refused request
+	// reaches no handler. Bearer-admitted requests are not checked.
+	// TestCrossOriginCookieWriteLedger walks every write route through it.
+	if s.refuseCrossOriginCookieWrite(w, r, p) {
+		return
+	}
 	// A plugin token opens the plugin door and nothing else (plugins.go).
 	if s.refusePluginTokenElsewhere(w, r, p.Via) {
 		return
@@ -236,6 +243,11 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	// agent route, so a new one cannot forget it.
 	refused, sock := s.teamAgentGate(w, r)
 	if refused {
+		return
+	}
+	// A route naming a page the principal's TEAM owns: its team rule
+	// (team_pages.go teamPageRoutes), one place for every page route.
+	if s.teamPageGate(w, r) {
 		return
 	}
 	// A member's terminal or chat socket on a team's agent stays open only

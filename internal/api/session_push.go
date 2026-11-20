@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -242,7 +243,7 @@ func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 	if !s.chiefNudgesOn() || !s.chiefNudgeLive(owner) {
 		return false
 	}
-	if s.sessionMinderOf(octx, owner) != "" {
+	if s.stopJudgeOf(octx, owner) != judgeChief {
 		return false
 	}
 	_, err := s.chiefAgent(octx)
@@ -361,6 +362,8 @@ func (s *Server) reshowEpisode(octx context.Context, ep sessionstate.Episode, id
 	}
 	n := s.episodeNotification(octx, ep, idle, hosts)
 	n.Silent = true
+	// Its withdrawal must not overtake it either (clearHoldFrom).
+	s.clearRetry.reshow(ep.ID, s.now())
 	s.goNotify(ep.Owner, push.EventAttention, n, nil)
 	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
 }
@@ -606,18 +609,25 @@ func episodeBody(state string, idle time.Duration) string {
 // lands before the `attention` push it withdraws closes nothing, the push then
 // shows, and — cleared_at set — nothing ever withdraws it. So an episode
 // pushed less than pushBroadcastTimeout ago (the bound on one goNotify
-// fan-out: its push has been sent, or given up, by then) is NOT cleared here:
-// it is left uncleared, its row updated, and a later pass's backstop
-// withdraws it once that much time has passed. The check is here, not in
-// endEpisode, because the backstop can run a moment after the push too.
+// fan-out: its push has been sent, or given up, by then) — or re-shown that
+// recently (clearHoldFrom) — is NOT cleared here:
+// it is left uncleared, its row updated, and its withdrawal is retried the
+// moment that much time has passed (clearEpisodeLater) — with a later pass's
+// backstop behind it. The check is here, not in endEpisode, because the
+// backstop can run a moment after the push too.
 func (s *Server) clearEpisode(octx context.Context, ep sessionstate.Episode) {
 	if ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() {
 		return
 	}
-	if s.now().Sub(ep.PushedAt) < pushBroadcastTimeout {
-		s.attentionChanged(ep.Owner, episodeKey(ep.ID)) // its row goes now; its push on a later pass
+	if wait := pushBroadcastTimeout - s.now().Sub(s.clearHoldFrom(ep)); wait > 0 {
+		// A clock skew between muster and the database (opened_at) never holds
+		// it longer than one fan-out.
+		wait = min(wait, pushBroadcastTimeout)
+		s.attentionChanged(ep.Owner, episodeKey(ep.ID)) // its row goes now; its push once the fan-out is done
+		s.clearEpisodeLater(octx, ep, wait)
 		return
 	}
+	s.clearRetry.forgetReshow(ep.ID)
 	claimed, err := s.ext.Episodes.MarkCleared(octx, ep.ID, s.now())
 	if err != nil {
 		s.logger.Printf("session state: episode %d: cleared: %v", ep.ID, err)
@@ -643,6 +653,116 @@ func (s *Server) clearEndedEpisodes(octx context.Context, owner int64) {
 	for _, ep := range eps {
 		s.clearEpisode(octx, ep)
 	}
+}
+
+// clearHoldFrom is when ended episode ep's notification was last SENT, which
+// clearEpisode's hold is measured from: its push (pushed_at) — or, for a stop
+// resumed from 'gone' (ResumedFrom), its silent RE-SHOW (reshowEpisode), sent
+// when the episode opened, whose pushed_at is still the FIRST push's, minutes
+// back. 🔴 MEASURED FROM pushed_at ALONE, A RESUMED STOP ENDED MOMENTS AFTER ITS
+// RE-SHOW (the owner typing during that fan-out: episodeStatusMoved) sent its
+// `resolved` at once; landing before the re-show, it closed nothing, and the
+// re-shown notification stayed up for good (cleared_at set).
+//
+// Two witnesses of the re-show, the later wins: this process's own stamp
+// (clearRetry.reshown, on muster's clock — the process that re-showed it), and
+// for any resumed episode its opened_at (the database's clock), which covers a
+// re-show sent by another replica or before a restart. No migration: the
+// re-show is sent by the call that opened the episode (PG.Open's claimer).
+func (s *Server) clearHoldFrom(ep sessionstate.Episode) time.Time {
+	from := ep.PushedAt
+	if ep.ResumedFrom != 0 && ep.OpenedAt.After(from) {
+		from = ep.OpenedAt
+	}
+	if at, ok := s.clearRetry.reshownAt(ep.ID); ok && at.After(from) {
+		from = at
+	}
+	return from
+}
+
+// episodeClearRetries is the withdrawals clearEpisode deferred, one per
+// episode, and the re-shows this process sent (reshowEpisode) that their hold
+// is measured from. after, when set (a test), replaces time.AfterFunc.
+type episodeClearRetries struct {
+	mu      sync.Mutex
+	pending map[int64]bool
+	reshown map[int64]time.Time
+	after   func(d time.Duration, f func())
+}
+
+// reshow records that episode id's notification was re-shown at at, and
+// forgets every re-show older than one fan-out (it holds nothing any more).
+func (r *episodeClearRetries) reshow(id int64, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reshown == nil {
+		r.reshown = map[int64]time.Time{}
+	}
+	for k, t := range r.reshown {
+		if at.Sub(t) > pushBroadcastTimeout {
+			delete(r.reshown, k)
+		}
+	}
+	r.reshown[id] = at
+}
+
+// reshownAt is when this process re-showed episode id, if it did.
+func (r *episodeClearRetries) reshownAt(id int64) (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.reshown[id]
+	return at, ok
+}
+
+// forgetReshow drops episode id's re-show (its withdrawal is being sent).
+func (r *episodeClearRetries) forgetReshow(id int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.reshown, id)
+}
+
+// clearEpisodeLater runs clearEpisode for ended episode ep again after wait —
+// the rest of its push's pushBroadcastTimeout — so a stop ended moments after
+// its push is withdrawn about then, not on the pass after (up to
+// SessionStateInterval later). 🔴 IDEMPOTENT WITH THE BACKSTOP: the retry is a
+// plain clearEpisode, so the MarkCleared claim decides which of it and
+// clearEndedEpisodes sends the one `resolved`; one retry per episode is
+// pending at a time, and one that fires a moment early schedules itself again.
+// It runs with octx's values (its principal: the claim is row-level-secured)
+// and is cancelled by the server's shutdown (streams): once muster is shutting
+// down it does nothing, and the backstop of the next process withdraws it.
+func (s *Server) clearEpisodeLater(octx context.Context, ep sessionstate.Episode, wait time.Duration) {
+	r := &s.clearRetry
+	r.mu.Lock()
+	if r.pending[ep.ID] {
+		r.mu.Unlock()
+		return
+	}
+	if r.pending == nil {
+		r.pending = map[int64]bool{}
+	}
+	r.pending[ep.ID] = true
+	after := r.after
+	r.mu.Unlock()
+	if after == nil {
+		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+	}
+	// octx's values (its principal), not its deadline: the caller's context
+	// (a pass's, a hook's) has ended by the time this runs.
+	kept := context.WithoutCancel(octx)
+	after(wait, func() {
+		r.mu.Lock()
+		delete(r.pending, ep.ID)
+		r.mu.Unlock()
+		base := s.streams.context()
+		if base.Err() != nil {
+			return // muster is shutting down
+		}
+		rctx, cancel := context.WithCancel(kept)
+		defer cancel()
+		defer context.AfterFunc(base, cancel)()
+		s.clearEpisode(rctx, ep)
+	})
 }
 
 // --- the waiting hook --------------------------------------------------------

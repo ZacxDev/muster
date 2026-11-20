@@ -1,5 +1,6 @@
 import { Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { hostTabsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
@@ -145,7 +146,7 @@ for (const vp of [
     test("the agent page's focus history shows the 120-character title whole", async ({ page }) => {
       await rig.login(page);
       await page.goto(rig.origin + '/agents/' + agentName);
-      await press(page.locator('#focus-history-open'));
+      await press(await menuItem(page, '#focus-history-open'));
       const dialog = page.locator('dialog#focus-history');
       await expect(dialog).toBeVisible();
       const first = dialog.locator('[data-focus-history-title]').first();

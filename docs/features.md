@@ -50,8 +50,10 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
+| [Fleet proposals](#fleet-orchestration) | the chief proposes what to send each of your stopped sessions; each is a card in the fleet digest, sent only when you tap Approve | the fleet digest | off | 1 line |
+| [Morning report](#morning-report) | one notification each morning, on days something happened overnight, opening a page of the questions waiting on you (answer them there), what got done, what is stuck and the night's usage | a database; for merged pull requests, session routing + PR mail routing and the GitHub App; for plan usage, the usage poll | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
-| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
+| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (live at once by default, and you are told; you can turn on asking first) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Scheduled host jobs](#scheduled-host-jobs) | a fixed command a mirrored machine runs on a cron, its output a page, its failures in Attention | pages, a `muster-mirror` jobs file on the machine | off (no jobs declared) | per machine |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
@@ -523,6 +525,96 @@ model and no chief turn: muster draws it from what it already knows.
 - **Check:** `fleet digest: ON (MUSTER_FLEET_DIGEST=1) — …`; off, the line
   reads `fleet digest: OFF — MUSTER_FLEET_DIGEST is unset`.
 
+### Fleet orchestration
+
+**Fleet proposals.** The chief proposes what to send each of your stopped
+sessions — continue, write a handoff, stop and wait, its own words, "write a
+handoff, then close", or a task moved from one session to another — and each
+proposal is a card in the fleet digest's **Proposed** group showing exactly
+what will be sent. **Nothing is sent until you tap Approve** (or Edit it and
+send it as your own words). muster also proposes, with no model, "Write
+handoff, then close" for each session whose pull request merged and that
+stopped with nothing in flight, and "CI finished" for a session that stopped
+while its pull request's CI ran (the GitHub App's checks read)
+([chief.md](chief.md#fleet-proposals)).
+
+- **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and
+  [session state](#session-state) (`MUSTER_SESSION_STATE=1`) — the server
+  refuses to boot with proposals on and either off — and the [chief](#chief).
+  Moving a task needs [session routing](#session-routing); answering a
+  session's plain-text question needs the [ask log](#ask-log)
+  (`MUSTER_ASK_LOG=1`), which is how muster knows the question is open.
+- **Turn it on:** `MUSTER_FLEET_ORCHESTRATION=propose` in `.env`. The chief
+  keeps judging stopped sessions (its nudges and the per-stop pushes are
+  unchanged); the proposals run alongside.
+- **Turning it off:** unset it (or `off`). The chief's fleet tools are not
+  listed, the digest has no Proposed group, nothing is written to the action
+  log, a message already queued from a card is not sent, and the "N proposals
+  waiting" Attention item is withdrawn on the next session-state pass.
+- **Check:** `fleet proposals: ON (MUSTER_FLEET_ORCHESTRATION=propose) — …`;
+  off, the line reads `fleet proposals: OFF — MUSTER_FLEET_ORCHESTRATION is not
+  propose`.
+
+### Morning report
+
+"While you were away": once a day, at 08:00 in one zone the server sets
+(America/Chicago by default), you get **one** notification — only on a day
+something happened overnight — that opens a page with four parts:
+
+1. **Waiting on you**: every question still open for you — the chief's, your
+   sessions' and your agents' — as the Asks page's own cards, so you answer
+   one right there, each with how long it has left ("Answer within 3h").
+   Only your own questions are listed, never a team's.
+2. **Done overnight**: pull requests your sessions created that merged, by
+   their titles; and complete tasks that changed overnight, said as exactly
+   that ("Complete task, changed overnight"), since muster keeps no time a
+   task was finished.
+3. **Stuck**: sessions idle with nothing running, or stopped on an error
+   (the same rule the chief's stall nudges use), and agents you started that
+   failed overnight.
+4. **Usage and cost**: how long your chief worked overnight; each Claude
+   plan's latest usage reading ("Claude plan 1: this 5-hour period 37% used");
+   and the chief's OpenRouter cost on the last whole UTC day, where its
+   OpenRouter sessions are on. A part with no source says so in plain words
+   ("Usage isn't tracked on this server", "Cost isn't tracked for Claude
+   plans"); an admin sees the setting behind it in the ⓘ.
+
+It is **read-only**: it reads muster's own records and never nudges, sends,
+asks or changes a task. No model is called. The notification carries counts
+only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's
+or a question's text.
+
+- **Overnight** is from one report time to the next: a question asked a
+  minute after 08:00 is tomorrow's news.
+- **The notification's count** of questions is every question still open,
+  old ones included; only a question asked overnight makes a day send it.
+- **Quiet days:** no notification when no question was asked overnight, no
+  pull request merged, nothing got newly stuck, and every pull request was
+  checked. The day's page still exists and says so. Shown but never enough on
+  their own to send it: a question asked before the night (asks wait up to a
+  day), a session stuck since before the night, a task that only changed, and
+  usage. A pull request whose state could not be read, or more recent pull
+  requests than one report checks (30), always sends it, saying so.
+- **Once a day:** each report is recorded per person per day, so a restart
+  never sends it twice. A server that was down at the report time sends it up
+  to 2 hours late, and skips the day after that.
+- **Needs:** a database. Merged pull requests need
+  [session routing](#session-routing) and [PR mail routing](#pr-mail-routing)
+  for the pull requests your sessions created, and the [GitHub App](#github-app)
+  for whether they merged; without them the page says so. Plan usage needs
+  `MUSTER_CC_USAGE_POLL=1`; cost needs the chief's OpenRouter sessions.
+- **Known limits:** plan usage is the latest reading, not a sum over the
+  night. Only the chief's working time is recorded; other agents' hours are
+  not. OpenRouter cost is booked per UTC day, so the report shows the last
+  whole UTC day before 08:00 (the day it falls in is still running, and the
+  next report shows it); each day is counted once.
+- **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the zone of its 08:00
+  is `MUSTER_MORNING_REPORT_TZ` (an IANA zone).
+- **Turning it off:** unset it. No report is written and `/morning` answers 404.
+- **Check:** `morning report: ON (MUSTER_MORNING_REPORT=1) — one push a day at
+  08:00 America/Chicago …`; off, the line reads `morning report: OFF —
+  MUSTER_MORNING_REPORT is unset`.
+
 ### Ask log
 
 Every question an agent asks you — a plain-text question at the end of a
@@ -548,18 +640,19 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
 Agents publish small pages for you — a showcase, questions, a form, file
 uploads, an approval, or their own script in a sandbox — shown to you at once
 (a card in the chat, a push), and shared with a link anyone can open: one tap
-on Share, or an agent's request, which waits for your approval unless you
-turned on **Let my agents share pages without asking** on your Account page
-(each user's own choice, off by default). What viewers send comes back to the agent as
+on Share, or an agent's request, which goes live at once unless you turned
+off **Let my agents share pages without asking** on your Account page (each
+user's own choice, on by default; off, it waits for your approval). What viewers send comes back to the agent as
 data, and you are notified. [pages.md](pages.md).
 
 - **Needs:** the core's database, and `MUSTER_PUBLIC_URL` (links are written on
   it). An `upload` block needs [attachments](#attachments).
 - **Turn it on:** `MUSTER_PAGES=1` in `.env`.
 - **Safety:** a page is served sandboxed, with no network; it never runs as
-  muster. You approve every link an agent asks for, unless you opted in to
-  your agents sharing without asking (Account → Pages; then you are told each
-  time). You can revoke any link.
+  muster. By default an agent's share request makes its link live at once and
+  you are told each time; turn off **Let my agents share pages without
+  asking** (Account → Pages) to approve every link an agent asks for. You can
+  revoke any link.
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
 

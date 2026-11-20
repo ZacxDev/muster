@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -89,8 +91,8 @@ func TestDeclaringJobsLeavesTheHostOutOfTheStepUp(t *testing.T) {
 }
 
 // TestATeamHostsJobsAreRefused: a host connected with a TEAM's token that
-// declares jobs gets none recorded (a job writes a page, and pages are
-// personal), and a job-result it sends is dropped without acting as the
+// declares jobs gets none recorded (a job writes a personal page), and a
+// job-result it sends is dropped without acting as the
 // team. The control: the team's manager's own host, connected beside it, has
 // its job recorded.
 func TestATeamHostsJobsAreRefused(t *testing.T) {
@@ -128,6 +130,90 @@ func TestATeamHostsJobsAreRefused(t *testing.T) {
 	f.tick(due(0))
 	if rec.count() != 1 {
 		t.Fatalf("%d executions after a fire; want only the personal host's job", rec.count())
+	}
+}
+
+// TestAJobsPageIsItsOwnersPersonalPageOnATeam: the page a job makes is its
+// owner's own — owner_id the job's owner, no created_by_user (0165 records
+// one only on a team's page), rolling — even when that owner manages a team:
+// the owner manages it (pages.MayManage) and reads it, a teammate reads it
+// as missing. The control: a page the TEAM owns, made beside it, the same
+// teammate reads (so the teammate's read is the team arm's, not a broken
+// principal's).
+func TestAJobsPageIsItsOwnersPersonalPageOnATeam(t *testing.T) {
+	f := newJobsFixture(t)
+	store := users.NewPG(f.pool)
+	f.srv.ext.Users = store
+	sys := authz.System(f.ctx)
+	admin := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	tm, err := store.CreateTeam(sys, admin, "jobs-team-"+suffix, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mate int64
+	if err := f.pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "jobs-mate-"+suffix).Scan(&mate); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		sys := authz.System(context.Background())
+		for _, q := range []string{`DELETE FROM pages WHERE owner_id = $1`, `DELETE FROM team_members WHERE team_id = $1`,
+			`DELETE FROM audit_log WHERE team_id = $1 OR object = 'team:' || $1::text`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = f.pool.Exec(sys, q, tm.ID)
+		}
+		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, mate)
+	})
+	if _, err := f.pool.Exec(sys, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES ($1, $2, 'viewer', $3)`, tm.ID, mate, f.owner); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &stdoutRecorder{stdout: "# report"}
+	f.connect(t, f.owner, f.host, []mirrorhost.JobSpec{declared("report", "0 6 * * *", "/usr/bin/env", "true")}, rec.exec)
+	j := f.waitJobs(t, f.host, 1)[0]
+	f.tick(due(0))
+	rs := f.settled(t, j, 1)
+	if rs[0].Status != hostjobs.StatusOK || rs[0].PageID == 0 {
+		t.Fatalf("the job did not write its page: %+v", rs[0])
+	}
+	page := rs[0].PageID
+	var owner int64
+	var byUser *int64
+	var rolling bool
+	var host string
+	if err := f.pool.QueryRow(sys, `SELECT owner_id, created_by_user, rolling_versions, mirror_host FROM pages WHERE id = $1`, page).Scan(&owner, &byUser, &rolling, &host); err != nil {
+		t.Fatal(err)
+	}
+	if owner != f.owner || byUser != nil || !rolling || host != f.host {
+		t.Fatalf("the job's page: owner %d, created_by_user %v, rolling %v, host %q; want owner %d, none, true, %q", owner, byUser, rolling, host, f.owner, f.host)
+	}
+
+	ownerP := f.srv.principalFor(f.ctx, f.owner, authz.ViaSession)
+	pg, err := f.srv.ext.Pages.Page(authz.WithPrincipal(context.Background(), ownerP), page)
+	if err != nil {
+		t.Fatalf("the owner reads the job's page: %v", err)
+	}
+	if !pages.MayManage(pg, ownerP) {
+		t.Fatal("the job's owner may not manage the job's page")
+	}
+	mateP := f.srv.principalFor(f.ctx, mate, authz.ViaSession)
+	if _, in := ownerP.TeamScope().RoleIn(tm.ID); !in {
+		t.Fatalf("the owner's principal is not on the team: %v", ownerP.Teams)
+	}
+	if _, in := mateP.TeamScope().RoleIn(tm.ID); !in {
+		t.Fatalf("the teammate's principal is not on the team: %v", mateP.Teams)
+	}
+	mateCtx := authz.WithPrincipal(context.Background(), mateP)
+	if _, err := f.srv.ext.Pages.Page(mateCtx, page); !errors.Is(err, pages.ErrNotFound) {
+		t.Fatalf("a teammate of the job's owner reads the job's page: %v; want not found", err)
+	}
+
+	// The control: the team's own page, which the same teammate reads.
+	var teamPage int64
+	if err := f.pool.QueryRow(sys, `INSERT INTO pages (owner_id, title, mirror_host) VALUES ($1, 'team page', $2) RETURNING id`, tm.ID, f.host).Scan(&teamPage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.ext.Pages.Page(mateCtx, teamPage); err != nil {
+		t.Fatalf("control: the teammate reads the team's own page: %v", err)
 	}
 }
 

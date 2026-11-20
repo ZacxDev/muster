@@ -29,6 +29,10 @@ type Tab struct {
 	// elements' ids end in. Plain [a-z0-9-].
 	ID    string
 	Label string
+	// Count, when not nil, is drawn after the label inside the tab (the
+	// session panel's counts, which its script keeps current); nil draws the
+	// label alone.
+	Count g.Node
 	Panel g.Node
 }
 
@@ -88,6 +92,7 @@ func TabsSelected(id, key, label, selected string, tabs ...Tab) TabSet {
 			g.Attr("tabindex", tabIndex),
 			Class(tabClass),
 			g.Text(t.Label),
+			t.Count,
 		))
 		panels = append(panels, Div(
 			ID(panelID),

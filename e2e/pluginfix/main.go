@@ -15,6 +15,9 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmprsessions <owner-id> <claude-session-prefix>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix episode <owner-id> <session-key> <stalled|needs_you> <host> <window>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmepisodes <owner-id> <session-key-prefix>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix endepisode <owner-id> <session-key>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix episodestreak <owner-id> <session-key>   → prints its open stop's streak ("" before a pass observed it)
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmfleetactions <owner-id> <session-key-prefix>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> [body] → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
@@ -23,6 +26,9 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix branding clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ccagent <owner-id> <name> <token>   → prints the agent id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix page <owner-id> <title> <agent-id|0> <mirror-host|-> <mirror-session|-> <versions> <live 0|1> <age-seconds>   → prints the page id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmpage <page-id>
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -67,7 +73,13 @@
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
 //	  - notifypref: clears the owner's notification preferences
-//	    (notify_preferences), the same way: off, the default, is left behind.
+//	    (notify_preferences), the same way: each switch's default is left
+//	    behind (off, but "Let my agents share pages without asking" on).
+//	  - ccagent: a running claude-code agent (the folded header's page).
+//	  - page / rmpage: a page as a session's create_page writes it — its
+//	    creator (an agent, or a mirrored session on its host), its versions
+//	    and, optionally, a live link — and its removal (session-open.spec.ts:
+//	    the session view's Pages tab).
 //	  - branding: clears the instance's branding (instance_branding, 0105) —
 //	    the server's, not an owner's, so it takes no owner: nothing set, the
 //	    built-in mark, is left behind for every later spec on the shared
@@ -84,6 +96,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -155,7 +168,7 @@ func run(args []string) error {
 		}
 	case "notifypref":
 		// Clears the owner's notification preferences (migration 0094): the
-		// next reader sees the default, off.
+		// next reader sees each switch's default (pages_agent_share: on).
 		owner, err := num(1)
 		if err != nil || len(args) != 3 || args[2] != "clear" {
 			return fmt.Errorf("usage: notifypref <owner-id> clear")
@@ -398,6 +411,88 @@ func run(args []string) error {
 			owner, args[2], args[3], args[4], args[5]); err != nil {
 			return err
 		}
+	case "plainask":
+		// An OPEN plain-text question in the ask log (internal/asklog, 0089),
+		// as the capture writes one for a Claude Code window's last turn, in
+		// the session's open stop: what session_answer continue / composed
+		// answers (fleet_answers.go fleetHeldQuestion).
+		owner, err := num(1)
+		if err != nil || len(args) != 6 {
+			return fmt.Errorf("usage: plainask <owner-id> <session-key> <host> <window> <question>")
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO asks (owner_id, kind, runtime, mirror_host, mirror_session, mirror_window, claude_session,
+				episode_id, question, question_norm, asked_at)
+			SELECT $1, 'plain_text', 'claude-code', $3, 'work', $4, $2, e.id, $5, lower($5), now() - interval '30 minutes'
+			FROM session_episodes e WHERE e.owner_id = $1 AND e.session_kind = 'mirror' AND e.session_key = $2 AND e.ended_at IS NULL`,
+			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "rmasks":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmasks <owner-id> <session-key-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM asks WHERE owner_id = $1 AND starts_with(claude_session, $2)`, owner, args[2]); err != nil {
+			return err
+		}
+	case "endepisode":
+		// Ends a mirrored session's OPEN stop now, as the owner's own word
+		// would (end_reason 'owner'): the stop a fleet proposal was filed in
+		// is over, so the proposal expires (chief-fleet-proposals.spec.ts).
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: endepisode <owner-id> <session-key>")
+		}
+		tag, err := conn.Exec(ctx, `UPDATE session_episodes SET ended_at = now(), end_reason = 'owner', updated_at = now()
+			WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2 AND ended_at IS NULL`, owner, args[2])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("endepisode: %d open stops of %s, want 1", tag.RowsAffected(), args[2])
+		}
+	case "episodestreak":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: episodestreak <owner-id> <session-key>")
+		}
+		var streak string
+		if err := conn.QueryRow(ctx, `SELECT coalesce(max(streak_key), '') FROM session_episodes
+			WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2 AND ended_at IS NULL`, owner, args[2]).Scan(&streak); err != nil {
+			return err
+		}
+		fmt.Println(streak)
+	case "rmfleetactions":
+		// Removes the fleet actions on sessions whose key starts with the
+		// prefix. The log is append-only BY TRIGGER (0158), so the trigger is
+		// switched off for this one statement, in one transaction (the
+		// fixture's connection owns the table).
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmfleetactions <owner-id> <session-key-prefix>")
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		for _, q := range []string{`ALTER TABLE fleet_actions DISABLE TRIGGER fleet_actions_append_only`,
+			`UPDATE send_queue SET fleet_action_id = NULL WHERE fleet_action_id IN (SELECT id FROM fleet_actions WHERE owner_id = $1 AND starts_with(subject_key, $2))`,
+			`DELETE FROM fleet_actions WHERE owner_id = $1 AND starts_with(subject_key, $2)`,
+			`ALTER TABLE fleet_actions ENABLE TRIGGER fleet_actions_append_only`} {
+			var err error
+			if strings.Contains(q, "$1") {
+				_, err = tx.Exec(ctx, q, owner, args[2])
+			} else {
+				_, err = tx.Exec(ctx, q)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
 	case "rmepisodes":
 		owner, err := num(1)
 		if err != nil || len(args) != 3 {
@@ -461,6 +556,78 @@ func run(args []string) error {
 			return fmt.Errorf("usage: rmplugin <owner-id> <plugin-name>")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM plugins WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "ccagent":
+		// A running claude-code agent (its page draws the folded header).
+		owner, err := num(1)
+		if err != nil || len(args) != 4 {
+			return fmt.Errorf("usage: ccagent <owner-id> <name> <token>")
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off, kind, cc_account)
+			VALUES ($1, $2, $3, $2, 'running', $4, true, 'claude-code', 'e2e-account') RETURNING id`, owner, args[2], "devpod-"+args[2], args[3]).Scan(&id); err != nil {
+			return err
+		}
+		fmt.Println(id)
+	case "page":
+		// A page as a session's create_page writes it: made <age> seconds ago
+		// by agent <agent-id> (0 for none) or by session <mirror-session> on
+		// host <mirror-host> ("-" for none), with <versions> versions (the
+		// last current) and, when <live> is 1, a live link.
+		owner, err := num(1)
+		if err != nil || len(args) != 9 {
+			return fmt.Errorf("usage: page <owner-id> <title> <agent-id|0> <mirror-host|-> <mirror-session|-> <versions> <live 0|1> <age-seconds>")
+		}
+		agent, err := num(3)
+		if err != nil {
+			return err
+		}
+		versions, err := num(6)
+		if err != nil || versions < 1 {
+			return fmt.Errorf("page: versions must be 1 or more")
+		}
+		age, err := num(8)
+		if err != nil {
+			return err
+		}
+		var agentArg, sessArg any
+		host := ""
+		if agent > 0 {
+			agentArg = agent
+		} else {
+			host = args[4]
+			if args[5] != "-" {
+				sessArg = args[5]
+			}
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO pages (owner_id, title, current_version, agent_id, mirror_host, mirror_session, creator_label, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'e2e', now() - make_interval(secs => $7), now() - make_interval(secs => $7)) RETURNING id`,
+			owner, args[2], versions, agentArg, host, sessArg, float64(age)).Scan(&id); err != nil {
+			return err
+		}
+		for v := int64(1); v <= versions; v++ {
+			blocks := fmt.Sprintf(`[{"type":"markdown","text":"# %s\n\nVersion %d of this page."}]`, args[2], v)
+			if _, err := conn.Exec(ctx, `INSERT INTO page_versions (owner_id, page_id, version, title, blocks, size_bytes, created_by)
+				VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'e2e')`, owner, id, v, args[2], blocks, len(blocks)); err != nil {
+				return err
+			}
+		}
+		if args[7] == "1" {
+			if _, err := conn.Exec(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, decided_at)
+				VALUES ($1, $2::bigint, encode(sha256(convert_to('e2e-page-link-' || $2::bigint::text || '-' || clock_timestamp()::text, 'UTF8')), 'hex'), 'live', 'e2e', now())`, owner, id); err != nil {
+				return err
+			}
+		}
+		fmt.Println(id)
+	case "rmpage":
+		// Deletes one page by id (its versions and links cascade).
+		id, err := num(1)
+		if err != nil || len(args) != 2 {
+			return fmt.Errorf("usage: rmpage <page-id>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM pages WHERE id = $1`, id); err != nil {
 			return err
 		}
 	default:

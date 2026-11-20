@@ -171,6 +171,11 @@ var pgBackedPackages = []string{
 	// row-level security, and a fake ledger can falsify neither.
 	"internal/memorelay",
 	"internal/mirror",
+	// Added by the morning report (migration 0161). "One report per owner per
+	// day", "the push is claimed once and never for a quiet day" and "one
+	// owner's reports are invisible to another" are a primary key's, a
+	// conditional UPDATE's and row-level security's claims.
+	"internal/morning",
 	"internal/notes",
 	// Notification preferences (migration 0094): "off for every user who never
 	// chose" and "one user's switch is theirs alone" are claims about a table
@@ -193,7 +198,7 @@ var pgBackedPackages = []string{
 	// focus", "an upsert keeps one row" and "full-text search ranks the right
 	// focus first" are claims about row-level security and SQL.
 	"internal/focus",
-	// Scheduled host jobs (migration 0163). "A due job fires once across two
+	// Scheduled host jobs (migration 0166). "A due job fires once across two
 	// schedulers", "one running run per job" and "another owner's jobs are
 	// invisible" are claims about a compare-and-set, a partial unique index
 	// and row-level security.

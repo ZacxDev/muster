@@ -124,6 +124,9 @@ type Server struct {
 	// (fleet_read.go): its own, two minutes long, beside the closed-review
 	// settle's (pr_closed.go).
 	fleetPRs prStateCache
+	// fleetWrapClosing holds the wraps whose close runs in the background now
+	// (fleetWrapClose): one close per wrap in flight.
+	fleetWrapClosing sync.Map
 	// fleetOwners is fleet_list's cache of each stopped session's owner facts
 	// (last_owner_message_at, chief_texts_since_owner), per episode and streak
 	// (fleet_read.go).
@@ -145,6 +148,9 @@ type Server struct {
 	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
 	// fleetChat): owner id → *sync.Mutex.
 	fleetChatOpen sync.Map
+	// fleetCI is the fleet's cache of GitHub's CI answers (fleet_answers.go
+	// fleetCIRead).
+	fleetCI fleetCICache
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -180,6 +186,12 @@ type Server struct {
 	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
 	// another, 0 for none.
 	waitingGrace time.Duration
+	// clearRetry is the episode withdrawals deferred until their push's
+	// fan-out has had pushBroadcastTimeout (clearEpisodeLater, session_push.go).
+	clearRetry episodeClearRetries
+	// statusRuns is the status hook's per-owner coalescing and negative reads
+	// (episodeStatusMoved, session_state.go).
+	statusRuns episodeStatusRuns
 
 	// askLog is the ask log's capture state (ask_log.go), nil when
 	// Extensions.AskLog is unset; set by UseExtensions.
@@ -260,18 +272,21 @@ type Server struct {
 	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
 	// outcome-write attempts (zero: jobFinishRetryPause). jobDrains is each
 	// agent's queue runner in this process (jobs_queue.go).
-	jobLanes         jobLanes
-	ownJobs          ownJobs
-	jobDrains        jobDrains
+	jobLanes  jobLanes
+	ownJobs   ownJobs
+	jobDrains jobDrains
 	// jobsStopping is set by StopJobs at the start of a graceful shutdown:
 	// this process takes no more jobs from the table (jobs_queue.go).
 	jobsStopping atomic.Bool
 	// poolFailovers serialises a pool submission's account failover per
 	// (owner, pool) (jobs.go createPoolJob).
-	poolFailovers keyedLocks
+	poolFailovers    keyedLocks
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
+	// jobRateLimitBackoff is the first wait before a job's turn is sent again
+	// after a transient 429 (zero: JobRateLimitBackoff; jobs.go runJobTurn).
+	jobRateLimitBackoff time.Duration
 	// unroutedNow is the unrouted-message sweep's clock (nil: time.Now;
 	// unrouted.go).
 	unroutedNow func() time.Time
@@ -333,6 +348,13 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// chatHTMLEvery is how often, at most, this server's chat streams render
+	// a reply's html (chat_stream.go); zero = chatStreamHTMLEvery. A test sets
+	// it before its socket opens.
+	chatHTMLEvery time.Duration
+	// buildVersion is the build this server reports (Server.version); empty =
+	// BuildVersion. A test sets it instead of reassigning BuildVersion.
+	buildVersion string
 	// turnRoleChecked, test-only (nil in production): called when a member's
 	// turn on a team agent has passed turnActingContext's first role read, so
 	// a test can change the membership between that read and the send.
@@ -455,6 +477,9 @@ type Server struct {
 	// hostJobReports is why a host's last jobs message could not be
 	// recorded, per (owner, host), and its Attention item (hostjobs.go).
 	hostJobReports hostJobReportErrs
+	// officerChats is the operator chats' turns in flight on this replica
+	// (officer_operator_chat.go).
+	officerChats operatorChats
 	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
 	// officer_spawn_share.go); nil with no database.
 	spawnLender officers.HostSpawnLender
@@ -883,6 +908,8 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET "+ui.NavWaitingPath, s.requireSession(s.handleNavWaiting))
 	// A session view's Preview button (plugin_chip.go), which its slot polls.
 	mux.HandleFunc("GET "+ui.PreviewButtonPath, s.requireSession(s.handlePreviewButton))
+	// Its panel's Pages tab: the window's session's pages.
+	mux.HandleFunc("GET "+ui.SessionPagesPath, s.requireSession(s.handleSessionPages))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
@@ -1082,7 +1109,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
+		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -1233,7 +1260,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	uptime := s.now().Sub(s.startedAt).Seconds()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"version": BuildVersion,
+		"version": s.version(),
 		"uptime":  uptime,
 	})
 }
@@ -1346,7 +1373,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// The page judges the stream alive by hearing from it (ui/live.go): a
 	// board where nothing changes sends nothing, so it beats.
-	beat := time.NewTicker(liveHeartbeatEvery())
+	beat := time.NewTicker(socketSettingsOf(r.Context()).heartbeatEvery())
 	defer beat.Stop()
 	for {
 		select {

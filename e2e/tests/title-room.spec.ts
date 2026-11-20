@@ -1,5 +1,6 @@
 import { FrameLocator, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { titleRoomPort } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
@@ -52,7 +53,11 @@ const UNPINNED: [string, string][] = [
   ['inventory-forecast-model-refresh', '@7'],
   ['subscription-renewal-reminder-job', '@8'],
 ];
-const ALL_WINDOWS = [...WINDOWS, ...UNPINNED];
+// A window with a SHORT title (10 characters), for the header's "On
+// <computer>" line (the last describe below). Neither pinned nor visited by
+// the tests above it.
+const SHORT = 'disk-check';
+const ALL_WINDOWS = [...WINDOWS, ...UNPINNED, [SHORT, '@12'] as [string, string]];
 // A window's title: its session's name, without tmux's window index.
 const titleOf = (s: string) => s;
 // The window whose rendered view the header tests open: its title is 42
@@ -123,11 +128,12 @@ async function visitUnpinned(page: Page) {
     await expect(page.locator('nav[aria-label="View"]')).toBeVisible();
   }
 }
-// The header's truncating title box: the <h1> at the base, the button in it here.
+// The header's truncating title box: its [data-agent-title-text] line (the
+// button itself, before the computer's name had a line of its own).
 const headerFit = (page: Page) =>
   page.evaluate(() => {
     const h1 = document.querySelector('header h1') as HTMLElement;
-    const el = (h1.querySelector('button') as HTMLElement) || h1;
+    const el = (h1.querySelector('[data-agent-title-text]') as HTMLElement) || h1;
     return { text: (el.textContent || '').trim(), scroll: el.scrollWidth, client: el.clientWidth, clipped: el.scrollWidth > el.clientWidth + 1 };
   });
 const title = (page: Page) => page.locator('#mv-title');
@@ -264,7 +270,10 @@ for (const vp of [
           const at = (y: number) => b.contains(document.elementFromPoint(x, y));
           return { up: at(mid - 21), down: at(mid + 21), header: document.querySelector('header')!.getBoundingClientRect().height };
         });
-        expect(hit, 'the title is a 44px target and the header is its old 57px').toEqual({ up: true, down: true, header: 57 });
+        // 65px, not the 57px it was: the computer's name has its own line
+        // under the title now (the last describe below), 16px of text — the
+        // header grew by 8px, the 44px controls beside it set the rest.
+        expect(hit, 'the title is a 44px target and the header is 65px').toEqual({ up: true, down: true, header: 65 });
         await title(page).click();
         await expect(pop(page)).toBeVisible();
         // The whole header line, the badge's host included.
@@ -507,11 +516,11 @@ for (const vp of [
       const s = 'release-notes-drafter';
       const leftOut = (u: URL) => !(u.searchParams.get('session') === s && u.pathname.startsWith('/mirror/'));
       await page.goto(viewOf(s, winOf(s)));
-      await expect(page.locator('#mv-back')).toBeVisible();
+      await expect(page.locator('#mv-back')).toBeAttached();
       // CONTROL: bare home is this window (it was just opened).
       const bare = await page.request.get(origin + '/', { maxRedirects: 0 });
       expect(new URL(bare.headers()['location'], origin).searchParams.get('session'), 'control: bare home is this window').toBe(s);
-      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), page.locator('#mv-back').click()]);
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), (await menuItem(page, '#mv-back')).click()]);
       expect(leftOut(new URL(page.url())), `the view's Home landed on ${page.url()}`).toBe(true);
       await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(rig.host)}&session=${encodeURIComponent(s)}&window=${encodeURIComponent(winOf(s))}`);
       await expect(page.locator('#term-back')).toBeVisible();
@@ -520,3 +529,73 @@ for (const vp of [
     });
   });
 }
+
+// THE COMPUTER'S NAME FITS ON A PHONE (the v0.250.0 phone check, F3). The
+// header's "On <computer>" shared ONE truncating line with the title, after
+// it, so at 390px it never showed: even a 10-character title read
+// "disk-check…" with no computer at all. It has its own line under the title
+// now, and each truncates on its own.
+//
+// shownOf measures a header text by its TEXT, not its box: the width its words
+// lay out to (a Range over them — clipped text still lays out whole) against
+// how much of that is on screen, inside every ancestor that clips. Measured on
+// both of a window's pages, for a 10- and a 40-character title, and the
+// computer's name is the rig's real one ("On e2e-title-…", 21 characters).
+// 🔴 RED AT THE BASE (f7f97c6e): the name was 32% shown beside the short title
+// and 0% beside the long one (measured on the same markup in Chromium at 390).
+test.describe('phone 390×844, the computer\'s name in the header', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  type Shown = { text: string; needs: number; shown: number };
+  const shownOf = (page: Page, sel: string) =>
+    page.locator(sel).first().evaluate((el): Shown => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const r = document.createRange();
+      let first: Node | null = null, last: Node | null = null;
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!(n.textContent || '').trim()) continue;
+        first = first || n;
+        last = n;
+      }
+      if (!first || !last) return { text: '', needs: 0, shown: 0 };
+      r.setStart(first, 0);
+      r.setEnd(last, (last.textContent || '').length);
+      const t = r.getBoundingClientRect();
+      let left = t.left, right = t.right;
+      for (let a: Element | null = first.parentElement; a; a = a.parentElement) {
+        if (getComputedStyle(a).overflowX === 'visible') continue;
+        const b = a.getBoundingClientRect();
+        left = Math.max(left, b.left);
+        right = Math.min(right, b.right);
+      }
+      right = Math.min(right, document.documentElement.clientWidth);
+      return { text: (el.textContent || '').trim(), needs: Math.round(t.width), shown: Math.round(Math.max(0, right - left)) };
+    });
+
+  for (const [what, session] of [['a 10-character title', SHORT], ['a 40-character title', LONG]] as const) {
+    for (const surface of ['rendered view', 'terminal']) {
+      test(`${surface}, ${what}: "On <computer>" is on screen, not cut to a stub`, async ({ page }) => {
+        await ready(page);
+        const path = surface === 'terminal' ? '/mirror/terminal' : '/mirror/view';
+        await page.goto(origin + `${path}?host=${encodeURIComponent(rig.host)}&session=${encodeURIComponent(session)}&window=${encodeURIComponent(winOf(session))}`);
+        const titleSel = surface === 'terminal' ? 'header h1 > span' : 'header h1 [data-agent-title-text]';
+        await expect(page.locator(titleSel).first()).toBeVisible();
+        await expect(page.locator('header [data-term-badge]')).toBeVisible();
+        const host = await shownOf(page, 'header [data-term-badge] [data-host-icon]');
+        const title = await shownOf(page, titleSel);
+        const info = JSON.stringify({ host, title });
+        expect(host.text, info).toBe(`On ${rig.host}`);
+        // The computer's name: on screen, at least three quarters of it.
+        expect(host.shown, `"On <computer>" is on screen (${info})`).toBeGreaterThanOrEqual(100);
+        expect(host.shown / host.needs, `"On <computer>" is not a stub (${info})`).toBeGreaterThanOrEqual(0.75);
+        // The title keeps its line: a short one whole, a long one at least 150px.
+        if (session === SHORT) expect(title.shown, `the short title is whole (${info})`).toBeGreaterThanOrEqual(title.needs - 1);
+        else expect(title.shown, `the long title keeps its width (${info})`).toBeGreaterThanOrEqual(150);
+        // Each on its own line: the computer's name is below the title.
+        const [tb, hb] = await Promise.all([page.locator(titleSel).first().boundingBox(), page.locator('header [data-term-badge]').boundingBox()]);
+        expect(hb!.y, `the name's line is under the title's (${info})`).toBeGreaterThanOrEqual(tb!.y + tb!.height - 1);
+        expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
+      });
+    }
+  }
+});

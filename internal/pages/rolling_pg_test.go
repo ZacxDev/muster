@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// A ROLLING page (Creator.RollingVersions, migration 0163: a scheduled host
+// A ROLLING page (Creator.RollingVersions, migration 0166: a scheduled host
 // job's own page) keeps its newest MaxVersionsPerPage versions, dropping the
 // oldest one nothing references; every other page keeps the cap.
 
@@ -125,6 +125,85 @@ func TestARollingPageNeverDropsAReferencedVersion(t *testing.T) {
 	}
 	if got := versionNumbers(t, s, p.ID); got != "5,3,1" {
 		t.Fatalf("a refused version dropped one: held %s", got)
+	}
+}
+
+// TestARollingPageDropsAVersionThatUsesAnAsset: a version that uses one of
+// the page's assets (0164's page_version_assets) is dropped like any other
+// unreferenced version, and its asset references go with it (0164's
+// cascade from page_versions), so the drop is not refused by the reference.
+// The ASSET stays the page's: it is still listed and its bytes are still
+// served from the page's prefix until it is deleted, which, no version
+// using it now, is allowed; an asset a version still held uses stays
+// served and in use. Deleting the page leaves no asset rows.
+func TestARollingPageDropsAVersionThatUsesAnAsset(t *testing.T) {
+	defer func(v int) { MaxVersionsPerPage = v }(MaxVersionsPerPage)
+	MaxVersionsPerPage = 4
+	s, pool := pgStore(t)
+	two := asUser(2)
+	job := Creator{MirrorHost: "workstation", Label: "job", RollingVersions: true}
+	plain, pn := mdBlocks(t, "no media")
+	p, _, err := s.Create(two, job, "R", plain, pn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := addAsset(t, s, 2, job, p.ID, 1, 10, "image/png")
+	y := addAsset(t, s, 2, job, p.ID, 2, 20, "video/mp4")
+	withX, xn := mdBlocks(t, "![x]("+x.Ref()+")")
+	withY, yn := mdBlocks(t, "![y]("+y.Ref()+")")
+	for _, w := range []struct {
+		b []Block
+		n int
+	}{{withX, xn}, {withY, yn}, {plain, pn}} {
+		if _, _, err := s.AddVersion(two, job, p.ID, "R", w.b, w.n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Holds 4 (current), 3 (uses y), 2 (uses x), 1. Version 5 drops 1;
+	// version 6 drops 2, the version that uses x.
+	for i := 5; i <= 6; i++ {
+		if _, _, err := s.AddVersion(two, job, p.ID, "R", plain, pn); err != nil {
+			t.Fatalf("version %d of a rolling page whose oldest unreferenced version uses an asset: %v", i, err)
+		}
+	}
+	if got := versionNumbers(t, s, p.ID); got != "6,5,4,3" {
+		t.Fatalf("held %s; want 6,5,4,3 (1, then 2, dropped)", got)
+	}
+	refs := func(asset string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(two, `SELECT count(*) FROM page_version_assets WHERE page_id = $1 AND asset_id = $2`, p.ID, asset).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := refs(x.PublicID); n != 0 {
+		t.Fatalf("dropped version 2 left %d references to its asset", n)
+	}
+	if n := refs(y.PublicID); n != 1 {
+		t.Fatalf("held version 3 has %d references to its asset; want 1", n)
+	}
+	if _, err := s.VersionAsset(two, p.ID, 3, y.PublicID); err != nil {
+		t.Fatalf("held version 3 no longer serves its asset: %v", err)
+	}
+	if list, err := s.Assets(two, p.ID); err != nil || len(list) != 2 {
+		t.Fatalf("the page lists %d assets (%v); want both: a dropped version takes no asset", len(list), err)
+	}
+	if _, err := s.DeleteAsset(two, job, p.ID, y.PublicID); !errors.Is(err, ErrAssetInUse) {
+		t.Fatalf("the asset held version 3 uses was deleted: %v", err)
+	}
+	if got, err := s.DeleteAsset(two, job, p.ID, x.PublicID); err != nil || got.PublicID != x.PublicID {
+		t.Fatalf("the asset only the dropped version used could not be deleted: %+v %v", got, err)
+	}
+	if _, err := s.Delete(two, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(two, `SELECT (SELECT count(*) FROM page_assets WHERE page_id = $1) + (SELECT count(*) FROM page_version_assets WHERE page_id = $1)`, p.ID).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Errorf("deleting the rolling page left %d asset rows", left)
 	}
 }
 

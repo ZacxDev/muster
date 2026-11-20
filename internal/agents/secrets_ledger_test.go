@@ -68,7 +68,7 @@ var secretQueryLedger = map[string]string{
 	// reads it. They run against a throwaway database only.
 	"e2e/ccfix/main.go:run":       "FIXTURE WRITE: seeds the old column (e2e only)",
 	"e2e/heldfix/main.go:run":     "FIXTURE WRITE: seeds the old column (e2e only)",
-	"e2e/pluginfix/main.go:run#2": "FIXTURE WRITE: seeds the old column (e2e only), twice",
+	"e2e/pluginfix/main.go:run#3": "FIXTURE WRITE: seeds the old column (e2e only), three times (chief, agent, ccagent)",
 }
 
 // TestEveryQueryNamingAnAgentCredentialIsClassified walks the module and

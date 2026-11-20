@@ -448,9 +448,9 @@ func TestAViewsDocumentIsKeptForBackButNeverShared(t *testing.T) {
 		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "private, no-cache" {
 			t.Errorf("GET %s = %d, Cache-Control %q; want 200 and private, no-cache", p, resp.StatusCode, resp.Header.Get("Cache-Control"))
 		}
-		// Through the whole middleware chain, which sets no-referrer on
-		// everything: a page with a form the browser may submit itself must
-		// override it, or that submit carries `Origin: null` and is refused.
+		// Through the whole middleware chain: a page with a form the browser
+		// may submit itself must be same-origin, or (under no-referrer) that
+		// submit carries `Origin: null` and is refused.
 		if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {
 			t.Errorf("GET %s: Referrer-Policy = %q, want same-origin", p, got)
 		}

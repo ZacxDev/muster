@@ -15,25 +15,27 @@ import (
 // account, "↻ switched" and a large Terminal button — a floating "● N waiting"
 // pill sat above the thread, the thread was a bordered card with a divider above
 // the composer, and the working indicator was a bubble. A mirrored session has
-// one header row, its messages straight on the page, its asks between the
-// conversation and the composer and a one-line "working…".
+// one header row, its messages straight on the page and a one-line "working…".
 //
 // So a claude-code agent's page — the chief's and every dispatched one's — draws
 // (foldedHeader):
 //
-//   - ONE header row: ☰, the status dot, the title, the asks badge, New chat,
-//     Chat history, Focus history, and the ⋯ — at the row's END, where a
+//   - ONE header row: ☰, the status dot, the title, the asks badge, the Open
+//     button (its pages, plugin_chip.go), New chat, and the ⋯ — at the row's
+//     END, where a
 //     mirrored session's last control is. The CHIEF's row has the one list
 //     icon a mirrored session's has instead of the three (its sheet holds its
-//     chats: chief_chats.go) and its context chip under the title
-//     (foldedTitle);
+//     chats: chief_chats.go), and its ⋯ says how much memory the chat uses
+//     when that is high (chiefMemorySlot);
+//   - Chat history and Focus history IN THE ⋯ MENU too (session-open: the
+//     row left the title 8px at 390px with the Open button drawn);
 //   - the status row's other controls IN THE ⋯ MENU (foldedMenuItems): the Claude
 //     account, the failover ("Account switched" and its whole line — in the menu
 //     itself, no second popover), the worker pool, and Terminal (the same
 //     view-swap link the Rendered | Terminal switch draws, so the terminal still
 //     opens in the kept frame);
-//   - the "N waiting" chip as a count badge in the header (askerAsksBadge), and
-//     the asks block under the transcript (agentChatPane).
+//   - the agent's open asks as a count badge in the header (AskerAsksBadge),
+//     which opens the Asks page filtered to them; the page draws no asks block.
 //
 // The transcript, the composer, the working row and the relay rows are every
 // agent page's, whatever its kind (agentChatPane, chatLogInner).
@@ -61,7 +63,7 @@ func headerFolded(v AgentDetailView) bool {
 // 🔴 BELOW `sm` ITS GUTTER IS px-2 AND ITS TOOLS ARE gap-1, AND THAT IS
 // MEASURED ROOM, NOT TASTE. The row holds five 44px controls (☰, New chat,
 // Chat history, Focus history, ⋯), the 12px status dot and — while asks are
-// hidden — the badge. With the page header's px-4 and gap-3 tools, at 390px the
+// open — the asks badge. With the page header's px-4 and gap-3 tools, at 390px the
 // badge left the title 0px: "chief" drew as its "…" alone (the e2e
 // chief-fold-in shot). A mirrored session's header is px-2 for the same reason.
 func foldedHeader(v AgentDetailView) g.Node {
@@ -78,7 +80,10 @@ func foldedHeader(v AgentDetailView) g.Node {
 			g.If(v.Card.ID != 0, agentStrip(v.Card)),
 			foldedTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
-			g.If(v.AsksSrc != "", askerAsksBadge()),
+			g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
+			// The agent's Open button (its pages), while it has any
+			// (plugin_chip.go).
+			previewButtonSlot(v.Open),
 			agentHeaderToolsWith(v, true),
 			g.If(v.Card.ID != 0, Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(v.Card, "", foldedMenuItems(v)))),
 		),
@@ -89,38 +94,18 @@ func foldedHeader(v AgentDetailView) g.Node {
 	)
 }
 
-// foldedTitle is the folded header's title: agentTitle — and, on a chief's
-// chat, the chat's context chip UNDER it (chiefHeaderContext), as a mirrored
-// session's header draws its chip under its title.
-//
-// 🔴 THE TWO LINES ARE THE ROW'S 44px, SO THE HEADER IS NOT TALLER FOR THEM:
-// the title's line is h-6 and the chip's h-5. The title's "…" (h-11, shown
-// only while the title is clipped) overflows its h-6 line rather than growing
-// it — so a title that starts or stops clipping moves nothing — and keeps its
-// 44px tap target.
-func foldedTitle(v AgentDetailView) g.Node {
-	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
-		return agentTitle(v)
-	}
-	return Div(
-		Class("flex min-w-0 flex-1 flex-col justify-center"),
-		Div(Class("flex h-6 min-w-0 items-center"), agentTitle(v)),
-		chiefHeaderContext(v.ChiefChat, "h-5"),
-	)
-}
+// foldedTitle is the folded header's title: agentTitle. A chief's chat drew
+// its context chip under it before #871; how much context the chat uses is
+// in the ⋯ menu now, and only when it is high (chiefMemorySlot).
+func foldedTitle(v AgentDetailView) g.Node { return agentTitle(v) }
 
-// chiefHeaderContext is the line holding a chief chat's context chip in a page
-// header (chiefContextSlot), height h (its height before the chip loads, so the
-// chip's arrival moves nothing). Nothing off a chief's chat.
-func chiefHeaderContext(b *ChiefChatBar, h string) g.Node {
-	if b == nil {
+// foldedChiefMemory is a claude-code chief's ⋯ memory slot, among the
+// menu's other extras (so not its divider's peer); nil off a chief's chat page.
+func foldedChiefMemory(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
 		return nil
 	}
-	return Div(
-		g.Attr("data-chief-context-row", ""),
-		Class("flex min-w-0 items-center "+h),
-		chiefContextSlot(b.AgentName, b.SessionID),
-	)
+	return chiefMemorySlot(v.ChiefChat.AgentName, v.ChiefChat.SessionID, false)
 }
 
 // foldedMenuItems is what the status row held, as the ⋯ menu's first items.
@@ -155,6 +140,13 @@ func foldedMenuItems(v AgentDetailView) g.Node {
 				Span(g.Attr("data-worker-pool", v.WorkerPool), Class("ml-auto min-w-0 truncate text-fg2"), g.Text(v.WorkerPool)),
 			)),
 		),
+		// The chat's history and its focus history (the header kept New chat
+		// alone, agentHeaderToolsWith): not on the chief's page, whose list
+		// icon opens both (chatIndexButton).
+		historyMenuItems(v),
+		// A chief's chat: its memory line, when its context is high
+		// (chiefMemorySlot).
+		foldedChiefMemory(v),
 		// The Rendered | Terminal switch's link (viewToggle), as a menu item: the
 		// same id and data-view-swap, so the terminal opens in the kept frame
 		// (view_swap.go) and is a plain link without script. The view swap's

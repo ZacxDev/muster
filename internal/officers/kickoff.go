@@ -456,10 +456,38 @@ const (
 	ToolContactGet   = "officer_contact_get"
 	ToolContactsList = "officer_contacts_list"
 	ToolContactNote  = "officer_contact_note"
+	// The OWN-STATE tools (officers UX PR 2/4; internal/api
+	// officer_own_state.go): what a builtin officer reads and does about its
+	// OWN state when its owner chats with it on its page. ToolMyState reads
+	// (its open asks, pending drafts and outreach batches, refusals waiting
+	// on its owner, today's spend against its budget, its schedules); the
+	// other three ACT and are refused outside an operator chat (chat.go
+	// OperatorChatID): ToolConfirmCard asks muster to draw a confirm card
+	// for one of its pending drafts or batches — the OWNER approves it, never
+	// the officer — and ToolRefusalRefile / ToolRefusalDrop are the officer
+	// page's Re-file and Drop of a refusal waiting on its owner. Offered to a
+	// BUILTIN pod officer only (ToolOffered).
+	ToolMyState       = "officer_my_state"
+	ToolConfirmCard   = "officer_confirm_card"
+	ToolRefusalRefile = "officer_refusal_refile"
+	ToolRefusalDrop   = "officer_refusal_drop"
 )
 
 // ContactTools are the three contact tools (ToolContactGet …).
 var ContactTools = []string{ToolContactGet, ToolContactsList, ToolContactNote}
+
+// OwnStateTools are the four own-state tools (ToolMyState …).
+var OwnStateTools = []string{ToolMyState, ToolConfirmCard, ToolRefusalRefile, ToolRefusalDrop}
+
+// OwnStateActs reports whether tool is one of the own-state tools that ACT
+// (refused outside an operator chat).
+func OwnStateActs(tool string) bool {
+	switch tool {
+	case ToolConfirmCard, ToolRefusalRefile, ToolRefusalDrop:
+		return true
+	}
+	return false
+}
 
 // hostTools are the officer tools a host officer's instances are offered
 // (ToolOffered).
@@ -534,13 +562,13 @@ func ToolOffered(o Officer, tool string) bool {
 		// muster#565) — never the routine pool, never an untiered officer.
 		// HQ also refuses a type whose flood_actuator is off.
 		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
-	case ToolRolloutPromotePropose:
-		// item_asks.go: a rollout officer's ROUTINE pool (and an untiered
-		// one), never its judgement pool: HQ tiers the sweep that proposes
-		// routine, and the charter's judgement work only escalates a failed
-		// rollout.result — it never proposes, and the charter forbids a retry.
-		// HQ also refuses a type whose rollout_actuator is off, a repository
-		// its allowlist does not name and a lost lease.
+	case ToolRolloutEvidenceAttach:
+		// rollout_evidence.go: a rollout officer's ROUTINE pool (and an
+		// untiered one), never its judgement pool: HQ tiers the hourly sweep,
+		// the item that attaches evidence, routine, and the charter's
+		// judgement work only escalates a failed rollout.result. HQ also
+		// refuses a type whose rollout_actuator is off, a repository its
+		// allowlist does not name and a lost lease.
 		return o.Type() == RolloutOfficerType && o.Tier != TierJudgement
 	case ToolPRContext:
 		// pr_context.go: the JUDGEMENT pool only, as the flood tool — the
@@ -554,6 +582,11 @@ func ToolOffered(o Officer, tool string) bool {
 	case ToolContactGet, ToolContactsList, ToolContactNote:
 		// 🔴 A BUILTIN OFFICER'S ONLY: the people are in muster's store; the
 		// type grant (contacts) is read at call time.
+		return o.IsBuiltin()
+	case ToolMyState, ToolConfirmCard, ToolRefusalRefile, ToolRefusalDrop:
+		// 🔴 A BUILTIN OFFICER'S ONLY: its state is muster's store. A host
+		// officer never reaches here (hostTools): its operator chat has no
+		// lane to run in.
 		return o.IsBuiltin()
 	}
 	return false

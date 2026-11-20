@@ -71,6 +71,8 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"POST /mirror/ask-attachments": mirrorTeamHostDoor,
 	// …and its take-back when the ask was not filed (ask_media.go).
 	"DELETE /mirror/ask-attachments/{id}": mirrorTeamHostDoor,
+	// A page's image or video, sent by the host's MCP proxy (page_assets.go).
+	"POST /mirror/pages/{id}/assets": mirrorTeamHostDoor,
 
 	"GET /mirror/terminal":         mirrorTeamView,
 	"GET /mirror/terminal/ws":      mirrorTeamViewOrKeys, // read-only at viewer; live keys (mode=interactive) at operator
@@ -90,6 +92,7 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"POST /mirror/view/suggest/event": mirrorTeamRefused,
 
 	"GET /ui/mirror/preview-button":           mirrorTeamView,    // on the TEAM's viewer plugins (2b.3b), never the viewer's
+	"GET /ui/mirror/session-pages":            mirrorTeamView,    // a team window lists no pages (windowPagesRef)
 	"GET /mirror/view/complete":               mirrorTeamOperate, // the composer's catalog
 	"GET /mirror/terminal/send":               mirrorTeamOperate,
 	"POST /mirror/terminal/send":              mirrorTeamOperate,

@@ -122,6 +122,10 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO fleet_owner_marks (looked_at) VALUES (now())`, func() []any { return nil }, nil},
 		{`INSERT INTO officer_seen (officer_owner, officer, seen_at) VALUES (1, 'draft:example-' || lower($1), now())`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_cap_raises (officer, day, daily_usd, raised_at) VALUES ('draft:example-' || lower($1), current_date, 20, now())`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO fleet_actions (class, proposer, subject_kind, subject_key, episode_id, text, text_sha256, state) VALUES ('continue', 'chief', 'mirror', $1, 1, 'go on', repeat('0', 64), 'proposed')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO officer_chat_cards (officer_owner, officer, kind, draft_id, body_sha256, media_sha256, card_sha256) VALUES (1, 'draft:example-' || lower($1), 'draft', 1, repeat('a', 64), '{}', repeat('b', 64))`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO morning_reports (day, window_since, window_until, quiet) VALUES ('2000-01-02', '2000-01-01T14:00:00Z', '2000-01-02T14:00:00Z', true)`, func() []any { return nil }, nil},
 		{`INSERT INTO host_jobs (host, name, cron, command, timeout_s, reported_at) VALUES ('host-a', 'smoke-' || lower($1), '0 6 * * *', '{/bin/true}', 60, now()) RETURNING id`, func() []any { return []any{tag} }, &hostJob},
 		{`INSERT INTO host_job_runs (job_id, host, job, trigger, status, timeout_s, fired_at) VALUES ($1, 'host-a', 'smoke', 'cron', 'ok', 60, now())`, func() []any { return []any{hostJob} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
@@ -147,6 +151,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
 		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
 		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
+		{`INSERT INTO page_assets (page_id, public_id, content_type, size_bytes) VALUES ($1, substr(md5('asset' || $2), 1, 22), 'image/png', 1)`, func() []any { return []any{page, tag} }, nil},
+		{`INSERT INTO page_version_assets (page_id, version, asset_id) VALUES ($1, 1, substr(md5('asset' || $2), 1, 22))`, func() []any { return []any{page, tag} }, nil},
 		{`INSERT INTO officer_types (key, charter) VALUES ('conf-' || lower($1), 'c')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_defs (officer, type_key) VALUES ('conf-' || lower($1) || ':a', 'conf-' || lower($1))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_items (officer, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'k', 's')`, func() []any { return []any{tag} }, nil},
@@ -233,7 +239,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"tables with a team lend policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
 			WHERE schemaname='public' AND policyname='team_lent_read'`), lentTables()},
 		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
+			WHERE schemaname='public' AND policyname='team_read'`), teamReadTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -250,6 +256,14 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if _, page := teamPageTables[tbl]; page {
+			// The team page policies (0165), pinned whole by the share ledger
+			// (teamPagePolicies); here only that each is one of them.
+			if w, ok := teamPagePolicies(tbl)[name]; !ok || w[0] != cmd || permissive != "PERMISSIVE" || w[1] != qual || w[2] != check {
+				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0165's team page policies", tbl, name, cmd, permissive, qual, check)
+			}
+			continue
 		}
 		if c, shared := shareClasses[tbl]; shared {
 			// The team policies (0127): one per command, each with the user
@@ -516,8 +530,35 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_owner_is_team", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	// 0165 adds four, each pinned below to the same shape — scope all for its
+	// own duration, search_path pinned, EXECUTE to muster_app and not PUBLIC:
+	// muster_is_team_member (whether a page's creator is still on its team),
+	// muster_answer_team_page_card and muster_cancel_team_page_card (a member's
+	// answer to, and withdrawal of, a team agent's page share card) and
+	// muster_revoke_team_page_uploads (a team page's file rows, on its delete).
+	// Their behaviour is TestTheTeamCardAnswerDoorHoldsInTheDatabase's and
+	// TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive's.
+	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_is_team_member",
+		"muster_owner_is_team", "muster_retire_agent_name", "muster_revoke_team_page_uploads"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
+	}
+	for _, fn := range []string{"muster_is_team_member", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_revoke_team_page_uploads"} {
+		var public, app bool
+		if err := f.pool.QueryRow(f.mig, `SELECT has_function_privilege('public', p.oid, 'EXECUTE'), has_function_privilege('muster_app', p.oid, 'EXECUTE')
+			FROM pg_proc p WHERE p.proname = $1`, fn).Scan(&public, &app); err != nil {
+			t.Fatal(err)
+		}
+		if public || !app {
+			t.Errorf("%s: EXECUTE to PUBLIC %v, to muster_app %v; want muster_app only", fn, public, app)
+		}
+		var cfg []string
+		if err := f.pool.QueryRow(f.mig, `SELECT proconfig FROM pg_proc WHERE proname = $1`, fn).Scan(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(cfg)
+		if !slices.Equal(cfg, []string{"muster.scope=all", "search_path=pg_catalog"}) {
+			t.Errorf("%s: proconfig=%v; want search_path pinned and scope all for its own duration", fn, cfg)
+		}
 	}
 }
 
@@ -715,3 +756,7 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 		t.Errorf("RLSStatus tables = %v; want %v", tables, want)
 	}
 }
+
+// teamReadTables is every table with a team_read policy: the share-class ones
+// (0127) and the team page ones (0165).
+func teamReadTables() []string { return ownerFixedTables() }

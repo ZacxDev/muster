@@ -60,6 +60,7 @@ func TestEverySignInAndSignOutClearsTheCaches(t *testing.T) {
 		t.Errorf("password sign-in = %d, Clear-Site-Data %q; want 303 and \"cache\"", w.Code, w.Header().Get("Clear-Site-Data"))
 	}
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin") // muster's own form (the central origin check)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Header().Get("Clear-Site-Data") != `"cache"` {

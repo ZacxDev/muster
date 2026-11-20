@@ -349,6 +349,14 @@ func TestTheLogTabSaysWhetherTheLogIsOffEmptyOrFiltered(t *testing.T) {
 		!strings.Contains(body, `data-asklog-stat="median"><span class="`) || !strings.Contains(body, `>20s</span>`) {
 		t.Fatalf("the full tab lacks its summary (median 20s):\n%s", body)
 	}
+	// 🔴 THE TILE'S CLAIM IS TRUE: A's answers took 10, 20 and 40 s, so "9 in
+	// 10 answered within" must name 40 s (all 3 were), never the interpolated
+	// p90 of 36 s (only 2 of 3 were) that the API's p90_answer_secs reports.
+	full := on.session(t, askLogPanelPath, on.a).Body.String()
+	p90 := regexp.MustCompile(`data-asklog-stat="p90"><span class="[^"]*">([^<]*)</span><span class="[^"]*">([^<]*)</span>`).FindStringSubmatch(full)
+	if p90 == nil || p90[1]+" "+p90[2] != "40s 9 in 10 answered within" {
+		t.Fatalf("the 9-in-10 tile reads %q, want \"40s 9 in 10 answered within\":\n%s", p90, full)
+	}
 }
 
 // TestTheAsksPageReadsTheLogOnlyOnItsTab: opened on another tab, the Log

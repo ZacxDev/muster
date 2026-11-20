@@ -1,4 +1,4 @@
-// Package hostjobs is the store of SCHEDULED HOST JOBS (migration 0163;
+// Package hostjobs is the store of SCHEDULED HOST JOBS (migration 0166;
 // docs/host-jobs.md): each job as its host last reported it, its cron's next
 // fire, and its runs. The protocol is internal/mirror's hostjobs.go, the host
 // half internal/mirrorhost's, and what a fire and a result DO — the trigger,
@@ -31,7 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// Run statuses (0163's CHECK).
+// Run statuses (0166's CHECK).
 const (
 	StatusRunning = "running"
 	// StatusOK: the command exited 0 and its output was a valid page — a
@@ -54,7 +54,7 @@ const (
 	StatusLost = "lost"
 )
 
-// Triggers (0163's CHECK).
+// Triggers (0166's CHECK).
 const (
 	TriggerCron   = "cron"
 	TriggerManual = "manual"
@@ -287,7 +287,7 @@ func (s *Store) FireDue(ctx context.Context, now time.Time, limit int) ([]Fire, 
 const maxRunsPerJob = 1000
 
 // StartRun records a run of the caller's job j by trigger at now, as ONE of:
-//   - skipped, when a run of j is still running (the 0163 one-running index
+//   - skipped, when a run of j is still running (the 0166 one-running index
 //     decides, whichever replica or path got there first);
 //   - running, when online (the caller then sends the host its job-run);
 //   - offline, when the host is not connected.
@@ -431,7 +431,7 @@ func (s *Store) OfflineNotices(ctx context.Context, host string, job int64) ([]i
 }
 
 // Forget deletes the caller's job name on host — declared or not — with its
-// runs (0163's cascade), and answers the Attention items its runs recorded
+// runs (0166's cascade), and answers the Attention items its runs recorded
 // (the caller withdraws the open ones). ErrNotFound when the caller has no
 // such job. A host that still declares it records it again on its next
 // connection: forget is for a host that is gone.
@@ -489,7 +489,7 @@ func (s *Store) LostRuns(ctx context.Context, now time.Time, limit int) ([]Run, 
 }
 
 // CleanTail is stderr as a run row keeps it: valid UTF-8 with no NUL, at most
-// mirror.MaxJobStderrTail bytes (0163's CHECK), cut at its START (it is a
+// mirror.MaxJobStderrTail bytes (0166's CHECK), cut at its START (it is a
 // tail).
 func CleanTail(s string) string {
 	s = strings.ReplaceAll(strings.ToValidUTF8(s, "?"), "\x00", "")
@@ -501,7 +501,7 @@ func CleanTail(s string) string {
 }
 
 // CleanDetail is a run's detail: valid UTF-8, at most 1000 characters
-// (0163's CHECK).
+// (0166's CHECK).
 func CleanDetail(s string) string {
 	s = strings.ReplaceAll(strings.ToValidUTF8(s, "?"), "\x00", "")
 	if utf8.RuneCountInString(s) > 1000 {

@@ -281,6 +281,10 @@ type Observation struct {
 	BudgetRead bool
 	// Spent is the officer's spend today in USD, when BudgetRead.
 	Spent float64
+	// Budget is the daily budget the pass held it to, in USD: the declared
+	// daily_budget_usd, or its owner's raise for today
+	// (Officer.WithRaisedCap). 0 with no budget.
+	Budget float64
 	// SpendUnreadable: the officer has a daily budget and its spend could not
 	// be read this pass (then OverBudget, fail closed).
 	SpendUnreadable bool
@@ -1275,7 +1279,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 			for _, d := range ds {
 				waiting += d.BudgetWaiting
 			}
-			alert = &BudgetAlert{Spent: obs[0].Spent, Budget: o.Budget.DailyUSD, Waiting: waiting, ResetAt: CapResetAt(now)}
+			alert = &BudgetAlert{Spent: obs[0].Spent, Budget: obs[0].Budget, Waiting: waiting, ResetAt: CapResetAt(now)}
 		}
 	}
 	var ended []refusedCap
@@ -1493,6 +1497,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 	// closed), as an unreadable session ledger does.
 	var over, read, unreadable bool
 	var spent float64
+	budget := o.Budget.DailyUSD
 	if o.Budget.DailyUSD > 0 {
 		if sr, ok := r.hq.(spendReader); ok {
 			v, served, err := sr.SpentToday(ctx, o, r.now())
@@ -1501,7 +1506,19 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 				r.log.Printf("officers: %s: reading its spend for daily_budget_usd: %v — not waking it for new work this pass", o.ID, err)
 				over, unreadable = true, true
 			case served:
-				spent, read, over = v, true, o.OverBudget(v)
+				// The owner's raise for today, when there is one
+				// (Officer.WithRaisedCap). An unreadable raise is the
+				// declared budget: the lower cap, so fail closed.
+				ob := o
+				if rr, ok := r.hq.(raisedCapReader); ok {
+					if c, err := rr.RaisedCapToday(ctx, o, r.now()); err != nil {
+						r.log.Printf("officers: %s: reading today's raised cap: %v — holding it to its declared daily_budget_usd this pass", o.ID, err)
+					} else {
+						ob = o.WithRaisedCap(c)
+					}
+				}
+				budget = ob.Budget.DailyUSD
+				spent, read, over = v, true, ob.OverBudget(v)
 			}
 		}
 	}
@@ -1528,7 +1545,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 			used, capped, counted = 0, true, nil
 		}
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
-			OverBudget: over, BudgetRead: read, Spent: spent, SpendUnreadable: unreadable}
+			OverBudget: over, BudgetRead: read, Spent: spent, Budget: budget, SpendUnreadable: unreadable}
 		out[i].Chats = r.chats.On(p)
 		out[i].ChatPlan, out[i].ChatHeldBack = r.chats.Want(ctx, p, out[i], r.now())
 	}
@@ -1813,6 +1830,11 @@ const passTimeout = 2 * time.Minute
 // later, none never — and the wait is measured
 // (muster_officer_pass_oldest_wait_seconds, muster_officer_pass_start_lag_seconds).
 const maxConcurrentPasses = 4
+
+// MaxConcurrentPasses is maxConcurrentPasses, for what sizes a budget the
+// passes share (the officer fleet-read test in internal/api models its
+// rate-limiter waits on it).
+const MaxConcurrentPasses = maxConcurrentPasses
 
 // passCandidate is a due officer Run has not started a pass for, waiting
 // since since: its nextAt, or — for a zero nextAt (a first pass, or one Due

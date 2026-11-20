@@ -236,6 +236,9 @@ type Client struct {
 	// connection.
 	jobs jobRunner
 
+	// onConnected runs each time a connection is registered (OnConnected).
+	onConnected atomic.Pointer[func()]
+
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
 	curMu sync.Mutex
@@ -329,6 +332,14 @@ func New(cfg Config) (*Client, error) {
 	// subdomain (internal/noredirect).
 	c.tunnel = noredirect.Client(&http.Client{Transport: c.tunnelTr})
 	return c, nil
+}
+
+// OnConnected sets f to run each time muster accepts a connection (after its
+// welcome): muster-mirror's MCP endpoint re-reads the tool lists then
+// (MCPProxy.KickTools), as a reconnect is when a muster upgrade arrives. f
+// must not block.
+func (c *Client) OnConnected(f func()) {
+	c.onConnected.Store(&f)
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
@@ -528,6 +539,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		c.log.Printf("muster-mirror: connected to %s as host %s with %d window(s) in %d session(s)", c.url, c.cfg.Host, len(first.windows), len(first.sessions))
 	} else {
 		c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(first.sessions))
+	}
+	if f := c.onConnected.Load(); f != nil {
+		(*f)()
 	}
 
 	// The first listing's repo names, work counts and colours, after the hello

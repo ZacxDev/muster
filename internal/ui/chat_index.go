@@ -32,24 +32,18 @@ import (
 // the window's address), and the sheet is a FIXED height, so neither switching
 // tabs nor a history page arriving moves anything outside the list.
 //
-// 🔴 ON THE CHIEF'S PAGE IT HAS A THIRD TAB, FIRST: "Chats" (chiefChatsPanel) —
-// its primary and side chats and the actions on them, the one place they are
-// managed (chief_chats.go). There "Your messages" lists the user bubbles the
-// page loaded (no host sends that page an index), and says so.
+// It is on the chief's agent page too, where "Your messages" lists the user
+// bubbles the page loaded (no host sends that page an index), and says so. The
+// chief's chats are NOT here: they are the strip of chips under its header
+// (chief_chats.go).
 
-// chatIndexLabel is the index control's and sheet's name; chatIndexChatsLabel
-// is it with the chief's Chats tab.
-const (
-	chatIndexLabel      = "Your messages and what it worked on"
-	chatIndexChatsLabel = "Chats, your messages and what it worked on"
-)
+// chatIndexLabel is the index control's and sheet's name.
+const chatIndexLabel = "Your messages and what it worked on"
 
 // chatIndexButton is the header control that opens the index for the log with
 // id logID.
-func chatIndexButton(logID string) g.Node { return chatIndexButtonNamed(logID, chatIndexLabel) }
-
-// chatIndexButtonNamed is chatIndexButton named label.
-func chatIndexButtonNamed(logID, label string) g.Node {
+func chatIndexButton(logID string) g.Node {
+	const label = chatIndexLabel
 	return Button(
 		Type("button"),
 		ID("chat-index-open"),
@@ -64,13 +58,33 @@ func chatIndexButtonNamed(logID, label string) g.Node {
 	)
 }
 
+// chatIndexMenuItem is chatIndexButton as an item of a header's ⋯ menu
+// (mirrorHeaderMenu): the same id and wiring, so chatIndexScript opens the
+// same sheet; it closes its menu as it is picked (data-menu-close).
+func chatIndexMenuItem(logID string) g.Node {
+	return Button(
+		Type("button"),
+		ID("chat-index-open"),
+		g.Attr("role", "menuitem"),
+		g.Attr("data-menu-close", ""),
+		g.Attr("data-chat-index-log", logID),
+		g.Attr("aria-label", chatIndexLabel),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", "chat-index"),
+		g.Attr("aria-expanded", "false"),
+		Class(headerMenuItemClass),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>`),
+		Span(g.Text("Messages and what it worked on")),
+	)
+}
+
 // chatIndexSheet is the index's sheet, closed: a bottom sheet over a backdrop,
 // with two tabs — the reader's messages (built by chatIndexScript) and the
 // session's focus history (historyPath, FocusHistoryPath of its newest page;
 // "" = the host reports no Claude session, so there is none). tabsKey is what
 // the tab choice is stored under.
 func chatIndexSheet(historyPath, tabsKey string) g.Node {
-	return chatIndexSheetWith(historyPath, tabsKey, nil, chatIndexPartialMirror)
+	return chatIndexSheetWith(historyPath, tabsKey, chatIndexPartialMirror)
 }
 
 // The "Your messages" tab's note when the list is only what the page loaded:
@@ -81,20 +95,14 @@ const (
 	chatIndexPartialPage   = "Only the messages loaded on this page are listed."
 )
 
-// chatIndexSheetWith is chatIndexSheet with chats, when not nil, as a "Chats"
-// tab FIRST (the chief's page: chiefChatsPanel), and partial as the messages
-// tab's only-loaded note.
-func chatIndexSheetWith(historyPath, tabsKey string, chats g.Node, partial string) g.Node {
-	label := chatIndexLabel
-	tabList := []Tab{
-		{ID: "messages", Label: "Your messages", Panel: chatIndexMessages(partial)},
-		{ID: "focus", Label: FocusHistoryLabel, Panel: focusHistoryList(historyPath)},
-	}
-	if chats != nil {
-		label = chatIndexChatsLabel
-		tabList = append([]Tab{{ID: "chats", Label: "Chats", Panel: chats}}, tabList...)
-	}
-	tabs := Tabs("chat-index-tabs", tabsKey, "Session index", tabList...)
+// chatIndexSheetWith is chatIndexSheet with partial as the messages tab's
+// only-loaded note (the chief's page: chatIndexPartialPage).
+func chatIndexSheetWith(historyPath, tabsKey, partial string) g.Node {
+	const label = chatIndexLabel
+	tabs := Tabs("chat-index-tabs", tabsKey, "Session index",
+		Tab{ID: "messages", Label: "Your messages", Panel: chatIndexMessages(partial)},
+		Tab{ID: "focus", Label: FocusHistoryLabel, Panel: focusHistoryList(historyPath)},
+	)
 	return g.Group{Div(
 		ID("chat-index"),
 		g.Attr("hidden", ""),
@@ -229,8 +237,8 @@ func chatIndexScript() g.Node {
     s.hidden = false;
     if (b) b.setAttribute('aria-expanded', 'true');
     // Keep the list current while it is open: new messages stream in. (A
-    // watch left from a sheet a boosted navigation replaced while open — the
-    // chief's Chats rows navigate — is dropped first.)
+    // watch left from a sheet a boosted navigation replaced while open is
+    // dropped first.)
     if (watch) { watch.disconnect(); watch = null; }
     var l = logEl();
     if (l && typeof MutationObserver !== 'undefined') {
@@ -247,7 +255,13 @@ func chatIndexScript() g.Node {
     if (watch) { watch.disconnect(); watch = null; }
     if (!s || s.hidden) return;
     s.hidden = true;
-    if (b) { b.setAttribute('aria-expanded', 'false'); b.focus({ preventScroll: true }); }
+    if (b) {
+      b.setAttribute('aria-expanded', 'false');
+      // An opener in a closed ⋯ menu cannot take focus: its trigger does
+      // (floatingMenuScript's __musterFocusBack).
+      var f = window.__musterFocusBack ? window.__musterFocusBack(b) : b;
+      if (f) f.focus({ preventScroll: true });
+    }
   }
 
   function jump(id) {
@@ -273,13 +287,9 @@ func chatIndexScript() g.Node {
     if (item) { jump(item.getAttribute('data-chat-index-item')); return; }
     if (t.closest('[data-chat-index-close]')) close();
   });
-  // Escape closes the sheet — unless a menu inside it is open (the chief's
-  // Chats rows' ⋯, a popover): that Escape is the menu's, which the browser
-  // closes, and the sheet stays.
+  // Escape closes the sheet.
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
-    var s = sheet();
-    try { if (s && s.querySelector(':popover-open')) return; } catch (err) {}
     close();
   });
   // The host's index arrived (or a Reset dropped it) while the sheet is open.

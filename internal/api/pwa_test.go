@@ -348,12 +348,9 @@ func TestPWAMetadataIsSessionIndependent(t *testing.T) {
 // TestServiceWorkerCarriesTheBuild: two builds serve different worker bytes,
 // which is what makes a deploy an update.
 func TestServiceWorkerCarriesTheBuild(t *testing.T) {
-	old := BuildVersion
-	t.Cleanup(func() { BuildVersion = old })
-
 	serve := func(v string) *httptest.ResponseRecorder {
-		BuildVersion = v
-		_, h := pwaServer(t, nil)
+		s, h := pwaServer(t, nil)
+		s.buildVersion = v
 		return get(h, "/sw.js", nil, false)
 	}
 	a, a2, b := serve("build-a"), serve("build-a"), serve(`build-"b"`)

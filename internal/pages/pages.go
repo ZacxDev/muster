@@ -24,6 +24,8 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // The limits (docs/design/pages.md#limits-and-quotas). Vars where a test
@@ -113,9 +115,24 @@ type Creator struct {
 	// made before it was recorded. It identifies; it never scopes: a tool
 	// acts on its HOST's pages (creatorClause), as before.
 	MirrorSession string
-	Label         string
+	// MirrorTmuxSession and MirrorWindow are the tmux session name and window
+	// id (@N) the mirrored session ran in when it made the page (0162), as its
+	// host listed it: what the window's session view lists its pages by, so
+	// a new session in the same window (a /clear, a restart, a resume) keeps
+	// them. Both "" for an agent's page, a caller with no window, and a page
+	// made before they were recorded. Like MirrorSession, they identify and
+	// never scope a tool.
+	MirrorTmuxSession string
+	MirrorWindow      string
+	Label             string
+	// ByUser is the PERSON who started the team agent that makes a TEAM's
+	// page (migration 0165: pages.created_by_user), recorded at create so
+	// only they manage it (MayManage). 0 for a person's own page — its owner
+	// is its creator, and the database blanks it — and for a team agent
+	// whose starter is not recorded. It identifies; it never scopes a tool.
+	ByUser int64
 	// RollingVersions, at Create, makes the page a ROLLING one
-	// (pages.rolling_versions, migration 0163): past MaxVersionsPerPage, a
+	// (pages.rolling_versions, migration 0166): past MaxVersionsPerPage, a
 	// new version drops the oldest version nothing references (RollingDrop)
 	// instead of being refused, so the page never fills and its id and links
 	// never change. Set only by the scheduled host job runner (internal/api
@@ -127,6 +144,50 @@ type Creator struct {
 // Valid reports whether c names exactly one creator.
 func (c Creator) Valid() bool { return (c.AgentID > 0) != (c.MirrorHost != "") }
 
+// SessionRef names ONE session whose pages are listed (Store.SessionPages): a
+// dispatched agent (AgentID), or a mirrored WINDOW on its host — MirrorHost,
+// the window (MirrorTmuxSession and MirrorWindow: what Creator recorded at
+// create, 0162) and the session keys it runs now (MirrorSessions:
+// Creator.MirrorSession, mirror.Window.MCPCallerKeys). A window's pages are
+// the ones made IN it, whichever Claude session made them (a /clear, a
+// restart, a resume start a new one), and the ones its sessions now made
+// wherever they ran.
+//
+// 🔴 A MIRRORED WINDOW IS MATCHED BY ITS WINDOW OR ITS SESSIONS, NEVER BY ITS
+// HOST ALONE: a host's every window would otherwise list every page any of
+// them made. So a page made before 0152 recorded the session (mirror_session
+// and the window both NULL) is listed for no window (docs/pages.md).
+type SessionRef struct {
+	AgentID           int64
+	MirrorHost        string
+	MirrorTmuxSession string
+	MirrorWindow      string
+	MirrorSessions    []string
+}
+
+// window reports whether s names a whole tmux window.
+func (s SessionRef) window() bool { return s.MirrorTmuxSession != "" && s.MirrorWindow != "" }
+
+// Valid reports whether s names exactly one session: an agent, or a host with
+// a window or at least one session key.
+func (s SessionRef) Valid() bool {
+	if s.AgentID > 0 {
+		return s.MirrorHost == "" && len(s.MirrorSessions) == 0 && !s.window() && s.MirrorWindow == "" && s.MirrorTmuxSession == ""
+	}
+	if s.MirrorHost == "" {
+		return false
+	}
+	if s.window() {
+		return true
+	}
+	for _, k := range s.MirrorSessions {
+		if k != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Page is one page.
 type Page struct {
 	ID             int64
@@ -134,8 +195,53 @@ type Page struct {
 	Title          string
 	CurrentVersion int
 	Creator        Creator
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// CreatorInTeam: the page's recorded creator (Creator.ByUser) is a
+	// member of its owner team NOW (0165's muster_is_team_member, read with
+	// the page). False when there is no creator, and on a person's own page.
+	CreatorInTeam bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// MayManage reports whether p may MANAGE page pg: delete it, change its
+// current version, revoke a link or make a new one. The page's owner (a
+// person on their own page; a team's agent, the team acting principal, on
+// the team's), the system scope, and — on a TEAM's page — the person who
+// started the agent that made it (Creator.ByUser) while they are a member of
+// the team, or, when the page records no such person OR that person has left
+// the team (CreatorInTeam false), any manager of the team (else nobody could
+// ever delete it). Every other member views and responds, and shares
+// (Share), but manages nothing — except that a manager may always revoke a
+// link (MayRevoke).
+//
+// 🔴 THE SAME RULE AS THE DATABASE'S muster_page_manager (migration 0165),
+// which holds every statement to it; this copy decides what the screen draws
+// and which routes refuse with words (internal/api teamPageRoutes).
+// TestMayManageMatchesTheDatabase pins the two together.
+func MayManage(pg Page, p authz.Principal) bool {
+	if p.All() || (p.UserID > 0 && pg.OwnerID == p.UserID) {
+		return true
+	}
+	role, member := p.TeamScope().RoleIn(pg.OwnerID)
+	if !member {
+		return false
+	}
+	if pg.Creator.ByUser > 0 && pg.CreatorInTeam {
+		return pg.Creator.ByUser == p.UserID
+	}
+	return role.AtLeast(authz.TeamManager)
+}
+
+// MayRevoke reports whether p may REVOKE a link of page pg: whoever may
+// manage it (MayManage), and ANY manager of its team, even while its creator
+// is present (operator decision: a mistaken Share is undone at once). 0165's
+// page_links_team_guard is the same rule in the database.
+func MayRevoke(pg Page, p authz.Principal) bool {
+	if MayManage(pg, p) {
+		return true
+	}
+	role, member := p.TeamScope().RoleIn(pg.OwnerID)
+	return member && role.AtLeast(authz.TeamManager)
 }
 
 // Summary is a page as a list shows it: the page and its counts.
@@ -231,7 +337,12 @@ type Response struct {
 	LinkID int64
 	// ByOwner: the page's owner sent it from their own view of the page,
 	// signed in (migration 0152), not a viewer through a link.
-	ByOwner        bool
+	ByOwner bool
+	// ResponderUser is WHO sent an owner-view response (ByOwner): the
+	// signed-in person — the owner on their own page, the member on a team's
+	// (migration 0165: page_responses.responder_user, forced to the caller by
+	// the database, never what the statement wrote). 0 for a link's response.
+	ResponderUser  int64
 	Version        int
 	Component      string
 	Kind           ResponseKind

@@ -62,7 +62,7 @@ func TestAResultEndingWhileTheConnectionIsPublishedIsNotStranded(t *testing.T) {
 
 // TestLoadJobsNormalisesTheCronsSpacing: a cron with a double space, a
 // leading space or a tab is the job its operator meant, stored with single
-// spaces (0163's CHECK refuses anything else).
+// spaces (0166's CHECK refuses anything else).
 func TestLoadJobsNormalisesTheCronsSpacing(t *testing.T) {
 	path := writeFile(t, `{"jobs":[{"name":"a","command":["/bin/true"],"cron":" 0  14\t* * *"}]}`)
 	jobs, err := LoadJobs(path)

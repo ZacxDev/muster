@@ -90,7 +90,8 @@ func (s *Server) releaseInstanceClaims(ctx context.Context, o officers.Officer, 
 // agent to run it on again and true when it was re-queued and that agent's
 // replacement pod is ready.
 //
-// 🔴 THE RULE: o failed rate_limited or auth_failed; the failover moved a off
+// 🔴 THE RULE: o failed on its account's usage limit or auth_failed
+// (o.AccountFailure; a transient 429 is neither); the failover moved a off
 // the account the turn ran on (this call or the gateway's, which ran first);
 // and the job was not already re-queued off that account (jobs.Requeuer: at
 // most once per FROM account per job, so a job never loops). Then it is
@@ -103,8 +104,10 @@ func (s *Server) releaseInstanceClaims(ctx context.Context, o officers.Officer, 
 // restart its pod (and drop an officer instance's claims) onto an account it
 // does not use either.
 func (s *Server) failoverJob(ctx context.Context, j jobs.Job, a agents.Agent, o jobs.Outcome) (agents.Agent, bool) {
+	// 🔴 o.AccountFailure, NOT o.Reason: a transient 429 is Reason rate_limited
+	// too, and must not move the worker (ccpool.AccountFailure decides).
 	if s.ext.AccountFailover == nil || o.Status != jobs.StatusFailed ||
-		(o.Reason != ccpool.FailureRateLimited && o.Reason != ccpool.FailureAuthFailed) {
+		(o.AccountFailure != ccpool.FailureRateLimited && o.AccountFailure != ccpool.FailureAuthFailed) {
 		return a, false
 	}
 	if s.NoClaudeAccount(ctx, a) {
@@ -114,7 +117,7 @@ func (s *Server) failoverJob(ctx context.Context, j jobs.Job, a agents.Agent, o 
 	if !ok {
 		return a, false
 	}
-	res := s.ext.AccountFailover.AccountFailed(ctx, a.ID, a.CCAccount, o.Reason, o.Error)
+	res := s.ext.AccountFailover.AccountFailed(ctx, a.ID, a.CCAccount, o.AccountFailure, o.Error)
 	if !res.Moved {
 		return a, false
 	}

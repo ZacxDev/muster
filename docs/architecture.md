@@ -77,7 +77,8 @@ not reach.
 ## What trusts what
 
 - **Browser → server:**
-  - A session cookie, plus a same-origin check on every write.
+  - A session cookie, plus a same-origin check on every write
+    ([auth.md](auth.md#cross-origin-writes)).
   - Typing into a mirrored session also needs a step-up
     ([sending-and-step-up.md](sending-and-step-up.md)).
 - **CLI, scripts → server:**

@@ -180,7 +180,7 @@ const (
 	// host_job_runs rows, its job's page and its Attention item — as that
 	// OWNER only, never as everybody. One site mints it — internal/api's
 	// hostJobPrincipal. NOT a team acting door: a team host's jobs are
-	// refused before it is reached (pages are personal), so a team principal
+	// refused before it is reached (a job's page is personal), so a team principal
 	// here is a bug and panics.
 	ViaHostJob Via = "host-job"
 	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0116):

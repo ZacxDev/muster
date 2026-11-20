@@ -47,11 +47,13 @@ import (
 //
 // 🔴 PAGES: a job writes its OWN page — one of its owner's pages, made by
 // muster as its HOST (pages.Creator MirrorHost) on the job's first output; a
-// host names no page. The page is ROLLING (0163's pages.rolling_versions): it
+// host names no page. The page is ROLLING (0166's pages.rolling_versions): it
 // keeps its newest pages.MaxVersionsPerPage versions, dropping the oldest
 // unreferenced one, so it never fills. A new version is written only when the
-// output CHANGED from the page's current version. A TEAM host's jobs are refused (hostJobsReported): pages are
-// personal, so a page a team owned would be readable by none of its members.
+// output CHANGED from the page's current version. A TEAM host's jobs are refused (hostJobsReported): a job's
+// page is personal, made with no ByUser, so it records no created_by_user
+// (0165); a team's page records the person whose agent made it, and a job
+// has no such person.
 //
 // 🔴 NO HOST OFFICER, NO STEP-UP: nothing here declares an officer or marks a
 // token, so declaring jobs leaves the host's mirror door exactly as it was
@@ -90,7 +92,7 @@ func (s *Server) hostJobClock() time.Time {
 
 // hostJobPrincipal is owner's principal for the job runner: authz.ViaHostJob,
 // so row-level security confines every read and write to owner's rows.
-// 🔴 false for a TEAM (pages are personal: a team's jobs are refused) and for
+// 🔴 false for a TEAM (a job's page is personal: a team's jobs are refused) and for
 // an owner whose account cannot be read (it may be a team): the caller acts
 // on nothing then.
 func (s *Server) hostJobPrincipal(ctx context.Context, owner int64) (context.Context, bool) {
@@ -124,7 +126,7 @@ func (s *Server) HostJobsReported(owner int64, host string, r mirror.HostJobsRep
 	octx, ok := s.hostJobPrincipal(ctx, owner)
 	if !ok {
 		if len(r.Jobs) > 0 {
-			s.logger.Printf("host jobs: %s's %d job(s) REFUSED: its owner %d is a team (or could not be read), and a job's page is personal", host, len(r.Jobs), owner)
+			s.logger.Printf("host jobs: %s's %d job(s) REFUSED: its owner %d is a team (or could not be read), and a job's page is a personal one", host, len(r.Jobs), owner)
 		}
 		return
 	}

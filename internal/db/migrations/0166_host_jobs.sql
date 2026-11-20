@@ -1,4 +1,4 @@
--- muster 0163 — SCHEDULED HOST JOBS (internal/hostjobs; internal/api
+-- muster 0166 — SCHEDULED HOST JOBS (internal/hostjobs; internal/api
 -- hostjobs.go; docs/host-jobs.md).
 --
 --   host_jobs      one row per (owner, host, job name): the job AS ITS HOST
@@ -25,26 +25,25 @@
 --       which every live link serves; not one a response names) instead of
 --       being refused, so the job's page never fills and its id and links
 --       never change. Every other page is false and keeps the cap (internal/
---       pages rollingDrop). A new column on an owned table; 0116's owner
---       isolation covers it.
+--       pages rollingDrop). A new column on an owned table; the pages
+--       table's row policies (0116, then 0165's) cover it.
 --
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, PERSONAL share class: a
--- job's page is one of the owner's pages, and pages are personal, so a TEAM
--- host's jobs are refused before they reach these tables (internal/api
+-- job's page is one of the owner's PERSONAL pages (no created_by_user: 0165
+-- records that only on a team's page), so a TEAM host's jobs are refused before they reach these tables (internal/api
 -- hostJobsReported). A run names its job by (owner_id, job_id), so a run
 -- cannot name another owner's job. rollback/rls_off.sql turns RLS off with
 -- the rest, and --rls-on re-applies this file (db.RLSOn), so every
 -- statement is idempotent.
 --
--- Numbered 0163 at the coordinator's direction (0157-0162 are taken by open
--- pull requests). The contiguity test refuses a gap, so it is red until those
--- land: 🔴 RENUMBER IT (and db.hostJobsMigrationVersion) at merge to the next
--- free number.
+-- Written as 0163, renumbered 0166 at merge (after 0165, its predecessor;
+-- the contiguity test refuses a gap): 🔴 RENUMBER IT (and
+-- db.hostJobsMigrationVersion) at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them):
 --   DROP TABLE public.host_job_runs, public.host_jobs;
 --   ALTER TABLE public.pages DROP COLUMN rolling_versions;
---   DELETE FROM schema_migrations WHERE version = 163;
+--   DELETE FROM schema_migrations WHERE version = 166;
 
 SET LOCAL lock_timeout = '3s';
 

@@ -54,10 +54,12 @@ var hostRowConsumers = map[string]string{
 	"internal/api/agents_list_tool.go:toolAgentsList":       "skips: the owner's agent list over MCP",
 	"internal/api/palette.go:paletteTargets":                "skips: the command palette's agents",
 	"internal/api/mentions.go:mentionIndex":                 "skips: the agents a chat reply's mention links to (the instance is its mirrored window)",
+	"internal/api/session_cards.go:sessionCards":            "skips: a host officer's row is no session card — [[session:agent:<n>]] for it draws \"a session\"; its instance's card is its mirrored window's (mirror:<key>)",
 	"internal/api/fleet_read.go:readFleet":                  "skips: the fleet reader (the chief's fleet list and the digest card)",
 	"internal/api/focus_tools.go:focusSearchHistory":        "skips: the live agents a focus search ranks",
 	"internal/api/sessions_overview.go:liveSessions":        "skips: the chief's live sessions overview",
 	"internal/api/fleet_report.go:collectFleet":             "skips: the fleet report's agents",
+	"internal/api/morning_report.go:morningStuck":           "skips: the morning report's failed agents (ProvisionedOnly)",
 	// READS: lookups that cannot select a host row, or read it harmlessly.
 	"internal/api/agent_outcome.go:outcomeIsChief":        "reads: the chief by name; a host row is named officer-…",
 	"internal/api/agent_outcome.go:outcomeTaskDone":       "reads: agents on a task; a host row has no note",

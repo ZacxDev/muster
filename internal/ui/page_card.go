@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/url"
 	"strconv"
@@ -18,7 +20,8 @@ import (
 // When an agent calls page_create, page_update or page_share_request, the
 // chat draws a card under its tool row: the page's title, what happened (a new
 // page, a new version, shared, waiting for you), an Open button and a Share
-// button, and a ⋯ menu with Revoke link, New link and the page's own screen.
+// button, and a ⋯ menu with the page's own screen, and Revoke link and New link
+// while the page has a live link.
 //
 // 🔴 ONE RENDERER FOR EVERY PATH. A dispatched agent's stored transcript
 // (chatLogInner, from AgentDetailView.PageCards), its live stream
@@ -125,6 +128,10 @@ type PageCardView struct {
 	// the Share button may fetch it before the click (pageShareJS); without
 	// one every fetch would mint a new link, so it waits for the tap.
 	Reusable bool
+	// NoRevoke: the reader may not revoke the page's link (a team's page,
+	// read by a member who may not: pages.MayRevoke), so the card's ⋯ menu
+	// has no Revoke link and no New link. Share stays: any member shares.
+	NoRevoke bool
 }
 
 // pageToolBase is a tool name's page tool — MUSTER's own only: bare (a
@@ -234,68 +241,81 @@ func pageCardTitle(raw string) string {
 // when reusable (the server keeps one link per page, so asking makes at most
 // that one), on the tap itself when not (every ask mints a new link).
 func PageShareButton(id int64, title, shareURL string, reusable bool) g.Node {
-	t := pageCardTitle(title)
+	return pageShareForm(id, pageCardTitle(title), shareURL, reusable, pageButtonPrimary)
+}
+
+// PageShareQuietButton is PageShareButton drawn quiet, beside a screen's own
+// primary button (the page screen's Open).
+func PageShareQuietButton(id int64, title, shareURL string, reusable bool) g.Node {
+	return pageShareForm(id, pageCardTitle(title), shareURL, reusable, pageButtonQuiet)
+}
+
+// PageShareMenuItem is PageShareButton drawn as an item of a ⋯ menu (a Pages
+// row's, pageRowMenu): the same form and data, so pageShareJS shares it.
+func PageShareMenuItem(id int64, title, shareURL string, reusable bool) g.Node {
+	return pageShareForm(id, pageCardTitle(title), shareURL, reusable, pageMenuItem)
+}
+
+// pageShareForm is every Share control: t is the title ALREADY PLAINED by its
+// caller (pageCardTitle), class how it is drawn.
+func pageShareForm(id int64, t, shareURL string, reusable bool, class string) g.Node {
 	pid := strconv.FormatInt(id, 10)
 	return Form(Method("POST"), Action(PageSharePath(id)), Class("contents"),
 		Button(Type("submit"), g.Attr("data-page-share", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
 			g.If(shareURL != "", g.Attr("data-share-url", shareURL)),
 			g.If(reusable, g.Attr("data-share-reusable", "")),
-			g.Attr("aria-label", "Share “"+t+"”"), Class(pageButtonPrimary),
+			g.Attr("aria-label", "Share “"+t+"”"), Class(class),
 			Span(g.Attr("aria-hidden", "true"), g.Text("↗")), Span(g.Text("Share"))))
 }
 
-// PageCopyButton is page id's Copy link button, on the page's own screen:
-// Share's link, always to the clipboard (never the share sheet) — the same
-// form, the same POST PageSharePath and the same address (pageShareJS), so
-// a copy and a share hand out one link. shareURL and reusable are
-// PageShareButton's.
-//
-// It is drawn HIDDEN and shown by pageShareJS only where the browser has a
-// share sheet (a phone): there Share opens the sheet, and Copy link is the one
-// tap that copies. Elsewhere Share itself copies, so a second button doing
-// the same would only be noise.
-func PageCopyButton(id int64, title, shareURL string, reusable bool) g.Node {
-	t := pageCardTitle(title)
+// pageMenuItem is one item of a page's ⋯ menu: a full-width row, 44px tall.
+const pageMenuItem = "press flex min-h-[44px] w-full items-center gap-1.5 rounded-md px-3 text-left text-sm text-fg hover:bg-s2"
+
+// pageLinkActions are the ⋯ menu's link items: Revoke link and New link (the
+// old one stops working), each a form pageShareJS posts — for a server WITH a
+// link key only (their callers draw none without one). They are drawn
+// hidden while the page has no live link (live false) and pageShareJS shows
+// them once a Share makes the reusable link, and hides them again on Revoke — so a menu
+// drawn before the first Share offers them after it, with no redraw. (A plain
+// wrapper carries hidden: a display utility on it would win over the
+// attribute.)
+func pageLinkActions(id int64, live bool) g.Node {
 	pid := strconv.FormatInt(id, 10)
-	return Form(Method("POST"), Action(PageSharePath(id)), Class("contents"),
-		Button(Type("submit"), g.Attr("data-page-copy", ""), g.Attr("hidden", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
-			g.If(shareURL != "", g.Attr("data-share-url", shareURL)),
-			g.If(reusable, g.Attr("data-share-reusable", "")),
-			g.Attr("aria-label", "Copy the link to “"+t+"”"), Class(pageButtonQuiet), g.Text("Copy link")))
-}
-
-// PageLinkSheetID is the element id of page id's link ⓘ.
-func PageLinkSheetID(id int64) string { return "page-link-" + strconv.FormatInt(id, 10) }
-
-// PageLinkSheet is THE ⓘ holding page id's link address (shareURL), with
-// Copy: the page's screen says "Share" (and "Copy link") and never spells the
-// address in its top layer. It is drawn hidden while the page has no link
-// (shareURL ""), and pageShareJS fills it, shows it and hides it as the link
-// changes (the first Share, New link, Revoke). Never withheld: the link is
-// the owner's. A plain <span> carries hidden: a display utility on it would
-// win over the attribute.
-func PageLinkSheet(id int64, shareURL string) g.Node {
-	return Span(g.Attr("data-page-link-sheet", ""), g.Attr("data-page-id", strconv.FormatInt(id, 10)), g.If(shareURL == "", g.Attr("hidden", "")),
-		InfoSheet{ID: PageLinkSheetID(id), Label: "This page's link", Heading: "The page's link",
-			Lead: "Anyone with this link can open the page. Copy it to send it yourself:", Code: shareURL, Live: true}.Node())
-}
-
-// PageShareMenu is page id's ⋯ menu: Revoke link, New link (the old one stops
-// working), and — off its own screen — the page's screen.
-func PageShareMenu(id int64, title string, withDetail bool) g.Node {
-	t := pageCardTitle(title)
-	pid := strconv.FormatInt(id, 10)
-	item := "press flex min-h-[44px] w-full items-center rounded-md px-3 text-left text-sm text-fg hover:bg-s2"
 	action := func(act, path, label string) g.Node {
 		return Form(Method("POST"), Action(path), g.Attr("data-page-share-action", act), g.Attr("data-page-id", pid),
-			Button(Type("submit"), Class(item), g.Text(label)))
+			Button(Type("submit"), Class(pageMenuItem), g.Text(label)))
 	}
-	return Details(g.Attr("data-page-share-menu", ""), Class("relative"),
-		Summary(g.Attr("aria-label", "More for “"+t+"”"), Class(pageButtonQuiet+" cursor-pointer list-none"), g.Text("⋯")),
-		Div(Class("absolute right-0 z-20 mt-1 flex w-48 flex-col rounded-lg bg-s1 p-1 shadow-lg shadow-black/30 ring-1 ring-line"),
-			action("revoke", PageShareRevokePath(id), "Revoke link"),
-			action("rotate", PageShareRotatePath(id), "New link"),
-			g.If(withDetail, A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(item), g.Text("Page settings")))))
+	return Div(g.Attr("data-page-link-actions", ""), g.Attr("data-page-id", pid), g.If(!live, g.Attr("hidden", "")),
+		action("revoke", PageShareRevokePath(id), "Revoke link"),
+		action("rotate", PageShareRotatePath(id), "New link"))
+}
+
+// PageShareMenu is a page card's ⋯ (MoreMenu, menuID its element id): Revoke
+// link and New link (the old one stops working) only while the page has a
+// live link (live) — there is nothing to revoke or replace before — and the
+// page's own screen. On a server with no link key (reusable false) they are
+// not drawn at all: both act on the page's reusable link, which it never has
+// (a one-off link is revoked on the page's screen). Nor are they for a reader
+// who may not revoke the page's link (revoke false, pages.MayRevoke: a team's
+// page, read by a member who is neither its creator nor, while the creator is
+// on the team, a manager; New link is a revoke and a Share, so it goes with
+// Revoke). Page settings is every reader's.
+func PageShareMenu(id int64, title string, live, reusable, revoke bool, menuID string) g.Node {
+	return MoreMenu(menuID, "More for “"+pageCardTitle(title)+"”",
+		g.If(reusable && revoke, pageLinkActions(id, live)),
+		A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(pageMenuItem), g.Text("Page settings")))
+}
+
+// pageCardMenuID is the element id of a card's ⋯ menu: its card's id's, or,
+// for a card drawn without one (the card route's, whose placeholder takes
+// the id later), one of its own, so two cards of a page never share it.
+func pageCardMenuID(v PageCardView, id string) string {
+	if id != "" {
+		return id + "-menu"
+	}
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return "page-card-menu-" + strconv.FormatInt(v.ID, 10) + "-" + hex.EncodeToString(b[:])
 }
 
 // PageCard draws one card; id is its element id ("" for none).
@@ -337,7 +357,7 @@ func PageCard(v PageCardView, id string) g.Node {
 			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
-			PageShareMenu(v.ID, v.Title, true)),
+			PageShareMenu(v.ID, v.Title, v.Live, v.Reusable, !v.NoRevoke, pageCardMenuID(v, id))),
 	)
 }
 
@@ -366,8 +386,9 @@ const cgCopyTextJS = `  window.cgCopyText = function (text) {
 // PageShareScript is the page Share button's behaviour with what it needs,
 // for a document without appScript: the owner's own view of a page (its
 // shell, internal/pages Shell), whose version popover carries the same
-// PageShareButton. A toast needs an #action-toasts element on the page.
-func PageShareScript() string { return cgCopyTextJS + pageShareJS }
+// PageShareButton — and draws that popover's times in the reader's own zone
+// (plainWhenJS). A toast needs an #action-toasts element on the page.
+func PageShareScript() string { return cgCopyTextJS + pageShareJS + plainWhenJS }
 
 // pageShareJS is the Share button's and the ⋯ menu's behaviour, in appScript
 // (every document with the nav: the chat, the mirrored view, the Pages
@@ -418,17 +439,16 @@ const pageShareJS = `
       setTimeout(function () { t.remove(); }, 5000);
     };
     var setShareURL = function (id, url) {
-      document.querySelectorAll('[data-page-share][data-page-id="' + id + '"], [data-page-copy][data-page-id="' + id + '"]').forEach(function (b) {
+      document.querySelectorAll('[data-page-share][data-page-id="' + id + '"]').forEach(function (b) {
         b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
-      // The page's link ⓘ (PageLinkSheet) holds the address (its Copy copies
-      // the code);
-      // shown while the page has a link, hidden once it has none.
-      document.querySelectorAll('[data-page-link-sheet][data-page-id="' + id + '"]').forEach(function (s) {
-        s.querySelectorAll('[data-info-code]').forEach(function (c) { c.textContent = url || ''; });
-        s.hidden = !url;
-      });
+      setLive(id, !!url);
+    };
+    // setLive shows a page's Revoke link / New link (pageLinkActions) while it
+    // has a live link, and hides them once it has none.
+    var setLive = function (id, live) {
+      document.querySelectorAll('[data-page-link-actions][data-page-id="' + id + '"]').forEach(function (a) { a.hidden = !live; });
     };
     var postJSON = function (src) {
       return fetch(src, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (r) {
@@ -446,6 +466,8 @@ const pageShareJS = `
       if (!btn._ensure) {
         btn._ensure = postJSON(btn.closest('form').action).then(function (j) {
           if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
+          // A one-off link (no link key): Revoke link and New link act on
+          // the page's reusable link only, so they stay away.
           else btn.setAttribute('data-share-url', j.url);
           // The page has a live link now: its card no longer says private.
           document.querySelectorAll('[data-page-card][data-page-id="' + btn.getAttribute('data-page-id') + '"] [data-note-live]').forEach(function (n) {
@@ -462,6 +484,11 @@ const pageShareJS = `
         pageToast('Copy this link: ' + url);
       });
     };
+    // closeMenu closes the ⋯ menu (a popover, MoreMenu) el is in.
+    var closeMenu = function (el) {
+      var p = el.closest('[popover]');
+      if (p && p.hidePopover) { try { p.hidePopover(); } catch (x) {} }
+    };
     var canSheet = function (data) { return !!navigator.share && (!navigator.canShare || navigator.canShare(data)); };
     // sheet calls navigator.share NOW (the caller is still inside the tap,
     // or has nothing better), falling back to fallback() on any failure but a
@@ -477,12 +504,10 @@ const pageShareJS = `
     var sharePage = function (btn) {
       var title = btn.getAttribute('data-share-title') || document.title;
       var have = btn.getAttribute('data-share-url');
-      // Copy link (PageCopyButton) is Share without the sheet: the clipboard.
-      var sheetOK = !btn.hasAttribute('data-page-copy');
       if (have) {
         // The fast path: synchronous, inside the click's own dispatch.
         var data = { title: title, url: have };
-        if (sheetOK && canSheet(data)) sheet(data, function () { return copyShare(btn, have); });
+        if (canSheet(data)) sheet(data, function () { return copyShare(btn, have); });
         else copyShare(btn, have);
         return;
       }
@@ -504,13 +529,13 @@ const pageShareJS = `
       };
       got.then(function (url) {
         var data = { title: title, url: url };
-        if (sheetOK && canSheet(data)) return sheet(data, function () { return copiedOr(url); });
+        if (canSheet(data)) return sheet(data, function () { return copiedOr(url); });
         return copiedOr(url);
       }).catch(function (e) { pageToast(e.message || 'The link could not be made.'); })
         .then(function () { btn.removeAttribute('aria-busy'); });
     };
     var early = function (e) {
-      var btn = e.target.closest && e.target.closest('[data-page-share], [data-page-copy]');
+      var btn = e.target.closest && e.target.closest('[data-page-share]');
       if (btn && btn.hasAttribute('data-share-reusable') && !btn.getAttribute('data-share-url')) ensure(btn).catch(function () {});
     };
     // The mirrored view's placeholders: each filled once from the server, or
@@ -528,30 +553,49 @@ const pageShareJS = `
         }).catch(function () { ph.remove(); });
       });
     };
-    // Copy link (PageCopyButton) only where Share opens a share sheet.
-    var showCopy = function () {
-      if (!navigator.share) return;
-      document.querySelectorAll('[data-page-copy][hidden]').forEach(function (b) { b.hidden = false; });
+    // The page screen's Delete asks in place: "Delete this page" becomes the
+    // question with Delete and Cancel (focus on Cancel); Cancel, or Escape
+    // inside it, puts the button back. Only Delete posts.
+    var deleteBox = function (box, asking) {
+      var ask = box.querySelector('[data-page-delete-ask]'), q = box.querySelector('[data-page-delete-confirm]');
+      if (!ask || !q) return;
+      ask.hidden = asking;
+      q.hidden = !asking;
+      var f = asking ? q.querySelector('[data-page-delete-cancel]') : ask.querySelector('button');
+      if (f) f.focus();
     };
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest && e.target.closest('[data-page-delete-ask], [data-page-delete-cancel]');
+      if (!t) return;
+      var box = t.closest('[data-page-delete-box]');
+      if (box) deleteBox(box, t.hasAttribute('data-page-delete-ask'));
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      var a = document.activeElement, box = a && a.closest && a.closest('[data-page-delete-box]');
+      if (!box || box.querySelector('[data-page-delete-confirm]').hidden) return;
+      e.preventDefault();
+      deleteBox(box, false);
+    });
     fillCards();
-    showCopy();
-    new MutationObserver(function () { fillCards(); showCopy(); }).observe(document.documentElement, { childList: true, subtree: true });
+    new MutationObserver(function () { fillCards(); }).observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('pointerdown', early, true);
     document.addEventListener('focusin', early, true);
     document.addEventListener('click', function (e) {
-      var btn = e.target.closest && e.target.closest('[data-page-share], [data-page-copy]');
+      var btn = e.target.closest && e.target.closest('[data-page-share]');
       if (!btn) return;
       e.preventDefault();
       sharePage(btn);
+      // Shared from a ⋯ menu (a Pages row's): the menu closes.
+      closeMenu(btn);
     });
     document.addEventListener('submit', function (e) {
       var f = e.target.closest && e.target.closest('form[data-page-share-action]');
       if (!f) return;
       e.preventDefault();
       var act = f.getAttribute('data-page-share-action'), id = f.getAttribute('data-page-id');
-      var menu = f.closest('details');
       postJSON(f.action).then(function (j) {
-        if (menu) menu.open = false;
+        closeMenu(f);
         if (act === 'rotate') {
           setShareURL(id, j.url);
           pageToast('New link made. The old one no longer works. Tap Share to send it.');

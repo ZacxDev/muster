@@ -181,7 +181,7 @@ func Validate(blocks []Block) ([]Block, int, error) {
 		return nil, 0, err
 	}
 	if len(enc) > MaxVersionBytes {
-		return nil, 0, invalid("the blocks are %d KiB; a version holds at most %d KiB (images inline as data: URIs count)", len(enc)>>10, MaxVersionBytes>>10)
+		return nil, 0, invalid("the blocks are %d KiB; a version holds at most %d KiB (images inline as data: URIs count; attach a large image or a video with page_asset_upload and use its asset: ref)", len(enc)>>10, MaxVersionBytes>>10)
 	}
 	return blocks, len(enc), nil
 }

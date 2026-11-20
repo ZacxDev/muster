@@ -65,7 +65,7 @@ const (
 	MaxJobArgs         = 32
 	MaxJobArgBytes     = 1024
 	MaxJobCommandBytes = 4096
-	// MaxJobCronBytes bounds a cron expression (0163's CHECK).
+	// MaxJobCronBytes bounds a cron expression (0166's CHECK).
 	MaxJobCronBytes = 100
 	// MaxJobStdout bounds a run's stdout: a page version's own bound
 	// (pages.MaxVersionBytes). A run that writes more FAILS: a cut-off
@@ -194,7 +194,7 @@ type JobResult struct {
 var jobNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // ValidJobName reports whether name may name a job: lowercase letters,
-// digits and '-' in words, at most 63 bytes (0163's CHECK).
+// digits and '-' in words, at most 63 bytes (0166's CHECK).
 func ValidJobName(name string) bool { return len(name) <= 63 && jobNamePattern.MatchString(name) }
 
 var (
@@ -270,7 +270,7 @@ func CleanJobs(in []HostJob) (kept []HostJob, dropped []string) {
 }
 
 // NormalizeCron is cron with its fields separated by exactly one space and
-// nothing around them: the form 0163's CHECK (`^\S+( \S+){4}$`) holds the
+// nothing around them: the form 0166's CHECK (`^\S+( \S+){4}$`) holds the
 // column to, and the grammar (internal/cronspec) reads the same either way.
 // So "0  14 * * *", a leading space or a tab is the job its operator meant,
 // never a row the database refuses.

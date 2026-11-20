@@ -81,7 +81,12 @@ type MentionIndex struct {
 	loadNames func() MentionNames
 	loadTasks func(ids []int64) map[int64]bool
 
+	// loadCards is the session cards a chief's reply can draw
+	// (session_card.go), keyed by every key that names one; nil: none.
+	loadCards func() map[string]SessionCard
+
 	mu      sync.Mutex
+	cards   map[string]SessionCard   // nil until loaded
 	names   map[string]mentionTarget // nil until loaded
 	tasks   map[int64]bool           // every id asked about, and its answer
 	pending []int64                  // primed, not yet asked
@@ -97,6 +102,36 @@ type mentionTarget struct {
 // resolve). Either may be nil: then nothing of that kind links.
 func NewMentionIndex(names func() MentionNames, tasks func(ids []int64) map[int64]bool) *MentionIndex {
 	return &MentionIndex{loadNames: names, loadTasks: tasks, tasks: map[int64]bool{}, queued: map[int64]bool{}}
+}
+
+// WithSessionCards turns session cards on (session_card.go): load is the
+// viewer's own sessions' cards by key, called at most once, on the first
+// reference to resolve. It returns mx. Only the chief's chat turns them on.
+func (mx *MentionIndex) WithSessionCards(load func() map[string]SessionCard) *MentionIndex {
+	if mx != nil {
+		mx.loadCards = load
+	}
+	return mx
+}
+
+// cardsOn reports whether mx draws session cards.
+func (mx *MentionIndex) cardsOn() bool { return mx != nil && mx.loadCards != nil }
+
+// sessionCard is key's card, loading the cards on first use.
+func (mx *MentionIndex) sessionCard(key string) (SessionCard, bool) {
+	if !mx.cardsOn() {
+		return SessionCard{}, false
+	}
+	mx.mu.Lock()
+	defer mx.mu.Unlock()
+	if mx.cards == nil {
+		mx.cards = mx.loadCards()
+		if mx.cards == nil {
+			mx.cards = map[string]SessionCard{}
+		}
+	}
+	c, ok := mx.cards[key]
+	return c, ok
 }
 
 // mentionTaskRefRe finds the task refs Prime queues: a superset of what
@@ -274,6 +309,9 @@ func mentionEndsAt(s string, j int) bool {
 type mentionCtx struct {
 	mx   *MentionIndex
 	tail string
+	// sheets is the ⓘ sheets of the session cards drawn so far, written after
+	// the message (markdownRender).
+	sheets []string
 }
 
 // mentionFor is the context for rendering src with mx (nil for none),

@@ -44,6 +44,13 @@ import (
 //     door runs them in order and waits. The browser's Stop/Start are NOT step-up gated
 //     (requireSession only; docs/sending-and-step-up.md gates mirrored typing,
 //     not agent lifecycle), so this door is no bypass of a fresh sign-in.
+//   - 🔴 NOT STEP-UP GATED, ON ANY MACHINE (operator decision "fully
+//     ungated"; host_stepup.go, hostStepUpExempt): from a machine whose
+//     other owner-authority calls are phone confirmation cards (one that
+//     starts agents for the chief, runs a host officer, or a remote caller)
+//     it runs at once, force included. The accepted risk — any process of
+//     that machine's user can restart the chief and cut a turn off — is
+//     stated at its exemption.
 //   - 🔴 REFUSED WHILE THE CHIEF IS MID-TURN unless force. The browser's Stop
 //     cuts a turn off without asking; this tool asks the same two questions
 //     replaceChief does (chief_replace.go): the chief's SESSION CLAIM (a plugin

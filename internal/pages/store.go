@@ -20,9 +20,12 @@ import (
 //
 // 🔴 EVERY METHOD BUT LinkByToken RUNS UNDER THE CALLER'S PRINCIPAL. The
 // tables are under FORCE row-level security, so a request reads and writes
-// only its own user's rows, and a new row's owner is the principal's user
-// (owner_id's default), never a parameter. Another owner's page reads exactly
-// as a missing one (ErrNotFound).
+// only its own user's rows — and, since 0165, a member reads the pages of the
+// teams on their door and writes them only as its guards allow (answering,
+// sharing, deciding a share card; managing is the creator's). A new page's
+// owner is the principal's user (owner_id's default), never a parameter; a
+// link or response names its PAGE's owner, read under the page row's lock.
+// Another owner's page reads exactly as a missing one (ErrNotFound).
 //
 // 🔴 THE "…For" METHODS ARE ALSO SCOPED TO A CREATOR: a tool acts only on the
 // pages its caller made (Creator), and another creator's page — the same
@@ -41,14 +44,19 @@ type Store interface {
 	Page(ctx context.Context, id int64) (Page, error)
 	// Pages is the caller's pages, newest activity first.
 	Pages(ctx context.Context) ([]Summary, error)
+	// SessionPages is the caller's pages that session s CREATED, newest
+	// first (by when each was made). Nothing, and no query, for an s that
+	// names no session (SessionRef.Valid).
+	SessionPages(ctx context.Context, s SessionRef) ([]Summary, error)
 	// Versions is page id's versions, newest first, without their blocks.
 	Versions(ctx context.Context, id int64) ([]Version, error)
 	// Version is version v of page id; v 0 is the current one.
 	Version(ctx context.Context, id int64, v int) (Version, error)
 	// SetCurrent makes version v current (a rollback).
 	SetCurrent(ctx context.Context, id int64, v int) (Page, error)
-	// Files is the public ids of every file sent through page id's links
-	// (its upload responses): what deleting the page must delete first.
+	// Files is the public ids of every file the page holds — sent through its
+	// links (its upload responses) and its author's assets: what deleting the
+	// page must delete first.
 	Files(ctx context.Context, id int64) ([]string, error)
 	// CloseLinks revokes every pending or live link of page id, under the page
 	// row's lock, and returns them (their cards are the caller's to withdraw).
@@ -108,9 +116,11 @@ type Store interface {
 	// AddResponse records one response through link l at version v.
 	// ErrTooMany past MaxResponsesPerLink, or MaxUploadsPerLink for an upload.
 	AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
-	// AddOwnerResponse records one response the caller — page id's OWNER, from
-	// their own view — sent at version v (ByOwner, no link). The same caps as
-	// a link's, counted over the page's owner responses; ErrNotFound for a
+	// AddOwnerResponse records one response the caller — page id's OWNER, or
+	// on a team's page a member of the team (0165), from their own view —
+	// sent at version v (ByOwner, no link), recorded as the caller
+	// (ResponderUser). The same caps as a link's, counted over the page's
+	// owner-view responses (every member's together); ErrNotFound for a
 	// page the caller cannot see, ErrClosing for one being deleted.
 	AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
 	// Responses is page id's responses with an id above after, oldest first,
@@ -119,6 +129,34 @@ type Store interface {
 	// ResponsesBefore is page id's responses with an id below before (0: no
 	// bound), NEWEST first, at most limit (the owner's screen's pages).
 	ResponsesBefore(ctx context.Context, id, before int64, limit int) ([]Response, error)
+
+	// The author's assets (asset.go, migration 0164).
+
+	// AssetRoom is what c's page id may still take, under its caps: the bytes
+	// (MaxAssetBytesPerPage less what it holds) — ErrNotFound for a page that
+	// is not c's, ErrClosing for one being deleted, ErrTooMany when it holds
+	// MaxAssetsPerPage. A hint for the upload's own cap: AddAsset decides.
+	AssetRoom(ctx context.Context, c Creator, id int64) (int64, error)
+	// AddAsset records a stored asset of c's page id, under the page row's
+	// lock: ErrTooMany past MaxAssetsPerPage or MaxAssetBytesPerPage (counted
+	// with a), ErrClosing for a page being deleted, ErrAssetType for a type
+	// that is not one of the six.
+	AddAsset(ctx context.Context, c Creator, id int64, a Asset) (Asset, error)
+	// AssetFor is asset publicID of c's page id.
+	AssetFor(ctx context.Context, c Creator, id int64, publicID string) (Asset, error)
+	// Assets is page id's assets (the caller's page, any creator's), oldest first.
+	Assets(ctx context.Context, id int64) ([]Asset, error)
+	// VersionAsset is asset publicID of page id IF version v (0: the current
+	// one) refers to it; ErrNotFound otherwise — another page's asset, an
+	// asset this version does not use, a missing one alike.
+	VersionAsset(ctx context.Context, id int64, v int, publicID string) (Asset, error)
+	// VersionAssets is every asset version v (0: the current one) of page id
+	// refers to.
+	VersionAssets(ctx context.Context, id int64, v int) ([]Asset, error)
+	// DeleteAsset deletes asset publicID of c's page id and returns it (its
+	// bytes are the caller's to delete): ErrAssetInUse while any version
+	// refers to it.
+	DeleteAsset(ctx context.Context, c Creator, id int64, publicID string) (Asset, error)
 }
 
 // PGStore is Store on Postgres.
@@ -152,12 +190,13 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), coalesce(p.mirror_tmux_session, ''), coalesce(p.mirror_window, ''), p.creator_label, coalesce(p.created_by_user, 0),
+	(p.created_by_user IS NOT NULL AND public.muster_is_team_member(p.owner_id, p.created_by_user)), p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
-	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
-		&p.CreatedAt, &p.UpdatedAt}, extra...)
+	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.MirrorTmuxSession, &p.Creator.MirrorWindow, &p.Creator.Label,
+		&p.Creator.ByUser, &p.CreatorInTeam, &p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Page{}, ErrNotFound
@@ -194,7 +233,33 @@ func insertVersion(ctx context.Context, tx pgx.Tx, page int64, v int, title stri
 	out := Version{PageID: page, Version: v, Title: title, Blocks: blocks, SizeBytes: size, CreatedBy: by}
 	err = tx.QueryRow(ctx, `INSERT INTO page_versions (page_id, version, title, blocks, size_bytes, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`, page, v, title, enc, size, by).Scan(&out.ID, &out.CreatedAt)
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	return out, insertVersionAssets(ctx, tx, page, v, blocks)
+}
+
+// insertVersionAssets records the assets version v of page refers to
+// (AssetRefs), in the version's own transaction.
+//
+// 🔴 ONLY THE PAGE'S OWN: each is looked up among page's assets first, and one
+// that is not there — another page's, another owner's (row-level security:
+// unseen), deleted, never attached — refuses the version with a sentence
+// naming it. 0164's foreign key holds the same if this check ever went.
+func insertVersionAssets(ctx context.Context, tx pgx.Tx, page int64, v int, blocks []Block) error {
+	for _, ref := range AssetRefs(blocks) {
+		var ok bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM page_assets WHERE page_id = $1 AND public_id = $2)`, page, ref).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: %s%s is not an asset of this page: attach the file to this page with page_asset_upload first, and use the ref it returns", ErrInvalid, AssetScheme, ref)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO page_version_assets (page_id, version, asset_id) VALUES ($1, $2, $3)`, page, v, ref); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Create inserts the page and its version 1 in one transaction.
@@ -225,8 +290,19 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorSession != "" {
 			sess = truncate(c.MirrorSession, 200)
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label, rolling_versions) VALUES ($1, $2, $3, $4, $5, $6)
-			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200), c.RollingVersions)
+		// A team's page records the person who started its agent (0165); a
+		// person's own records none (the database blanks it).
+		var byUser any
+		if c.ByUser > 0 {
+			byUser = c.ByUser
+		}
+		// And the tmux window it was made in (0162: both, or neither).
+		var tmuxSess, win any
+		if c.AgentID <= 0 && c.MirrorTmuxSession != "" && c.MirrorWindow != "" {
+			tmuxSess, win = truncate(c.MirrorTmuxSession, 200), truncate(c.MirrorWindow, 200)
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, mirror_tmux_session, mirror_window, creator_label, created_by_user, rolling_versions)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+pageCols, title, agent, c.MirrorHost, sess, tmuxSess, win, truncate(c.Label, 200), byUser, c.RollingVersions)
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err
@@ -293,6 +369,9 @@ func (s *PGStore) AddVersion(ctx context.Context, c Creator, id int64, title str
 // Every other version is unreferenced, and is dropped oldest first. A page
 // whose every version is referenced cannot make room: ErrTooMany, as a
 // non-rolling page at the cap. The versions that remain are never rewritten.
+// A dropped version's asset uses (page_version_assets) go with it, by 0164's
+// cascade; its ASSETS stay the page's, deletable once no kept version uses
+// them (TestARollingPageDropsAVersionThatUsesAnAsset).
 func rollingDrop(ctx context.Context, tx pgx.Tx, id int64, held int) error {
 	excess := held - MaxVersionsPerPage + 1
 	if excess <= 0 {
@@ -330,7 +409,13 @@ const summaryCols = pageCols + `,
 	(SELECT count(*) FROM page_responses r WHERE r.page_id = p.id)`
 
 func (s *PGStore) summaries(ctx context.Context, where string, args ...any) ([]Summary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY p.updated_at DESC, p.id DESC LIMIT 500`, args...)
+	return s.summariesOrdered(ctx, where, `p.updated_at DESC, p.id DESC`, args...)
+}
+
+// summariesOrdered is summaries in order (a constant ORDER BY list, never a
+// caller's words).
+func (s *PGStore) summariesOrdered(ctx context.Context, where, order string, args ...any) ([]Summary, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY `+order+` LIMIT 500`, args...)
 	if err != nil {
 		return nil, wrap("list", err)
 	}
@@ -356,6 +441,33 @@ func (s *PGStore) PagesFor(ctx context.Context, c Creator) ([]Summary, error) {
 
 // Pages lists the caller's pages.
 func (s *PGStore) Pages(ctx context.Context) ([]Summary, error) { return s.summaries(ctx, "") }
+
+// SessionPages lists the pages session x made, newest made first. Row-level
+// security scopes it to what the caller may read, whatever x names.
+//
+// 🔴 A MIRRORED WINDOW'S PAGES ARE ITS OWNER'S OWN, NAMED IN THE QUERY: since
+// 0165 a member also READS their teams' pages, and a team's page made from a
+// host, window and session of the same names (another owner's same strings
+// name another machine) would be counted as this window's. An agent is one
+// agents row, so its pages are whatever the caller may read of them.
+// TestAWindowsPagesAreItsOwnersEvenOnATeamsSameNamedHost.
+func (s *PGStore) SessionPages(ctx context.Context, x SessionRef) ([]Summary, error) {
+	if !x.Valid() {
+		return nil, nil
+	}
+	var where string
+	var args []any
+	if x.AgentID > 0 {
+		where, args = ` AND p.agent_id = $1`, []any{x.AgentID}
+	} else {
+		// Made IN the window (its tmux session and window id), or by a
+		// session it runs now — always on the same host.
+		where, args = ` AND p.agent_id IS NULL AND p.owner_id = nullif(current_setting('muster.uid', true), '')::bigint AND p.mirror_host = $1 AND (
+			(p.mirror_tmux_session = $2 AND p.mirror_window = $3) OR p.mirror_session = ANY($4))`,
+			[]any{x.MirrorHost, x.MirrorTmuxSession, x.MirrorWindow, x.MirrorSessions}
+	}
+	return s.summariesOrdered(ctx, where, `p.created_at DESC, p.id DESC`, args...)
+}
 
 // Versions lists a page's versions without their blocks.
 func (s *PGStore) Versions(ctx context.Context, id int64) ([]Version, error) {
@@ -406,7 +518,20 @@ func (s *PGStore) SetCurrent(ctx context.Context, id int64, v int) (Page, error)
 
 // Files lists a page's uploaded files.
 func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT upload_public_id FROM page_responses WHERE page_id = $1 AND kind = 'upload' ORDER BY id`, id)
+	// A viewer's files, then the author's assets (0164): both are uploads rows
+	// under the page's prefix.
+	//
+	// 🔴 AND EVERY LIVE UPLOADS ROW UNDER THE PAGE'S PREFIX, whatever names it:
+	// an asset deleted while its row's revoke failed (page_asset_delete), or a
+	// file whose recording failed, is no longer named by either table above,
+	// and would outlive the page live. Each id once (GROUP BY).
+	rows, err := s.pool.Query(ctx, `SELECT f FROM (
+		SELECT upload_public_id AS f, 0 AS k, id FROM page_responses WHERE page_id = $1 AND kind = 'upload'
+		UNION
+		SELECT public_id, 1, id FROM page_assets WHERE page_id = $1
+		UNION
+		SELECT public_id, 2, id FROM uploads WHERE object_key LIKE 'pages/' || $1::bigint || '/%' AND revoked_at IS NULL) x
+		GROUP BY f ORDER BY min(k), min(id)`, id)
 	if err != nil {
 		return nil, wrap("files", err)
 	}
@@ -528,17 +653,19 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 	}
 	var l Link
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := lockPage(ctx, tx, id); err != nil {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
 			return err
 		}
 		if err := openLinkRoom(ctx, tx, id); err != nil {
 			return err
 		}
-		var err error
 		// 🔴 ONLY THE HASH IS WRITTEN; the token goes back to the caller once.
-		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
-			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent))
+		// The row names the PAGE's owner, never the caller's default: on a
+		// team's page a member's Share writes the team's link (0165).
+		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
+			VALUES ($6, $1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
+			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent, owner))
 		return err
 	})
 	if err != nil {
@@ -600,9 +727,10 @@ func (s *PGStore) insertReusable(ctx context.Context, tx pgx.Tx, owner, id int64
 	}
 	// 🔴 THE LOOKUP KEY IS STILL THE HASH; the sealed copy is only ever read
 	// back to show the owner (or the agent, in auto mode) the same address.
-	l, err := scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, reusable, token_sealed, decided_at)
-		VALUES ($1, $2, 'live', $3, $4, true, $5, now()) RETURNING `+linkCols,
-		id, TokenHash(tok), truncate(requestedBy, 200), byAgent, sealed))
+	// The page's owner, named (a team member's Share writes the team's row).
+	l, err := scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, made_by_agent, reusable, token_sealed, decided_at)
+		VALUES ($6, $1, $2, 'live', $3, $4, true, $5, now()) RETURNING `+linkCols,
+		id, TokenHash(tok), truncate(requestedBy, 200), byAgent, sealed, owner))
 	if err != nil {
 		return Link{}, err
 	}
@@ -788,6 +916,24 @@ func (s *PGStore) RevokeLink(ctx context.Context, id, linkID int64) (Link, error
 	return l, wrap("revoke link", err)
 }
 
+// RevokeTeamPageUploads revokes every uploads row under TEAM page id's own
+// prefix (pages/<id>/), for a caller who may manage the page (migration
+// 0165's muster_revoke_team_page_uploads): a delete's step, so no file row of
+// the page stays live once its objects are swept. 0127 writes uploads at
+// operator, so a viewer-role creator's or manager's per-file revoke would
+// revoke none. It reports how many rows it revoked; ErrNotFound when the
+// caller may not manage the page (or it is no team's).
+func (s *PGStore) RevokeTeamPageUploads(ctx context.Context, id int64) (int, error) {
+	var n *int
+	if err := s.pool.QueryRow(ctx, `SELECT public.muster_revoke_team_page_uploads($1)`, id).Scan(&n); err != nil {
+		return 0, wrap("revoke team page uploads", err)
+	}
+	if n == nil {
+		return 0, ErrNotFound
+	}
+	return *n, nil
+}
+
 // LinkByToken reads one live link by its token's hash, under the system
 // principal (sys). The token's shape is checked first, so a malformed one
 // never reaches the database.
@@ -811,12 +957,12 @@ func (s *PGStore) LinkByToken(ctx context.Context, token string) (Link, error) {
 	return l, nil
 }
 
-const responseCols = `id, page_id, coalesce(link_id, 0), by_owner, version, component, kind, data, upload_public_id, created_at`
+const responseCols = `id, page_id, coalesce(link_id, 0), by_owner, coalesce(responder_user, 0), version, component, kind, data, upload_public_id, created_at`
 
 func scanResponse(row pgx.Row) (Response, error) {
 	var r Response
 	var kind string
-	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.ByOwner, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.ByOwner, &r.ResponderUser, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
 	r.Kind = ResponseKind(kind)
 	return r, err
 }
@@ -846,7 +992,7 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 			return ErrLinkNotFound
 		}
 		var err error
-		out, err = insertResponse(ctx, tx, l.PageID, l.ID, v, component, kind, data, uploadID)
+		out, err = insertResponse(ctx, tx, l.OwnerID, l.PageID, l.ID, v, component, kind, data, uploadID)
 		return err
 	})
 	if err != nil {
@@ -861,11 +1007,11 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := lockPage(ctx, tx, id); err != nil {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
 			return err
 		}
-		var err error
-		out, err = insertResponse(ctx, tx, id, 0, v, component, kind, data, uploadID)
+		out, err = insertResponse(ctx, tx, owner, id, 0, v, component, kind, data, uploadID)
 		return err
 	})
 	if err != nil {
@@ -882,7 +1028,10 @@ func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, compone
 // 🔴 ONE RESPONDER PER ROW: linkID > 0 is that link's response; 0 is the
 // owner's (by_owner, link_id NULL — 0152's page_responses_one_responder).
 // The owner's caps are a link's caps, so their own view is no bigger a hole.
-func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
+//
+// owner is the PAGE's owner, named on the row: a team member's response on a
+// team's page is the team's row (0165), recorded as theirs by responder_user.
+func insertResponse(ctx context.Context, tx pgx.Tx, owner, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
@@ -907,8 +1056,8 @@ func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, c
 	if kind == KindUpload && files >= MaxUploadsPerLink {
 		return Response{}, fmt.Errorf("%w: %s recorded %d files, the most one link may", ErrTooMany, who, files)
 	}
-	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID))
+	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (owner_id, page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
+		VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID, owner))
 	// The data's own CHECK (0116: pg_column_size(data) <= 40000) can refuse
 	// what CheckSubmit's byte bound let through (it bounds the JSON text,
 	// not its stored form): a refusal, never a server error.
@@ -973,7 +1122,7 @@ func wrap(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing, ErrResponseTooLarge} {
+	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing, ErrResponseTooLarge, ErrAssetInUse, ErrAssetType} {
 		if errors.Is(err, e) {
 			return err
 		}

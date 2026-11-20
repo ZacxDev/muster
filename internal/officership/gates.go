@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/cichecks"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -388,28 +389,32 @@ func (g *Gates) hqEnabled(ctx context.Context) error {
 
 // checksGreen: every required check is success on sha — a commit status
 // whose latest state is success, or (when no status of that name exists) a
-// completed, successful check run. Missing counts as not passed.
+// completed, successful check run. Missing counts as not passed. The verdict
+// per check is internal/cichecks' (cichecks.Of), the ONE reading of a
+// commit's CI the fleet's CI read shares; only green passes here (neutral and
+// skipped do not).
 func (g *Gates) checksGreen(ctx context.Context, sha string) error {
 	st, err := g.GH.Statuses(ctx, sha)
 	if err != nil {
 		return refuse(GateChecks, "could not read the commit statuses of %s: %v", short(sha), err)
 	}
+	c := cichecks.Checks{Statuses: map[string]cichecks.Status{}}
+	for name, state := range st {
+		c.Statuses[name] = cichecks.Status{State: state}
+	}
 	var bad []string
 	for _, name := range g.Ship.RequiredChecks {
-		if state, ok := st[name]; ok {
-			if state != "success" {
-				bad = append(bad, name+"="+state)
+		if _, ok := st[name]; !ok {
+			runs, err := g.GH.CheckRuns(ctx, sha, name)
+			if err != nil {
+				return refuse(GateChecks, "could not read check run %q on %s: %v", name, short(sha), err)
 			}
-			continue
+			for _, r := range runs {
+				c.Runs = append(c.Runs, cichecks.Run{ID: r.ID, Name: r.Name, Status: r.Status, Conclusion: r.Conclusion})
+			}
 		}
-		runs, err := g.GH.CheckRuns(ctx, sha, name)
-		if err != nil {
-			return refuse(GateChecks, "could not read check run %q on %s: %v", name, short(sha), err)
-		}
-		if r, ok := newest(runs, name); !ok {
-			bad = append(bad, name+"=missing")
-		} else if r.Status != "completed" || r.Conclusion != "success" {
-			bad = append(bad, name+"="+r.Status+"/"+r.Conclusion)
+		if v := cichecks.Of(c, name); v.State != cichecks.Green {
+			bad = append(bad, name+"="+v.Detail)
 		}
 	}
 	if len(bad) > 0 {

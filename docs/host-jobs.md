@@ -118,7 +118,11 @@ links never change. A version is never dropped while it is referenced: the
 **current** version (the one your view and every live share link show) and
 any version a **response** was sent at are kept. If every older version is one
 of those, the run fails with the page's own "too many versions" reason, as any
-other page's would. Every other page keeps the plain cap.
+other page's would. Every other page keeps the plain cap. A dropped version
+that showed one of the page's [images or video](pages.md#images-and-video)
+takes only its use of it: the file stays the page's (listed, and served to any
+kept version that shows it) until you delete it, which is allowed once no
+kept version shows it, or until the page is deleted.
 
 A new version is written **only when the output changed**: when the blocks and
 the title are the same as the page's current version, the run is `ok` and no
@@ -133,9 +137,10 @@ for markdown larger than one markdown block holds (64 KiB).
 Shareable pages must be on (`MUSTER_PAGES=1`, [pages.md](pages.md)); without
 them every run fails with that reason.
 
-**Team hosts.** Pages are personal (a team member cannot read a page a team
-owns), so a team host's jobs are **refused**: muster records none of them and
-logs why. Declare the job on a personal host.
+**Team hosts.** A team host's jobs are **refused**: muster records none of
+them and logs why. A job's page is a personal one; a team's page (readable by
+its members) records the person whose agent made it, and a job has no such
+person. Declare the job on a personal host.
 
 ## When a run fails
 

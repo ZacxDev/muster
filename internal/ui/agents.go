@@ -483,6 +483,14 @@ func repoOptions(repos []RepoView) []ComboOption {
 	return opts
 }
 
+// The model picker's words (the jargon audit's F044): what the empty box
+// says and what a screen reader calls it — never "quick-picks" or
+// "filter/search".
+const (
+	ModelPickerPlaceholder = "Choose a model…"
+	ModelPickerLabel       = "Choose a model"
+)
+
 // comboboxSkeleton is the subtly-animated placeholder shown in a lazy combobox
 // list (and inside the dropdown) until the real options load.
 func comboboxSkeleton() g.Node {
@@ -671,13 +679,13 @@ func modelFieldForDisplay(selected, note, displayOverride string) g.Node {
 			g.Attr("role", "combobox"),
 			g.Attr("aria-expanded", "false"),
 			g.Attr("aria-controls", listID),
-			g.Attr("aria-label", "Model — pick a quick-pick or type to filter/search"),
+			g.Attr("aria-label", ModelPickerLabel),
 			g.Attr("autocomplete", "off"),
 			// Pre-filled with the TRIMMED display of the current slug so the user sees
 			// a clean label; the hidden field holds the full slug that submits. Empty
 			// when nothing is selected → the cluster default wins unless changed.
 			Value(display),
-			Placeholder("Model — quick-picks, or type to filter/search…"),
+			Placeholder(ModelPickerPlaceholder),
 			Class("w-full rounded-lg border-0 bg-bg px-3 py-2.5 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
 		Ul(

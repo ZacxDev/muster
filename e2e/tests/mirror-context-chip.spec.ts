@@ -97,8 +97,8 @@ const widths = [
   { name: 'desktop', width: 1280, height: 800 },
 ];
 
-// fits: nothing in the header (or the page) scrolls sideways, and the back
-// arrow and the view switch are wholly on screen.
+// fits: nothing in the header (or the page) scrolls sideways, and the ⋯
+// menu's trigger and the view switch are wholly on screen.
 async function expectFits(page: Page, label: string) {
   const m = await page.evaluate(() => {
     const h = document.querySelector('header')!;
@@ -110,19 +110,20 @@ async function expectFits(page: Page, label: string) {
       header: [h.scrollWidth, h.clientWidth],
       doc: [document.documentElement.scrollWidth, document.documentElement.clientWidth],
       vw: window.innerWidth,
-      back: box('#mv-back'),
+      menu: box('#mv-menu-open'),
       toggle: box('header nav[aria-label="View"]'),
       chip: box('#mv-context'),
       count: box('#mv-context [data-ctx-count]'),
       name: box('#mv-context [data-ctx-name]'),
-      // The first header control right of the chip's column.
-      next: box('#chat-index-open'),
+      // The first header control right of the chip's column (the Open
+      // button when drawn, else the view switch).
+      next: box('#preview-toggle, header nav[aria-label="View"]'),
     };
   });
   const at = `${label} (${JSON.stringify(m)})`;
   expect(m.header[0], `${at}: the header scrolls sideways`).toBeLessThanOrEqual(m.header[1]);
   expect(m.doc[0], `${at}: the page scrolls sideways`).toBeLessThanOrEqual(m.doc[1]);
-  for (const [name, b] of [['back', m.back], ['view switch', m.toggle], ['chip', m.chip], ['count', m.count]] as const) {
+  for (const [name, b] of [['⋯', m.menu], ['view switch', m.toggle], ['chip', m.chip], ['count', m.count]] as const) {
     expect(b.left, `${at}: the ${name} starts off screen`).toBeGreaterThanOrEqual(0);
     expect(b.right, `${at}: the ${name} ends off screen`).toBeLessThanOrEqual(m.vw);
   }
