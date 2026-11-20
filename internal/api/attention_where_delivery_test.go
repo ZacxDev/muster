@@ -51,7 +51,7 @@ func whereAnsweredAsks() []attention.Ask {
 // delivery line, by id. The line names the session as the title does, never
 // by its tmux target: that is the card's ⓘ (whereTargets).
 var whereDeliveries = map[int64][2]string{
-	101: {"on ws", "Queued for mango — waiting: the session is busy. muster keeps trying."},
+	101: {"on ws", "Will reach mango when it's back."},
 	102: {"pear:2 @ ws (not shown in any mirrored window now)", "Queued for pear:2 @ ws (not shown in any mirrored window now): delivering it as a new message in its session."},
 	103: {"on ws", "Waiting for build to read it: a mirrored session reads its answer itself (attention_wait); muster does not type into it."},
 	104: {"on ws", "Delivery failed: the paste was not seen."},

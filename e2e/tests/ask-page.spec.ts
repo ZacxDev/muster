@@ -184,10 +184,25 @@ for (const vp of [
       await page.locator('#app-main').evaluate((e) => e.scrollTo(0, e.scrollHeight));
       expect((await page.locator('#app-compose').boundingBox())!.y).toBeCloseTo(compose.y, 0);
 
+      // Answer is DISABLED while the box is blank (a blank answer used to
+      // round-trip to a server notice); a chip's fill enables it.
+      const send = page.locator('[data-ask-send]');
+      await expect(send).toBeDisabled();
+      // Pressed anyway (aria-disabled keeps it focusable): nothing is posted,
+      // the box takes focus.
+      const blank = posts(page);
+      await send.click({ force: true });
+      await page.waitForTimeout(300);
+      expect(blank, 'a blank Answer posted nothing').toEqual([]);
+      await expect(box).toBeFocused();
+      await box.fill('   ');
+      await expect(send, 'whitespace is still blank').toBeDisabled();
+      await box.fill('');
       // A chip FILLS the box and sends nothing.
       const sent = posts(page);
       await chips.nth(1).tap();
       await expect(box).toHaveValue(sugB);
+      await expect(send).toBeEnabled();
       await expect(box).toBeFocused();
       await page.waitForTimeout(300);
       expect(sent, 'a chip sent nothing').toEqual([]);
@@ -200,6 +215,8 @@ for (const vp of [
       await page.waitForURL(origin + `/attention/asks/${id}`);
       expect(sent).toEqual([`/attention/asks/${id}/answer`]);
       await expect(page.locator('[data-ask-closed]')).toBeVisible();
+      // Settled, it is headed by its state, not "… is asking".
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Answered');
       await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: ' + sugB + ' — and post in the channel');
       await expect(page.locator('#app-compose'), 'no answer box on an answered ask').toBeHidden();
       const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string; answer: string };

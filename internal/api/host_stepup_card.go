@@ -12,7 +12,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
-	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -68,6 +67,8 @@ const (
 	stepUpRejectTitle   = "Reject this draft?"
 	stepUpRejectWhy     = "Reject this draft"
 	stepUpAskedByPrefix = "Asked by "
+	// stepUpVenuePrefix leads a draft card's venue pill.
+	stepUpVenuePrefix = "Post on "
 )
 
 // stepUpDetails is the card's boilerplate, on the record: what every card's
@@ -395,7 +396,8 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 		b.WriteString(`<p class="break-words text-sm text-fg" data-stepup-about>` + esc(c.About) + `</p>
 `)
 	}
-	if c.Asker != "" && c.About != stepUpAskedByPrefix+c.Asker {
+	// Who asked, once: not again when the why or the where line says it.
+	if asked := stepUpAskedByPrefix + c.Asker; c.Asker != "" && c.About != asked && c.Why != asked {
 		b.WriteString(`<p class="break-words text-xs text-fg2" data-stepup-asker>` + esc(stepUpAskedByPrefix+c.Asker) + `</p>
 `)
 	}
@@ -407,16 +409,13 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 		text := c.Preview
 		if c.DraftID > 0 {
 			// Line by line: a line break is the post's own, drawn as one.
-			lines := strings.Split(text, "\n")
-			for i, l := range lines {
-				lines[i] = flows.VisibleEscape(l)
-			}
-			text = strings.Join(lines, "\n")
+			text = visibleLines(text)
 		}
 		b.WriteString(`<div class="flex min-w-0 flex-col gap-2 rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-stepup-preview>
 `)
 		if c.Venue != "" {
-			b.WriteString(`<span class="` + ui.AsksPillClass + ` self-start" data-stepup-venue>` + esc(c.Venue) + `</span>
+			// "Post on X", not "X": a bare venue name read as a close button.
+			b.WriteString(`<span class="` + ui.AsksPillClass + ` self-start" data-stepup-venue>` + esc(stepUpVenuePrefix+c.Venue) + `</span>
 `)
 		}
 		if text != "" {
@@ -441,7 +440,7 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 		b.WriteString("</div>\n")
 	}
 	b.WriteString(`<details class="rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line" data-stepup-details>
-<summary class="flex min-h-[44px] cursor-pointer items-center text-sm font-semibold text-fg2" data-stepup-details-toggle>Details</summary>
+<summary class="flex min-h-[44px] cursor-pointer items-center justify-between gap-2 text-sm font-semibold text-fg2" data-stepup-details-toggle>Details` + ui.AsksCardChevron + `</summary>
 <p class="whitespace-pre-wrap break-words pb-2 text-sm text-fg2" data-stepup-details-text>` + esc(c.Details) + `</p>
 </details>
 `)

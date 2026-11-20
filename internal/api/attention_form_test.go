@@ -21,8 +21,11 @@ func answerFormOf(t *testing.T, out string) string {
 
 // placeFree is an answer form without what its PLACE adds (askFormPlace):
 // the form tag's own attributes (the Asks card's htmx post, a session page's
-// hx-boost), a return page's return field, and a Dismiss in the answer row.
+// hx-boost), a return page's return field, a Dismiss in the answer row, and
+// the Asks feed's gate on Answer (gated: drawn aria-disabled, turned on by
+// its script as the box fills).
 func placeFree(form string) string {
+	form = strings.Replace(form, " "+ui.AsksSendDisabledClass+`" aria-disabled="true" data-asks-send>`, `">`, 1)
 	form = regexp.MustCompile(`^<form [^>]*>`).ReplaceAllString(form, "<form>")
 	form = regexp.MustCompile(`<input type="hidden" name="return" value="[^"]*">`).ReplaceAllString(form, "")
 	return regexp.MustCompile(`<button type="submit" form="ask-9-dismiss"[^>]*>.*?</button>`).ReplaceAllString(form, "")
@@ -45,7 +48,7 @@ func TestTheAsksCardAndAReturnListDrawOneAnswerForm(t *testing.T) {
 	for _, want := range []string{
 		`class="` + ui.AsksOptionClass + `" data-attention-option>yes</button>`,
 		`<div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="answer-9"`,
-		`<button type="submit" id="answer-9-submit" class="` + ui.AsksCardSendQuietClass + `">Answer</button>`,
+		`<button type="submit" id="answer-9-submit" class="` + ui.AsksCardSendQuietClass + ` ` + ui.AsksSendDisabledClass + `" aria-disabled="true" data-asks-send>Answer</button>`,
 		`rows="1"`, `class="` + ui.AskFormInputClass + `"`, `<label for="answer-9" class="sr-only">Your answer</label>`,
 	} {
 		if !strings.Contains(card, want) {

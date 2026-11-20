@@ -687,14 +687,17 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
  *
  * - The document scrolls the feed; scroll-snap is PROXIMITY, never mandatory,
  *   so a card taller than the screen still scrolls through.
- * - data-expanded="true" opens a card: its more region grows from zero rows
- *   (grid-template-rows 0fr -> 1fr) and turns visible, the question and the
+ * - data-expanded="true" opens a card: its more region takes its rows at
+ *   once (grid-template-rows 0fr -> 1fr) and fades in, the question and the
  *   context line unclamp, the chevron turns. Collapsed, the more region is
  *   visibility:hidden, so its links are out of the tab order and the
  *   accessibility tree.
- * - .asks-leave collapses a card out (the feed's script set its height first),
- *   .asks-enter brings one in, [data-asks-slide] slides a tab's panel in from
- *   the side it came from.
+ * - .asks-leave fades a card out (the feed's script then takes it off the
+ *   page), .asks-enter brings one in, [data-asks-slide] slides a tab's panel
+ *   in from the side it came from.
+ * - THE MOTION IS OPACITY AND TRANSFORM ONLY, 180-200ms on the standard
+ *   easing (cubic-bezier(0.2, 0, 0, 1)): no height, padding or margin is
+ *   animated (a layout animation repaints the whole feed every frame).
  * - ALL OF IT is off under prefers-reduced-motion: reduce (the last block).
  */
 html:has([data-asks-feed]) {
@@ -743,38 +746,44 @@ html:has([data-asks-feed]) {
 .asks-more {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .asks-more > * {
   visibility: hidden;
-  transition: visibility 0s linear 220ms;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1), transform 180ms cubic-bezier(0.2, 0, 0, 1), visibility 0s linear 180ms;
 }
 .asks-card[data-expanded="true"] .asks-more {
   grid-template-rows: 1fr;
 }
 .asks-card[data-expanded="true"] .asks-more > * {
   visibility: visible;
+  opacity: 1;
+  transform: none;
   transition-delay: 0s;
 }
 .asks-chevron {
-  transition: transform 200ms ease;
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 .asks-card[data-expanded="true"] .asks-chevron {
   transform: rotate(180deg);
 }
+/* A <details> whose <summary> draws the chevron (a step-up card's Details):
+   it turns with [open], whatever card it sits in. */
+details[data-stepup-details]:not([open]) > summary .asks-chevron {
+  transform: none;
+}
+details[data-stepup-details][open] > summary .asks-chevron {
+  transform: rotate(180deg);
+}
 .asks-leave {
-  height: 0 !important;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-  margin-bottom: -0.75rem !important;
   opacity: 0;
-  overflow: hidden;
   transform: scale(0.98);
   pointer-events: none;
-  transition: height 240ms ease, padding 240ms ease, margin 240ms ease, opacity 180ms ease, transform 240ms ease !important;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1), transform 180ms cubic-bezier(0.2, 0, 0, 1) !important;
 }
 .asks-enter {
-  animation: card-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: card-in 200ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 .asks-instant,
 .asks-instant * {

@@ -67,12 +67,28 @@ const (
 	// AsksCardChipsClass / AsksCardChipClass are the suggested replies: a tap
 	// FILLS the answer box (nothing is sent before Answer).
 	AsksCardChipsClass = "flex flex-wrap gap-1.5"
-	AsksCardChipClass  = "press min-h-[44px] max-w-full break-words rounded-full bg-bg px-3 py-1.5 text-left text-sm text-fg ring-1 ring-inset ring-accent/40 transition hover:bg-s2"
+	// Its ring is ring-edge: 3:1 or more against the chip and the card in both
+	// themes (accent/40 was 2.4:1 dark, 1.8:1 light).
+	AsksCardChipClass = "press min-h-[44px] max-w-full break-words rounded-full bg-bg px-3 py-1.5 text-left text-sm text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
+	// AsksAIPillHTML marks the suggested replies as an AI's, on the feed's
+	// card and the ask page alike.
+	AsksAIPillHTML = `<span class="self-center rounded bg-accent/15 px-1.5 py-0.5 text-xs font-semibold text-fg" data-asks-ai-pill>AI</span>`
 	// AsksCardSendClass is the answer row's Answer: compact, beside the box.
 	AsksCardSendClass = AsksPrimaryButtonBase + " shrink-0"
 	// AsksCardSendQuietClass is Answer on a card whose options are its primary
 	// action: outlined, not filled.
 	AsksCardSendQuietClass = "press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
+	// AsksSendDisabledClass is how an Answer reads while it is off (its box is
+	// blank, and no option is chosen: aria-disabled="true").
+	//
+	// 🔴 ARIA-DISABLED, NOT THE disabled ATTRIBUTE: the mic's ↑ is disabled
+	// exactly while the Send it presses is (dictate.go syncArrow: a send in
+	// flight), and a blank box is what a voice answer starts from — a native
+	// disabled Answer disabled the ↑ and no voice answer could be sent
+	// (e2e dictation.spec "the ask page's ↑ answers once"). A blank Answer is
+	// refused by the page's script instead (the feed's htmx:beforeRequest, the
+	// ask page's submit guard), and by the server whatever they do.
+	AsksSendDisabledClass = "aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 	// AsksCountClass is the page header's "N open".
 	AsksCountClass = AsksPillClass + " tabular-nums"
 	// AsksCardErrorClass is a card's refusal line (AsksCardErrorHTML), in its
@@ -203,7 +219,7 @@ func AsksFeedScriptHTML() string { return nodeString(staticScript(asksFeedScript
 
 // AsksLeaveFallbackMs is how long a leaving card waits for its collapse's
 // transitionend before it counts the collapse as played (a transition the
-// browser skipped, a card a refresh detached). Above .asks-leave's 240ms.
+// browser skipped, a card a refresh detached). Above .asks-leave's 180ms.
 const AsksLeaveFallbackMs = 400
 
 // AsksCollapsingAttr marks a feed card whose leave collapse is playing; the
@@ -330,7 +346,8 @@ var asksFeedJS = `(function () {
   // server has answered or dismissed (kept a minute: a refresh fetched just
   // before the POST landed still lists them). Both by id.
   var leaving = {}, settled = {};
-  // leave: the card collapses out (height, then hidden), the next one moves up.
+  // leave: the card fades out (opacity and transform only), then is hidden and
+  // the next one moves up.
   // card.__asksLeft is the collapse's end: done once it has played (or at
   // once under reduced motion), with what waits for it (settle's removal).
   function leave(card) {
@@ -364,7 +381,6 @@ var asksFeedJS = `(function () {
     // to its end state — the collapse cut off again, by the refresh the answer
     // itself causes.
     card.setAttribute('` + AsksCollapsingAttr + `', '');
-    card.style.height = card.offsetHeight + 'px';
     void card.offsetHeight;
     card.classList.add('asks-leave');
     var end = function () {
@@ -372,7 +388,7 @@ var asksFeedJS = `(function () {
       if (card.hasAttribute('data-asks-leaving')) { card.style.display = 'none'; count(); }
       finish();
     };
-    card.addEventListener('transitionend', function (e) { if (e.target === card && e.propertyName === 'height') end(); });
+    card.addEventListener('transitionend', function (e) { if (e.target === card && e.propertyName === 'opacity') end(); });
     setTimeout(end, ` + strconv.Itoa(AsksLeaveFallbackMs) + `);
   }
   // afterLeave: run f once card's collapse has played out — at once when it
@@ -500,6 +516,17 @@ var asksFeedJS = `(function () {
     }, { once: true });
   });
 
+  // ANSWER IS ON ONLY WHILE ITS BOX HOLDS TEXT: a card's Answer
+  // (data-asks-send) is drawn aria-disabled, its box empty (AsksSendDisabledClass
+  // says why not the disabled attribute); a blank answer is not sent
+  // (htmx:beforeRequest above). Typing, a chip's fill and the mic's transcript
+  // all fire input here.
+  document.addEventListener('input', function (e) {
+    var b = e.target;
+    if (!b || b.tagName !== 'TEXTAREA' || !b.form) return;
+    var s = b.form.querySelector('[data-asks-send]');
+    if (s) { if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
+  });
   document.addEventListener('click', function (e) {
     var t = e.target;
     var chip = t && t.closest && t.closest('[data-asks-suggestion]');

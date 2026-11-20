@@ -321,7 +321,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		if inRow {
 			rowDismiss = dismiss
 		}
-		b.WriteString(askAnswerFormHTML(it, id, askFormPlace{attrs: gate, dismiss: rowDismiss, chips: true}))
+		b.WriteString(askAnswerFormHTML(it, id, askFormPlace{attrs: gate, dismiss: rowDismiss, chips: true, gated: true}))
 	case it.openCode != nil:
 		b.WriteString(`<div data-asks-controls>` + openCodeAskHTML(it) + `</div>
 `)
@@ -432,10 +432,12 @@ func askDismissButton(form, name string) string {
 // attributes: the Asks card's htmx post or step-up, a session page's
 // hx-boost="false" and step-up), dismiss (Dismiss at the end of the answer
 // row, "" when the card's footer holds it) and chips (the suggested replies:
-// only where the Asks feed's script fills the box from them).
+// only where the Asks feed's script fills the box from them) and gated
+// (Answer drawn aria-disabled while its box is blank: only where the Asks feed's
+// script enables it as the box fills).
 type askFormPlace struct {
 	back, attrs, dismiss string
-	chips                bool
+	chips, gated         bool
 }
 
 // askAnswerFormHTML is THE answer form, on the Asks page's card and on a
@@ -468,7 +470,7 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		b.WriteString("</div>\n")
 	}
 	if p.chips && len(it.suggestions) > 0 {
-		b.WriteString(`<div class="` + ui.AsksCardChipsClass + `" role="group" aria-label="` + suggestLabel + `" data-asks-suggestions>`)
+		b.WriteString(`<div class="` + ui.AsksCardChipsClass + `" role="group" aria-label="` + suggestLabel + `" data-asks-suggestions>` + ui.AsksAIPillHTML)
 		for _, t := range it.suggestions {
 			b.WriteString(`<button type="button" class="` + ui.AsksCardChipClass + `" data-asks-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) + `">` + esc(t) + `</button>`)
 		}
@@ -480,6 +482,16 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	if len(it.Options) > 0 {
 		send = ui.AsksCardSendQuietClass
 	}
+	// GATED (the Asks feed, whose script runs here): Answer starts OFF
+	// (aria-disabled: ui.AsksSendDisabledClass says why not disabled) — the box
+	// is empty — and the feed's script turns it on while the box holds text
+	// (ui/asks_card.go). Elsewhere (a morning report, an officer's page:
+	// no feed script) it is drawn enabled, as before.
+	sendAttrs := ""
+	if p.gated {
+		send += " " + ui.AsksSendDisabledClass
+		sendAttrs = ` aria-disabled="true" data-asks-send`
+	}
 	mic, note := "", ""
 	if it.dictate != "" {
 		mic = ui.DictateWaveHTML(it.dictate, input+"-dictate") +
@@ -489,7 +501,7 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		mic + `<button type="submit" id="` + submit + `" class="` + send + `">Answer</button>` + p.dismiss + `</div>
+		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>Answer</button>` + p.dismiss + `</div>
 ` + note)
 	b.WriteString("</form>\n")
 	return b.String()

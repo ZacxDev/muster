@@ -149,6 +149,10 @@ for (const vp of [
       await expect.poll(() => pageThumb.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth), { timeout: 10_000 }).toBe(2);
       await expect(page.locator('#ask-page [data-ask-why="agent"]')).toContainText(why);
       await expect(page.locator('#ask-page [data-ask-media-image]')).toHaveCount(1);
+      // On the page the image is drawn LARGE (at most 20rem tall, its own
+      // aspect), not as the feed's 56px thumbnail.
+      await expect(pageThumb).toHaveClass(/(^| )max-h-80( |$)/);
+      await expect(page.locator('#ask-page [data-ask-media-image]')).not.toHaveClass(/(^| )h-14( |$)/);
 
       // The same URL with no session is not the file.
       const anon = await fetch(origin + fileURL, { redirect: 'manual' });

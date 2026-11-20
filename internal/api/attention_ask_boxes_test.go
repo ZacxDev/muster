@@ -249,7 +249,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 	for name, page := range map[string]string{
 		"the list":     attentionItemsHTML(items, time.Now()),
 		"a return":     attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
-		"the composer": askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false),
+		"the composer": askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false, false),
 	} {
 		tags := dictateTag.FindAllStringSubmatch(page, -1)
 		if len(tags) == 0 {
@@ -287,7 +287,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 			}
 			// The Answer it clicks: a submit of that id, with no name (so it
 			// posts the typed answer, never an option), right after the ↑.
-			answer := regexp.MustCompile(`</button><button type="submit" id="` + submit + `" class="[^"]*"( data-ask-send)?>Answer</button>`)
+			answer := regexp.MustCompile(`</button><button type="submit" id="` + submit + `" class="[^"]*"( aria-disabled="true" data-ask-send| aria-disabled="true" data-asks-send)?>Answer</button>`)
 			if !answer.MatchString(page) {
 				t.Errorf("%s: mic %s's ↑ is not right before its Answer #%s:\n%s", name, mic, submit, page)
 			}
@@ -312,7 +312,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 	for name, html := range map[string]string{
 		"the list":      attentionItemsHTML(items, time.Now()),
 		"a return":      attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
-		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath(), false),
+		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath(), false, false),
 		"the page's js": ui.DictateScriptHTML(s.dictatePath()),
 	} {
 		if strings.Contains(html, "data-dictate") || strings.Contains(html, "__musterDictate") || strings.Contains(html, "-dictate-note") {
@@ -330,7 +330,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 // mics already parsed). RED at origin/main: no mic.
 func TestTheAskComposerCarriesTheMicBesideAnswer(t *testing.T) {
 	r := httptest.NewRequest("GET", askPagePath(9), nil)
-	html := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false)
+	html := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false, false)
 	m := dictateTag.FindStringSubmatch(html)
 	if m == nil || m[1] != "ask-dictate" || m[2] != "ask-input" || m[3] != "ask-dictate-note" {
 		t.Fatalf("the composer's mic: %v\n%s", m, html)

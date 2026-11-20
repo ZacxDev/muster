@@ -1,0 +1,220 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// The asks audit's fixes, pinned by their literal words and markup.
+
+// askPageBody renders ask a's page, at path (its own, or with a ?notice=).
+func askPageBody(t *testing.T, s *Server, a attention.Ask, path string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.renderAskPage(rec, httptest.NewRequest("GET", path, nil).WithContext(s.attentionPrincipal(context.Background(), 1)), a)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the ask page: %d", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// askPageH1 is the page's top bar heading.
+func askPageH1(body string) string {
+	const open = `<h1 class="min-w-0 flex-1 truncate text-base font-semibold text-fg">`
+	i := strings.Index(body, open)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(open):]
+	return rest[:strings.Index(rest, "</h1>")]
+}
+
+// TestAStepUpCardsPageOffersNoBrowserAnswer: the browser can never answer a
+// step-up card (errHostDecisionNeedsPhone), so its page draws no options, no
+// suggestions, no answer box and no mic — one line says where it is answered —
+// and it is headed by the card's own action, never by its internal asker
+// label ("step-up is asking"). Dismiss stays: it withdraws the card, and no
+// decision runs from it. RED before the asks audit: Confirm and Refuse, the
+// box and the mic were drawn, under "step-up is asking".
+func TestAStepUpCardsPageOffersNoBrowserAnswer(t *testing.T) {
+	a := stepUpFixtureAsk(t, "Big news.")
+	a.Owner, a.CreatedAt = 1, time.Now()
+	s := whereServer(t, a)
+	body := askPageBody(t, s, a, askPagePath(a.ID))
+	if got := askPageH1(body); got != "Post to X?" {
+		t.Errorf("the heading %q, want %q", got, "Post to X?")
+	}
+	for _, want := range []string{
+		`<p class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-ask-stepup-phone>Confirm this on your phone.</p>`,
+		`data-ask-dismiss>Dismiss without answering</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the step-up page lacks %s:\n%s", want, body)
+		}
+	}
+	for _, never := range []string{`data-ask-option`, `id="ask-answer"`, `id="ask-input"`, `id="ask-send"`, `ask-dictate`, `<button type="button" data-ask-suggestion`,
+		"step-up is asking", "step-up asks", `data-ask-source`, ">Confirm</button>", ">Refuse</button>"} {
+		if strings.Contains(body, never) {
+			t.Errorf("the step-up page still draws %q", never)
+		}
+	}
+	// Settled, it is headed by its state.
+	a.Status = attention.Answered
+	if got := askPageH1(askPageBody(t, s, a, askPagePath(a.ID))); got != "Answered" {
+		t.Errorf("an answered step-up card's heading %q, want Answered", got)
+	}
+}
+
+// TestAStepUpCardsRefusalsSayWhatToDo: an answer the server refuses because
+// only the paired phone may give it, or because a restart lost the request,
+// returns to the ask page with its OWN notice — never the generic "an answer
+// is non-blank text…" (ErrInvalid, which both wrap) — and the step-up page,
+// which has no answer box to show a notice in, shows it on the page.
+// RED before the asks audit: both landed on ?notice=ask-invalid.
+func TestAStepUpCardsRefusalsSayWhatToDo(t *testing.T) {
+	a := stepUpFixtureAsk(t, "Big news.")
+	a.Owner, a.CreatedAt = 1, time.Now()
+	s := whereServer(t, a)
+	for err, want := range map[error][2]string{
+		errHostDecisionNeedsPhone: {"ask-needs-phone", "Confirm this on your paired phone."},
+		errHostDecisionLost:       {"ask-lost", "This request was lost when muster restarted; the session must ask again."},
+	} {
+		form := url.Values{"return": {askPagePath(a.ID)}}
+		r := httptest.NewRequest("POST", askPagePath(a.ID)+"/answer", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		s.attentionFormFailed(rec, r, err, a)
+		if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != askPagePath(a.ID)+"?notice="+want[0] {
+			t.Errorf("%v: %d %q, want 303 to ?notice=%s", err, rec.Code, loc, want[0])
+		}
+		body := askPageBody(t, s, a, askPagePath(a.ID)+"?notice="+want[0])
+		if !strings.Contains(body, `data-ask-notice>`+want[1]+`</p>`) {
+			t.Errorf("%v: the step-up page does not say %q:\n%s", err, want[1], body)
+		}
+	}
+	if got := composerNotices[noticeAskInvalid].text; got != "Type an answer or pick an option." {
+		t.Errorf("the blank-answer notice %q", got)
+	}
+}
+
+// TestAStepUpCardIsMustersOwnOnTheFeed: the Asks feed's card for a step-up
+// card names muster as who asks — the head and data-asks-who (the "Sent to"
+// toast) — never the internal asker label "step-up". RED before the asks
+// audit: its head read "step-up".
+func TestAStepUpCardIsMustersOwnOnTheFeed(t *testing.T) {
+	a := stepUpFixtureAsk(t, "Big news.")
+	a.Owner, a.CreatedAt = 1, time.Now()
+	it := askItem(a)
+	if title, src, isSrc := attentionTitle(it); title != "muster" || src != "" || !isSrc {
+		t.Errorf("attentionTitle %q, %q, %v; want muster, \"\", true", title, src, isSrc)
+	}
+	card := askFeedCardHTML(it, time.Now())
+	if !strings.Contains(card, `data-asks-who="muster"`) || strings.Contains(card, ">step-up<") || strings.Contains(card, `"step-up"`) {
+		t.Errorf("the feed card names its asker wrong:\n%s", card)
+	}
+}
+
+// TestTheAskPageAnswerIsDisabledWhileBlank: Answer is drawn aria-disabled (the
+// box starts empty; not the disabled attribute, which disabled the mic's ↑ —
+// ui.AsksSendDisabledClass), the page's script turns it on while the box holds
+// text, and a blank answer is not posted;
+// beside options it is quiet and Dismiss is a text link, without them the
+// filled primary and the full-width quiet Dismiss. The badge row no longer
+// repeats who asks (the heading says it). RED before the asks audit: Answer
+// was never disabled, and a blank answer round-tripped to the server.
+func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
+	now := time.Now()
+	opts := attention.Ask{ID: 31, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Squash or merge?",
+		Options: []string{"Squash", "Merge"}, Status: attention.Open, CreatedAt: now}
+	free := opts
+	free.ID, free.Options = 32, nil
+	s := whereServer(t, opts, free)
+	body := askPageBody(t, s, opts, askPagePath(opts.ID))
+	for _, want := range []string{
+		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
+		`<button type="submit" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" data-ask-dismiss>Dismiss without answering</button>`,
+		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
+		`if (!b || e.target.id !== 'ask-answer' || !e.submitter || e.submitter.id !== 'ask-send' || b.value.trim()) return;
+    e.preventDefault();`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the options page lacks %s:\n%s", want, body)
+		}
+	}
+	if got := askPageH1(body); got != "Worker Seven is asking" {
+		t.Errorf("the heading %q", got)
+	}
+	if strings.Contains(body, "data-ask-source") || strings.Contains(body, "Worker Seven</span> asks") {
+		t.Errorf("the badge row still names the asker:\n%s", body)
+	}
+	body = askPageBody(t, s, free, askPagePath(free.ID))
+	for _, want := range []string{
+		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
+		`<button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>Dismiss without answering</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the free-text page lacks %s:\n%s", want, body)
+		}
+	}
+	// Settled: headed by its state, never "is asking".
+	for st, want := range map[attention.Status]string{attention.Answered: "Answered", attention.Cancelled: "Dismissed", attention.Expired: "Expired"} {
+		free.Status = st
+		if got := askPageH1(askPageBody(t, s, free, askPagePath(free.ID))); got != want {
+			t.Errorf("%s: heading %q, want %q", st, got, want)
+		}
+	}
+}
+
+// TestTheFeedsSuggestionsCarryTheAIPill: the feed card's suggested replies
+// are marked as an AI's, as the ask page's are, and their ring is ring-edge
+// (3:1 in both themes; accent/40 was under it).
+func TestTheFeedsSuggestionsCarryTheAIPill(t *testing.T) {
+	it := attentionItem{Key: "ask-9", Kind: attentionKindAsk, AskID: 9, Text: "ship?", suggestions: []string{"Ship it"}}
+	form := askAnswerFormHTML(it, "9", askFormPlace{chips: true, gated: true})
+	if !strings.Contains(form, `data-asks-suggestions><span class="self-center rounded bg-accent/15 px-1.5 py-0.5 text-xs font-semibold text-fg" data-asks-ai-pill>AI</span><button type="button" class="`+ui.AsksCardChipClass+`"`) {
+		t.Errorf("the feed's chips carry no AI pill:\n%s", form)
+	}
+	if !strings.Contains(ui.AsksCardChipClass, " ring-edge ") || strings.Contains(ui.AsksCardChipClass, "accent/40") {
+		t.Errorf("the chip ring: %q", ui.AsksCardChipClass)
+	}
+}
+
+// TestTheSmallerAsksFixes pins the audit's copy and markup fixes that need no
+// server: the step-up Details' chevron, an outbound draft's medium named by
+// its file alone (its type, size and SHA-256 behind Details), the Log tab's
+// loading line, and the queued delivery's sentence.
+func TestTheSmallerAsksFixes(t *testing.T) {
+	a := stepUpFixtureAsk(t, "Big news.")
+	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-details-toggle>Details`+ui.AsksCardChevron+`</summary>`) {
+		t.Errorf("the step-up Details has no chevron:\n%s", page)
+	}
+	plugin, venue, kind := int64(3), "x", plugins.TargetPost
+	d := plugins.Draft{ID: 14, PluginID: &plugin, Venue: &venue, TargetKind: &kind, Body: "Hi", Status: plugins.DraftPending,
+		MediaRefs: []string{"launch/hero-1.webp"}, Media: []plugins.DraftMedia{{Ref: "launch/hero-1.webp", ContentType: "image/webp", Size: 2048, SHA256: strings.Repeat("b", 64)}}}
+	card := outboundCardHTML(plugins.DraftCard{Draft: d})
+	for _, want := range []string{
+		`<span class="break-all text-xs text-fg2" data-draft-medium-name>launch/hero-1.webp</span>`,
+		`<details class="` + ui.AsksDetailsClass + `" data-draft-medium-details><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>`,
+		`data-draft-medium-facts>image/webp · 2 KB · sha256 ` + strings.Repeat("b", 64) + `</span></details>`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the outbound card lacks %s:\n%s", want, card)
+		}
+	}
+	if lazy := askLogLazyHTML(url.Values{}); !strings.Contains(lazy, `data-asklog-loading>Loading…</p>`) || !strings.Contains(lazy, `<noscript>`) {
+		t.Errorf("the Log tab's loading line:\n%s", lazy)
+	}
+	queued := attention.Ask{Delivery: attention.DeliveryQueued, DeliveryDetail: "this muster has no agent gateway"}
+	if got, _ := answerDeliveryText(queued, "Worker Seven", false); got != "Will reach Worker Seven when it's back." {
+		t.Errorf("the queued delivery %q", got)
+	}
+}

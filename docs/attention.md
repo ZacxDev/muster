@@ -100,9 +100,10 @@ taller than the screen still scrolls through).
   box, on attached media, on anything that scrolls sideways, at the left edge
   (the menu's swipe) or with text selected is left alone. Pinch-zoomed in, a
   sideways drag pans the zoomed page and never changes the tab.
-- **Answer** or **Dismiss** a card and it collapses out: the collapse plays
-  to its end before the card is removed (at once under *reduce motion*), the
-  next card moves up and takes focus, and the open count drops. An answer
+- **Answer** or **Dismiss** a card and it fades out (opacity and transform
+  only, 180 ms): the fade plays to its end before the card is removed (at once
+  under *reduce motion*), the next card moves up and takes focus, and the open
+  count drops. **Answer** is off while its box is blank. An answer
   that is taken says **Sent to** *the session's name* in a small toast; a
   dismissal says nothing. The card's form posts (htmx)
   to the queue's own answer and dismiss routes with an

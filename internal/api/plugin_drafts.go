@@ -899,15 +899,16 @@ func draftKindLabel(d plugins.Draft) string {
 // draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass, fixed),
 // its head the kind badge, WHO drafted it (the agent's display name:
 // DraftCard.AgentDisplay, the one naming rule, set by readDraftViews) and how
-// long ago; its facts as pills (the plugin, the state, a relative expiry, the
-// length); the message it answers as a quote marked untrusted; the reply in
+// long ago; its facts as pills (the plugin, the state, a relative expiry); the
+// message it answers as a quote marked untrusted; the reply in
 // normal text; then ONE primary action (Approve and send) on its own row,
 // with Reject (and its reason box) under it (ui.AsksDecisionClass).
 //
 // 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The draft is
-// drawn through flows.VisibleEscape — printable ASCII as itself, everything else
-// spelled out — with its length in characters, so nothing invisible or
-// look-alike rides along unseen. It is in the page's normal text now (it was
+// drawn through flows.VisibleEscape line by line (visibleLines) — printable
+// ASCII as itself, a line break as one, everything else spelled out — so
+// nothing invisible or look-alike rides along unseen (its length in characters
+// is on data-runes, no longer a pill). It is in the page's normal text now (it was
 // monospace, broken anywhere: "minu/te"), wrapping at words. The message it
 // answers is the OUTSIDE party's text: drawn escaped, in its own box, labelled
 // untrusted, and never mistaken for the draft.
@@ -947,7 +948,6 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	if exp := draftExpiryText(d, now); exp != "" {
 		pills = append(pills, `<span class="`+ui.AsksPillClass+`" data-draft-expiry><time datetime="`+d.ExpiresAt.UTC().Format(time.RFC3339)+`">`+esc(exp)+`</time></span>`)
 	}
-	pills = append(pills, `<span class="`+ui.AsksPillClass+` tabular-nums" data-draft-runes>`+runes+` characters</span>`)
 	b.WriteString(`<div class="` + ui.AsksPillsClass + `" data-draft-pills>` + strings.Join(pills, "") + `</div>
 `)
 	if d.IsOutbound() {
@@ -967,7 +967,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 `)
 	}
 	b.WriteString(`<div class="rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</p>
+<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>` + esc(visibleLines(d.Body)) + `</p>
 </div>
 `)
 	if d.ExternalRef != "" {
@@ -1022,6 +1022,21 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// visibleLines is v drawn through flows.VisibleEscape LINE BY LINE: each
+// line break is drawn as one (the box is whitespace-pre-wrap), and everything
+// else — a tab, a carriage return, a bidi control, any non-ASCII letter — is
+// spelled out exactly as VisibleEscape spells it. Split back on "\n" and
+// unescaped line by line it is v again (the mapping stays one-to-one: a
+// literal backslash-n in v is drawn \\n). The step-up card's preview draws a
+// draft's text the same way (stepUpCardHTML).
+func visibleLines(v string) string {
+	lines := strings.Split(v, "\n")
+	for i, l := range lines {
+		lines[i] = flows.VisibleEscape(l)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:

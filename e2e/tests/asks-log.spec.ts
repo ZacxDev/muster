@@ -452,6 +452,39 @@ test.describe('long lines', () => {
   }
 });
 
+// THE LOG TAB'S LOADING AND ERROR STATES (the asks audit): while the panel is
+// fetched it says "Loading…" (it used to show a link to the very page it was
+// on); a failed fetch says "Couldn't load the log." with a Retry that fetches
+// it again, in place.
+test.describe('log loading and error, phone 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
+  test('the Log tab says Loading…, then on a failure offers a Retry that loads it', async ({ page }) => {
+    await signIn(page, origin);
+    await page.goto(`${origin}/attention`);
+    let release = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    let fail = true;
+    await page.route('**/attention/log*', async (route) => {
+      if (new URL(route.request().url()).pathname !== '/attention/log') return route.continue();
+      await held;
+      if (fail) return route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' });
+      return route.continue();
+    });
+    await page.getByRole('tab', { name: 'Log' }).click();
+    const line = page.locator('[data-asklog-loading]');
+    await expect(line).toHaveText('Loading…');
+    await expect(page.getByRole('link', { name: 'Open the ask log' })).toHaveCount(0);
+    release();
+    await expect(line).toHaveText("Couldn't load the log. Retry");
+    fail = false;
+    const fetched = page.waitForResponse((r) => new URL(r.url()).pathname === '/attention/log' && r.status() === 200);
+    await line.getByRole('link', { name: 'Retry' }).click();
+    await fetched;
+    await expect(page.getByTestId('asklog-panel')).toBeVisible();
+    await expect(page).toHaveURL(`${origin}/attention?tab=log`);
+  });
+});
+
 // With the ask log off there is no Log tab at all (it used to be a tab of
 // setup prose: "set MUSTER_ASK_LOG=1 and restart"), and ?tab=log opens Open.
 // RED at origin/main d1ff2dbe: the tab was drawn, with that prose. The

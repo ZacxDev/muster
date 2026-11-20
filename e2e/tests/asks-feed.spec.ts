@@ -217,32 +217,35 @@ for (const vp of [
       await expect(page.locator(`#ask-${ids.rotate}`)).toHaveCount(0);
     });
 
-    // 🔴 THE COLLAPSE PLAYS BEFORE THE CARD IS REMOVED (a frame probe). The
-    // answer's POST lands in tens of milliseconds, inside the 240ms collapse;
-    // settle() used to remove the card right then, so it vanished at full
-    // height (docs/attention.md promised "it collapses out"). Sampled per
-    // animation frame from the click: partway through the transition the card
-    // is still in the DOM and mid-collapse, and the last frame it is still
-    // connected it has collapsed to nothing. RED at origin/main d1ff2dbe: gone
-    // by ~65ms, at its full height.
-    test('an answered card plays its collapse before it is removed (frame probe)', async ({ page }) => {
+    // 🔴 THE FADE PLAYS BEFORE THE CARD IS REMOVED (a frame probe). The
+    // answer's POST lands in tens of milliseconds, inside the 180ms leave;
+    // removing the card then cut the motion off and the card simply vanished.
+    // The leave is OPACITY AND TRANSFORM ONLY (the asks audit: no height,
+    // padding or margin animation). Sampled per frame from the click: partway
+    // through, the card is still in the DOM, part-faded, at its FULL height;
+    // the last frame it is shown it has faded to (nearly) nothing.
+    // RED at origin/main d1ff2dbe: gone by ~65ms. (Its height collapsed until
+    // the asks audit; this probe pinned that collapse then.)
+    test('an answered card plays its fade before it is removed (frame probe)', async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'no-preference' });
       await openFeed(page);
       const id = `ask-${ids.rotate}`;
       const rotate = page.locator('#' + id);
       await rotate.scrollIntoViewIfNeeded();
-      const h0 = await rotate.evaluate((el) => el.getBoundingClientRect().height);
-      expect(h0, 'the card has a height to collapse').toBeGreaterThan(60);
+      // Its LAYOUT height (offsetHeight: a transform's scale is not layout).
+      const h0 = await rotate.evaluate((el) => (el as HTMLElement).offsetHeight);
+      expect(h0, 'the card has a height').toBeGreaterThan(60);
       await page.evaluate((id) => {
         const el = document.getElementById(id)!;
-        const out: { t: number; connected: boolean; h: number; shown: boolean }[] = [];
+        const out: { t: number; connected: boolean; h: number; o: number; shown: boolean }[] = [];
         (window as unknown as { __probe: typeof out }).__probe = out;
         el.addEventListener('click', () => {
           const t0 = performance.now();
           (function f() {
             const t = performance.now() - t0;
             const connected = el.isConnected;
-            out.push({ t, connected, h: connected ? el.getBoundingClientRect().height : 0, shown: connected && getComputedStyle(el).display !== 'none' });
+            const cs = connected ? getComputedStyle(el) : null;
+            out.push({ t, connected, h: connected ? (el as HTMLElement).offsetHeight : 0, o: cs ? parseFloat(cs.opacity) : 0, shown: !!cs && cs.display !== 'none' });
             if (t < 700) requestAnimationFrame(f);
           })();
         }, { capture: true, once: true });
@@ -254,16 +257,17 @@ for (const vp of [
       const frames = await page.waitForFunction(() => {
         const p = (window as unknown as { __probe: { t: number }[] }).__probe;
         return p.length && p[p.length - 1].t >= 700 ? p : null;
-      }).then((h) => h.jsonValue() as Promise<{ t: number; connected: boolean; h: number; shown: boolean }[]>);
-      const mid = frames.filter((f) => f.t >= 100 && f.t <= 180);
-      expect(mid.length, 'frames were sampled partway through the collapse').toBeGreaterThan(0);
+      }).then((h) => h.jsonValue() as Promise<{ t: number; connected: boolean; h: number; o: number; shown: boolean }[]>);
+      const mid = frames.filter((f) => f.t >= 50 && f.t <= 130);
+      expect(mid.length, 'frames were sampled partway through the fade').toBeGreaterThan(0);
       for (const f of mid) {
         expect(f.connected && f.shown, `at ${Math.round(f.t)}ms the card is still on the page: ${JSON.stringify(frames)}`).toBe(true);
-        expect(f.h, `at ${Math.round(f.t)}ms it is mid-collapse`).toBeGreaterThan(1);
-        expect(f.h, `at ${Math.round(f.t)}ms it is mid-collapse`).toBeLessThan(h0 - 1);
+        expect(f.o, `at ${Math.round(f.t)}ms it is mid-fade`).toBeGreaterThan(0.01);
+        expect(f.o, `at ${Math.round(f.t)}ms it is mid-fade`).toBeLessThan(0.99);
+        expect(Math.abs(f.h - h0), `at ${Math.round(f.t)}ms its height is not animated`).toBeLessThan(1);
       }
       const lastShown = [...frames].reverse().find((f) => f.shown)!;
-      expect(lastShown.h, `the last frame it was shown, it had collapsed (${Math.round(lastShown.t)}ms)`).toBeLessThan(h0 * 0.25);
+      expect(lastShown.o, `the last frame it was shown, it had faded (${Math.round(lastShown.t)}ms)`).toBeLessThan(0.25);
       expect(frames.some((f) => !f.connected), 'and then it was removed').toBe(true);
     });
 
@@ -613,7 +617,10 @@ for (const vp of [
       const card = page.locator(`#ask-${ids.freetext}`);
       const box = page.locator(`#answer-${ids.freetext}`);
       const slot = card.locator('[data-asks-card-error]');
+      // Answer is DISABLED while the box is blank; typing enables it.
+      await expect(card.getByRole('button', { name: 'Answer', exact: true })).toBeDisabled();
       await box.fill('main, please');
+      await expect(card.getByRole('button', { name: 'Answer', exact: true })).toBeEnabled();
       const r = await page.request.post(`${origin}/attention/asks/${ids.freetext}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
       expect(r.status()).toBeLessThan(400);
       const refused = page.waitForResponse((x) => new URL(x.url()).pathname === `/attention/asks/${ids.freetext}/answer`);

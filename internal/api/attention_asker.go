@@ -321,6 +321,12 @@ func (s *Server) attentionFormFailed(w http.ResponseWriter, r *http.Request, err
 			code = noticeAskReleaseRefused
 		case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
 			code = noticeAskClosed
+		// A step-up card's two refusals (host_stepup.go), before ErrInvalid,
+		// which they wrap: each says what the owner can do.
+		case errors.Is(err, errHostDecisionNeedsPhone):
+			code = noticeAskNeedsPhone
+		case errors.Is(err, errHostDecisionLost):
+			code = noticeAskLost
 		case errors.Is(err, attention.ErrInvalid):
 			code = noticeAskInvalid
 		}
@@ -338,6 +344,10 @@ const (
 	noticeAskFailed  = "ask-failed"
 	// noticeAskReleaseRefused: a Release option refused (answer_release.go).
 	noticeAskReleaseRefused = "ask-release-refused"
+	// noticeAskNeedsPhone / noticeAskLost: a step-up card's answer refused
+	// (errHostDecisionNeedsPhone, errHostDecisionLost).
+	noticeAskNeedsPhone = "ask-needs-phone"
+	noticeAskLost       = "ask-lost"
 )
 
 func init() {
@@ -348,11 +358,19 @@ func init() {
 	composerNotices[noticeAskInvalid] = struct {
 		text string
 		ok   bool
-	}{"Not recorded: an answer is non-blank text, up to 8000 characters, or one of the question's options.", false}
+	}{"Type an answer or pick an option.", false}
 	composerNotices[noticeAskFailed] = struct {
 		text string
 		ok   bool
 	}{"Not recorded: the answer could not be saved. Try again, or answer on the Asks page.", false}
+	composerNotices[noticeAskNeedsPhone] = struct {
+		text string
+		ok   bool
+	}{"Confirm this on your paired phone.", false}
+	composerNotices[noticeAskLost] = struct {
+		text string
+		ok   bool
+	}{"This request was lost when muster restarted; the session must ask again.", false}
 	composerNotices[noticeAskReleaseRefused] = struct {
 		text string
 		ok   bool

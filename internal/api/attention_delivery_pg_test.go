@@ -307,8 +307,8 @@ func TestARestartMidDeliveryDeliversOnce(t *testing.T) {
 }
 
 // TestABusyOrStoppedAgentKeepsTheAnswerQueuedSayingWhy: an agent mid-turn, or
-// not running, is not pushed to; the item says why; once it can take it, the
-// sweep delivers it.
+// not running, is not pushed to; the delivery records why and the item says
+// the answer will reach it; once it can take it, the sweep delivers it.
 func TestABusyOrStoppedAgentKeepsTheAnswerQueuedSayingWhy(t *testing.T) {
 	f := newDeliveryFixture(t)
 	id := f.ask(t, f.chiefTok, "Rotate the key now?")
@@ -319,8 +319,10 @@ func TestABusyOrStoppedAgentKeepsTheAnswerQueuedSayingWhy(t *testing.T) {
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued || a.DeliveryDetail != "the agent is in the middle of a turn" {
 		t.Fatalf("while the chief is mid-turn: %q %q", a.Delivery, a.DeliveryDetail)
 	}
-	if item := answeredItem(f.page(t, "/attention"), id); !strings.Contains(item, "waiting: the agent is in the middle of a turn") {
-		t.Fatalf("the queued item does not say why: %s", item)
+	// The card says it will arrive (the asks audit: the reason is muster's to
+	// retry, not the owner's; it is kept on the record, DeliveryDetail above).
+	if item := answeredItem(f.page(t, "/attention"), id); !strings.Contains(item, "Will reach ") || !strings.Contains(item, " when it&#39;s back.") {
+		t.Fatalf("the queued item does not say it will arrive: %s", item)
 	}
 	f.srv.turns.leave(f.chief.ID)
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.chief.ID); err != nil {
