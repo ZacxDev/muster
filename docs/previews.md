@@ -296,7 +296,7 @@ whole (`internal/previewgw/proxy.go`).
 
 - **To the app:** `Host: localhost:<port>`, `X-Forwarded-Host: p-<id>.<zone>`,
   `X-Forwarded-Proto: https`. Removed: the gateway's cookies (`__Host-mp`,
-  `__Host-mps`) and every `muster_*` cookie, `Forwarded`, every inbound
+  `__Host-mps`) and every `muster_*` or `__Host-muster_*` cookie (any case), `Forwarded`, every inbound
   `X-Forwarded-*`, `X-Real-IP`, `CF-*`, `True-Client-IP`, `CDN-Loop`,
   `X-Muster-*`. **The viewer's address is not forwarded.** The app's own
   cookies and `Authorization` pass, and so does the browser's `Origin`

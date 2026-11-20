@@ -234,7 +234,7 @@ func (s *Server) passwordSession(r *http.Request) (auth.Session, bool) {
 	if s.auth.goTrueMode() || s.auth.BrowserAuthRefusal() != "" {
 		return auth.Session{}, false
 	}
-	ck, err := r.Cookie(sessionCookieName)
+	ck, err := r.Cookie(s.auth.cookieName(sessionCookieName))
 	if err != nil || ck.Value == "" {
 		return auth.Session{}, false
 	}

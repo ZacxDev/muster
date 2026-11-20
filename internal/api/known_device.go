@@ -48,7 +48,7 @@ func (c AuthConfig) deviceSecret() []byte {
 // knownDevice reports whether r carries a device cookie this server signed,
 // unexpired, under the current operator password.
 func (s *Server) knownDevice(r *http.Request) bool {
-	ck, err := r.Cookie(knownDeviceCookieName)
+	ck, err := r.Cookie(s.auth.cookieName(knownDeviceCookieName))
 	if err != nil || ck.Value == "" {
 		return false
 	}
@@ -59,7 +59,7 @@ func (s *Server) knownDevice(r *http.Request) bool {
 // setKnownDeviceCookie marks the browser that just proved the password.
 func (s *Server) setKnownDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     knownDeviceCookieName,
+		Name:     s.auth.cookieName(knownDeviceCookieName),
 		Value:    auth.SignSession(s.auth.deviceSecret(), time.Now(), knownDeviceTTL),
 		Path:     "/",
 		HttpOnly: true,

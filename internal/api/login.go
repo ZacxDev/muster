@@ -201,7 +201,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 // issue time is what the step-up gate reads.
 func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:  sessionCookieName,
+		Name:  s.auth.cookieName(sessionCookieName),
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
 		Path:  "/",
 		// HttpOnly: the cookie is never read by script, so keep it away from any
@@ -220,6 +220,8 @@ func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request
 // passwordCookieSecure is the Secure attribute of a password-mode cookie set on
 // the response to r: MUSTER_SECURE_COOKIES, EXCEPT on a page this machine
 // serves itself over plain http on its loopback interface (loopbackHTTPPage).
+// On a `__Host-` deployment (HostPrefixedCookies) it is always true: there is
+// no exception, and a loopback http sign-in is refused instead (hostCookieNames).
 //
 // 🔴 WHY THE EXCEPTION, AND WHY IT IS SAFE. Chromium keeps a Secure cookie set
 // over http://localhost (a loopback origin is a secure context); WebKit drops
@@ -235,6 +237,9 @@ func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request
 // leaves the machine. Anywhere else — https, a LAN address, a proxy in front
 // (a Host it did not keep, a forwarded https) — the flag is exactly as set.
 func (s *Server) passwordCookieSecure(r *http.Request) bool {
+	if s.auth.HostPrefixedCookies() {
+		return true // a `__Host-` cookie without Secure is refused by every browser
+	}
 	return s.auth.SecureCookies && !loopbackHTTPPage(r)
 }
 
@@ -277,7 +282,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	clearSiteCaches(w)
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     s.auth.cookieName(sessionCookieName),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

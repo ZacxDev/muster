@@ -31,10 +31,13 @@ const codeCrossSite = "cross_site"
 
 // gatewayCookie reports whether a cookie name is one the gateway sets or
 // reserves: the owner cookie, the share-link cookie (phase 3), and muster's
-// own muster_* cookies. None of them reaches an app, and an app may not set
-// one.
+// own muster_* cookies, under either name muster-server gives them (its
+// `__Host-muster_*` names on an https deployment, the bare ones otherwise;
+// browsers match the `__Host-` prefix in any case). None of them reaches an
+// app, and an app may not set one.
 func gatewayCookie(name string) bool {
-	return strings.EqualFold(name, OwnerCookie) || strings.EqualFold(name, ShareCookie) || strings.HasPrefix(name, "muster_")
+	return strings.EqualFold(name, OwnerCookie) || strings.EqualFold(name, ShareCookie) || strings.HasPrefix(name, "muster_") ||
+		strings.HasPrefix(strings.ToLower(name), "__host-muster_")
 }
 
 // ShareCookie is the phase-3 share-link cookie's name, reserved now so the

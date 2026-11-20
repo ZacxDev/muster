@@ -387,7 +387,7 @@ func (s *Server) pushIcon(ctx context.Context) string {
 // logout paths: a device left subscribed after its user signed out would keep
 // buzzing with their task titles for whoever picks it up next.
 func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid int64) {
-	hash := cookieValue(r, pushDeviceCookie)
+	hash := cookieValue(r, s.auth.cookieName(pushDeviceCookie))
 	if hash == "" {
 		return
 	}
@@ -407,7 +407,7 @@ func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid in
 
 func (s *Server) setPushDeviceCookie(w http.ResponseWriter, r *http.Request, hash string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: pushDeviceCookie, Value: hash, Path: "/",
+		Name: s.auth.cookieName(pushDeviceCookie), Value: hash, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(),
 		MaxAge: int((400 * 24 * time.Hour) / time.Second),
 	})
@@ -415,7 +415,7 @@ func (s *Server) setPushDeviceCookie(w http.ResponseWriter, r *http.Request, has
 
 func (s *Server) clearPushDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name: pushDeviceCookie, Value: "", Path: "/",
+		Name: s.auth.cookieName(pushDeviceCookie), Value: "", Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(), MaxAge: -1,
 	})
 }

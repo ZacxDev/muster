@@ -453,7 +453,7 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
   own cookie, to that same server's public image route.
 - **Use a separate host name for each server.** Cookies are not port-scoped,
   so two muster servers on different ports of one host share one
-  `muster_session` cookie jar and see each other's sign-in cookie on every
+  cookie jar (`muster_session`, or `__Host-muster_session` on https) and see each other's sign-in cookie on every
   request, with or without the switcher (it adds nothing beyond ordinary
   navigation between them).
 - **A server addressed by IP** may show no logo, only its monogram and label:

@@ -293,6 +293,9 @@ var bannerLedger = []string{
 	envGoTrueSecret,
 	envBrowserPort,
 	envSecureCookies,
+	// The cookie names: `cookie names: __Host- PREFIXED` (an https public URL
+	// with the secure-cookie setting on) or `UNPREFIXED`.
+	envPublicURL,
 	envHookToken,
 	// The metrics listener: one line, both directions.
 	envMetricsPort,
@@ -645,9 +648,6 @@ var bannerExempt = map[string]string{
 		"with ln.Addr()), which is the answer this variable is asked for and is strictly " +
 		"better than echoing the request — it is printed after the banner, by serve, not by " +
 		"logBanner",
-	envPublicURL: "the externally reachable origin: an input to the same-origin check " +
-		"(api.Extensions.PublicURL) and the base of every minted link; named by the " +
-		"`file attachments:` line when it is what disables uploads",
 	envFaroURL: "browser RUM: handed to ui.SetFaroConfig for the page agent, not a property " +
 		"of this server's auth or dependency posture. logBanner has no line for it on purpose",
 	envFaroKey: "browser RUM: the collect-endpoint key, handed to ui.SetFaroConfig with the " +
