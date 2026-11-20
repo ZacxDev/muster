@@ -1878,10 +1878,16 @@ func loadConfig(getenv func(string) string) (config, error) {
 	// can toss cookies onto muster's host. See sameSitePluginOrigin.
 	if !c.authConfig().HostPrefixedCookies() {
 		if p, ok := sameSitePluginOrigin(origins, c.PublicURL); ok {
+			// The remedy differs by mode: gotrue cookies are always Secure, so
+			// only the URL matters there.
+			needs := "an https " + envPublicURL
+			if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue {
+				needs += " with " + envSecureCookies + " on or unset"
+			}
 			return config{}, fmt.Errorf("invalid %s: %s shares %s's registrable domain, and this deployment's cookies "+
-				"are not __Host- prefixed (that needs an https %s and %s on), so a page there could set cookies "+
-				"muster would read. Give muster its https %s, or move the plugin to another registrable domain",
-				envPluginOrigins, p, envPublicURL, envPublicURL, envSecureCookies, envPublicURL)
+				"are not __Host- prefixed, so a page there could set cookies muster would read. Prefixed names "+
+				"need %s; or move the plugin to another registrable domain",
+				envPluginOrigins, p, envPublicURL, needs)
 		}
 	}
 	c.PluginOrigins = origins

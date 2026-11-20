@@ -258,19 +258,31 @@ func (f *gtFixture) principals() []authz.Principal {
 
 type reqOpt func(*http.Request)
 
+// withCookies carries a GoTrue session under its `__Host-` names: every gotrue
+// fixture here has an https public URL, so it is a prefixed deployment
+// (HostPrefixedCookies; gotrue cookies are always Secure). withLegacyCookies
+// carries one under the old names.
 func withCookies(at, rt string) reqOpt {
 	return func(r *http.Request) {
 		if at != "" {
-			r.AddCookie(&http.Cookie{Name: accessCookieName, Value: at})
+			r.AddCookie(&http.Cookie{Name: "__Host-" + accessCookieName, Value: at})
 		}
 		if rt != "" {
-			r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: rt})
+			r.AddCookie(&http.Cookie{Name: "__Host-" + refreshCookieName, Value: rt})
 		}
+	}
+}
+
+func withLegacyCookies(at, rt string) reqOpt {
+	return func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: accessCookieName, Value: at})
+		r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: rt})
 	}
 }
 
 func asNavigation(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", "document") }
 func asXHR(r *http.Request)        { r.Header.Set("HX-Request", "true") }
+
 // fromIP makes the request arrive from ip: its TCP peer, which is the client
 // address under the default policy (internal/clientaddr). It used to set
 // CF-Connecting-IP, which no longer names the client unless the peer is a
@@ -301,10 +313,12 @@ func do(h http.Handler, method, target string, body url.Values, opts ...reqOpt) 
 	return w
 }
 
+// setCookies is the response's cookies by name, a `__Host-` name keyed by its
+// unprefixed base (so ck[accessCookieName] reads either deployment's).
 func setCookies(w *httptest.ResponseRecorder) map[string]*http.Cookie {
 	out := map[string]*http.Cookie{}
 	for _, c := range w.Result().Cookies() {
-		out[c.Name] = c
+		out[strings.TrimPrefix(c.Name, "__Host-")] = c
 	}
 	return out
 }

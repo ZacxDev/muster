@@ -85,11 +85,14 @@ host that set it.
 
 - **On an https deployment they carry the `__Host-` prefix**
   (`__Host-muster_session`, and so on). The rule is per deployment, never per
-  request: prefixed when the resolved secure-cookie setting is on (see
-  `MUSTER_SECURE_COOKIES` in [configuration.md](configuration.md)) **and**
-  `MUSTER_PUBLIC_URL` is `https`; unprefixed otherwise, which includes the
-  Compose stack (`http://localhost`) and any plain-http or `MUSTER_SECURE_COOKIES=0`
-  install. The boot banner's `cookie names:` line says which.
+  request: prefixed when `MUSTER_PUBLIC_URL` is `https` **and** the cookies
+  are `Secure`. In gotrue mode they always are, so every https gotrue
+  deployment is prefixed, `MUSTER_SECURE_COOKIES=0` included. In password mode
+  that takes the resolved secure-cookie setting (see `MUSTER_SECURE_COOKIES` in
+  [configuration.md](configuration.md)). Everything else is unprefixed: the
+  Compose stack on `http://localhost`, any plain-http install, and a password
+  install with `MUSTER_SECURE_COOKIES=0`. The boot banner's `cookie names:`
+  line says which.
 - **What the prefix buys.** A browser keeps a `__Host-` cookie only if it is
   `Secure`, has `Path=/` and has no `Domain`, so a page on another host, a
   sibling subdomain included, can never set one that muster reads. A prefixed
@@ -105,7 +108,9 @@ host that set it.
   `Secure` cookie there, so sign-in would work in one engine and not another.
   Instead a sign-in or step-up from a plain-http loopback page is refused with
   a page saying "This muster is set up for `<MUSTER_PUBLIC_URL>`. Sign in
-  there." and no cookie is set. Use the public URL.
+  there.", with a link to that address's sign-in page, and no cookie is set.
+  This is what the Compose stack does once it is given an https address (the
+  Tailscale step in [quickstart-local.md](quickstart-local.md#add-your-phone)).
 - **An unprefixed deployment beside a same-site plugin refuses to boot.** With
   unprefixed names, nothing stops a page on the same registrable domain
   (`meet.example.com` beside `app.example.com`, as well as any subdomain of

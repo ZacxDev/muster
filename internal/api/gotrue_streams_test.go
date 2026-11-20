@@ -78,7 +78,7 @@ type opened struct {
 }
 
 func cookieHeader(at, rt string) string {
-	return accessCookieName + "=" + at + "; " + refreshCookieName + "=" + rt
+	return "__Host-" + accessCookieName + "=" + at + "; __Host-" + refreshCookieName + "=" + rt // an https gotrue fixture: prefixed
 }
 
 func (f *streamFixture) openSSE(t *testing.T, at, rt string) opened {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,8 +28,10 @@ var cookieBases = []string{
 }
 
 // HostPrefixedCookies reports whether this deployment names its cookies with
-// the `__Host-` prefix: the RESOLVED secure-cookie setting is on AND the public
-// URL is https.
+// the `__Host-` prefix: the public URL is https AND its cookies are Secure —
+// in gotrue mode always (its cookies are unconditionally Secure, whatever
+// MUSTER_SECURE_COOKIES says), in password mode when the RESOLVED
+// secure-cookie setting is on.
 //
 // 🔴 THE NAME IS CHOSEN PER DEPLOYMENT, NEVER PER REQUEST. The Secure flag on
 // an unprefixed deployment is per request (passwordCookieSecure drops it on a
@@ -44,7 +47,7 @@ var cookieBases = []string{
 // URL): there the loopback exception drops Secure, and a `__Host-` cookie
 // without Secure is refused by every browser.
 func (c AuthConfig) HostPrefixedCookies() bool {
-	if !c.SecureCookies {
+	if !c.SecureCookies && !c.goTrueMode() {
 		return false
 	}
 	u, err := url.Parse(strings.TrimSpace(c.PublicURL))
@@ -66,7 +69,7 @@ func (c AuthConfig) cookieName(base string) string {
 // page (loopbackHTTPPage) is refused before its handler runs: the cookie it
 // would set is `__Host-`, so it must be Secure, and WebKit drops a Secure cookie
 // on http://localhost — the sign-in would "succeed" and stick in one engine
-// only. TestCookieMintingFunctionsAreLedgered pins the functions that set a
+// only. TestCookieLiteralsAndSignInCallersAreLedgered pins the functions that set a
 // sign-in cookie, so a new one has to be routed here or argued out.
 var cookieSignInPaths = map[string]bool{
 	loginPath:                             true,
@@ -89,13 +92,27 @@ func (s *Server) hostCookieNames(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && cookieSignInPaths[r.URL.Path] && loopbackHTTPPage(r) {
-			s.renderNotice(w, r, http.StatusForbidden, "Sign in at this muster's address",
-				"This muster is set up for "+s.auth.PublicURL+". Sign in there.")
+			s.refuseLoopbackSignIn(w, r)
 			return
 		}
 		expireLegacyCookies(w, r)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// refuseLoopbackSignIn is the page a loopback http sign-in gets on a prefixed
+// deployment: it names MUSTER_PUBLIC_URL and links to its sign-in page (the
+// Compose + Tailscale quickstart's desktop path), and sets no cookie.
+func (s *Server) refuseLoopbackSignIn(w http.ResponseWriter, r *http.Request) {
+	public := strings.TrimRight(strings.TrimSpace(s.auth.PublicURL), "/")
+	const heading = "Sign in at this muster's address"
+	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">` + heading + `</h1>
+<p class="text-sm text-fg2">This muster is set up for ` + html.EscapeString(public) + `. Sign in there.</p>
+<p class="text-sm"><a class="font-semibold text-accent underline" href="` + html.EscapeString(public+loginPath) + `">Sign in at ` +
+		html.EscapeString(public) + `</a></p>
+</section>`
+	writeAuthDocument(w, http.StatusForbidden, s.uiBrand(r.Context()), heading, inner)
 }
 
 // expireLegacyCookies adds a Max-Age=0 Set-Cookie for each unprefixed muster

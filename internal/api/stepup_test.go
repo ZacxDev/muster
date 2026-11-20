@@ -71,7 +71,7 @@ func newStepUpRig(t *testing.T) *stepUpRig {
 func (r *stepUpRig) dial(t *testing.T, at, rt, mode string) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
 	h := http.Header{}
-	h.Set("Cookie", (&http.Cookie{Name: accessCookieName, Value: at}).String()+"; "+(&http.Cookie{Name: refreshCookieName, Value: rt}).String())
+	h.Set("Cookie", (&http.Cookie{Name: "__Host-" + accessCookieName, Value: at}).String()+"; "+(&http.Cookie{Name: "__Host-" + refreshCookieName, Value: rt}).String())
 	h.Set("Origin", r.ts.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

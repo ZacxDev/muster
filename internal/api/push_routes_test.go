@@ -346,7 +346,9 @@ func TestLogoutUnsubscribesThisBrowser(t *testing.T) {
 	gsub := f.member("m@example.com", 7, authz.RoleMember)
 	at, rt, _ := f.fake.Mint(gsub)
 	edge := BrowserListener(f.s.Handler())
-	w := do(edge, "POST", "/logout", url.Values{}, withCookies(at, rt), withDevice)
+	// The gotrue fixture is https, so prefixed: its device cookie is __Host-.
+	withHostDevice := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "__Host-" + pushDeviceCookie, Value: hash}) }
+	w := do(edge, "POST", "/logout", url.Values{}, withCookies(at, rt), withHostDevice)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("gotrue logout: %d", w.Code)
 	}

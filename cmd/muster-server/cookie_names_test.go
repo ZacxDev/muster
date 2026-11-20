@@ -9,8 +9,14 @@ import (
 // cookieEnv is a getenv over the three variables the cookie-name rule and the
 // boot refusal read.
 func cookieEnv(public, secure, origins string) func(string) string {
+	return cookieEnvMode("", public, secure, origins)
+}
+
+func cookieEnvMode(mode, public, secure, origins string) func(string) string {
 	return func(k string) string {
 		switch k {
+		case envAuthMode:
+			return mode
 		case envPublicURL:
 			return public
 		case envSecureCookies:
@@ -47,6 +53,24 @@ func TestTheCookieNameRuleKeysOnTheResolvedSetting(t *testing.T) {
 			t.Errorf("public %q, MUSTER_SECURE_COOKIES %q: prefixed=%v, want %v", c.public, c.secure, got, c.want)
 		}
 	}
+	// gotrue mode: its cookies are always Secure, so an https URL is enough,
+	// MUSTER_SECURE_COOKIES=0 included.
+	for _, c := range []struct {
+		public, secure string
+		want           bool
+	}{
+		{"https://muster.example.com", "0", true},
+		{"https://muster.example.com", "", true},
+		{"http://muster.example.com", "1", false},
+	} {
+		cfg, err := loadConfig(cookieEnvMode("gotrue", c.public, c.secure, ""))
+		if err != nil {
+			t.Fatalf("%q, secure %q: %v", c.public, c.secure, err)
+		}
+		if got := cfg.authConfig().HostPrefixedCookies(); got != c.want {
+			t.Errorf("public %q, MUSTER_SECURE_COOKIES %q: prefixed=%v, want %v", c.public, c.secure, got, c.want)
+		}
+	}
 }
 
 // TestUnprefixedCookiesBesideASameSitePluginOriginRefuseToBoot: with
@@ -69,9 +93,20 @@ func TestUnprefixedCookiesBesideASameSitePluginOriginRefuseToBoot(t *testing.T) 
 	}
 	for _, c := range refuse {
 		_, err := loadConfig(cookieEnv(c.public, c.secure, c.origins))
-		if err == nil || !strings.Contains(err.Error(), "shares MUSTER_PUBLIC_URL's registrable domain") {
-			t.Errorf("public %q, secure %q, origins %q: %v; want the same-site refusal", c.public, c.secure, c.origins, err)
+		if err == nil || !strings.Contains(err.Error(), "shares MUSTER_PUBLIC_URL's registrable domain") ||
+			!strings.Contains(err.Error(), "need an https MUSTER_PUBLIC_URL with MUSTER_SECURE_COOKIES on or unset;") {
+			t.Errorf("public %q, secure %q, origins %q: %v; want the same-site refusal with the password-mode remedy", c.public, c.secure, c.origins, err)
 		}
+	}
+	// gotrue: refused on a plain-http URL, with the remedy that applies there
+	// (no MUSTER_SECURE_COOKIES); with an https URL and the flag off it is
+	// prefixed and loads.
+	if _, err := loadConfig(cookieEnvMode("gotrue", "http://app.example.com", "", "https://meet.example.com")); err == nil ||
+		!strings.Contains(err.Error(), "need an https MUSTER_PUBLIC_URL;") {
+		t.Errorf("gotrue, http URL, sibling origin: %v; want the refusal naming only the https URL", err)
+	}
+	if _, err := loadConfig(cookieEnvMode("gotrue", "https://app.example.com", "0", "https://meet.example.com")); err != nil {
+		t.Errorf("gotrue, https URL, MUSTER_SECURE_COOKIES=0, sibling origin: %v; want it to load (prefixed)", err)
 	}
 	load := []struct{ public, secure, origins string }{
 		{"http://app.example.com", "", "https://meet.example.org"},   // another registrable domain
