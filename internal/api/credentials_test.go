@@ -129,7 +129,7 @@ func TestTheAdminHasNothingToAddAndWritesAreRefused(t *testing.T) {
 	}
 	// No store at all: the page says so, a write is a 503, and nothing panics.
 	none := credServer(t, nil, 41)
-	if rec := credDo(t, none, "GET", "/account/credentials", nil); !strings.Contains(rec.Body.String(), "no credential store") {
+	if rec := credDo(t, none, "GET", "/account/credentials", nil); !strings.Contains(rec.Body.String(), "Saving AI accounts isn&#39;t turned on for this server yet.") {
 		t.Fatalf("no store: %d %s", rec.Code, rec.Body)
 	}
 	if rec := credDo(t, none, "POST", "/account/credentials/claude", url.Values{"name": {"x"}}); rec.Code != http.StatusServiceUnavailable {

@@ -291,6 +291,10 @@ var agentHrefCallLedger = map[string]int{
 	// The fleet digest's Open session for an agent (fleet_read.go): its stop's
 	// conversation, or the bare page when it has none.
 	"AgentSessionHref ← internal/api/fleet_read.go:fleetSessionHref": 1,
+	// The morning report's Stuck lines (morning_report.go): a failed agent's
+	// bare page, and a stalled conversation's own.
+	"AgentSessionHref ← internal/api/morning_report.go:Server.morningStuck": 1,
+	"AgentSessionHref ← internal/api/morning_report.go:stuckHref":           1,
 	// Push-tap targets stay BARE on purpose (#237): a notification is resolved
 	// when TAPPED, and the bare URL picks the latest session at that moment.
 	// askingAgentHref passes session 0 for an agent's own ask (bare, as

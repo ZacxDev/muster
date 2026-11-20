@@ -373,7 +373,7 @@ func outboundCardHTML(c plugins.DraftCard) string {
 	}
 	b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-outbound data-draft-venue="` + esc(d.VenueText()) +
 		`" data-draft-target-kind="` + esc(t.Kind) + `">
-<span class="break-all text-xs text-fg2"><span class="font-semibold">Outbound · ` + esc(d.VenueText()) + `</span> · ` + what + `</span>
+<span class="break-all text-xs text-fg2"><span class="font-semibold" data-draft-outbound-what>` + what + ` on ` + esc(venueName(d.VenueText())) + `</span></span>
 `)
 	if t.Kind == plugins.TargetReply || d.BecauseRef != nil {
 		if m := c.ReplyTo; m != nil {
@@ -805,7 +805,18 @@ func outboundAttentionText(c plugins.DraftCard) string {
 	if d.Officer != nil {
 		who = " by " + officerWords(c)
 	}
-	return "Outbound " + what + " on " + d.VenueText() + who
+	// In words (the jargon audit's U-25): "New post on X by Marketing for
+	// Acme", not "Outbound new post on x by officer marketing:acme".
+	return strings.ToUpper(what[:1]) + what[1:] + " on " + venueName(d.VenueText()) + who
+}
+
+// venueName is a venue's key as a card names it: its first letter
+// upper-cased ("x" → "X", "bluesky" → "Bluesky").
+func venueName(v string) string {
+	if v == "" {
+		return "its plugin"
+	}
+	return strings.ToUpper(v[:1]) + v[1:]
 }
 
 // officerWords is how a card names the officer that filed draft card c: its
@@ -838,33 +849,76 @@ func (s *Server) withDraftOfficerNames(cards []plugins.DraftCard) {
 	}
 }
 
-// pluginDeliverToFieldHTML is the create form's Deliver to field, drawn only
-// while the built-in officer store is on (a binding needs it).
-func (s *Server) pluginDeliverToFieldHTML() string {
+// pluginDeliverToFieldHTML is the create form's "Send to" choice, drawn only
+// while the built-in officer store is on (a binding needs it): your chief or
+// one of your built-in officers, BY NAME — never a typed "officer:<id>" (the
+// jargon audit's F062). The value submitted is the binding as before.
+func (s *Server) pluginDeliverToFieldHTML(r *http.Request) string {
 	if s.officerStore == nil {
 		return ""
 	}
-	return `<label for="plugin-deliver-to" class="text-sm font-medium text-fg">Deliver to <span class="text-xs text-fg2">optional: officer:&lt;id&gt; to give its messages to a builtin officer instead of your chief</span></label>
-<input id="plugin-deliver-to" name="deliver_to" maxlength="120" placeholder="officer:example:main" class="` + flowsInputClass + `" data-testid="plugin-deliver-to">
+	return `<label for="plugin-deliver-to" class="text-sm font-medium text-fg">Send to <span class="text-xs text-fg2">who gets its messages</span></label>
+<select id="plugin-deliver-to" name="deliver_to" class="` + flowsInputClass + `" data-testid="plugin-deliver-to">` + s.deliverToOptionsHTML(r, "") + `</select>
 `
+}
+
+// deliverToOptionsHTML is the "Send to" choice's options: your chief (""),
+// then each of the caller's built-in officers by name, cur selected — and cur
+// itself when it is not among them (a binding made elsewhere stays shown).
+func (s *Server) deliverToOptionsHTML(r *http.Request, cur string) string {
+	opt := func(v, label string) string {
+		sel := ""
+		if v == cur {
+			sel = " selected"
+		}
+		return `<option value="` + html.EscapeString(v) + `"` + sel + `>` + html.EscapeString(label) + `</option>`
+	}
+	var b strings.Builder
+	b.WriteString(opt("", "Your chief"))
+	seen := cur == ""
+	if s.officerStore != nil {
+		defs, err := s.officerStore.ListDefs(r.Context(), requestOwner(r.Context()))
+		if err != nil {
+			s.logger.Printf("plugins: list officers for Send to: %v", err)
+		}
+		for _, d := range defs {
+			v := plugins.DeliverToOfficerPrefix + d.Officer
+			seen = seen || v == cur
+			b.WriteString(opt(v, ui.OfficerPlainName("", d.Officer)))
+		}
+	}
+	if !seen {
+		b.WriteString(opt(cur, deliverToName(cur)))
+	}
+	return b.String()
+}
+
+// deliverToName is a plugin's binding in words: "your chief" for none, an
+// officer by name (ui.OfficerPlainName) — never "officer:<id>" (F064).
+func deliverToName(deliverTo string) string {
+	if deliverTo == "" {
+		return "your chief"
+	}
+	return ui.OfficerPlainName("", strings.TrimPrefix(deliverTo, plugins.DeliverToOfficerPrefix))
 }
 
 // pluginDeliverToFormHTML is a live messages plugin's card form to change
 // its binding ("" clears it), drawn while the built-in store is on or the
 // plugin is bound.
-func (s *Server) pluginDeliverToFormHTML(p plugins.Plugin) string {
+func (s *Server) pluginDeliverToFormHTML(r *http.Request, p plugins.Plugin) string {
 	if !p.Has(plugins.CapMessages) || (s.officerStore == nil && p.DeliverTo == nil) {
 		return ""
 	}
-	cur, shown := "", "your chief"
+	cur := ""
 	if p.DeliverTo != nil {
-		cur, shown = *p.DeliverTo, *p.DeliverTo
+		cur = *p.DeliverTo
 	}
+	shown := deliverToName(cur)
 	// 🔴 THE BINDING IS SAID IN TEXT, not only as the field's value: a
 	// field's value is not the page's text, so after a save the card read
 	// as unbound (the blind probe's "Deliver to looks empty").
-	return `<span class="text-xs text-fg2" data-plugin-delivers-to>Delivers to <span class="font-mono text-fg">` + html.EscapeString(shown) + `</span></span>
+	return `<span class="text-xs text-fg2" data-plugin-delivers-to>Delivers to <span class="text-fg">` + html.EscapeString(shown) + `</span></span>
 <form method="POST" action="` + pluginsPath + `/` + strconv.FormatInt(p.ID, 10) + `/deliver-to" class="flex flex-wrap items-center gap-2" data-plugin-deliver-to>
-<label class="text-xs text-fg2">Deliver to <input name="deliver_to" maxlength="120" value="` + html.EscapeString(cur) + `" placeholder="your chief" class="` + flowsInputClass + `"></label>
+<label class="text-xs text-fg2">Send to <select name="deliver_to" class="` + flowsInputClass + `">` + s.deliverToOptionsHTML(r, cur) + `</select></label>
 <button type="submit" class="` + flowsQuietButton + `">Save</button></form>`
 }

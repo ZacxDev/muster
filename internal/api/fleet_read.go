@@ -293,8 +293,8 @@ func (s *Server) attachFleetPRs(ctx context.Context, subs []fleetSubject) {
 	// this a member would read, through the digest, the state of a pull
 	// request in any repository the App is installed on. Not entitled: every
 	// state stays unknown.
-	reader := s.ext.FleetPRStates
-	if reader == nil || s.githubAppForOwner(ctx, requestOwner(ctx)) == nil {
+	reader := s.fleetPRReader(ctx)
+	if reader == nil {
 		return
 	}
 	rctx, cancel := context.WithTimeout(withPRReadBudget(ctx, fleetPRReadsPerCall), fleetPRReadsDeadline)
@@ -314,6 +314,19 @@ func (s *Server) attachFleetPRs(ctx context.Context, subs []fleetSubject) {
 		}
 		p.ClosedAt = st.ClosedAt
 	}
+}
+
+// fleetPRReader is the GitHub read of pull-request states for ctx's owner:
+// nil when there is no reader or the owner may not use the GitHub App
+// (githubAppForOwner — the reason is attachFleetPRs' ONLY WHERE THE OWNER MAY
+// USE THE APP). The fleet's pull-request groups and the morning report's
+// merged pull requests both read through it, so neither can read a state the
+// other may not.
+func (s *Server) fleetPRReader(ctx context.Context) PRStateReader {
+	if s.ext.FleetPRStates == nil || s.githubAppForOwner(ctx, requestOwner(ctx)) == nil {
+		return nil
+	}
+	return s.ext.FleetPRStates
 }
 
 // fleetPRState is a pull request's fleet state from GitHub's state and merged

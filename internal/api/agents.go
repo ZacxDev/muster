@@ -179,6 +179,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// The fleet digest card (fleet_digest.go).
 	s.registerFleetDigestRoutes(mux)
 	s.registerFleetCardRoutes(mux)
+	s.registerMorningReportRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the

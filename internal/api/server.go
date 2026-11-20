@@ -1357,7 +1357,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// The page judges the stream alive by hearing from it (ui/live.go): a
 	// board where nothing changes sends nothing, so it beats.
-	beat := time.NewTicker(liveHeartbeatEvery())
+	beat := time.NewTicker(socketSettingsOf(r.Context()).heartbeatEvery())
 	defer beat.Stop()
 	for {
 		select {

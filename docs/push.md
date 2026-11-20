@@ -36,6 +36,7 @@ has its own toggle, and all are on by default:
 | `page` | Someone sent a response through one of your [pages](pages.md)' links: at most one notification per page a minute. |
 | `page_published` | An agent published a new page for you (`page_create`): `Page ready: <title>`, its body `From agent <name>.` or `From session "<name>".`, tagged `page-<id>-ready`; a tap opens your view of it. |
 | `page_shared` | An agent shared one of your pages without asking (your own opt-in, [pages.md](pages.md#when-an-agent-shares)): its own toggle, so muting `page_published` never hides that a page went public. |
+| `morning_report` | Your [morning report](features.md#morning-report): once a day at the server's report time, only on a day something happened overnight. Titled `While you were away`, its body counts only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's or a question's text; tagged `morning-report`, so the next day's replaces it. A tap opens that day's report (`/morning/<date>`), where its open questions are answered in place. Sent at most once per day. |
 | `page_updated` | An agent published a new **version** of one of your pages (`page_update`): `Page updated: <title> (v<N>)`, its body `From agent <name>.` or `From session "<name>".`; a tap opens that version in your view of the page (`/pages/<id>/view?v=<N>`). One tag per page (`page-<id>-updated`), so a newer version replaces the older on the device. At most 6 per 10 minutes from one agent or session ([the sender's cap](#an-agent-notifies-you)); the rest are dropped and logged. Its own toggle, apart from `page_published`, so you can mute an iterating agent's revisions and still hear of a new page. |
 | `agent_notify` | One of your agents sent you a notification with `notify_owner` ([below](#an-agent-notifies-you)). |
 
@@ -71,7 +72,7 @@ Either part is left out when unknown, and both when neither is known. The
 notification never adds the task's description or a comment's text beyond
 what it already carried.
 
-The same section has **Show tmux sessions** (off unless you
+The same section has **Show technical session names** (off unless you
 turn it on): a notification that names a mirrored session by its human name
 then adds the window's codename (its tmux address when the host sent none)
 and host after it, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-sessions)). It is
@@ -80,7 +81,7 @@ list, in the attention summary and on the session switcher's pills and dock
 rows; its POST is `/account/notifications/tmux`
 (`on=1|0`).
 
-Under it is **Start notification titles with the tmux name** (off unless you
+Under it is **Start notifications with the computer and session name** (off unless you
 turn it on; independent of the switch above): every push title about a tmux
 window then starts with the window's codename and host, so a phone that cuts
 the end of a title still shows it — `mango:1@laptop · Billing migration needs
@@ -203,7 +204,7 @@ member's comment on a team task (below).
 
 - **Each member is decided on their own.** For each recipient muster applies
   that person's own event toggles, their own rate cap, their own **Start
-  notification titles with the tmux name** switch, and the router's admin
+  notifications with the computer and session name** switch, and the router's admin
   rule. A busy team spends each member's cap, not one shared one.
 - **The title names the team.** It starts with the team's name and ` · `, as
   in `platform · Ana is asking`. The prefix goes on before the title is

@@ -321,9 +321,9 @@ func clearSiteCaches(w http.ResponseWriter) {
 func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem string) {
 	inner := s.loginBrandHTML(context.Background()) + `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
-<p class="text-sm text-fg2">Enter the operator password to continue.</p>
+<p class="text-sm text-fg2">Enter the password to continue.</p>
 ` + problemNode(problem) + `
-<label for="muster-password" class="text-sm font-medium text-fg">Operator password</label>
+<label for="muster-password" class="text-sm font-medium text-fg">Password</label>
 <input id="muster-password" name="password" type="password" autocomplete="current-password" autofocus required
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">

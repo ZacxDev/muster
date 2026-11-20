@@ -108,12 +108,26 @@ func (s *Server) handleTeamConnectorsPage(w http.ResponseWriter, r *http.Request
 	s.renderTeamConnectors(w, r, tctx, team, http.StatusOK, "", "")
 }
 
+// renderTeamConnectorsOff is a team's Connectors page on a server with no
+// connector store: the plain sentence, the variable in an admin's ⓘ (the
+// jargon audit's F112). The machine routes keep ConnectorsUnconfigured.
+func (s *Server) renderTeamConnectorsOff(w http.ResponseWriter, r *http.Request) {
+	admin := authz.IsAdmin(r.Context())
+	words := TeamConnectorsOff
+	if !admin {
+		words += " Your admin can turn them on."
+	}
+	s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", words,
+		ui.SetupSheet("team-connectors-setup", "How to turn on connected accounts", "Set this in the server's .env and restart muster:",
+			"MUSTER_CONNECTOR_ENCRYPTION_KEY", admin))
+}
+
 // renderTeamConnectors draws the team's pending connector requests (each with
 // Approve and Deny) and the repositories already approved for the team (each
 // with Revoke), read as the team (tctx).
 func (s *Server) renderTeamConnectors(w http.ResponseWriter, r *http.Request, tctx context.Context, team int64, code int, problem, notice string) {
 	if s.ext.Connectors == nil {
-		s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", ConnectorsUnconfigured)
+		s.renderTeamConnectorsOff(w, r)
 		return
 	}
 	pending, err := s.ext.Connectors.ListPendingGrants(tctx)
@@ -217,7 +231,7 @@ func (s *Server) decideTeamConnector(w http.ResponseWriter, r *http.Request, app
 		return
 	}
 	if s.ext.Connectors == nil {
-		s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", ConnectorsUnconfigured)
+		s.renderTeamConnectorsOff(w, r)
 		return
 	}
 	gid, err := strconv.ParseInt(r.PathValue("grant"), 10, 64)
@@ -298,7 +312,7 @@ func (s *Server) handleTeamStandingRevoke(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if s.ext.Connectors == nil {
-		s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", ConnectorsUnconfigured)
+		s.renderTeamConnectorsOff(w, r)
 		return
 	}
 	sid, err := strconv.ParseInt(r.PathValue("standing"), 10, 64)

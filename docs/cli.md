@@ -48,7 +48,7 @@ be minted from the CLI. `muster token ls` and `muster token revoke <id>` manage
 them, and `muster whoami` says who a credential acts as.
 
 `agent create` is the one exception: it presents `MUSTER_AGENT_CREATE_TOKEN`, a
-token of scope **Create agents** (`agent-create`), and never sends
+token of scope **Start agents only** (`agent-create`), and never sends
 `MUSTER_TOKEN`. The server refuses every other token on `POST /api/agents`, a
 full-access one included, so the ordinary credential cannot create agents.
 Where it is read from:

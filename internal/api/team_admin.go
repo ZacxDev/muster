@@ -327,8 +327,27 @@ const (
 	TeamChiefKindRefusal    = "A team chief is a Claude Code agent, and this deployment does not enable the claude-code kind (MUSTER_AGENT_KINDS)."
 	TeamChiefPoolRefusal    = "This team has no Claude account to run on: an admin lists the team in MUSTER_TEAMS_ON_SERVER_POOL to run its agents on the server's Claude pool."
 	TeamChiefManagerOnly    = "Only a manager of the team turns its chief on or off."
-	TeamChiefNone           = "This team has no chief yet."
+	// TeamChiefCantStart is the Manage section's line when a refusal holds:
+	// the refusal itself is said once, above it (F111).
+	TeamChiefCantStart = "Start and Restart come back once it can run."
+	TeamChiefNone      = "This team has no chief yet."
 )
+
+// teamChiefRefusalWords is a team chief refusal in words, for the team's
+// pages: the refusal names the server setting that decides it, which belongs
+// in an ⓘ (the jargon audit's F109, F111). A refusal it does not know is
+// returned as it is.
+func teamChiefRefusalWords(refusal string) string {
+	switch refusal {
+	case TeamChiefComposeRefusal:
+		return "A team chief can't run on this install: only the admin's own chief runs here."
+	case TeamChiefKindRefusal:
+		return "A team chief can't run on this server yet."
+	case TeamChiefPoolRefusal:
+		return "This team has no Claude account to run on yet."
+	}
+	return refusal
+}
 
 // teamChiefRefusal is why team's chief cannot be provisioned on this
 // deployment, or "".
@@ -407,7 +426,10 @@ func (s *Server) renderTeamChief(w http.ResponseWriter, r *http.Request, team in
 	b.WriteString(`<p class="text-sm text-fg" id="team-chief-status" data-has-chief="` + strconv.FormatBool(has) + `">` + html.EscapeString(status) + `</p>`)
 	switch {
 	case refusal != "":
-		b.WriteString(`<p class="text-sm text-fg2" id="team-chief-credentials">` + html.EscapeString(refusal) + `</p>`)
+		// The refusal in words, its setting in the ⓘ: an admin's, or "Ask
+		// your admin" for a manager who is not one.
+		b.WriteString(`<div class="flex items-center gap-1"><p class="text-sm text-fg2" id="team-chief-credentials">` + html.EscapeString(teamChiefRefusalWords(refusal)) + `</p>` +
+			ui.InfoSheetHTML(ui.SetupSheet("team-chief-why", "Why the team chief can't run", "What the server says:", refusal, authz.IsAdmin(ctx))) + `</div>`)
 	case has && a.CCAccount != "":
 		b.WriteString(`<p class="text-sm text-fg2" id="team-chief-credentials">Runs on the server pool, account ` + html.EscapeString(a.CCAccount) + `.</p>`)
 	default:
@@ -435,9 +457,9 @@ func (s *Server) renderTeamChief(w http.ResponseWriter, r *http.Request, team in
 		b.WriteString(`</div>`)
 		b.WriteString(`<p class="text-sm"><a class="text-accent underline" id="team-connectors-link" href="/teams/` + id + `/connectors">The team agents' connector requests</a></p>`)
 		if refusal != "" {
-			// Why Start and Restart are not offered (the same sentence as the
-			// credentials line above, for the manager reading the controls).
-			b.WriteString(`<p class="text-sm text-fg2" id="team-chief-refusal">Start and Restart are not available: ` + html.EscapeString(refusal) + `</p>`)
+			// Why Start and Restart are not offered: the reason is the
+			// credentials line above, said once.
+			b.WriteString(`<p class="text-sm text-fg2" id="team-chief-refusal">` + TeamChiefCantStart + `</p>`)
 		}
 		b.WriteString(`</section>`)
 	}

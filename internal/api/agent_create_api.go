@@ -30,7 +30,7 @@ import (
 // agents — and this handler refuses every principal that did not come through
 // a personal token: the shared hook secret (ViaHook, which acts as user 1
 // whoever holds it) above all. The owner mints the token deliberately, at
-// /account/tokens (Create agents).
+// /account/tokens (Start agents only).
 //
 // ⚠ NO CAPS AND NO BUDGET, like the form it replaced: it is the owner acting
 // with their own credential, not the chief. The form's checks run unchanged,
@@ -71,7 +71,7 @@ var AgentCreateTooLarge = fmt.Sprintf("the request body is over %d KiB (%d bytes
 // that did not come through a personal token: the shared hook secret, a
 // service credential, anything else.
 const AgentCreateViaRefusal = "POST /api/agents takes only a personal API token of scope agent-create " +
-	"(mint one at " + accountTokensPath + ", Create agents); the shared hook secret and service credentials cannot create agents"
+	"(mint one at " + accountTokensPath + ", Start agents only); the shared hook secret and service credentials cannot create agents"
 
 // AgentCreateStartRequired is the 400 body for a request that does not say
 // whether to start the agent: the two outcomes differ too much to default.

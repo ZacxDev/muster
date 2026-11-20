@@ -451,7 +451,7 @@ task routing, a chief that runs as a gateway, and one that cannot deliver a
 first turn at all (where creating it stopped, then Start, still works).
 
 - **Only a personal token of scope `agent-create` reaches it.** Mint one at
-  `/account/tokens` (**Create agents**). A full-access token is refused (403),
+  `/account/tokens` (**Start agents only**). A full-access token is refused (403),
   so the CLI's ordinary token cannot create agents; an `agent-create` token
   reaches nothing else; the shared hook secret is refused too.
 - **The body** is JSON: `kind`, `repo`, `repo_branch`, `model`, `prompt` (the

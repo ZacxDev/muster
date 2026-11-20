@@ -210,6 +210,37 @@ type RuleImpact struct {
 	AvgBefore, Avoided int64
 }
 
+// Window is the principal's chief turns in [Since, Until): how many, how
+// long they ran together (each turn's own duration, summed — the chief's
+// working time, not wall-clock time) and the tokens they moved.
+type Window struct {
+	Turns  int64
+	Busy   time.Duration
+	Tokens Tokens
+}
+
+// Window is the principal's chief turns created in [since, until) (the
+// morning report's usage line). Unlike Report it has an upper bound and no day
+// buckets.
+func (s *PGStore) Window(ctx context.Context, since, until time.Time) (Window, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return Window{}, err
+	}
+	var w Window
+	var ms int64
+	err = s.pool.QueryRow(ctx, `SELECT count(*), coalesce(sum(duration_ms), 0)::bigint,
+		coalesce(sum(input_tokens), 0)::bigint, coalesce(sum(output_tokens), 0)::bigint,
+		coalesce(sum(cache_read_tokens), 0)::bigint, coalesce(sum(cache_creation_tokens), 0)::bigint
+		FROM chief_turn_usage WHERE owner_id = $1 AND created_at >= $2 AND created_at < $3`, o, since, until).
+		Scan(&w.Turns, &ms, &w.Tokens.Input, &w.Tokens.Output, &w.Tokens.CacheRead, &w.Tokens.CacheCreation)
+	if err != nil {
+		return Window{}, err
+	}
+	w.Busy = time.Duration(ms) * time.Millisecond
+	return w, nil
+}
+
 // Report implements Store.
 func (s *PGStore) Report(ctx context.Context, since time.Time) (Report, error) {
 	o, err := owner(ctx)

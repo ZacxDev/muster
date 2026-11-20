@@ -43,6 +43,7 @@ func featureOffSet(t *testing.T) features.Set {
 		{ID: features.PluginViewers, Name: "Plugin viewers", PlainName: "Plugin views", Description: "Viewers.", Enable: one("MUSTER_EXAMPLE_PLUGIN_ORIGINS")},
 		{ID: features.AskLog, Name: "Ask log", PlainName: "Question history", Description: "Asks.", Enable: one("MUSTER_EXAMPLE_ASK_LOG")},
 		{ID: features.Attachments, Name: "File attachments", PlainName: "Attach files", Description: "Files.", Enable: one("MUSTER_EXAMPLE_S3_BUCKET")},
+		{ID: features.MorningReport, Name: "Overnight report", PlainName: "While you were away", Description: "Mornings.", Enable: one("MUSTER_EXAMPLE_MORNING")},
 	}
 	st := map[string]features.Status{}
 	for _, f := range catalog {
@@ -93,6 +94,7 @@ var featureOffSites = []featureOffSite{
 		s.requirePluginsOn(func(http.ResponseWriter, *http.Request) { panic("reached past the gate") })(w, r)
 	}},
 	{fn: "handleUpload", feature: features.Attachments, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handleUpload(w, r) }},
+	{fn: "handleMorningReport", feature: features.MorningReport, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handleMorningReport(w, r) }},
 }
 
 // featureOffWant is what each feature's notice says, as literals.
@@ -105,6 +107,7 @@ var featureOffWant = map[string]struct{ name, line, memberNext, adminNext, code,
 	features.PluginViewers:  {"Plugin views", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PLUGIN_ORIGINS=1", "docs/features.md#plugin-viewers"},
 	features.AskLog:         {"Question history", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_ASK_LOG=1", "docs/features.md#ask-log"},
 	features.Attachments:    {"Attach files", "Not fully set up on this server.", "Ask your admin to finish setting it up.", "Something it needs is missing. Its ⓘ says what.", "MUSTER_EXAMPLE_S3_BUCKET=1", "docs/features.md#attachments"},
+	features.MorningReport:  {"While you were away", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_MORNING=1", "docs/features.md#morning-report"},
 }
 
 // featureOffJSON is each feature's typed 404 body, byte for byte, as it was
@@ -118,6 +121,7 @@ var featureOffJSON = map[string]string{
 	features.PluginViewers:  `{"docs":"docs/features.md#plugin-viewers","enable":"set MUSTER_EXAMPLE_PLUGIN_ORIGINS=1 in .env and restart (docs/features.md#plugin-viewers)","error":"feature_disabled","feature":"plugin-viewers","message":"disabled: plugin-viewers — set MUSTER_EXAMPLE_PLUGIN_ORIGINS=1 in .env and restart (docs/features.md#plugin-viewers)","name":"Plugin viewers","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
 	features.AskLog:         `{"docs":"docs/features.md#ask-log","enable":"set MUSTER_EXAMPLE_ASK_LOG=1 in .env and restart (docs/features.md#ask-log)","error":"feature_disabled","feature":"ask-log","message":"disabled: ask-log — set MUSTER_EXAMPLE_ASK_LOG=1 in .env and restart (docs/features.md#ask-log)","name":"Ask log","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
 	features.Attachments:    `{"docs":"docs/features.md#attachments","enable":"set MUSTER_EXAMPLE_S3_BUCKET=1 in .env and restart (docs/features.md#attachments)","error":"feature_disabled","feature":"attachments","message":"misconfigured: attachments — MUSTER_EXAMPLE_S3_BUCKET is not a bucket name; set MUSTER_EXAMPLE_S3_BUCKET=1 in .env and restart (docs/features.md#attachments)","name":"File attachments","reason":"MUSTER_EXAMPLE_S3_BUCKET is not a bucket name","state":"misconfigured"}` + "\n",
+	features.MorningReport:  `{"docs":"docs/features.md#morning-report","enable":"set MUSTER_EXAMPLE_MORNING=1 in .env and restart (docs/features.md#morning-report)","error":"feature_disabled","feature":"morning-report","message":"disabled: morning-report — set MUSTER_EXAMPLE_MORNING=1 in .env and restart (docs/features.md#morning-report)","name":"Overnight report","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
 }
 
 // featureOffPage reaches site as a document navigation by a signed-in reader
@@ -366,7 +370,7 @@ func TestEveryFeatureOffSiteIsListed(t *testing.T) {
 var featureIDs = map[string]string{
 	"SessionRouting": features.SessionRouting, "Pages": features.Pages, "PRMailRouting": features.PRMailRouting,
 	"Dictation": features.Dictation, "Plugins": features.Plugins, "PluginViewers": features.PluginViewers,
-	"AskLog": features.AskLog, "Attachments": features.Attachments,
+	"AskLog": features.AskLog, "Attachments": features.Attachments, "MorningReport": features.MorningReport,
 }
 
 func featureOffDedupe(xs []string) []string {
