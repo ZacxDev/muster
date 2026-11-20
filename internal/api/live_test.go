@@ -435,3 +435,48 @@ func TestAWriteSeamReachesOnlyTheWritesMadeOnItsContext(t *testing.T) {
 		t.Errorf("the seam ran %d times over one write of its own and %d beats of another's: want 1", n, pings.Load())
 	}
 }
+
+// TestTheViewsCloseDetectionIsItsOwnServers: a server's replaced close
+// detection (socketSettings.closeRead) is what its own view sockets open with,
+// and no other server's: sockets opened on a server without one never run it,
+// and each socket opened on the server with one runs it exactly once — also
+// after this server's sockets have opened with it. It was a package variable a
+// test reassigned while another test's view handler read it as its socket
+// opened — a data race (close_reason_handler_test.go against
+// handleMirrorViewWS).
+func TestTheViewsCloseDetectionIsItsOwnServers(t *testing.T) {
+	var ran atomic.Int64
+	own := &socketSettings{closeRead: func(c *websocket.Conn, ctx context.Context) context.Context {
+		ran.Add(1)
+		return c.CloseRead(ctx)
+	}}
+	s, ts, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, own)
+	other, ots, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, &socketSettings{every: fastBeat})
+	waitRan := func(n int64, what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for ran.Load() < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: this server's close detection ran %d times, want %d", what, ran.Load(), n)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	_ = dialPage(t, s, ts, viewSock)
+	waitRan(1, "this server's first view socket")
+	// Another server's view sockets, opened after this server's: open and
+	// beating (so their handlers are past the open), never running the seam.
+	for i := 0; i < 3; i++ {
+		wantPings(t, "other server's view", dialPage(t, other, ots, viewSock), 1)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Fatalf("1 view socket here and 3 on another server ran this server's close detection %d times: want 1", n)
+	}
+	_ = dialPage(t, s, ts, viewSock)
+	waitRan(2, "this server's second view socket")
+	time.Sleep(50 * time.Millisecond)
+	if n := ran.Load(); n != 2 {
+		t.Errorf("2 view sockets here ran this server's close detection %d times: want 2", n)
+	}
+}

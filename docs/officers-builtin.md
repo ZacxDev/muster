@@ -625,8 +625,10 @@ What happens:
   that session. So on this machine every owner-authority tool
   (`plugin_draft_decide`, `plugin_outbound_batch_decide`,
   `connector_request_decide`, `attention_answer`, `agent_destroy`,
-  `chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
-  `plugin_request_decide`) files a confirmation card instead of deciding; it
+  `dispatch_approve`, `route_reply`, `plugin_message_route`,
+  `plugin_request_decide`) files a confirmation card instead of deciding
+  (`chief_restart` does not: it runs at once, on every machine; see
+  [mirroring.md](mirroring.md#chief_restart-is-not-gated)); it
   runs once, exactly as asked, when you answer **Confirm** on your paired
   phone (a signed action: a fresh step-up, single use, bound to that one
   decision); a browser or MCP answer of the card is refused. Without a paired
