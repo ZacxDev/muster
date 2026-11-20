@@ -43,6 +43,7 @@ var apiNavWriters = []string{
 	"renderPageDetail",             // /pages/{id} (one page: versions, links, responses)
 	"handleUsagePage",              // /usage (what the chief costs)
 	"handleAnswersPage",            // /answers (how answering question cards went)
+	"handleMorningReport",          // /morning, /morning/{date} (the morning report)
 	"writeAdminDocument",           // /admin/users, /admin/invites
 	"renderNotice",                 // a notice, when its reader is signed in (it is in apiBareWriters too)
 	"renderTeamPage",               // /teams/{id} (a team's manager page)
@@ -400,6 +401,7 @@ var apiNavSecret = map[string]bool{
 	"renderPageDetail":             true,  // shows each live share link: a bearer capability
 	"handleUsagePage":              false, // token counts and senders the owner already sees; no secret
 	"handleAnswersPage":            false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
+	"handleMorningReport":          false, // the owner's own questions, done and stuck lines, usage; no secret
 	"renderTeamPage":               false, // members, roles and activity; no secret shown or taken
 	"handleAccountTeams":           false, // your teams, roles and notify switches; no secret shown or taken
 	"renderTeamOfficers":           false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)

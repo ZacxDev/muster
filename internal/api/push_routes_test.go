@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -212,7 +213,7 @@ func TestPushIsOffWithoutKeys(t *testing.T) {
 	if page := pushDo(t, off, "GET", "/tasks", "").Body.String(); strings.Contains(page, `id="enable-push"`) {
 		t.Error("the shell draws the Enable button with no VAPID keys")
 	}
-	if page := pushDo(t, off, "GET", "/account", "").Body.String(); !strings.Contains(page, pushUnconfigured) {
+	if page := pushDo(t, off, "GET", "/account", "").Body.String(); !strings.Contains(page, html.EscapeString(pushUnconfiguredWords)) {
 		t.Error("the account page does not say push is unconfigured")
 	}
 

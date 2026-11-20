@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -464,6 +465,10 @@ var bannerLedger = []string{
 	// owner's stops in place of the chief's nudges — so the log must say which
 	// state this is.
 	envFleetOrchestration,
+	// THE MORNING REPORT IS LEDGERED: ON, every person gets a push each
+	// morning built from their sessions, tasks and questions — so the log must
+	// say which state this is, and at what time.
+	envMorningReport,
 	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
 	// databases; OFF, they reach whatever address they name — so the log must
 	// say which.
@@ -499,6 +504,8 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envMorningReportTZ: "printed with its value on the `morning report: ON` line; off, the report does not run, and a bad value " +
+		"refuses boot either way",
 	envDatabaseFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
 		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
 		"file refuses boot",
@@ -963,6 +970,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		FleetDigest: true,
 		// Fleet proposals: the banner branches on ext.FleetPropose (below).
 		FleetPropose: true,
+		// The morning report: the banner branches on ext.MorningReport (below).
+		MorningReport: true,
 		// The dial guard: the banner branches on ext.DialGuard (below).
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
@@ -1026,6 +1035,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Episodes:        sessionstate.NewPG(nil),
 		FleetDigest:     true,
 		FleetPropose:    true,
+		MorningReport:   &api.MorningReport{Store: morning.NewPG(nil), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}},
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 		Pages:           pages.NewPG(nil),
 		CCUsageInterval: 5 * time.Minute,

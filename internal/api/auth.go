@@ -334,6 +334,14 @@ const NoOriginRefusalHint = "the same-origin check found neither an Origin nor a
 // have to send Origin itself.
 //
 // GET and HEAD pass: they change nothing (handleShare documents that rule).
+//
+// ⚠ ON A COOKIE ROUTE THIS IS NOW THE SECOND CHECK, NOT THE ONLY ONE. admit's
+// central origin check (cross_origin.go) runs first on every write a browser
+// session admits, on every route. This one is kept where it is: it is
+// stricter in one way (it refuses `Origin: null` even with
+// `Sec-Fetch-Site: same-origin`, so a native form on these routes still needs
+// its page served Referrer-Policy: same-origin), and the unauthenticated
+// doors (sign-in, passkeys, invites) rely on isSameOrigin directly.
 func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || s.isSameOrigin(r) {

@@ -161,7 +161,7 @@ func subagentCard(id string, c subagentCall, s *mirror.Subagent, badge g.Node) g
 	}
 	var result g.Node
 	if c.result != nil && strings.TrimSpace(c.result.Content) != "" {
-		result = toolPre("result", c.result.Content)
+		result = toolPre(ToolOutputLabel, c.result.Content)
 	}
 	return Details(
 		ID(id),

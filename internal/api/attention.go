@@ -197,6 +197,10 @@ type attentionItem struct {
 	// Source names who is waiting: the asking agent or session, the window,
 	// the plugin.
 	Source string `json:"source"`
+	// OfficerID is the built-in officer that raised the ask or notice (its
+	// "<type>:<area>" id), "" otherwise: Source says it in words ("Product
+	// officer (Acme)"), and a machine reader needs the id.
+	OfficerID string `json:"officer_id,omitempty"`
 	// target is the part of Source that names a mirrored window's tmux target
 	// (mirror.WhereTarget), "" for none: every display plains Source with
 	// textplain.TitleKeeping(Source, target), so the target reaches the
@@ -381,12 +385,34 @@ func sessionKey(host, session, window string) string {
 	return "session-" + hex.EncodeToString(sum[:8])
 }
 
+// shownAskLabel is a's stored label as a surface shows it: a built-in
+// officer's ask is stored under "officer <id>" (officerAskLabel, the key its
+// page matches asks by) and SHOWN by what the officer is for, "Product officer
+// (Acme)" (the jargon audit's U-24); any other label as stored.
+func shownAskLabel(a attention.Ask) string {
+	if id := officerAskID(a); id != "" {
+		return ui.OfficerSourceName(id)
+	}
+	return a.Asker.Label
+}
+
+// officerAskID is the built-in officer that raised a, from its stored label
+// ("officer <id>"), or "" when an officer did not. An item carries it as
+// OfficerID, so a machine reader (the chief's attention_list) keeps the id
+// its plain Source no longer spells.
+func officerAskID(a attention.Ask) string {
+	if id, ok := strings.CutPrefix(a.Asker.Label, officerAskLabel("")); ok && a.Asker.System {
+		return id
+	}
+	return ""
+}
+
 // askerLabel is an ask's source by what it stored: its label (for a mirrored
 // session, its name and host when it asked — no tmux target), else its ids.
 // Every surface shows askSource, which falls back to this.
 func askerLabel(a attention.Ask) string {
 	if a.Asker.Label != "" {
-		return a.Asker.Label
+		return shownAskLabel(a)
 	}
 	if a.Asker.AgentID > 0 {
 		return "agent " + strconv.FormatInt(a.Asker.AgentID, 10)
@@ -477,7 +503,7 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, OfficerID: officerAskID(a), target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
 		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {

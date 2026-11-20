@@ -42,6 +42,11 @@ func (s *Server) registerSessionTagRoutes(mux Mux) {
 	mux.HandleFunc("POST /sessions/tags/delete", s.requireOperatorWrite(s.handleSessionTagRemove))
 }
 
+// badSessionKindWords is the 400 a pin, tag or title-drift request with no
+// session kind gets: reached only from a hand-typed address, and said in
+// words (the jargon audit's F097: it said "kind must be agent or mirror").
+const badSessionKindWords = "Something went wrong: this link doesn't say which session it is for."
+
 // sessionTagTarget is the subject a request names, the page's own window, or a
 // 400's reason.
 func sessionTagTarget(get func(string) string) (sessiontags.Target, string, error) {
@@ -65,7 +70,7 @@ func sessionTagTarget(get func(string) string) (sessiontags.Target, string, erro
 		}
 		return t, w, nil
 	}
-	return sessiontags.Target{}, "", errors.New("kind must be agent or mirror")
+	return sessiontags.Target{}, "", errors.New(badSessionKindWords)
 }
 
 func (s *Server) handleSessionTagsList(w http.ResponseWriter, r *http.Request) {

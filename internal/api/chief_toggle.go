@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // ---------------------------------------------------------------------------
@@ -210,7 +211,7 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 		return head + state("unavailable", ComposeChiefNotYours) + `</section>`
 	}
 	if owner <= 0 || !s.chiefToggleAvailable(owner, list) {
-		return head + state("unavailable", ChiefNotSetUp) + `</section>`
+		return head + chiefNotSetUpHTML(authz.IsAdmin(ctx)) + `</section>`
 	}
 	notice := ""
 	switch r.URL.Query().Get("chief") {

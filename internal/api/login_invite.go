@@ -646,7 +646,7 @@ func (s *Server) countPasskeys(ctx context.Context, ip, sub string) int {
 // retried, at most three times.
 // resetTokensRevoked is appended to every page a reset that SET the password
 // ends on: the reset revoked the user's API tokens (users.ResetCredentials).
-const resetTokensRevoked = "Your API tokens were revoked."
+const resetTokensRevoked = "Your access keys were revoked."
 
 func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time, done string) {
 	for attempt := 0; attempt < 3; attempt++ {

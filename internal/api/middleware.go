@@ -220,8 +220,15 @@ const permissionsPolicy = "microphone=(self)"
 // hijacking, external SCRIPTS and styles (script-src/style-src 'self'), and
 // keeping the pages' own fetches same-origin (connect-src 'self', plus a Faro
 // collector when telemetry is on). img-src also admits other origins' brand
-// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
-// keeps the magic-link token out of the Referer header.
+// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy: same-origin
+// keeps a token in a URL (a magic link, a claim or reset link) out of every
+// request to ANOTHER origin, and still lets a browser send muster's real
+// Origin on a native form POST. 🔴 It used to be no-referrer, under which a
+// form POST carries `Origin: null`; on a plain-http, non-loopback deployment
+// (where browsers send no Sec-Fetch-Site) the central origin check
+// (cross_origin.go) then refused muster's own no-JavaScript forms. Pages that
+// need no Referer even to muster itself (the share links /s/…, notify_owner's
+// redirect, page content documents) set no-referrer themselves.
 //
 // hsts, when not empty, is the Strict-Transport-Security value (hstsFor): sent
 // on every response when the public URL is https. A browser ignores it on a
@@ -235,7 +242,7 @@ func securityHeaders(next http.Handler, hsts string) http.Handler {
 		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'", ""))
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Permissions-Policy", permissionsPolicy)
 		next.ServeHTTP(w, r)
 	})

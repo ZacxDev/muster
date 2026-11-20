@@ -178,6 +178,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /usage",
 		// The answer-attempt log's page (answers_page.go).
 		"GET /answers",
+		// The morning report's page (morning_report.go).
+		"GET /morning",
+		"GET /morning/{date}",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
