@@ -92,13 +92,13 @@ const accountPath = "/account"
 // SignOutEverywhereTokenNote sits beside "Sign out everywhere": that button
 // ends GoTrue sessions only, and a person must not believe it ended their API
 // tokens (accounts PR 6).
-const SignOutEverywhereTokenNote = "Paired phones are signed out too. API tokens are not affected — revoke them under API tokens below."
+const SignOutEverywhereTokenNote = "Paired phones are signed out too. Access keys are not affected — revoke them under Access keys below."
 
 // ResetDoneNote is what /account?reset=1 — where a successful password reset
 // lands — says: the reset revoked every personal API token (users.ResetCredentials).
 // ⚠ DISPLAY-ONLY: the query flag is not a fact the server checks, so a
 // hand-typed /account?reset=1 shows it too. It reaches nothing else.
-const ResetDoneNote = "Your password was reset. Your API tokens were revoked; create new ones under API tokens below."
+const ResetDoneNote = "Your password was reset. Your access keys were revoked; create new ones under Access keys below."
 
 // accountResetDonePath is where a successful reset redirects, before
 // resetDonePath adds what happened to the passkeys.
@@ -182,10 +182,17 @@ func (s *Server) registerAccountRoutes(mux Mux) {
 // stays bare (writeAuthDocument): every nav link there would answer with the
 // sign-in form. The test is the principal requireSession attached, so a
 // caller cannot pick the wrong one: TestANoticeHasTheNavOnlyForASignedInReader.
-func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string) {
+//
+// sheet, when given, is an ⓘ beside the sentence: where the exact detail (a
+// setting, a variable) goes, never in the sentence itself.
+func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string, sheet ...ui.InfoSheet) {
+	line := `<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>`
+	if len(sheet) > 0 && sheet[0].ID != "" {
+		line = `<div class="flex items-center gap-1">` + line + ui.InfoSheetHTML(sheet[0]) + `</div>`
+	}
 	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
-<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
+` + line + `
 </section>`
 	if p, ok := authz.From(r.Context()); ok && p.Via == authz.ViaSession {
 		s.writeNavDocument(w, r, code, heading, "", false, inner)
@@ -412,13 +419,21 @@ const (
 
 // --- the account page ---------------------------------------------------------
 
+// AccountSharedPasswordLine is the Account page's "who is signed in" on a
+// password server: everyone signs in with the one shared password, so it
+// names no person.
+const AccountSharedPasswordLine = `<p class="text-sm text-fg2" id="account-who">Signed in with the shared password.</p>`
+
 func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
-	who := "the operator password"
+	// Who is signed in, in words: the shared password on a password server
+	// (the jargon audit's F079: it said "Signed in as the operator
+	// password"), else the user's email.
+	signedIn := AccountSharedPasswordLine
 	if s.auth.goTrueMode() && s.gt != nil {
 		// The principal requireSession attached names the user; read the row
 		// rather than resolving the cookies a second time.
 		if u, err := s.gt.Users.ByID(r.Context(), authz.MustFrom(r.Context()).UserID); err == nil {
-			who = u.Email
+			signedIn = `<p class="text-sm text-fg2" id="account-who">Signed in as <span class="font-semibold text-fg">` + html.EscapeString(u.Email) + `</span>.</p>`
 		}
 	}
 	everywhere := ""
@@ -454,14 +469,15 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
-<p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
+`+signedIn+`
 <form method="POST" action="/logout">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>
 `+everywhere+`
 `+passkeysLink+`
-<a href="/account/credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Credentials (Claude, OpenRouter)</a>
-<a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
+<a href="/account/credentials" id="account-credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">`+CredentialsTitle+`</a>
 <a href="`+FeaturesPagePath+`" id="account-features" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Features (what this server runs, and how to turn the rest on)</a>
+<p class="pt-2 text-xs font-medium uppercase tracking-wide text-muted" id="account-advanced">Advanced</p>
+<a href="`+accountTokensPath+`" id="account-tokens" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">`+AccessKeysLinkText+`</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
 `+s.accountDevicesSection(r)+`
@@ -670,7 +686,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.auth.goTrueMode() {
 		s.renderNotice(w, r, http.StatusOK, "Admin account claimed",
-			"Your sign-in works. This server still uses the operator password; once it is switched to "+
+			"Your sign-in works. This server still uses the shared password; once it is switched to "+
 				"GoTrue sign-in (MUSTER_AUTH_MODE=gotrue) you will sign in with this email and password.")
 		return
 	}

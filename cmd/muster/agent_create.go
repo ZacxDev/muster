@@ -41,7 +41,7 @@ type agentCreateBody struct {
 // agentCreateNoTokenMsg is the local refusal when envAgentCreateToken is unset.
 // It says what the server would: only an agent-create token reaches the route.
 const agentCreateNoTokenMsg = "creating agents needs a token of scope agent-create: mint one at /account/tokens " +
-	"(Create agents) and export it as " + envAgentCreateToken + ". This verb never sends " + envToken +
+	"(Start agents only) and export it as " + envAgentCreateToken + ". This verb never sends " + envToken +
 	" (the server refuses every other token on this route, a full one included), so nothing was sent."
 
 // agentCreateNoTokenTenantsMsg is appended on a host with more than one tenant,
@@ -65,7 +65,7 @@ body with --note-id). --start=false creates it STOPPED and provisions nothing;
 Start it later from its page in the web UI.
 
 🔴 THE TOKEN IS ` + envAgentCreateToken + `, NOT ` + envToken + `. It must be a personal token of
-scope agent-create, minted at /account/tokens (Create agents). The server
+scope agent-create, minted at /account/tokens (Start agents only). The server
 refuses every other token on this route, a full-access one included, so the
 CLI's ordinary token cannot create agents; this verb never sends it.
 

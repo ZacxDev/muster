@@ -516,8 +516,8 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	}
 	ck := setCookies(r)
 	page := do(w.edge, "GET", "/account?reset=1&passkeys=none", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
-	if page.Code != 200 || !strings.Contains(page.Body.String(), "Your API tokens were revoked") {
-		t.Fatalf("the reset's landing page: %d, does not say the API tokens were revoked\n%s", page.Code, truncate(page.Body.String(), 600))
+	if page.Code != 200 || !strings.Contains(page.Body.String(), "Your access keys were revoked") {
+		t.Fatalf("the reset's landing page: %d, does not say the access keys were revoked\n%s", page.Code, truncate(page.Body.String(), 600))
 	}
 }
 
@@ -528,9 +528,9 @@ func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
 	w := newInviteWorld(t)
 	page := do(w.edge, "GET", "/account", nil, w.asAdmin())
 	body := page.Body.String()
-	i, j := strings.Index(body, "Sign out everywhere"), strings.Index(body, "API tokens are not affected")
+	i, j := strings.Index(body, "Sign out everywhere"), strings.Index(body, "Access keys are not affected")
 	if page.Code != 200 || i < 0 || j < 0 || j < i {
-		t.Fatalf("/account: %d; want the note \"API tokens are not affected\" after the Sign out everywhere button\n%s",
+		t.Fatalf("/account: %d; want the note \"Access keys are not affected\" after the Sign out everywhere button\n%s",
 			page.Code, truncate(body, 800))
 	}
 	t.Cleanup(func() {
@@ -573,7 +573,7 @@ func TestTheMintPageSaysWhyItRefused(t *testing.T) {
 		want string
 	}{
 		{apitokens.ErrUserDisabled, http.StatusForbidden, "This account is disabled"},
-		{apitokens.ErrSessionEnded, http.StatusUnauthorized, "your password was reset, or the account was disabled and re-enabled). Sign in again to create API tokens"},
+		{apitokens.ErrSessionEnded, http.StatusUnauthorized, "your password was reset, or the account was disabled and re-enabled). Sign in again to create access keys"},
 	} {
 		s := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "mint-refusal-operator-pw"}, log.New(io.Discard, "", 0))
 		s.UseExtensions(Extensions{APITokens: refusingTokens{err: c.err}, Users: stubUsers{}})
@@ -612,8 +612,8 @@ func TestAResetWhoseSignInFailsStillSaysTheTokensWereRevoked(t *testing.T) {
 	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
 	body := r.Body.String()
 	if r.Code != http.StatusBadGateway || !strings.Contains(body, "Your password is set, but sign-in failed") ||
-		!strings.Contains(body, "Your API tokens were revoked") {
-		t.Fatalf("a reset whose sign-in fails: %d; want 502 saying the password is set AND the API tokens were revoked\n%s", r.Code, truncate(body, 500))
+		!strings.Contains(body, "Your access keys were revoked") {
+		t.Fatalf("a reset whose sign-in fails: %d; want 502 saying the password is set AND the access keys were revoked\n%s", r.Code, truncate(body, 500))
 	}
 	if _, err := ts.Authenticate(authz.System(context.Background()), secret); !errors.Is(err, apitokens.ErrBadToken) {
 		t.Fatalf("CONTROL: the token after that reset: %v; the notice says it was revoked", err)

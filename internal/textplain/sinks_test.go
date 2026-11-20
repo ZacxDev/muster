@@ -166,7 +166,6 @@ var uiExempt = map[string]exemption{
 	"agents.go modelFieldForDisplay m.Label":             {1, whyStatic},
 	"chief_sessions.go runtimeModelForms rt.Label":       {2, whyStatic},
 	"components.go sidebarIn t.Label":                    {1, whyStatic},
-	"chief_chats.go chiefContextChip c.Title":            {2, "ContextView.Title is how the chip's number is derived — muster's own constant (ChiefContextTitle, set by ChiefContextView), never a session's or author's title"},
 	"nav_layout.go NavDocument v.Title":                  {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":                {1, whyStatic},
 	"switcher.go switcherEntry it.Label":                 {2, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
@@ -196,10 +195,13 @@ var uiExempt = map[string]exemption{
 var apiExempt = map[string]exemption{
 	// A person is named on the teams pages (personLabel: email, else display
 	// name) the same way renderAdminUsers names a user.
-	"admin.go Server.renderAdminUsers u.DisplayName":                 {3, whyPerson},
-	"admin_teams.go Server.renderAdminTeams m.DisplayName":           {1, whyPerson},
-	"admin_teams.go Server.renderAdminTeams u.DisplayName":           {1, whyPerson},
-	"teams_pages.go Server.renderTeamPage m.DisplayName":             {1, whyPerson},
+	// The 4th: the activity list names the people it mentions by
+	// personLabel (plain_audit.go's auditPeople) — a person, not a title.
+	"admin.go Server.renderAdminUsers u.DisplayName":       {4, whyPerson},
+	"admin_teams.go Server.renderAdminTeams m.DisplayName": {1, whyPerson},
+	"admin_teams.go Server.renderAdminTeams u.DisplayName": {1, whyPerson},
+	// The 2nd: the team activity list's people (auditPeople), as admin.go's.
+	"teams_pages.go Server.renderTeamPage m.DisplayName":             {2, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
 	// The Officers pages (O-C): the schedule presets and capability labels are
 	// fixed UI text; an escalation choice names a person (personLabel) or the
@@ -213,8 +215,10 @@ var apiExempt = map[string]exemption{
 	"officers_pages.go Server.renderOfficerForm who.Label": {1, whyPerson},
 	// A team dispatch's push names the member whose say-so it was (team
 	// sharing 4.7): cut to one line and sanitised by teamDispatchPushBody.
-	"team_dispatch.go Server.personName u.DisplayName":         {2, whyPerson},
-	"plugins.go Server.renderPluginsPage p.Label":              {1, "a plugin's configured label (its name), not a title"},
+	"team_dispatch.go Server.personName u.DisplayName": {2, whyPerson},
+	// The 2nd: the card's capabilities ⓘ is labelled with it ("What <label>
+	// may do, exactly"), the same name the card heads with.
+	"plugins.go Server.renderPluginsPage p.Label":              {2, "a plugin's configured label (its name), not a title"},
 	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
 	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
 	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to ui.PageShareQuietButton and ui.PageLinkMenu, which plain it once (pageCardTitle)"},

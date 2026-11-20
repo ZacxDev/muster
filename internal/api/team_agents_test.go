@@ -355,6 +355,7 @@ var agentsListCallers = map[string]string{
 	"Server.agentsListEntries":      "visible: the sidebar lists team agents; primaryChief over ownedBy(list, viewer)",
 	"Server.paletteTargets":         "visible: the palette searches team agents",
 	"Server.mentionIndex":           "visible: a team agent's name is linked",
+	"Server.sessionCards":           "own: ownedBy(list, requestOwner(ctx)) — a card only for the viewer's own agent",
 	"Server.actorIsAgent":           "visible: a team agent's name is an agent's",
 	"Server.agentIsChief":           "visible: chiefPredicate is per owner",
 	"Server.agentIsDeleteProtected": "visible: deleteProtection is per owner",
