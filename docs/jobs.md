@@ -618,9 +618,10 @@ owner's accounts**:
   if the last one is rate-limited too, the job fails `rate_limited` on its
   account. A chat or officer turn is retried there with its own backoff, as
   before. A `claude-code` image from before the `usage_limit` mark sends none,
-  so its usage-limit 429 is read the same way: the account is marked only when
-  a turn meets the CLI's usage-limit menu (the `409`), which a turn in a
-  session that already hit the limit does, and a job's fresh session may not.
+  so its usage-limit 429 is read the same way: the account is marked when a
+  turn meets the CLI's usage-limit menu (the `409`). A job's retry is sent in
+  the same session, so it meets the menu if the CLI raised it there; the job
+  then fails over as for any usage limit.
 - **Pinned agents stay.** An agent whose account was named explicitly when it
   was created — a dispatch's or `POST /api/chief/replace`'s `cc_account`, an
   officer's `cc_account` — is not moved, unless it opted in: the `cc_failover`

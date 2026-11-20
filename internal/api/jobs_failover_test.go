@@ -146,9 +146,12 @@ type accountGateway struct {
 	// before it answers (0: every one fails).
 	failTimes int
 	failed    int
-	reply     string
-	mu        sync.Mutex
-	onAcct    []string
+	// script, when set, is the answers of the limited account's turns in
+	// order (a nil entry answers reply); past its end every turn answers.
+	script []*agents.RuntimeError
+	reply  string
+	mu     sync.Mutex
+	onAcct []string
 }
 
 func (g *accountGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, emit func(string)) (string, error) {
@@ -158,6 +161,18 @@ func (g *accountGateway) Chat(ctx context.Context, a agents.Agent, key, msg stri
 	route, _ := agents.TurnRouteFrom(ctx)
 	_ = route
 	g.mu.Lock()
+	if g.script != nil && g.limited[a.CCAccount] {
+		var rt *agents.RuntimeError
+		if g.failed < len(g.script) {
+			rt = g.script[g.failed]
+		}
+		g.failed++
+		g.mu.Unlock()
+		if rt != nil {
+			return "", rt
+		}
+		return g.reply, nil
+	}
 	fail := g.limited[a.CCAccount] && (g.failTimes == 0 || g.failed < g.failTimes)
 	if fail {
 		g.failed++
@@ -498,5 +513,58 @@ func TestATransient429JobIsRetriedOnTheSameAccount(t *testing.T) {
 	}
 	if _, ok := out["account_failovers"]; ok {
 		t.Fatalf("account_failovers = %v, want none", out["account_failovers"])
+	}
+}
+
+// TestA409LimitMenuOnTheRetryFailsTheWorkerOver: north's first turn answers a
+// transient 429 (a ccd from before the usage_limit mark sends its usage limit
+// so too) and the same-session retry meets the CLI's usage-limit menu, ccd's
+// 409. That 409 is the account's limit (ccpool.AccountFailure), so it is not
+// retried again: the worker is failed over to south, where the job runs.
+// This is how a job on an older ccd still gets its account marked and moved.
+func TestA409LimitMenuOnTheRetryFailsTheWorkerOver(t *testing.T) {
+	r := newFailoverRig(t, map[string]string{"north": "south"}, map[string]bool{"north": true}, "rate_limited")
+	r.gw.script = []*agents.RuntimeError{
+		{Status: 429, Type: "rate_limited", Message: "API Error: Request rate limited"},
+		{Status: 409, Type: "rate_limited", Message: "the CLI's pane shows its usage-limit menu; nothing was typed"},
+	}
+	out := r.await(t, r.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+	r.fo.mu.Lock()
+	calls := strings.Join(r.fo.calls, ",")
+	r.fo.mu.Unlock()
+	if out["status"] != jobs.StatusSucceeded || out["cc_account"] != "south" || calls != "north:rate_limited" {
+		t.Fatalf("job = %v/%v (%v) on %v, failover calls %q; want succeeded on south after north:rate_limited",
+			out["status"], out["reason"], out["error"], out["cc_account"], calls)
+	}
+	if got := strings.Join(r.gw.turns(), ","); got != "north,north,south" {
+		t.Fatalf("turns ran on %q, want north,north,south", got)
+	}
+}
+
+// TestAJobsTimeoutDuringARetryWaitFailsItRateLimited: the job's timeout (1
+// unit of 20ms) ends while it waits to send a transient 429's turn again (the
+// wait is an hour here). The job fails rate_limited on north, not timed_out:
+// the turn answered, and nothing was sent after it. No failover is asked for.
+func TestAJobsTimeoutDuringARetryWaitFailsItRateLimited(t *testing.T) {
+	r := newFailoverRig(t, map[string]string{"north": "south"}, map[string]bool{"north": true}, "rate_limited")
+	r.gw.transient, r.gw.message = true, "API Error: Request rate limited"
+	r.s.jobSecond = 20 * time.Millisecond
+	r.s.jobRateLimitBackoff = time.Hour
+	start := time.Now()
+	out := r.await(t, r.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "timeout_s": 1}))
+	if out["status"] != jobs.StatusFailed || out["reason"] != "rate_limited" || out["cc_account"] != "north" {
+		t.Fatalf("job = %v/%v (%v) on %v, want failed/rate_limited on north", out["status"], out["reason"], out["error"], out["cc_account"])
+	}
+	if el := time.Since(start); el > 10*time.Second {
+		t.Fatalf("the job took %v: its timeout did not end the retry wait", el)
+	}
+	if got := strings.Join(r.gw.turns(), ","); got != "north" {
+		t.Fatalf("turns ran on %q, want north (no turn after the wait was cut short)", got)
+	}
+	r.fo.mu.Lock()
+	calls := strings.Join(r.fo.calls, ",")
+	r.fo.mu.Unlock()
+	if calls != "" {
+		t.Fatalf("failover calls = %q, want none", calls)
 	}
 }

@@ -21,6 +21,11 @@ func TestIsLimitTextReadsEveryUsageLimitAndNoTransientRateLimit(t *testing.T) {
 		"Claude usage limit reached. Your limit will reset at 3pm (America/Los_Angeles).",
 		"5-hour limit reached ∙ resets 3pm",
 		"weekly limit reached",
+		"session limit reached", // internal/credentials shared_pool_marks_pg_test.go
+		"Session limit reached ∙ resets 2am",
+		"Opus limit reached ∙ resets Dec 3, 4pm (UTC)",
+		"Claude Sonnet limit reached",
+		"Weekly Opus limit reached",
 		"You've hit your Opus limit · resets Oct 15, 10pm (UTC)",
 		"You've hit your weekly Opus limit",
 	}

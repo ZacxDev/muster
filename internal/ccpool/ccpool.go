@@ -168,12 +168,14 @@ const (
 // when a turn meets the CLI's usage-limit menu: the CLI raises it in the
 // session that hit the limit, and that session's next turn is refused with the
 // 409 above, which every ccd that fails over sends. A turn in a FRESH session
-// (each job's, a new chat's) has no menu on its pane and may 429 unmarked
-// again; so may the parked session's own turn after ccd stops its idle lane
-// (cmd/ccd lanes.release), since that lane's CLI starts fresh. Nothing else
-// marks an account (the usage poller, internal/ccusage, only clears a mark),
-// so under such a ccd an exhausted account can stay unmarked until its image
-// is updated.
+// (each job's, a new chat's) has no menu on its pane and may 429 unmarked, but
+// its retries go to the same session (internal/api runJobTurn, the officer
+// chat runner), so they meet the menu if the CLI raised it. ccd stops an idle
+// lane parked on the menu (cmd/ccd lanes.release) only after refusing a turn
+// with that 409, so the mark is already written. Nothing else marks an account
+// (the usage poller, internal/ccusage, only clears a mark): under such a ccd,
+// an account whose CLI raises no menu stays unmarked until its image is
+// updated.
 func AccountFailure(failureType string, usageLimit bool, status int) string {
 	switch failureType {
 	case FailureAuthFailed:
