@@ -118,8 +118,9 @@ for (const vp of [
       await expect(card).toBeVisible();
       // The fixture is the card the issue reports: the expiry line and a
       // multi-line body (positive controls on the fixture itself). The card
-      // draws a newline as a visible `\n` (flows.VisibleEscape); the count of
-      // those markers is the ONLY check here that the body has real newlines.
+      // draws a newline as a real line break (visibleLines), never a spelled
+      // `\n`; the count of real newlines is the ONLY check here that the body
+      // has them, and the spelled-marker count proves none is escaped.
       // The data-runes check compares the card's length with the fixture's
       // own, so it shows the whole body arrived but cannot see newlines (a
       // space in place of each would pass it).
@@ -127,7 +128,9 @@ for (const vp of [
       await expect(card.locator('[data-draft-expiry]')).toHaveText(/^expires in \d+[mhd]$/);
       await expect(card).not.toContainText('UTC');
       const body = card.locator('[data-draft-body]');
-      expect((await body.textContent())!.split('\\n').length - 1, 'the reply shows its three newlines').toBe(3);
+      const text = (await body.textContent())!;
+      expect(text.split('\n').length - 1, 'the reply shows its three newlines').toBe(3);
+      expect(text.split('\\n').length - 1, 'no newline is spelled out as \\n').toBe(0);
       await expect(card.locator('[data-draft-text]')).toHaveAttribute('data-runes', String(Array.from(BODY).length));
 
       await card.scrollIntoViewIfNeeded();
