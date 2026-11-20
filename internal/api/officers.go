@@ -335,6 +335,10 @@ type OfficersConfig struct {
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
 	HostSpawns officers.HostSpawnStore
+	// AutoRestart is the wake loop's bounded restart of an instance in error
+	// (officers.AutoRestart; MUSTER_OFFICER_AUTO_RESTART_AFTER and
+	// MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY). The zero value is off.
+	AutoRestart officers.AutoRestart
 	// UnclaimedAfter is how long a host instance may run without claiming an
 	// item before its owner is told (officer_unclaimed.go); 0 is
 	// DefaultOfficerUnclaimedAfter.
@@ -568,7 +572,8 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		}
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff, Chats: chats}
+		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff, Chats: chats,
+		AutoRestart: cfg.AutoRestart, AutoRestartNotice: s.officerAutoRestartNotice}
 	if cfg.Builtin != nil {
 		// routine_kinds: the store defers a routine item to its officer's next
 		// routine_wake_at, reading the LIVE roster (officers.Registry.ForOwner).
@@ -931,7 +936,11 @@ var _ kickoffRearmer = (*agents.PGStore)(nil)
 //   - It is `error` (crash-looping, image pull failing, a failed apply): ALSO
 //     up. Counting it down would have the loop re-Start it every poll — a
 //     restart storm that re-arms its first turn each time. It holds its slot
-//     until an operator looks; any claim it held lapses with its lease.
+//     until it recovers, an operator acts, or — for an error class a restart
+//     fixes (classifyInstanceError) — the wake loop's bounded auto-restart
+//     restarts it in place (internal/officers autorestart.go: backoff and a
+//     per-officer daily cap). Any claim it held lapses with its lease, or is
+//     released by that restart.
 //   - Its ROW says provisioning or pending but no instance is visible yet: up.
 //     That is a create or a Start in flight (the row is written before the
 //     backend shows the Deployment), and counting it down would start it twice.
@@ -999,6 +1008,9 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
 			PromptPending: ok && promptPending(a),
 			Spent:         f.s.officerRT.spent(o, name)}
+		if in.Error {
+			in.ErrorClass = classifyInstanceError(a, idx[name])
+		}
 		switch {
 		case in.Up:
 		case !ok:
@@ -1194,8 +1206,10 @@ const repromptSlack = 2 * time.Minute
 // minutes, and between items it holds no HQ claim, so the loop re-prompted it
 // mid-turn; when that turn ended more than ProvisioningStuckTimeout after the
 // re-arm, the kickoff deliverer's dwell check read the row as a first turn that
-// never landed and marked it `error` — and an instance in error holds its slot
-// for ever (TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance).
+// never landed and marked it `error` — and an instance in error held its slot
+// until an operator acted (TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance;
+// the bounded auto-restart now restarts such an instance, at most a few times
+// a day, but a re-prompt must still never cause one).
 // Now the row is never written: no stuck verdict can be derived from it.
 //
 //   - The session claim (taken with agents.Store.ClaimKickoffForDelivery, which

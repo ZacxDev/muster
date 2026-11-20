@@ -79,8 +79,8 @@ func officerBatchDraft(o string) plugins.Draft {
 func TestEveryOfficerPushIsClassified(t *testing.T) {
 	want := map[officerPush]bool{
 		"ask": true, "escalation": true, "draft": true, "outreach_batch": true, "connector_request": true,
-		"budget": true, "cap_hold": true,
-		"draft_refused": false, "budget_unreadable": false, "unclaimed": false, "page_published": false, "page_shared": false,
+		"budget": true, "cap_hold": true, "restart_held": true,
+		"draft_refused": false, "auto_restart": false, "budget_unreadable": false, "unclaimed": false, "page_published": false, "page_shared": false,
 		"page_updated": false, "notify_owner": false,
 	}
 	for k, d := range want {
@@ -110,6 +110,8 @@ func TestOfficerDecisionCardsAreTheirCards(t *testing.T) {
 		{officerPushConnectorRequest, officerCardRef{ID: "6437", Team: 908}, "/teams/908/connectors#connector-request-6437"},
 		{officerPushBudget, officerCardRef{ID: "scout:docs", Owner: 1}, "/officers/scout:docs?owner=1"},
 		{officerPushCapHold, officerCardRef{ID: "ops watch", Owner: 908}, "/officers/ops%20watch?owner=908"},
+		{officerPushRestartHeld, officerCardRef{ID: "ops relay", Owner: 913}, "/officers/ops%20relay?owner=913"},
+		{officerPushAutoRestart, officerCardRef{ID: "ops relay", Owner: 913}, ""},
 		{officerPushBudgetUnreadable, officerCardRef{ID: "scout:docs", Owner: 1}, ""},
 		{officerPushDraftRefused, officerCardRef{ID: "5317"}, ""},
 	} {

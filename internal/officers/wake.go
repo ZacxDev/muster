@@ -59,8 +59,13 @@ type InstanceState struct {
 	// not up. An instance in error counts as up: it holds its slot.
 	Up bool
 	// Error reports the instance in error (crash-looping, a failed apply). It
-	// holds its slot, so the loop logs and counts it rather than starting it.
+	// holds its slot, so the loop logs and counts it rather than starting it
+	// — until the bounded auto-restart (autorestart.go) restarts it, when
+	// ErrorClass is one a restart fixes.
 	Error bool
+	// ErrorClass is why it is in error (meaningful only with Error):
+	// ErrorUnknown when the fleet cannot say, which is never restarted.
+	ErrorClass ErrorClass
 	// Down is why the instance is not up, as the fleet sees it ("" when up,
 	// or when the fleet cannot say): "no agent yet", "its window @23 on h1
 	// is gone", "its last start was refused: …". The start line names it, so
@@ -330,6 +335,10 @@ type Decision struct {
 	StartWhy map[int]string
 	// Release is live claims held by an instance that is not up.
 	Release []Item
+	// Restart is the instances in error this pass restarts (stop, release
+	// what each held, start: autorestart.go), ascending. Each was counted up
+	// by Decide, so none is in Start; none is in Stop or Overrun.
+	Restart []Restart
 	// Overrun is live claims held past the pool's wall-time cap: each holder
 	// is stopped (when up) and the item completed escalated. An overrun claim
 	// is never in Release, Held or Stop.
@@ -804,8 +813,10 @@ type officerState struct {
 	// instance agent name (the two pools' numbers overlap).
 	promptedAt map[string]time.Time
 	// errored is the instances last seen in error (logged on change), by
-	// instance agent name.
+	// instance agent name: since when this process has seen each in error.
 	errored map[string]erroredSlot
+	// restarts is the day's auto-restarts (autorestart.go).
+	restarts restartBook
 	// scaledDown is each instance this process scaled to zero itself, and
 	// why, by instance agent name: its next start is a WAKE, not a restart
 	// (startReason). Cleared when it starts; a restart of muster forgets it,
@@ -905,6 +916,10 @@ type Reconciler struct {
 	judgement *JudgementLedger
 	// capHold is Config.CapHold (nil: none).
 	capHold func(o Officer, h CapHold)
+	// autoRestart is Config.AutoRestart (the zero value: off).
+	autoRestart AutoRestart
+	// restartNotice is Config.AutoRestartNotice (nil: none).
+	restartNotice func(o Officer, e AutoRestartEvent)
 	// budgetAlert is Config.BudgetAlert (nil: none).
 	budgetAlert func(o Officer, a BudgetAlert)
 	// chats is Config.Chats (nil: no chat turns are run).
@@ -978,6 +993,15 @@ type Config struct {
 	// Chats runs the officers' chat turns (chat.go): nil runs none, and a
 	// chat item then only keeps its pool busy.
 	Chats *ChatRunner
+	// AutoRestart is the bounded restart of an instance in error
+	// (autorestart.go). The zero value is off: an instance in error holds
+	// its slot until an operator acts.
+	AutoRestart AutoRestart
+	// AutoRestartNotice, when set, is told each auto-restart, each restart
+	// held (once per error episode: its class is not restartable or the
+	// day's cap is spent) and the recovery of a held one. Called outside the
+	// loop's lock, from the pass; it must not block.
+	AutoRestartNotice func(o Officer, e AutoRestartEvent)
 }
 
 // DefaultRefreshEvery is how often Run re-reads the roster (Config.Refresh)
@@ -1003,12 +1027,21 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Kickoff = func(_ context.Context, o Officer, n int) string { return KickoffText(o, n) }
 	}
 	return &Reconciler{kickoff: cfg.Kickoff, reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery, chats: cfg.Chats,
+		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, autoRestart: cfg.AutoRestart, restartNotice: cfg.AutoRestartNotice, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery, chats: cfg.Chats,
 		state: map[string]*officerState{}, passing: map[string]bool{}, done: make(chan struct{})}, nil
 }
 
-// erroredSlot is how an instance in error is named in the log.
-type erroredSlot struct{ officer, instance string }
+// erroredSlot is an instance in error: how it is named in the log, since
+// when this process has seen it in error (the auto-restart's clock), and
+// whether its owner was told its restart is held (once per episode).
+type erroredSlot struct {
+	officer, instance string
+	since             time.Time
+	class             ErrorClass
+	heldTold          bool
+	// pool is the pool it is an instance of, for the recovery notice.
+	pool Officer
+}
 
 // st is the state of the officer keyed key (Officer.Key).
 func (r *Reconciler) st(key string) *officerState {
@@ -1208,6 +1241,10 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		}
 		ds[i] = Decide(p, obs[i], idleSince[p.Tier], now, prompted)
 	}
+	held := make([][]AutoRestartEvent, len(pools))
+	for i, p := range pools {
+		held[i] = r.planRestarts(s, p, obs[i], &ds[i], now)
+	}
 	if s.fault != "" {
 		r.log.Printf("officers: %s: %s answers again (was a configuration fault: it answered %s)", o.ID, backendWord(o), s.fault)
 		s.fault = ""
@@ -1323,6 +1360,9 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	for _, c := range ended {
 		r.endCapHold(c)
 	}
+	for i, p := range pools {
+		r.tellHeld(p, held[i])
+	}
 	res := r.actAll(ctx, pools, ds, nil)
 	// The chat turns, last: each runs on its own goroutine, on an instance
 	// this pass already saw up (one started now gets its chats next pass).
@@ -1410,14 +1450,18 @@ func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 	r.mu.Lock()
 	s := r.st(o.Key())
 	var entered, left []string
+	at := r.now()
 	now := map[string]erroredSlot{}
 	for i, p := range pools {
 		for _, in := range obs[i].Instances {
 			if in.Error {
-				now[in.Name] = erroredSlot{officer: p.label(), instance: p.InstanceLabel(in.N)}
-				if _, was := s.errored[in.Name]; !was {
+				e, was := s.errored[in.Name]
+				if !was {
+					e = erroredSlot{since: at}
 					entered = append(entered, in.Name)
 				}
+				e.officer, e.instance, e.class, e.pool = p.label(), p.InstanceLabel(in.N), in.ErrorClass, p
+				now[in.Name] = e
 			}
 		}
 	}
@@ -1434,12 +1478,24 @@ func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 	sort.Strings(left)
 	for _, name := range entered {
 		e := now[name]
-		r.log.Printf("officers: %s: instance %s is in error — it holds its slot and is NOT restarted, so the officer runs below target "+
-			"until it recovers or an operator acts (agent %s)", e.officer, e.instance, name)
+		switch {
+		case !r.autoRestart.On():
+			r.log.Printf("officers: %s: instance %s is in error (%s) — it holds its slot and is NOT restarted (auto-restart is off), so the officer runs below target "+
+				"until it recovers or an operator acts (agent %s)", e.officer, e.instance, e.class, name)
+		case e.class.Restartable():
+			r.log.Printf("officers: %s: instance %s is in error (%s) — it holds its slot; muster restarts it once it has been in error %s or more with work waiting, "+
+				"at most %d auto-restarts per officer per UTC day (agent %s)", e.officer, e.instance, e.class, r.autoRestart.After, r.autoRestart.MaxPerDay, name)
+		default:
+			r.log.Printf("officers: %s: instance %s is in error (%s) — it holds its slot and is NOT restarted: a restart does not fix that class, so the officer runs below target "+
+				"until it recovers or an operator acts (agent %s)", e.officer, e.instance, e.class, name)
+		}
 	}
 	for _, name := range left {
 		e := gone[name]
 		r.log.Printf("officers: %s: instance %s left error", e.officer, e.instance)
+		if e.heldTold && r.restartNotice != nil {
+			r.restartNotice(e.pool, AutoRestartEvent{Instance: e.instance, Name: name, Class: e.class, Recovered: true})
+		}
 	}
 	r.publish()
 }
@@ -1565,6 +1621,9 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 			continue
 		}
 		r.log.Printf("officers: %s: released item %s: its holder %s is not running", o.label(), it.ID, it.ClaimedBy)
+	}
+	for _, rs := range d.Restart {
+		errs = append(errs, r.restart(ctx, o, rs)...)
 	}
 	for _, n := range d.Start {
 		if err := r.fleet.Start(ctx, o, n, r.kickoff(ctx, o, n)); err != nil {

@@ -70,6 +70,15 @@ const (
 	// cap's escalation refused (officerCapHoldNotice): the officer is stopped
 	// until the operator acts on its page.
 	officerPushCapHold officerPush = "cap_hold"
+	// officerPushAutoRestart: the wake loop restarted an instance from error
+	// (officerAutoRestartNotice): it is working again; logged.
+	officerPushAutoRestart officerPush = "auto_restart"
+	// officerPushRestartHeld: an instance in error with work waiting that
+	// the wake loop will not restart — its error class is not one a restart
+	// fixes, or the officer's daily auto-restarts are spent
+	// (officerAutoRestartNotice): it holds its slot until the operator stops
+	// and starts it.
+	officerPushRestartHeld officerPush = "restart_held"
 	// officerPushUnclaimed: a host instance has not claimed its item
 	// (raiseUnclaimedNotice): a dismiss-only notice.
 	officerPushUnclaimed officerPush = "unclaimed"
@@ -100,6 +109,8 @@ var officerPushes = map[officerPush]bool{
 	officerPushBudget:           true,  // raise the cap for today, or lift the hold (the officer's page)
 	officerPushBudgetUnreadable: false, // muster's failure, in its log; nothing the operator decides
 	officerPushCapHold:          true,  // the officer is held: act on its page
+	officerPushAutoRestart:      false, // it is working again; the log says why it was restarted
+	officerPushRestartHeld:      true,  // stop and start the instance on the officer's page
 	officerPushUnclaimed:        false, // dismiss-only: its card stays on the Asks page
 	officerPushPagePublished:    false, // the page is in the officer's chat
 	officerPushPageShared:       false, // the owner opted in to unasked shares
@@ -155,7 +166,7 @@ func officerDecisionCard(k officerPush, r officerCardRef) string {
 			return ""
 		}
 		return connectorRequestLink(r.Team, id)
-	case officerPushBudget, officerPushCapHold:
+	case officerPushBudget, officerPushCapHold, officerPushRestartHeld:
 		// The officer's page: where a hold is lifted or the day's cap raised.
 		// It has no budget section to anchor yet; a later change adds one
 		// and retargets this. owner= is always named: the page reads it for

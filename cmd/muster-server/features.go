@@ -286,7 +286,8 @@ func featureCatalog() []features.Feature {
 			Enable:      []features.Var{v(envOfficers, "JSON array")},
 			Settings: []string{officers.TokenEnvPrefix + "<NAME>", officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>",
 				officers.KubeEndpointEnvPrefix + "<CLUSTER>", officers.KubeCAEnvPrefix + "<CLUSTER>", officers.KubeMinterEnvPrefix + "<CLUSTER>",
-				officers.KubeAllowlistEnvPrefix + "<CLUSTER>", officers.ImageRegistriesEnv, envOfficerImagePullSecret}},
+				officers.KubeAllowlistEnvPrefix + "<CLUSTER>", officers.ImageRegistriesEnv, envOfficerImagePullSecret,
+				envOfficerAutoRestartAfter, envOfficerAutoRestartMaxPerDay}},
 	}
 }
 

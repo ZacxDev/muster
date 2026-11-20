@@ -410,9 +410,10 @@ type Server struct {
 	// recipient read is counted as a dropped TEAM push only for a team
 	// (teamPushRecipients).
 	teamOwners sync.Map
-	// capHolds is each owner's officer cap-hold notices shown and not yet
-	// ended (officerCapHoldNotice), by tag: the team sweep's
-	// "officer cap holds" kind reads them. In memory, as the episode is.
+	// capHolds is each owner's officer hold notices shown and not yet ended
+	// — a cap hold (officerCapHoldNotice) or a held auto-restart
+	// (officerAutoRestartNotice) — by tag: the team sweep's "officer cap
+	// holds" kind reads them. In memory, as the episode is.
 	capHoldsMu sync.Mutex
 	capHolds   map[int64]map[string]bool
 	// teamLive is every open request a member holds on a team's surface — a

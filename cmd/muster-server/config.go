@@ -156,6 +156,14 @@ const (
 	// (MUSTER_AGENT_NETPOL_FROM_NAMESPACE), copied into each such instance's
 	// namespace and listed in its pod's imagePullSecrets. Unset: none.
 	envOfficerImagePullSecret = "MUSTER_OFFICER_IMAGE_PULL_SECRET"
+	// The wake loop's bounded restart of an officer instance in error
+	// (officers.AutoRestart, internal/officers autorestart.go): its first
+	// restart of the UTC day after AFTER in error (a Go duration from 1m to
+	// 24h; 0 or off turns it off; unset 5m), each later one that day after
+	// twice the last, at most MAX_PER_DAY per officer (0 to 100; 0 turns it
+	// off; unset 4). Parsed by parseOfficerAutoRestart.
+	envOfficerAutoRestartAfter     = "MUSTER_OFFICER_AUTO_RESTART_AFTER"
+	envOfficerAutoRestartMaxPerDay = "MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -841,6 +849,10 @@ type config struct {
 	// MUSTER_OFFICER_IMAGE_REGISTRIES is set (validateOfficerImagePullSecret).
 	OfficerImagePullSecret string
 	OfficerImageRegistries bool
+	// OfficerAutoRestart is MUSTER_OFFICER_AUTO_RESTART_AFTER and
+	// MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY (parseOfficerAutoRestart): the
+	// defaults when unset, the zero value (off) when either is off.
+	OfficerAutoRestart officers.AutoRestart
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1318,6 +1330,41 @@ const officerEgressDNSUnfiltered = "unfiltered"
 
 // officerEgressSet reports whether either officer egress setting is set.
 func (c config) officerEgressSet() bool { return len(c.OfficerEgressCIDRs) > 0 || c.OfficerEgressDNS }
+
+// parseOfficerAutoRestart reads the wake loop's auto-restart policy:
+// MUSTER_OFFICER_AUTO_RESTART_AFTER (a Go duration from 1m to 24h, or 0 /
+// off; unset officers.DefaultAutoRestartAfter) and
+// MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY (0 to 100; unset
+// officers.DefaultAutoRestartMaxPerDay). Either turned off answers the zero
+// value: an instance in error then holds its slot until an operator acts. Any
+// other value refuses to boot.
+func parseOfficerAutoRestart(getenv func(string) string) (officers.AutoRestart, error) {
+	p := officers.AutoRestart{After: officers.DefaultAutoRestartAfter, MaxPerDay: officers.DefaultAutoRestartMaxPerDay}
+	switch v := strings.TrimSpace(getenv(envOfficerAutoRestartAfter)); v {
+	case "":
+	case "0", "off":
+		p.After = 0
+	default:
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Minute || d > 24*time.Hour {
+			return officers.AutoRestart{}, fmt.Errorf("invalid %s %q: a Go duration from 1m to 24h, or 0 or off to turn it off (unset means %s)",
+				envOfficerAutoRestartAfter, v, officers.DefaultAutoRestartAfter)
+		}
+		p.After = d
+	}
+	if v := strings.TrimSpace(getenv(envOfficerAutoRestartMaxPerDay)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 100 {
+			return officers.AutoRestart{}, fmt.Errorf("invalid %s %q: a whole number from 0 to 100, 0 to turn it off (unset means %d)",
+				envOfficerAutoRestartMaxPerDay, v, officers.DefaultAutoRestartMaxPerDay)
+		}
+		p.MaxPerDay = n
+	}
+	if !p.On() {
+		return officers.AutoRestart{}, nil
+	}
+	return p, nil
+}
 
 // parseOfficerEgressCIDRs parses MUSTER_OFFICER_EGRESS_CIDRS: a comma list of
 // `<cidr>:<port>`, each held to provision.CheckEgressCIDR (the one rule, also
@@ -1924,6 +1971,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.OfficersSet = strings.TrimSpace(getenv(envOfficers)) != ""
 	c.OfficerImagePullSecret = strings.TrimSpace(getenv(envOfficerImagePullSecret))
 	c.OfficerImageRegistries = strings.TrimSpace(getenv(officers.ImageRegistriesEnv)) != ""
+	if c.OfficerAutoRestart, err = parseOfficerAutoRestart(getenv); err != nil {
+		return config{}, err
+	}
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)

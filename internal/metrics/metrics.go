@@ -425,10 +425,27 @@ var (
 // every pass.
 var (
 	// OfficerErrorSlots counts officer instance slots held by an instance in
-	// error: the officer runs below target until it recovers or an operator acts.
+	// error: the officer runs below target until it recovers, the wake loop's
+	// bounded auto-restart restarts it, or an operator acts.
 	OfficerErrorSlots = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "muster_officer_error_slots",
-		Help: "Officer instance slots held by an instance in error (not restarted; the officer runs below target).",
+		Help: "Officer instance slots held by an instance in error (the officer runs below target until it recovers or is restarted).",
+	})
+	// OfficerAutoRestarts counts officer instances the wake loop restarted
+	// (stopped, then started) from error, with backoff and a per-officer
+	// daily cap (internal/officers autorestart.go); the log line names the
+	// officer, the instance and the error class.
+	OfficerAutoRestarts = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "muster_officer_auto_restarts_total",
+		Help: "Officer instances restarted from error by the wake loop (bounded by backoff and a per-officer daily cap).",
+	})
+	// OfficerAutoRestartsHeld counts restarts the wake loop would have made
+	// but held — the instance's error class is not one a restart fixes, or
+	// the officer's daily cap is spent — once per error episode. The owner
+	// is notified; the instance holds its slot until an operator acts.
+	OfficerAutoRestartsHeld = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "muster_officer_auto_restarts_held_total",
+		Help: "Officer instance restarts from error held (class not restartable, or the daily cap spent), once per error episode.",
 	})
 	// OfficerHQFaults counts officers whose HQ answers a PERMANENT refusal
 	// (401/403/404: a revoked token, HQ without the officer API): a
