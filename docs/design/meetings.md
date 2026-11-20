@@ -2,7 +2,9 @@
 
 **Status: proposed. Nothing here is built.** The operator's decisions are
 recorded under [decisions](#decisions). Everything else is the recommended
-design, and the [open questions](#open-questions) are for the operator. Where
+design. The operator answered the first round of open questions on
+2026-11-20 (recorded as decisions 6–15); what is still open is under
+[open questions](#open-questions). Where
 this page says how muster works today, it cites `file:line` at commit
 `5fd6f7632`, and the code is the authority ([decisions.md](../decisions.md)).
 A claim nothing confirmed is marked **UNVERIFIED**, and each one has a
@@ -36,9 +38,21 @@ agreed.
   the transcript, every 10 s, emitting only items it has not emitted before.
   The candidate is **`scaledown/extract`**, with **`deepseek/deepseek-v4-flash`**
   as the fallback, chosen by a [labelled evaluation](#action-item-evaluation)
-  with a stated pass bar. The model is one config value.
+  with a stated pass bar. The model is one config value. Only transcript
+  **text** goes to OpenRouter, never audio; on by default, off per meeting.
+- **Everyone in the call sees** the live transcript and the action items.
+  Recording is **on by default** (off per meeting), with a notice to every
+  participant while it is on.
+- **Hosted in the muster tenant,** beside muster (same namespace or Compose
+  stack), on a **subdomain of muster's own host** (`meet.<muster host>`): a
+  different origin from muster, which is what the frame's sandbox relies on
+  ([origins](#origins-and-hosts)).
+- **Two more small core seams** beside `app`: a [knock notification](#core-seam-knock-notification)
+  through muster's existing push path, and a narrow [`tasks` capability](#core-seam-the-tasks-capability)
+  so the plugin need not hold `messages`.
 - **muster still never calls out.** The plugin calls muster (hand-off redeem,
-  `GET /plugin/v1/self`, `POST /plugin/v1/tasks`). muster calls nothing.
+  `GET /plugin/v1/self`, `POST /plugin/v1/tasks`, `POST /plugin/v1/notify`).
+  muster calls nothing.
 
 ## Goals
 
@@ -63,8 +77,10 @@ agreed.
   breakout rooms and dial-in by phone are out.
 - **End-to-end encryption.** The SFU, the recorder and the transcriber all
   see the media; that is what makes recording and transcripts possible.
-- **Multi-language meetings.** English first; the STT choice keeps a path to
-  French (Kyutai) and 14 languages (Cohere) for later.
+- **Languages other than English** in v1 (decision 15). The STT choice keeps
+  a path to French (Kyutai) and 14 languages (Cohere) for later.
+- **Team-owned meeting tabs** in v1 (decision 14): an `app` plugin is
+  person-owned. A team's manager minting one for every member is later work.
 - **Chief or officer involvement.** The chief does not attend, summarise or
   act on meetings in this design. An action item becomes a task only when the
   owner clicks.
@@ -81,10 +97,13 @@ agreed.
 | CSP and Permissions-Policy | `internal/api/middleware.go:201-305` | every response carries `Permissions-Policy: microphone=(self)` and a CSP with no `frame-src`, except the two session views, which add the viewer plugins' origins |
 | `MUSTER_PLUGIN_ORIGINS` | [configuration.md](../configuration.md#muster-server-optional-features) | the admin's allowlist of plugin origins; a request whose `Host` is under one is refused `421` |
 | Sidebar section links | `internal/ui/components.go:923-1190`, `internal/ui/nav_agents.go` (`navMore`), ledger `internal/ui/nav_ledger_test.go` | where a new tab is drawn, and the test that makes every new document decide whether it draws the nav |
-| Plugin tasks | [plugins.md](../plugins.md#post-pluginv1tasks-one-task-per-upstream-record) | `POST /plugin/v1/tasks`, idempotent by key, behind `messages` and `MUSTER_PLUGIN_TASK_NAMESPACES` |
+| Plugin tasks | [plugins.md](../plugins.md#post-pluginv1tasks-one-task-per-upstream-record) | `POST /plugin/v1/tasks`, idempotent by key, behind `messages` (which also opens messages to the chief and drafts) and `MUSTER_PLUGIN_TASK_NAMESPACES` |
 | Dictation's STT | `images/stt-cohere/app.py`, [dictation.md](../dictation.md) | batch transcription of an uploaded file; no streaming |
 | The Android shell | `muster-android`, `feature/shell/.../ShellChromeClient.kt` | grants the microphone only to the muster origin, audio alone; denies camera and every other origin |
 | Object store | [uploads.md](../uploads.md) | muster's bucket, with a key scoped to `uploads/*` and `pages/*` |
+| Session cookies | `internal/api/login.go:203-216`, `login.go:279-286`, `accounts.go:879-883`, `known_device.go:61-68`, `push_routes.go:409-414` | every cookie muster sets is **host-only** (no `Domain`), `HttpOnly`, `SameSite=Lax` ([below](#origins-and-hosts)) |
+| CSRF check | `internal/api/auth.go:317-331` (`requireSameOrigin`), `auth.go:363` (`isSameOrigin`) | state-changing requests must carry muster's own **origin** (full host), because a sibling subdomain is same-site |
+| Web push | [push.md](../push.md) | per-event toggles on Account → Notifications, tags that replace and withdraw, muster-written text for plugin events |
 
 ### Finding: the existing STT service does not stream
 
@@ -116,13 +135,18 @@ mode and the post-meeting pass.
    newest first.
 2. Taps **New meeting**. The meeting is created and the owner is in it: their
    camera preview, a mute and camera toggle, and the link with a **Copy link**
-   button. A switch, **Record**, shows the owner's default (off unless they
-   changed it); it can be turned on until the first guest is admitted.
+   button. Two switches, both **on** by default: **Record**, and **AI action
+   items** ("sends the transcript text, never audio, to an AI service"). Either
+   can be turned off at any time; turned off, it cannot be turned back on once
+   a guest has been admitted, so nobody is recorded or sent to the AI service
+   who knocked while it was off.
 3. Pastes the link wherever they like (a chat, an email). That is all the
    setup there is.
 4. When a guest knocks, a row appears at the top of the call: "**Ada** wants
    to join · Admit · Deny". One tap admits. Admit all is shown when more than
-   one waits.
+   one waits. If the owner is not on the meeting's page, their phone gets a
+   push, "Someone is waiting to join your meeting"; a tap opens the meeting
+   ([knock notification](#core-seam-knock-notification)).
 5. During the call: **Share screen**; the live transcript in a side panel
    (a sheet below `sm`), each line under its speaker's name; **Action items**
    in a second panel, each appearing as it is found, each with
@@ -139,15 +163,17 @@ mode and the post-meeting pass.
 
 1. Opens the link. The page, on the plugin's own origin, says whose meeting it
    is ("*owner label*'s meeting"), and before anything else the notice:
-   "This meeting is transcribed. Action items are found by an AI service
-   (*provider name*). [It is recorded.]"
+   "This meeting is recorded and transcribed. The transcript text (not the
+   audio) is sent to an AI service (OpenRouter) to find action items." Each
+   clause is shown only while its switch is on.
 2. Types a name (1–40 characters), allows the camera and microphone (or
    joins without them), and taps **Ask to join**.
 3. Waits: "Waiting for *owner label* to let you in." The camera preview stays
    on so they can fix their hair.
-4. Admitted: they are in the call, with the same transcript and action-item
-   panels (see [open question 1](#open-questions)), and a permanent badge,
-   "Transcribing" or "Recording · Transcribing".
+4. Admitted: they are in the call, with the **same live transcript and
+   action-item panels as the owner** (decision 6; they cannot Make task or
+   Dismiss), and a permanent badge naming what is on, e.g.
+   "Recording · Transcribing · AI".
 5. Denied, or the meeting ends while they wait: "You weren't admitted" or
    "This meeting has ended." The link answers `410` from then on.
 
@@ -156,10 +182,10 @@ mode and the post-meeting pass.
 ```
             owner's browser (muster origin)                     guest's browser
  ┌───────────────────────────────────────────────┐        ┌─────────────────────────┐
- │ muster page /apps/<plugin id>                 │        │ https://meet.<zone>/j/… │
+ │ muster page /apps/<plugin id>                 │        │ https://meet.<host>/j/… │
  │  sidebar · header · <iframe sandbox allow=    │        │ (top level, no account) │
  │   "camera; microphone; display-capture …">    │        └───────┬──────────┬──────┘
- │     └─ https://meet.<zone>/enter?muster_code= │                │ HTTPS    │ WebRTC
+ │     └─ https://meet.<host>/enter?muster_code= │                │ HTTPS    │ WebRTC
  └──────────┬────────────────────────┬───────────┘                │          │
      mint   │ POST /plugin-handoffs  │ HTTPS + WebRTC              │          │
             ▼                        ▼                             ▼          ▼
@@ -228,8 +254,8 @@ Everything in this section is in muster, generic, and names no meetings.
   `messages`/`viewer` choice, drawn only while `MUSTER_PLUGIN_ORIGINS` is set
   (as `viewer` is). Checked, the form asks for the origin and entry URL (the
   viewer fields), a **Tab label** and a **Tab icon**. `app` may be combined
-  with `messages` (needed for [Make task](#make-this-a-muster-task)) and with
-  `viewer`. Fixed at mint, as `viewer` is.
+  with [`tasks`](#core-seam-the-tasks-capability) (what [Make task](#make-this-a-muster-task)
+  needs), `messages` and `viewer`. Fixed at mint, as `viewer` is.
 - **Not pairable.** `POST /plugin/v1/pair` refuses `app`, for the reason it
   refuses `viewer`: the origin widens muster's own pages' policies, so the
   owner picks it on `/plugins`, never a plugin.
@@ -242,8 +268,8 @@ Everything in this section is in muster, generic, and names no meetings.
   emoji-icon style (`sidebarTab`, `components.go:1161`).
 - **At most 5** live `app` plugins per owner, so the sidebar cannot be
   flooded; a sixth is refused at mint.
-- **Person-owned only** in this design. A team `app` plugin is an
-  [open question](#open-questions).
+- **Person-owned only** in v1 (decision 14). A team `app` plugin, minted on
+  `/teams/<id>/plugins` so every member gets the tab, is later work.
 
 ### The tab
 
@@ -281,8 +307,12 @@ Everything in this section is in muster, generic, and names no meetings.
 
 ### The hand-off, extended
 
-- `HandoffTarget` gains `App *AppTarget` (`{"app": {}}`, no fields in v1).
-  Exactly one of `mirror` and `app` is set.
+- `HandoffTarget` gains `App *AppTarget`: `{"app": {}}`, or `{"app": {"ref":
+  "<ref>"}}` when the page was opened as `/apps/{id}?ref=<ref>` (a
+  [knock notification's](#core-seam-knock-notification) tap). `ref` matches
+  `^[A-Za-z0-9_-]{1,64}$` or is dropped; muster passes it through and does not
+  interpret it, and the plugin treats it as a hint (it re-checks that the
+  meeting is the owner's). Exactly one of `mirror` and `app` is set.
 - **The purpose comes from the target, never the request:** a mirror target
   mints `view`, an app target mints `app`. A request that names a purpose is
   ignored for these two (the stepped-up confirm keeps its own word).
@@ -297,6 +327,70 @@ Everything in this section is in muster, generic, and names no meetings.
   becomes "plugins on and `MUSTER_PLUGIN_ORIGINS` set", which is what it
   already checks, under a name that no longer says viewers.
 
+### Core seam: the `tasks` capability
+
+Decision 11. A token that should file tasks and nothing else.
+
+| capability | opens |
+|---|---|
+| `tasks` | `POST /plugin/v1/tasks` (filing and commenting by key), nothing else |
+
+- `messages` keeps opening the task routes, so every existing token behaves
+  as before (no migration of rows; the capability set gains one value).
+- A `tasks` token is refused `403` on `POST /plugin/v1/messages`, the draft
+  routes, task references' write queue and chief instructions.
+  `route_to_chief` on a `tasks`-only token is refused `400`: routing a notice
+  to the chief is a `messages` power.
+- Pairable, like `messages` (it widens no page policy). On `/plugins` it is a
+  checkbox, **Files tasks**.
+- The task routes' check becomes "has `messages` or `tasks`", in the one
+  place `requirePluginToken` admits a capability.
+
+### Core seam: knock notification
+
+Decision 10. An `app` plugin may ask muster to push its owner one of a
+**fixed set of notifications whose text muster writes**. v1 has one kind,
+`knock`.
+
+```
+POST /plugin/v1/notify   {"kind": "knock", "ref": "<meeting id>", "count": 2}
+DELETE /plugin/v1/notify/<ref>
+```
+
+| field | rule |
+|---|---|
+| `kind` | exactly `knock`; anything else `400` |
+| `ref` | `^[A-Za-z0-9_-]{1,64}$`: the plugin's own id for what the push is about |
+| `count` | 1–99, how many are waiting |
+
+- **Needs `app`** (the tap opens the app tab; a plugin without one has
+  nowhere to send the owner). `403` otherwise.
+- **The text is muster's**, never the plugin's: title `<tab label>`, body
+  "Someone is waiting to join your meeting" (or "<count> people are waiting
+  to join your meeting"). No guest name: it is text a stranger typed, and
+  muster's plugin pushes never quote what outsiders wrote (the `plugin`
+  event's rule in [push.md](../push.md)).
+- **Through the existing push path**: a new event, `app`, with its own toggle
+  on Account → Notifications ("An app needs you", on by default), sent to the
+  owner's subscribed devices and paired phones (payload v2, `type: "app"`).
+  Tag `app-<plugin id>-<ref>`, so a later count replaces the earlier one on
+  the device. The tap opens `/apps/<plugin id>?ref=<ref>`, which mints at tap
+  time like any visit to the page.
+- **Withdrawal:** `DELETE /plugin/v1/notify/<ref>` withdraws it (the
+  existing withdrawal, the silent `resolved` on paired phones). The plugin
+  calls it when the lobby empties or the owner opens the meeting.
+- **Limits:** at most one send per `(plugin, ref)` per 30 s and 30 per plugin
+  per hour; past that `429` with `Retry-After`, and the drop is logged as every
+  dropped push is.
+- **Answers:** `202` queued; `204` the owner has the toggle off or no device
+  (not an error: the plugin keeps the lobby row either way); `503` push is not
+  configured on this server.
+- **When the plugin sends it:** only while no owner session holds that
+  meeting's event stream open (the owner is not looking at it), on the first
+  knock and when the count rises.
+- muster still calls nothing: the plugin calls muster, and muster's own push
+  sender does the rest.
+
 ### The frame, exactly
 
 ```html
@@ -306,8 +400,8 @@ Everything in this section is in muster, generic, and names no meetings.
         src="<entry URL>?muster_code=…&muster_plugin=…">
 ```
 
-`<O>` is the **entry URL's exact origin** (`https://meet.<zone>`), never the
-`*.<zone>` pattern.
+`<O>` is the **entry URL's exact origin** (`https://meet.<muster host>`), never a
+wildcard pattern.
 
 - **The sandbox is the preview panel's, unchanged** (`PluginChipSandbox`). No
   `allow-top-navigation`, so the plugin cannot navigate muster's tab.
@@ -375,7 +469,7 @@ its camera and microphone, and Android's WebView has no screen capture
   a browser. No app change is needed for v1.
 - **Later (optional phase 7): in-app calls.** The main frame (muster's
   origin, already the only origin the bridge accepts) posts
-  `{"type": "app-origins", "origins": ["https://meet.<zone>"]}` on
+  `{"type": "app-origins", "origins": ["https://meet.<muster host>"]}` on
   `/apps/{id}`. The app then grants `RESOURCE_AUDIO_CAPTURE` and
   `RESOURCE_VIDEO_CAPTURE`, and nothing else, to a request whose origin is
   exactly one of those, after asking Android for `RECORD_AUDIO` and `CAMERA`.
@@ -399,27 +493,87 @@ its camera and microphone, and Android's WebView has no screen capture
 
 A public repository, `ZacxDev/muster-meetings`, MIT, Go, built from the
 template's layout (`internal/muster` client, `internal/mustertest` fake). Its
-token: **`app` + `messages`** (`messages` only for
+token: **`app` + `tasks`** (`tasks` only for
 [Make task](#make-this-a-muster-task); without it the button is not drawn).
+It never holds `messages`.
 It is listed on [ecosystem.md](../ecosystem.md) once it meets the bar there.
 
 ### Origins and hosts
 
 | host | serves | reached by |
 |---|---|---|
-| `meet.<zone>` | the owner app (`/enter`, `/api/*`), the guest page (`/j/*`), the LiveKit webhook | owners (framed), guests (top level), LiveKit (in-cluster) |
-| `rtc.<zone>` | LiveKit signaling (`wss`) | every participant's browser |
-| `turn.<zone>` | TURN/TLS | participants behind restrictive networks |
+| `meet.<muster host>` | the owner app (`/enter`, `/api/*`), the guest page (`/j/*`), the LiveKit webhook | owners (framed), guests (top level), LiveKit (in-cluster) |
+| `meet-rtc.<muster host>` | LiveKit signaling (`wss`) | every participant's browser |
+| `meet-turn.<muster host>` | TURN/TLS | participants behind restrictive networks |
 
-`<zone>` is under `MUSTER_PLUGIN_ORIGINS` and is **not the previews zone, and
-preferably not the same registrable domain**: previews serve arbitrary
-agent-run apps, which are same-site with one another by design
-([previews design](previews.md#previews-are-same-site-with-each-other)), and a
-meeting page should not be same-site with them.
+All three are subdomains of the hosted muster's own host, deployed in the
+muster tenant (decision 8). One wildcard certificate for `*.<muster host>`
+covers them; single-label siblings (`meet-rtc`, not `rtc.meet`) keep it so.
+The admin adds exactly `https://meet.<muster host>` to
+`MUSTER_PLUGIN_ORIGINS`. The two LiveKit hosts are never framed and need no
+entry. A pattern that covers muster's own host refuses to boot
+([configuration.md](../configuration.md#muster-server-optional-features)),
+and `meet.<muster host>` does not cover it.
+
+**Why the plugin may not be served from muster's exact origin.** Two
+reasons, each enough:
+
+- **muster refuses it.** A request whose `Host` is under
+  `MUSTER_PLUGIN_ORIGINS` is answered `421` on every muster listener, so the
+  plugin's host can never be muster's. This is deliberate: muster's
+  same-origin checks trust a request whose `Host` and `Origin` agree
+  ([previews design](previews.md#cookies-origins-and-framing)).
+- **The frame would become muster.** The frame carries `allow-same-origin`.
+  Framed from muster's own origin, the plugin's script would *be* muster's
+  origin: it could read muster's DOM through `window.parent`, call muster's
+  APIs with the owner's session (the browser attaches it to same-origin
+  requests) and pass `requireSameOrigin`. The sandbox protects muster only
+  because the frame's origin differs.
+
+**The cookie check: no blocker.** Every cookie muster sets is **host-only**:
+none sets a `Domain` attribute, so the browser never sends one to
+`meet.<muster host>`, and all are `HttpOnly`, so no script reads them on
+muster's own origin either. The places:
+
+| cookie | set at | attributes |
+|---|---|---|
+| password-mode session (`muster_session`) | `internal/api/login.go:203-216`, `login.go:279-286` | `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` (except loopback http), no `Domain` |
+| GoTrue access and refresh | `internal/api/accounts.go:879-883` (cleared `:889-892`) | `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure`, no `Domain` |
+| known device | `internal/api/known_device.go:61-68` | the same, no `Domain` |
+| push device | `internal/api/push_routes.go:409-414` | the same, no `Domain` |
+
+(Searched `internal/` and `cmd/`, non-test code, at `5fd6f7632`: those five
+`http.Cookie` literals are every cookie muster-server sets, none has a
+`Domain` field, and no code writes a raw `Set-Cookie` header. The only other
+cookie code is the preview gateway's, `internal/previewgw/cookie.go`, a
+separate process on its own host. The finding is pinned by a test,
+[below](#muster-core-tests), so a later `Domain` turns it red.)
+
+**What host-only does not cover, and why it holds anyway:**
+
+- **Same-site.** `meet.<muster host>` is **same-site** with muster (site is
+  the registrable domain). `SameSite=Lax` therefore does not stop the
+  browser attaching muster's cookies to a request the meetings page makes to
+  muster. What stops it acting is `requireSameOrigin`
+  (`internal/api/auth.go:317-331`), which compares the full-host **origin**
+  and refuses every state-changing request from another host; its own comment
+  names exactly this sibling-subdomain case. A `GET` passes and changes
+  nothing. The meetings page's own CSP (`connect-src 'self' …`) does not
+  list muster at all, and the plugin calls muster server-to-server only.
+- **Cookie tossing.** A page on `meet.<muster host>` *can* set a cookie with
+  `Domain=<muster host>`, which muster would then receive beside its own.
+  muster's cookie names carry no `__Host-` prefix, so the plugin could plant
+  a `muster_session` of its choosing (a sign-in-CSRF shape). The plugin is
+  the operator's own first-party code, deployed in the tenant, and serves no
+  HTML a guest wrote (names are escaped text; the guest page's CSP has no
+  `unsafe-inline`), so this is accepted for v1. The hardening is
+  [open question 1](#open-questions).
+- HSTS on muster has no `includeSubDomains` (`internal/api/middleware.go:243-246`), so it
+  neither helps nor hinders; the meetings hosts serve HTTPS only.
 
 ### The owner: the hand-off
 
-1. muster's page frames `https://meet.<zone>/enter?muster_code=…&muster_plugin=…`.
+1. muster's page frames `https://meet.<muster host>/enter?muster_code=…&muster_plugin=…`.
 2. `/enter` calls `POST /plugin/v1/handoffs/redeem`. It refuses any answer
    whose purpose is not `app` or whose target is not `{"app": {}}`.
 3. It creates an **owner session**: 32 random bytes, stored as SHA-256, bound
@@ -435,7 +589,7 @@ previews do; one owner is the common case.
 
 ### Guests: links, the lobby, admission
 
-- **The link** is `https://meet.<zone>/j/<code>`, `<code>` 128 random bits
+- **The link** is `https://meet.<muster host>/j/<code>`, `<code>` 128 random bits
   (22 base64url characters), stored as SHA-256. It is a right to **knock**,
   not to join. It dies when the meeting ends (`410`), and in any case
   24 hours after the meeting was created.
@@ -483,9 +637,9 @@ action-item window and the summary, and refuses every wait stream with
 
 | table | columns (abridged) |
 |---|---|
-| `owners` | `owner_id`, `owner_login` (from `/self`), `token_ref`, settings: `record_default`, `retention_days_recording`, `retention_days_text` |
+| `owners` | `owner_id`, `owner_login` (from `/self`), `token_ref`, settings: `record_default` (on), `ai_default` (on), `retention_days_recording` (30), `retention_days_text` (365) |
 | `owner_sessions` | `token_sha256`, `owner_id`, `created_at`, `expires_at` |
-| `meetings` | `id` (random), `owner_id`, `title`, `room`, `join_code_sha256`, `state`, `record`, `created_at`, `started_at`, `ended_at`, `purge_recording_at`, `purge_text_at` |
+| `meetings` | `id` (random), `owner_id`, `title`, `room`, `join_code_sha256`, `state`, `record`, `ai`, `created_at`, `started_at`, `ended_at`, `purge_recording_at`, `purge_text_at` |
 | `participants` | `id`, `meeting_id`, `kind` (owner/guest), `display_name`, `identity`, `ticket_sha256`, `state` (waiting/admitted/denied/removed/left), `knocked_at`, `admitted_at`, `left_at` |
 | `segments` | `id`, `meeting_id`, `participant_id`, `start_ms`, `end_ms`, `text`, `engine`, `pass` (live/final) |
 | `action_items` | `id`, `meeting_id`, `text`, `assignee`, `due`, `source_segment_ids`, `window_seq`, `model`, `status` (open/dismissed/tasked), `task_id`, `created_at` |
@@ -509,7 +663,7 @@ is `401`, another owner's meeting is `404`.
 | `POST /api/meetings {"title"?, "record"?}` | create; answers `{"id", "join_url"}` |
 | `GET /api/meetings/{id}` | one meeting: participants, recording state, items, summary |
 | `POST /api/meetings/{id}/token` | the owner's LiveKit token |
-| `POST /api/meetings/{id}/record {"on"}` | until the first guest is admitted |
+| `POST /api/meetings/{id}/record {"on"}` · `POST /api/meetings/{id}/ai {"on"}` | off at any time; on again only until the first guest is admitted |
 | `GET /api/meetings/{id}/events` | SSE: lobby changes, transcript segments, action items, recording state |
 | `POST /api/meetings/{id}/lobby/{pid}/admit` · `/deny` · `DELETE …/participants/{pid}` | lobby and removal |
 | `POST /api/meetings/{id}/end` | end it |
@@ -517,7 +671,7 @@ is `401`, another owner's meeting is `404`.
 | `GET /api/meetings/{id}/recording` | a `302` to a presigned object URL valid 5 minutes, or a stream through the plugin if the store is not reachable from browsers |
 | `POST /api/items/{id}/task` · `POST /api/items/{id}/dismiss` | [Make task](#make-this-a-muster-task), dismiss |
 | `DELETE /api/meetings/{id}` | delete now: rows and objects |
-| `GET/PUT /api/settings` | record default, retention |
+| `GET/PUT /api/settings` | record and AI defaults, retention |
 
 Guest and machine routes:
 
@@ -530,7 +684,7 @@ Guest and machine routes:
 | `GET /healthz`, `GET /metrics` | on an internal port only |
 
 Every page sets its own strict CSP (`default-src 'self'`, `connect-src 'self'
-wss://rtc.<zone>`, `frame-ancestors <muster's origin>` on owner pages and
+wss://meet-rtc.<muster host>`, `frame-ancestors <muster's origin>` on owner pages and
 `'none'` on guest pages), `Referrer-Policy: no-referrer`, and
 `Permissions-Policy: camera=(self), microphone=(self), display-capture=(self)`.
 
@@ -545,7 +699,7 @@ wss://rtc.<zone>`, `frame-ancestors <muster's origin>` on owner pages and
   reaches the internet through a relay, and one forwarded port is what a
   relay can carry cleanly.
 - **Through the relay.** The relay forwards `7882/udp`, `3478/udp` and
-  `7881/tcp` to the SFU, and passes TLS for `turn.<zone>` and `rtc.<zone>`
+  `7881/tcp` to the SFU, and passes TLS for `meet-turn.<muster host>` and `meet-rtc.<muster host>`
   through by SNI. LiveKit must advertise the relay's **public** address as its
   node IP (`rtc.node_ip`), not its pod address. If the relay can carry only
   TCP, everything still works over TURN/TLS on 443, with more latency
@@ -799,12 +953,12 @@ code** (guards and dedupe included), so it measures what ships.
 
 | extra | included | why |
 |---|---|---|
-| **(a) Make task** on an action item | **yes**, phase 6 | One click, and the plugin API already does it idempotently |
-| **(b) Recording/transcribing notice + per-meeting record toggle** | **yes, in the MVP**, not as an extra | Recording people without telling them is not an optional feature; the notice ships with the first recording and the first transcript |
-| **(c) Post-meeting summary** | **yes**, phase 6 | One LLM call at meeting end, on the same transcript; cheap, and it is what makes the past-meetings list scannable |
-| **(d) Retention** for recordings and transcripts | **yes**, phase 5 with recording | Recordings are the largest and most sensitive objects; they need an end date from day one |
+| **(a) Make task** on an action item | **yes**, phase 6 | One click, and the plugin API already does it idempotently; through the new narrow `tasks` capability (decision 11) |
+| **(b) Recording/transcribing notice + per-meeting toggles** | **yes, in the MVP**, not as an extra | Recording is on by default (decision 9), so the notice is not optional: it ships with the first recording and the first transcript. Toggles: **Record** and **AI action items**, both on, both off per meeting |
+| **(c) Post-meeting summary** | **yes**, phase 6 | One LLM call at meeting end, on the same transcript; cheap, and it is what makes the past-meetings list scannable. Follows the **AI action items** switch: off, no summary |
+| **(d) Retention** for recordings and transcripts | **yes**, phase 5 with recording | Recordings are the largest and most sensitive objects; they need an end date from day one. Defaults 30 days (recordings) and 365 days (text), decision 9 |
 | Post-meeting Cohere re-transcription | optional, phase 6 | Better archive accuracy using the service that already exists |
-| Knock notification to the owner's phone | **no** | Needs a new core seam (a plugin may not push to the owner today); [open question](#open-questions) |
+| Knock notification to the owner's phone | **yes**, phase 1d (core) + 2b (plugin) | Decision 10: a [core seam](#core-seam-knock-notification) on muster's existing push path, muster-written text |
 | Chat in the call | **no** | Not asked for; every participant already has a chat elsewhere |
 
 ### Make this a muster task
@@ -828,8 +982,9 @@ code** (guards and dedupe included), so it measures what ships.
 
 ### Summary
 
-At meeting end, one `chat_json` call (`MEETINGS_SUMMARY_MODEL`, default the
-DeepSeek model, `off` allowed) over the final transcript, cut to its last
+At meeting end, if the meeting's **AI action items** switch is on, one
+`chat_json` call (`MEETINGS_SUMMARY_MODEL`, default the DeepSeek model, `off`
+allowed server-wide) over the final transcript, cut to its last
 60,000 tokens: 3–6 bullet points and the decisions made. Stored, shown at the
 top of the past meeting. Not regenerated automatically.
 
@@ -850,18 +1005,25 @@ top of the past meeting. Not regenerated automatically.
 
 ## Security and privacy
 
-- **Consent.** The notice is shown to a guest before they knock and stays on
-  screen as a badge. Turning recording on after a guest is admitted is
-  refused, so nobody is recorded who knocked on an unrecorded meeting. The
-  owner sees the same badge. When action items or the summary are on, the
-  notice names the AI provider in words ("an AI service, OpenRouter").
-- **What leaves the network.** Media never does: the SFU, TURN, Egress and
-  STT are self-hosted. **Transcript text does**, to OpenRouter (and through
-  it to ScaleDown or DeepSeek's hosting provider), in 90-second windows and
-  once whole for the summary. `data_collection: deny` restricts routing to
-  providers that do not retain prompts. `MEETINGS_ITEMS_MODEL=off` and
-  `MEETINGS_SUMMARY_MODEL=off` keep everything inside. The plugin's README
-  says this, as ecosystem.md's bar requires.
+- **Consent.** Recording and the AI service are on by default, so the
+  notice carries the weight: it is shown to a guest before they knock, with
+  one clause per switch that is on, and stays on screen for everyone as a
+  badge while either is on. Either switch can be turned off at any time;
+  turning one back on after a guest was admitted is refused, so nobody is
+  recorded or sent to the AI service who knocked while it was off. The owner
+  sees the same badge.
+- **What leaves the network.** Audio and video never do: the SFU, TURN,
+  Egress and STT are self-hosted in the tenant. **Transcript text does**, by
+  default (decision 7), to OpenRouter (and through it to ScaleDown or
+  DeepSeek's hosting provider), in 90-second windows and once whole for the
+  summary. `data_collection: deny` restricts routing to providers that do not
+  retain prompts. Per meeting, **AI action items** off sends nothing; server
+  wide, `MEETINGS_ITEMS_MODEL=off` and `MEETINGS_SUMMARY_MODEL=off` do the
+  same for every meeting. The plugin's README says this, as ecosystem.md's
+  bar requires.
+- **Guests see what the owner sees, live** (decision 6): the transcript and
+  the action items, over their own event stream. They can change neither,
+  and the archive (past meetings, recordings) is the owner's alone.
 - **Guest isolation.** A guest's ticket opens only that meeting's wait and
   event streams. Guests reach no `/api/*` route, no past meeting, no
   recording, no other meeting's transcript. Their LiveKit grant has no admin
@@ -873,17 +1035,21 @@ top of the past meeting. Not regenerated automatically.
 - **Owner sessions.** Bearer only, in page memory, 8 hours, bound to one
   owner. The plugin polls `GET /plugin/v1/self` every 60 s; a `401` deletes
   every session of that owner and ends their live meetings.
-- **Token scopes.** The plugin's muster token: `app` + `messages`.
-  `messages` would also let it post messages to the chief; the plugin never
-  does, and a narrower `tasks` capability is an [open question](#open-questions).
+- **Token scopes.** The plugin's muster token: `app` + `tasks`. It cannot
+  post messages to the chief, file drafts or write chief instructions.
   The LiveKit API secret, the bucket key and the OpenRouter key are the
   plugin's alone and never reach a browser.
 - **Recordings** are served only to the owner, by presigned URLs valid 5
   minutes. The bucket is private.
 - **The webhook** accepts only LiveKit-signed requests.
 - **Logs** never carry transcript text, item text, guest names or codes.
-- **Same-site exposure.** The meetings origin is not under the previews zone
-  ([origins](#origins-and-hosts)).
+- **Same-site with muster.** `meet.<muster host>` is a different origin but
+  the same site. muster's cookies are host-only and `HttpOnly`, and its
+  state-changing routes check the full-host origin, so the plugin's pages
+  can neither read nor use the owner's muster session; cookie tossing is the
+  accepted residual ([origins](#origins-and-hosts), [open question 1](#open-questions)).
+- **Knock pushes** carry muster's text only, never a guest's name, are
+  capped per meeting and per plugin, and open muster's own page.
 - **muster's own surface widens in exactly three places,** all on
   `/apps/{id}` only: `frame-src` names one origin, `Permissions-Policy`
   delegates six features to it, and the frame's `allow` matches. Each is
@@ -909,36 +1075,49 @@ top of the past meeting. Not regenerated automatically.
 ## Deployment
 
 Generic; the deployment's names and addresses stay out of this repository.
+**Everything runs in the muster tenant** (decision 8): the same Kubernetes
+namespace as the muster deployment, or the same Compose project, on
+subdomains of muster's own host.
 
-**Kubernetes:**
+**Kubernetes (muster's namespace):**
 
 - `muster-meetings`: a Deployment, 1 replica, `strategy: Recreate` (one
   SQLite writer), a small PVC, its `mpl_` token, the LiveKit key and secret,
-  the bucket key and the OpenRouter key from Secrets. A Service for
-  `meet.<zone>` behind the ingress, and an internal port for the webhook,
-  STT ingest and metrics.
+  the bucket key and the OpenRouter key from Secrets of its own (muster's
+  Secrets are not mounted). It calls muster at muster's in-namespace Service.
+  An ingress rule for `meet.<muster host>`, beside muster's own rule for
+  `<muster host>`; an internal port for the webhook, STT ingest and metrics.
 - LiveKit server: the upstream Helm chart or a plain Deployment, with
   `hostNetwork` or a `LoadBalancer`/`NodePort` Service for `7882/udp`,
-  `7881/tcp` and `3478/udp`; TLS for `rtc.<zone>` and `turn.<zone>` through
-  the ingress or by SNI passthrough at the relay.
+  `7881/tcp` and `3478/udp`; TLS for `meet-rtc.<muster host>` and
+  `meet-turn.<muster host>` through the ingress or by SNI passthrough at the
+  relay.
 - LiveKit Egress: a Deployment, sized for the number of concurrent
-  recordings. Redis: a single small instance.
-- The streaming STT: a GPU Deployment on the GPU host, ClusterIP only.
-- NetworkPolicies: the plugin may reach muster, LiveKit's API, the STT
-  service, the object store and the internet (OpenRouter) only; Egress may
+  recordings. Redis: a single small instance of its own (not muster's, if
+  muster has one).
+- The streaming STT: a GPU workload on the GPU host, ClusterIP only. Where
+  the tenant has no GPU of its own, the `utterance` engine against muster's
+  existing STT service is the fallback.
+- NetworkPolicies: the plugin may reach muster's Service, LiveKit's API, the
+  STT service, the object store and the internet (OpenRouter) only; Egress may
   reach LiveKit, the object store and the plugin's ingest port; STT is
-  reachable from the plugin alone.
+  reachable from the plugin alone; **muster's own pods gain no egress to any
+  of these** (muster still calls nothing).
 
-**Docker Compose:** a `meetings` profile in the plugin repository's own
-`compose.yml` (not muster's), with `muster-meetings`, `livekit`, `egress`,
-`redis`, and optionally `stt-kyutai` (needs the NVIDIA runtime). Without a GPU
-service it runs the `utterance` engine against muster's existing
-`stt-cohere`. Ports published on the host: the three media ports and HTTPS
-for the three host names through the operator's reverse proxy.
+**Docker Compose (muster's stack):** the plugin repository ships a fragment,
+`compose.meetings.yml`, used with muster's file
+(`docker compose -f docker-compose.yml -f compose.meetings.yml --profile meetings up`),
+so its services join muster's project and network: `muster-meetings`,
+`livekit`, `egress`, `redis-meetings`, and optionally `stt-kyutai` (NVIDIA
+runtime). muster's own file is unchanged. Without a GPU service it runs the
+`utterance` engine against muster's `stt-cohere`. Ports published on the
+host: the three media ports, and HTTPS for the three subdomains through the
+stack's reverse proxy.
 
-**muster's side:** add `https://*.<zone>` (or the exact host) to
-`MUSTER_PLUGIN_ORIGINS`, `meetings` to `MUSTER_PLUGIN_TASK_NAMESPACES`, and
-mint the token on `/plugins` with **App tab** checked.
+**muster's side:** add exactly `https://meet.<muster host>` to
+`MUSTER_PLUGIN_ORIGINS`, `meetings` to `MUSTER_PLUGIN_TASK_NAMESPACES`, turn on
+web push (for knock notifications), and mint the token on `/plugins` with
+**App tab** and **Files tasks** checked.
 
 ## Phased plan
 
@@ -949,24 +1128,30 @@ with the test plan's tests included.
 |---|---|---|---|
 | **0: spikes** | S1–S6 below; results written into this page | — | M |
 | **1: core `app`** | 1a: migration, capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
-| | 1b: hand-off `app` target and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card | muster | L |
-| | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
+| | 1b: hand-off `app` target (with `ref`) and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card | muster | L |
+| | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger, the host-only cookie golden | muster | M |
+| | 1d: the `tasks` capability (new, decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
+| | 1e: knock notification (new, decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md | muster | M |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link | muster-meetings | M |
-| | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, mobile layout | muster-meetings | L |
-| | 2c: Kubernetes manifests, Compose profile, TURN/relay notes in the README | muster-meetings | M |
+| | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
+| | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress and TURN/relay notes | muster-meetings | M |
 | | 2d: e2e click path without transcript or recording | muster-meetings | M |
-| **3: transcription** | 3a: track Egress ingest, `Engine` interface, `utterance` and `fake` engines, transcript panel, archive view and export | muster-meetings | M |
+| **3: transcription** | 3a: track Egress ingest, `Engine` interface, `utterance` and `fake` engines, transcript panel for owner and guests, archive view and export | muster-meetings | M |
 | | 3b: `kyutai` engine, partial captions | muster-meetings | M |
 | | 3c: `stt-eval` and its run on the GPU host | muster-meetings | M |
 | **4: action items** | 4a: `items-eval`, the corpus, the controls | muster-meetings | L |
-| | 4b: worker, guards, `extract` and `chat_json` adapters, live panel | muster-meetings | M |
+| | 4b: worker, guards, `extract` and `chat_json` adapters, live panel for owner and guests, the per-meeting **AI action items** switch | muster-meetings | M |
 | | 4c: run the evaluation, set the default model, commit the result | muster-meetings | S |
-| **5: recording** | 5: room composite Egress, record toggle and badge, playback, retention settings and sweeper, bucket lifecycle docs | muster-meetings | M |
+| **5: recording** | 5: room composite Egress, record toggle (on by default) and badge, playback, retention settings (30 / 365 days) and sweeper, bucket lifecycle docs | muster-meetings | M |
 | **6: extras** | 6a: Make task; 6b: summary; 6c: Cohere post-pass (optional); 6d: ecosystem.md row | both | S each |
 | **7: in-app calls on Android (optional)** | the `app-origins` bridge message and the camera grant | muster, muster-android | M |
 
 Core first because every later PR stands on it, and because it is the only
-part that changes muster for everyone. The plugin's phases 2–5 can each ship
+part that changes muster for everyone. The 2026-11-20 decisions add two core
+PRs (1d, S; 1e, M), about 3–4 engineer-days in all; no plugin PR changes size
+(in-tenant hosting simplifies 2c's DNS and certificates rather than adding
+to it). 1d and 1e are independent of 1b and can go in parallel; 2b's knock
+calls need 1e, and 6a needs 1d. The plugin's phases 2–5 can each ship
 alone: a call with no transcript is already useful.
 
 ### Phase 0 spikes
@@ -1030,6 +1215,35 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   guard: the existing test, extended with a new host).
 - **Alive poll.** `GET /ui/apps/{id}/alive` is `204` for a live plugin and
   `404` after revoke.
+- **Host-only cookies (decision 8's premise).** A golden over every
+  `Set-Cookie` muster-server emits across the sign-in, step-up, GoTrue,
+  known-device and push-device paths: each has no `Domain` attribute and is
+  `HttpOnly`. *Red if:* a `Domain` is added to any one of the five literals
+  (one mutation each). An invariant guard: no cookie violates it today.
+- **Sibling subdomain refused.** A `POST` to a state-changing route with a
+  valid session cookie and `Origin: https://meet.example.test` (a sibling of
+  the test server's host) is refused by `requireSameOrigin`; the same request
+  with muster's own origin passes (the positive control). Invariant guard
+  for the existing check, now load-bearing for this design.
+- **`tasks` capability.** A `tasks`-only token files and comments on
+  `POST /plugin/v1/tasks`, and is `403` on `POST /plugin/v1/messages`, the
+  draft routes, chief instructions and the task-write queue; `route_to_chief`
+  on it is `400`; a `messages`-only token still files tasks (backward
+  compatibility). *Red if:* the task route keeps checking `messages` only
+  (the `tasks` case goes red), or `tasks` is admitted by the messages route.
+- **Knock notification.** With a fake push sender: `kind: "knock"` sends one
+  push to the owner whose title is the tab label and whose body is muster's
+  pinned text, for `count` 1 and 3; an extra `name` field or any other `kind`
+  is `400`; a non-`app` token is `403`; a second send for the same ref within
+  30 s and the 31st in an hour are `429`; the tag is `app-<id>-<ref>`; the tap
+  URL is `/apps/<id>?ref=<ref>`; `DELETE` withdraws it; the toggle off answers
+  `204` and sends nothing. *Red if:* the body is taken from the request, the
+  rate cap is removed, or the capability check is removed (one each). A
+  fixture tab label distinct from every word of the pinned body, so a
+  mutant hardcoding the label cannot pass.
+- **The `ref` hint.** `/apps/{id}?ref=abc` mints a code whose redeemed target
+  is `{"app": {"ref": "abc"}}`; a `ref` with `/`, `..` or 65 characters is
+  dropped, not passed. *Red if:* the pattern check is removed.
 - **Ledgers.** The nav ledger lists the new document; `routes.golden` lists
   `GET /apps/{id}` and `GET /ui/apps/{id}/alive`.
 
@@ -1081,8 +1295,24 @@ redeem, self and tasks) and a fake LiveKit server API:
 - **Session revocation:** a `401` from the fake `/self` deletes the owner's
   sessions and ends their meetings within one poll. *Red if:* the poll's
   handler is a no-op.
-- **Recording toggle:** turning recording on after a guest was admitted is
-  refused. *Red if:* the check is removed.
+- **Defaults and toggles:** a new meeting has `record` and `ai` on; either
+  can be turned off at any time; turning either back on after a guest was
+  admitted is refused. *Red if:* a default flips, or the re-enable check is
+  removed (one each).
+- **AI off sends nothing:** with **AI action items** off, the fake
+  OpenRouter receives zero requests over a whole scripted meeting, while the
+  same meeting with it on sends at least one (the positive control), and the
+  summary is not requested either. *Red if:* the worker ignores the switch.
+- **No audio to OpenRouter:** every request body the fake OpenRouter receives
+  is JSON text with no `audio`/`input_audio` part and no base64 longer than
+  200 characters. An invariant guard.
+- **Guest event stream:** an admitted guest's stream carries transcript
+  segments and action items; a waiting, denied or removed ticket's carries
+  neither; no guest route accepts Make task or Dismiss. *Red if:* the
+  admission check on the stream is removed.
+- **Knock push timing:** the plugin calls `notify` on a knock only when no
+  owner session holds that meeting's event stream, and calls `DELETE` when
+  the lobby empties. *Red if:* the presence check is removed.
 - **Action-item guards:** out-of-window citations dropped, duplicates by text
   and by citation dropped, more than 5 per window cut, no call when there is
   no new segment. *Red if:* each guard is removed (one mutation each). The
@@ -1153,7 +1383,14 @@ support **UNVERIFIED**; if absent this step runs headed under Xvfb).
 7. The guest's fixture audio produces the transcript line under "Ada" in
    both panels (fake engine in the default leg).
 8. An action item "send the budget to Sam" appears in the owner's panel
-   within 15 s of the line (fake OpenRouter in the default leg).
+   **and the guest's** within 15 s of the line (fake OpenRouter in the
+   default leg); the guest's has no Make task button. Between steps 3 and 4, the
+   knock push reaches the owner while they are not on the meeting page. muster's
+   own `push.spec.ts` stubs the browser side and has no receiver, so this
+   needs a **new push sink**: a local HTTP server registered as the owner's
+   subscription endpoint (admitted by `MUSTER_PUSH_EXTRA_HOSTS`), holding the
+   subscription's key pair so it can decrypt the payload. The test asserts
+   muster's text and no guest name.
 9. **Make task**: muster's API shows a task tagged
    `meetings:<meeting>-<item>`; a second tap files nothing new.
 10. **End meeting**: the guest sees "This meeting has ended"; reloading the
@@ -1161,6 +1398,11 @@ support **UNVERIFIED**; if absent this step runs headed under Xvfb).
 11. The past meeting is listed with Ada, its transcript (the line, under
     "Ada"), a recording whose `<video>` plays to a non-zero duration, the
     action item marked "Task #n", and a summary.
+
+**Defaults:** the guest's notice at step 3 names recording, transcription
+and the AI service, because all three are on by default; a second meeting
+with both switches off shows only "transcribed", its fake OpenRouter receives
+nothing, and its past meeting has no recording and no summary.
 
 **Negative paths, same harness:** a second guest is denied and sees "You
 weren't admitted"; a guest calling the owner's `/api/meetings/{id}/token` with
@@ -1195,34 +1437,29 @@ positive control):
 | core frame | add `allow-top-navigation`, widen `allow` to `*` | "the frame, exactly" |
 | core CSP / Permissions-Policy | emit on every page | the two goldens |
 | core purpose | read purpose from the request | "purpose from the target" |
+| core cookies | add `Domain` to the session cookie | "host-only cookies" |
+| core `tasks` | admit `tasks` on `POST /plugin/v1/messages` | "`tasks` capability" |
+| core knock | take the push body from the request | "knock notification" |
+| AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
 ## Open questions
 
-1. **Do guests see the live transcript and action items,** or only the
-   owner? Recommended: both, to everyone in the call; the archive is the
-   owner's alone.
-2. **Is sending transcript text to OpenRouter acceptable** for every
-   meeting, or should action items and the summary be off by default and
-   turned on per meeting?
-3. **The meetings zone:** a registrable domain of its own (recommended), or a
-   host under an existing plugin zone?
-4. **Knock notifications:** a guest who knocks while the owner is not on the
-   page waits unseen. Worth a core seam that lets an `app` plugin push one
-   kind of notification to its owner?
-5. **A narrower `tasks` capability**, so the plugin need not hold `messages`
-   for Make task?
-6. **Defaults:** recording off by default (recommended)? Retention 30 days
-   for recordings and 365 for text? 8 participants at most?
-7. **Owner session length:** 8 hours, as previews' cookie, so signing out of
-   muster reaches an open meeting page only through the 30 s alive poll and
-   the 60 s `/self` poll?
-8. **Team meetings:** should a team's manager be able to mint a team `app`
-   plugin, so every member gets the tab?
-9. **English only** for v1?
+1. **`__Host-` cookie prefix.** Hosting the plugin on a subdomain of muster's
+   host makes cookie tossing possible: a page on `meet.<muster host>` can set
+   a `Domain=<muster host>` cookie named like muster's, which muster would
+   read ([origins](#origins-and-hosts)). Renaming muster's cookies to
+   `__Host-muster_session` (and the others) makes browsers refuse any such
+   cookie. It is a small core change, but it signs everyone out once (old
+   names are no longer read) and touches every cookie path. Accepted as a
+   residual for v1 because the plugin is the operator's own code; recommended
+   as its own core PR before any third-party `app` plugin is hosted on a
+   subdomain. Do it now, later, or not at all?
 
 ## Decisions
 
-Recorded from the operator's brief; binding on this design.
+Decisions 1–5 are from the operator's brief. Decisions 6–15 are the operator's answers
+to the first round of open questions, given **2026-11-20**. All are binding on this
+design.
 
 1. **The tab is a new core capability, `app`,** generic, entered through the
    viewer hand-off, with a frame allowed camera, microphone and screen
@@ -1240,3 +1477,31 @@ Recorded from the operator's brief; binding on this design.
 5. **Guests join by link with a typed name, into a lobby,** admitted by the
    owner with one click; the link dies when the meeting ends; no guest
    accounts.
+6. **(2026-11-20, operator) Guests see the live transcript and the action
+   items.** Everyone in the call sees both. The archive stays the owner's.
+7. **(2026-11-20, operator) Transcript text, never audio, goes to
+   OpenRouter** for action items and the summary. This is on by default, with a
+   per-meeting switch to turn it off.
+8. **(2026-11-20, operator) Hosting is in the muster tenant,** beside the muster
+   deployment (same namespace or Compose stack). It runs on a subdomain of the
+   hosted muster's own host (`meet.<muster host>`), added to
+   `MUSTER_PLUGIN_ORIGINS`. That is a different origin from muster, never the
+   same one (muster's `421`, and the `allow-same-origin` frame). The earlier
+   recommendation of a separate domain is dropped. The cookie check found
+   every muster cookie host-only, so this is not a blocker
+   ([origins](#origins-and-hosts)).
+9. **(2026-11-20, operator) Recording is on by default,** with a per-meeting
+   switch to turn it off and a visible notice to every participant while it is
+   on. Retention defaults are 30 days for recordings and 365 days for
+   transcripts.
+10. **(2026-11-20, operator) A core "someone is knocking" notification**
+    uses muster's existing push path
+    ([design](#core-seam-knock-notification)).
+11. **(2026-11-20, operator) A narrow `tasks` plugin capability** serves Make
+    task instead of `messages` ([design](#core-seam-the-tasks-capability)).
+12. **(2026-11-20, operator) The owner session lasts 8 hours.** Revocation reaches an open
+    page through the 30 s alive poll and the 60 s `/self` poll.
+13. **(2026-11-20, operator) The 8-participant cap stands** (see 9).
+14. **(2026-11-20, operator) No team-owned meeting tabs in v1;** they are
+    later work.
+15. **(2026-11-20, operator) v1 is English only.**
