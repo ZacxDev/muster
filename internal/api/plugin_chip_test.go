@@ -120,7 +120,7 @@ func toggleOf(page string) string { return toggleRE.FindString(page) }
 // mirrored window's Rendered AND Terminal views carry frame-src 'self' plus
 // each plugin's origin once — and draw one chip per plugin — while every other
 // page's CSP is BYTE-IDENTICAL to what it was before the chip (the literals
-// above). 'self' is kept: the Rendered | Terminal switch frames this origin's
+// above), and each reads the plugin list only for its app tabs. 'self' is kept: the Rendered | Terminal switch frames this origin's
 // other view (ui/view_swap.go; e2e view-swap.spec.ts is the browser control).
 func TestTheSessionViewsFrameTheOwnersViewerOriginsAndNoOtherPageChanges(t *testing.T) {
 	_, get, st := chipServer(t, chipZone+","+chipZone2,
@@ -158,8 +158,10 @@ func TestTheSessionViewsFrameTheOwnersViewerOriginsAndNoOtherPageChanges(t *test
 			t.Errorf("GET %s draws plugin chips %v", path, ids)
 		}
 	}
-	if st.lists != lists {
-		t.Errorf("a page that is not a session view read the plugin list (%d reads)", st.lists-lists)
+	// One read each for a page that draws the nav: its app tabs (plugin_app.go,
+	// meetings PR 1b) — /tasks draws it, / redirects. Never the viewer list.
+	if st.lists-lists != 1 {
+		t.Errorf("the pages that are not a session view read the plugin list %d times; want 1 (/tasks' app tabs)", st.lists-lists)
 	}
 }
 

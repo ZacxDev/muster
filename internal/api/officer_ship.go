@@ -156,8 +156,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Loops:          s.prLoopsFor(cfg, o),
 		PublicBranches: s.publicBranchesFor(cfg, o),
 		Queue:          s.prQueueFor(cfg, o),
-		ItemFinished: func(ctx context.Context, item int) (bool, string, error) {
-			return itemFinished(ctx, hq.c, item)
+		ItemGone: func(ctx context.Context, item int) (bool, string, error) {
+			return itemGone(ctx, hq.c, item)
 		},
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
@@ -303,50 +303,43 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
 }
 
-// itemLiveStatuses are the statuses of an item whose work is not over: its
-// queued pull request is still opened (open, released or claimed again by
-// anyone; waiting on a person; escalated to one).
-var itemLiveStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated}
-
-// itemFinished is the queue drain's item re-read (PushGate.ItemFinished),
-// with officer c's own token: NOT finished when HQ lists item in a live
-// status (itemLiveStatuses), whoever holds it; finished when it lists it
-// done (completed: done or no_action); finished as cancelled when it lists it
-// nowhere. 🔴 A claim is not the test: a lease lasts at most an hour and only
-// the officer heartbeats it, and a down holder's claim is released, while a
-// queued create may wait longer than that. An unreadable list, or a live list
-// at its page bound that does not name the item (officers.AllItemsFull: not
-// proven absent), is an error: the drain waits.
-func itemFinished(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
-	want := strconv.Itoa(item)
-	has := func(items []officers.Item) bool {
-		for _, it := range items {
-			if string(it.ID) == want {
-				return true
-			}
-		}
-		return false
-	}
-	cut := false
-	for _, st := range itemLiveStatuses {
-		items, err := c.AllItems(ctx, st)
-		if err != nil {
-			return false, "", fmt.Errorf("HQ's %s items could not be read: %v", st, err)
-		}
-		if has(items) {
-			return false, "", nil
-		}
-		cut = cut || officers.AllItemsFull(len(items))
-	}
-	done, err := c.AllItems(ctx, officers.StatusDone)
+// itemGone is the queue drain's item re-read (PushGate.ItemGone), with
+// officer c's own token: GONE only when HQ lists item in NO status (open,
+// claimed, waiting, escalated — and done, which also holds no_action) and
+// every one of those lists was read to its END — the item was cancelled or
+// removed, so its queued pull request is moot.
+//
+// 🔴 A COMPLETED ITEM IS NOT GONE: the officer is told it may complete its
+// item once its create is queued (kickoff.go), so a done item's queued pull
+// request is still opened — the work is in the pushed branch. 🔴 A claim is
+// not the test either: a lease lasts at most an hour, and a down holder's
+// claim is released, while a queued create may wait longer than that.
+//
+// It reads the same statuses in the same order as a grant's re-run
+// (blockStatuses: the short live lists first, done LAST, since done is the
+// officer's whole history and the read stops once the item is found).
+// Each list is paged by officers.StatusesOf: cursor to cursor until the last
+// page, whatever order a backend lists in (the built-in one lists oldest
+// first, so a recently completed item is on done's LAST page), each page
+// under muster's answer cap (halved and regrown). It stops at the first page
+// that names the item. Two ways the answer is not known, and both are an
+// error, so the drain WAITS (the row is kept; never opened, never dropped):
+//   - a page could not be read;
+//   - a list still had pages after officers.MaxStatusPages (StatusRead's
+//     Bounded): the item may be beyond it, so its absence proves nothing.
+func itemGone(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
+	id := officers.ItemID(strconv.Itoa(item))
+	read, err := officers.StatusesOf(ctx, c.Items, blockStatuses, map[officers.ItemID]bool{id: true})
 	if err != nil {
-		return false, "", fmt.Errorf("HQ's done items could not be read: %v", err)
+		return false, "", fmt.Errorf("HQ's items could not be read: %v", err)
 	}
-	if has(done) {
-		return true, fmt.Sprintf("item %d is completed in HQ, so its pull request is moot", item), nil
+	if _, ok := read.Of[id]; ok {
+		return false, "", nil
 	}
-	if cut {
-		return false, "", fmt.Errorf("item %d is in none of HQ's lists read, and one was at its page bound, so its state is unknown", item)
+	if len(read.Bounded) > 0 {
+		return false, "", fmt.Errorf("%w: item %d is in none of HQ's lists, but the %s list(s) still had pages after muster's bound of %d pages, "+
+			"so whether it is gone is not known: the queued pull request waits", officership.ErrItemStateBounded, item, strings.Join(read.Bounded, ", "),
+			officers.MaxStatusPages)
 	}
 	return true, fmt.Sprintf("item %d is no longer in HQ (cancelled or removed), so its pull request is moot", item), nil
 }
@@ -876,6 +869,9 @@ func (p prQueue) List(ctx context.Context, repo string) ([]officers.QueuedPR, er
 }
 func (p prQueue) Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error) {
 	return p.st.PRQueueSettle(p.as(ctx), p.o.ID, id, head, state, pr, note)
+}
+func (p prQueue) Mark(ctx context.Context, id int64, head, note string) (bool, error) {
+	return p.st.PRQueueMark(p.as(ctx), p.o.ID, id, head, note)
 }
 
 type publicBranches struct {

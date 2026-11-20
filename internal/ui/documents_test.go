@@ -137,6 +137,19 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// An app tab's page (/apps/{id}): the frame below a slim header. Its
+		// "empty" state is a label at the 24-character limit with no ref.
+		fn: "AppPage", label: "an app tab's page (/apps/{id})",
+		render: func(w io.Writer) error {
+			return AppPage(sampleAppPageView(NavChrome{Feat: featuresAllOn})).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			v := sampleAppPageView(NavChrome{Feat: featuresAllOn})
+			v.Label, v.Ref = "Twenty four characters x", ""
+			return AppPage(v).Render(w)
+		},
+	},
+	{
 		// The plain "Confirm it's you" page: the step-up for a send the browser
 		// submitted with no script. Its first showing has no error; the other
 		// state is a wrong password, said on the page. The pending message rides

@@ -28,6 +28,7 @@ import (
 // writeNavDocument — each draws the side nav.
 var apiNavWriters = []string{
 	"handleAccountPage",            // /account
+	"handleAppPage",                // /apps/{id}'s one 404 (the page itself is ui.AppPage)
 	"handleFeaturesPage",           // /account/features
 	"renderFeatureOff",             // a route whose feature is off, as a page (always signed in)
 	"handleAccountTeams",           // /account/teams (your teams, each one's notify switch)
@@ -391,6 +392,7 @@ var apiNavSecret = map[string]bool{
 	"renderCredentials":            true,  // takes a Claude OAuth token / an OpenRouter key
 	"renderAccountPasskeys":        true,  // runs passkey ceremonies
 	"handleAccountPage":            false, // sign-out forms only
+	"handleAppPage":                false, // the app page's 404: no secret
 	"handleFeaturesPage":           false, // variable names and states, never a value
 	"renderFeatureOff":             false, // the feature's plain name; an admin's ⓘ holds variable names, never a value
 	"renderAsksPage":               false, // the queue; the shell beside it has Faro already

@@ -57,6 +57,12 @@ const pluginCapAny plugins.Capability = "(any live token)"
 // plugins.capabilities admits; pluginTokenHas is the one place it is read.
 const pluginCapFilesTasks plugins.Capability = "(messages or tasks)"
 
+// pluginCapHandoff is the capability of POST /plugin/v1/handoffs/redeem:
+// viewer OR app (docs/design/meetings.md, "The hand-off, extended"). A code is
+// still redeemable only by the plugin it was minted for, and minted only for a
+// plugin holding its target's capability (plugins.HandoffTarget.purpose).
+const pluginCapHandoff plugins.Capability = "(viewer or app)"
+
 // pluginTokenHas is THE ONE PLACE requirePluginToken admits a capability: p
 // opens a route that needs need.
 func pluginTokenHas(p plugins.Plugin, need plugins.Capability) bool {
@@ -65,6 +71,8 @@ func pluginTokenHas(p plugins.Plugin, need plugins.Capability) bool {
 		return true
 	case pluginCapFilesTasks:
 		return p.Has(plugins.CapMessages) || p.Has(plugins.CapTasks)
+	case pluginCapHandoff:
+		return p.Has(plugins.CapViewer) || p.Has(plugins.CapApp)
 	}
 	return p.Has(need)
 }
@@ -72,8 +80,11 @@ func pluginTokenHas(p plugins.Plugin, need plugins.Capability) bool {
 // PluginCapabilityRefusal is the 403 body when a live plugin token lacks the
 // capability its route needs. It names the capability, not the token's own set.
 func PluginCapabilityRefusal(c plugins.Capability) string {
-	if c == pluginCapFilesTasks {
+	switch c {
+	case pluginCapFilesTasks:
 		return "this plugin token has neither the \"messages\" nor the \"tasks\" capability this route needs"
+	case pluginCapHandoff:
+		return "this plugin token has neither the \"viewer\" nor the \"app\" capability this route needs"
 	}
 	return "this plugin token does not have the \"" + string(c) + "\" capability this route needs"
 }
@@ -116,6 +127,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Viewer hand-off codes (plugin_handoffs.go): the owner's browser mints,
 	// the viewer plugin's token redeems. Off until MUSTER_PLUGIN_ORIGINS is set.
 	s.registerPluginHandoffRoutes(mux)
+	s.registerPluginAppRoutes(mux)
 
 	// Plugin pairing (plugin_pairing.go): the unauthenticated request and the
 	// poll, and the owner's decisions on /plugins.
@@ -148,6 +160,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	// messages OR tasks: the one route a tasks token opens (but /self).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, pluginCapFilesTasks))
+	// An app plugin's knock notification and its withdrawal (plugin_notify.go):
+	// app only, muster's own text.
+	s.registerPluginNotifyRoutes(mux)
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
 	// the writes people and agents queued on this plugin's references.
 	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList, plugins.CapMessages))
@@ -286,6 +301,8 @@ var teamPluginRoutes = map[string]bool{
 	"POST /plugin/v1/task-writes/claim":            false,
 	"POST /plugin/v1/task-writes/{id}/result":      false,
 	"POST /plugin/v1/tasks":                        false,
+	"POST /plugin/v1/notify":                       false,
+	"DELETE /plugin/v1/notify/{ref}":               false,
 }
 
 // TeamPluginRouteRefusal answers a team plugin token anywhere but the

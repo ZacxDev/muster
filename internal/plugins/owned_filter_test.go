@@ -86,7 +86,7 @@ func TestEveryPersonalPluginPathKeepsThePrincipalsOwn(t *testing.T) {
 		t.Errorf("SetDeliverTo on the team's plugin from the manager's session: %v; want ErrNotFound", err)
 	}
 	if _, _, err := s.MintHandoff(mgr, teamPlugin.ID, HandoffIn{Target: HandoffTarget{Mirror: &MirrorTarget{Host: "ws", Session: "main", Window: "@1"}},
-		Purpose: PurposeView, Origins: pats}, time.Now()); !errors.Is(err, ErrNotFound) {
+		Origins: pats}, time.Now()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("MintHandoff of the team's plugin from the manager's session: %v; want ErrNotFound", err)
 	}
 	if found, err := s.Revoke(mgr, teamPlugin.ID); err != nil || found {

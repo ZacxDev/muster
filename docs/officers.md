@@ -832,6 +832,47 @@ it holds its slot …", saying whether muster will restart it), and
 officer runs below target until the instance recovers, muster restarts it
 ([below](#an-instance-in-error)), or an operator acts.
 
+**An instance parked on a stale usage-limit menu is restarted.** When a turn
+meets its account's usage limit, the CLI raises its usage-limit menu in that
+session, and the menu stays until someone answers it, past the limit's reset
+too: ccd refuses every later prompt from it (`409 rate_limited`, nothing
+typed). With the usage poller on (`MUSTER_CC_USAGE_POLL`), muster remembers
+since when each instance's pane has been parked there, and the poller's latest
+good reading of each account. Once a reading **newer than the park** shows the
+account usable for the limit the menu names (the rule that clears a mark early,
+[configuration](configuration.md)), and the pane still refuses a prompt from
+the menu after that reading, with no turn on the account hitting the limit
+again since:
+
+- that refusal **marks nothing and moves no agent** — it says nothing the live
+  reading did not already overrule (before, it marked the account again
+  within minutes of every clear);
+- the wake loop **stops the instance**, releases any claim it held, and starts
+  it again when work waits — the Stop and Start an operator would do. One log
+  line per restart names the park and the reading ("stopped instance N to
+  restart it (k of 4 today): …").
+
+Decided by timestamps only: a typed turn that hit the limit (a `429`) always
+marks, and so does any refusal from a pane parked after the reading. The timing rule
+paces it: the stop ends the park, so the next restart of the same instance
+needs a new park and a newer reading, at most one per
+`MUSTER_CC_USAGE_POLL_INTERVAL`. As a backstop to that rule, at most 4 such
+restarts per instance per UTC day; past that the instance is held (logged once
+that day) until an operator acts, and its refusals are no longer treated as
+stale: they mark the account and ask the failover again, as before this
+feature. Each of ccd's lanes has its own pane and its own park: a chat lane's
+completed turn never clears the primary's park, and only the PRIMARY lane's
+stale park restarts the instance (a chat lane parked on the menu is stopped by
+ccd itself). This backstop is kept in memory and is not
+the auto-restart's stored cap, which counts restarts of an instance in `error`
+per error episode. Only a pod officer's instance is restarted this way, so only
+its stale refusal marks nothing; any other agent's stale refusal marks the
+account and fails it over as before. An instance in `error` is never
+restarted this way: that is [the auto-restart's](#an-instance-in-error), which
+holds a `rate_limited` error, so the two never restart one instance twice. The record is in memory: a restarted muster marks the
+account on the pane's next refusal as before, and the poller's next clear
+(within `MUSTER_CC_USAGE_POLL_INTERVAL`) makes the park stale again.
+
 **Starting** an instance that does not exist creates it, with its first message
 (below) as the kickoff. Starting one that exists **re-arms** its first message
 (`agents.PGStore.RearmKickoff`: the pending note is replaced and the kickoff
@@ -974,7 +1015,7 @@ released after the stop and before the start, so the item goes back to the
 queue and is claimed once, by whichever instance takes it next. A stop that
 fails starts nothing and releases nothing. A draft officer's create that
 [the open-pull-request queue](#the-open-pull-request-queue) holds for that
-item is not dropped by the release: the drain skips only an item finished in
+item is not dropped by the release: the drain skips only an item gone from
 HQ, so it still opens it, and a second create for the item (from the
 restarted instance) meets the per-item limit.
 
@@ -1059,6 +1100,29 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
   An item HQ does not list in any status stays unsettled too. A builtin
   officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+- **Reads only what it needs, a small page at a time.** How each recorded
+  item stands is read by paging each status list to its end, the short live
+  lists first and HQ's done history last (open, claimed, waiting, escalated,
+  done), 25 items a page (`officers.StatusPageLimit`), and stopping as soon
+  as every recorded item is found: an item still being worked is answered
+  without reading done at all. A page still over muster's 1 MiB answer cap
+  is asked again at half the size, down to one item, and the page after it
+  at double the size, back up to 25. A list still unread after 400 pages
+  (`officers.MaxStatusPages`) is logged as stopped at the page bound, and an
+  item not found before it is logged as such (not as absent from HQ); it
+  stays unsettled. (It used to read pages of 100, and one page of 100 large escalated
+  items was over the cap: the whole re-run gave up and nothing was re-run.)
+- **Not retried.** When the record or HQ's items cannot be read, the re-run
+  logs one line naming the grant and why; the blocked items stay unsettled
+  for the grant's next approval or the route below.
+- **Re-run by hand.** `POST /ui/connector-grants/{id}/rerun` re-runs an
+  APPROVED officer grant's still-unsettled blocked items exactly as its
+  approval does: for an approval whose re-run could not read HQ, or one made
+  before a fix. It needs a signed-in session from muster's own origin (for
+  example `fetch('/ui/connector-grants/32/rerun', {method: 'POST'})` from a
+  muster page's console). It answers `202` and logs each item; `409` for a
+  grant that is not approved or not an officer instance's, `404` for one you
+  cannot read. Settled items are never re-run twice.
 
 A different connector's grant, or another agent's, re-runs nothing: the
 record is keyed by the grant id.
@@ -2253,8 +2317,11 @@ refused. muster:
 4. answers **`202`** `{"queued": true, "message": …}`.
 
 The answer says the pull request is queued, muster opens it itself, and the
-officer must **not** escalate it or ask a human to open it. The charter says the
-same. The per-item and per-day limits still refuse.
+officer must **not** escalate it or ask a human to open it. It also says the
+officer may complete its item (`done` or `no_action`) once the create is
+queued, and when muster drops a queued create (the drain's skips below). The
+charter says the same, from one constant (`officers.QueuedCreateDropRule`).
+The per-item and per-day limits still refuse.
 
 - **No queue-jumping.** While any create of the officer is queued in a
   repository, a new create there is queued behind it even when a slot is
@@ -2289,23 +2356,53 @@ same. The per-item and per-day limits still refuse.
 - **The drain.** It runs right after a create is queued and in every draft
   sweep (5 minutes), per repository. muster takes the queued creates **oldest
   first** and, while the open limit has room, opens each as a draft with the
-  officer App's token. First it reads each one again. It **skips** the create,
+  officer App's token. First it reads each one again. The open and daily
+  limits are read **before** HQ is: while nothing could open, the drain waits
+  without reading HQ's item lists at all. It **skips** the create,
   and tells HQ (so the item does not end with no pull request and nobody
   told), when:
   - the branch is gone;
-  - the item is **finished** in HQ: listed done (completed, `done` or
-    `no_action`), or listed nowhere (cancelled or removed). An item that is
-    open, released, waiting, escalated or claimed again by anyone still has
-    its pull request opened, because the work is in the pushed branch. A
-    claim is not the test: a lease lasts at most an hour, and a down holder's
-    claim is released, while a queued create may wait longer. The officer may
-    complete its item once it is queued. If HQ cannot be read, or a list
-    it reads is at its page bound without naming the item, the drain waits;
+  - the item is **gone** from HQ: listed in no status at all (cancelled or
+    removed). An item that is **completed** (listed done: `done` or
+    `no_action`), open, released, waiting, escalated or claimed again by
+    anyone still has its pull request opened, because the work is in the
+    pushed branch, and the officer is told it may complete its item once it
+    is queued. A claim is not the test: a lease lasts at most an hour, and a
+    down holder's claim is released, while a queued create may wait longer.
+    To know the item is gone, muster reads each status list **to its end**,
+    page by page: open, claimed, waiting and escalated first, done last (it
+    is the officer's whole history), stopping at the first page that names
+    the item. Every page is read, so the order a backend lists in does not
+    matter (the built-in backend lists oldest first, so a recently completed
+    item is on done's last page). A page over muster's answer cap is asked
+    again at half the size (the same reader as a grant's re-run,
+    `officers.StatusesOf`). If any page cannot be read, the drain waits: an
+    item is never dropped on a list muster did not read whole.
+    A list still with pages after 400 is not read further. That is 10,000
+    items at the full page size of 25, and fewer when large items halve the
+    pages. The item's state is then not known, so that create is neither
+    opened nor dropped: it **keeps its place** and is read again at every
+    drain, and the drain goes on to the creates behind it, so one such
+    create does not hold back the rest. HQ is told **once** per create (and
+    again only after a new create from the branch refreshes it) that it
+    waits at the page bound; every drain logs it;
   - the stored title or body no longer passes the body contract or the
     credential, officer-id and public-repository checks;
   - the item has its pull request now;
   - the comparison at the branch's **current** head is refused. A push after
-    the create is fine: that head is what is checked and opened.
+    the create is fine: that head is what is checked and opened;
+  - GitHub refuses to open it **for good**: `422` only (for example *"No
+    commits between"*, a branch with nothing ahead of the base). The notice
+    carries GitHub's answer. Asking again would get the same answer, and a
+    row left at the front would block every create queued behind it. A `422`
+    saying *"A pull request already exists"* for the branch is not a
+    refusal: the row is kept and HQ is told nothing, and the next drain finds
+    that pull request open from the branch and drops the row with no notice
+    (below).
+    GitHub documents this 422 as "validation failed, or the endpoint has
+    been spammed" and gives no way to tell the two apart, so a 422 for
+    spamming would also drop the create (the notice carries GitHub's answer,
+    and the branch is kept).
 
   A branch that already has an open pull request is skipped with no notice.
   That check runs again once the create lock is held, so two drains racing
@@ -2314,7 +2411,19 @@ same. The per-item and per-day limits still refuse.
   The drain **stops**, and the next one tries again, so nothing behind jumps
   the queue, when:
   - the open or daily limit is still full;
-  - any read fails (the branch, its pull requests, HQ, the comparison).
+  - any read fails (the branch, its pull requests, any page of HQ's item
+    lists, the comparison);
+  - GitHub's open fails in a way that may pass later: a `5xx`, `400`, `401`,
+    `403` (a token, a permission or a secondary rate limit), `404`, `409`,
+    `410`, `429` or a network error, or a `422` saying the pull request
+    already exists.
+
+  **No age bound.** A queued create leaves the queue only by being opened or
+  by one of the skips above, never by age. Every way a row can stay is a
+  wait the next drain reads again; a row that can never open (its item or
+  branch gone, a refusal, GitHub refusing it for good) is dropped by the drain
+  itself. An age bound would drop exactly the pushed work the queue exists to
+  open.
 
   An opened pull request is re-checked and announced to HQ exactly as one the
   officer opened itself.

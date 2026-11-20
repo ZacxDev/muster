@@ -1787,8 +1787,9 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   page.
 - **Permissions-Policy, exactly.** `/apps/{id}`'s header is a pinned whole
   string; every other route's is exactly `microphone=(self)` (a golden over
-  every route). *Red if:* a feature is added, `self` is added to `camera`,
-  or the header leaks to another page.
+  every route). *Red if:* a feature is added, `self` is dropped from any
+  feature (spike S5: `self` must be present), or the header leaks to another
+  page.
 - **The frame, exactly.** The rendered `sandbox` attribute equals
   `PluginChipSandbox` and the `allow` attribute is a pinned whole string with
   the exact origin. *Red if:* `allow-top-navigation` is added, or the origin
@@ -2166,6 +2167,14 @@ listening on 443 under a test host name (a container with a test CA that
 muster trusts through `SSL_CERT_FILE`), holds the device's key pair, and
 decrypts payload v2. Nothing in muster's e2e does this today:
 `push.spec.ts` stubs `pushManager` and has no receiver.
+
+*As built (1e):* `e2e/pushsink` mints the test CA at start and serves the
+endpoint `https://push.example.test/up/<topic>` over TLS. Rather than a
+container bound to 443 and an `/etc/hosts` entry (both need root), muster is
+started with `HTTPS_PROXY` at the sink's own CONNECT proxy, which accepts only
+`push.example.test:443`; the TLS handshake (SNI, chain via `SSL_CERT_FILE`)
+runs end to end inside the tunnel. It runs in the ordinary e2e leg with no
+extra CI step.
 
 **Defaults:** the guest's notice at step 3 names recording, transcription
 and the AI service, because all three are on by default; a second meeting

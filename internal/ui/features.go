@@ -74,6 +74,10 @@ type Features struct {
 	// sidebar's brand, and the shell's favicon. The zero value draws the
 	// wordmark and muster's own icons.
 	Brand Brand
+	// Apps are the signed-in owner's live app plugins, oldest first
+	// (internal/api plugin_app.go, liveAppPlugins): one sidebar entry each,
+	// after the built-in section links (app_page.go). nil draws none.
+	Apps []AppTab
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

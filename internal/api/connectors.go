@@ -108,6 +108,9 @@ func (s *Server) registerConnectorRoutes(mux Mux) {
 	mux.HandleFunc("POST /ui/connector-requests/{id}/approve", s.requireOperatorWrite(s.handleConnectorApprove))
 	mux.HandleFunc("POST /ui/connector-requests/{id}/deny", s.requireOperatorWrite(s.handleConnectorDeny))
 	mux.HandleFunc("DELETE /connector-grants/{id}", s.requireOperatorWrite(s.handleConnectorRevoke))
+	// Re-run an APPROVED officer grant's blocked items again
+	// (officer_connector_rerun.go handleConnectorGrantRerun).
+	mux.HandleFunc("POST /ui/connector-grants/{id}/rerun", s.requireOperatorWrite(s.handleConnectorGrantRerun))
 	mux.HandleFunc("DELETE /connector-standing-grants/{id}", s.requireOperatorWrite(s.handleStandingGrantRevoke))
 }
 
