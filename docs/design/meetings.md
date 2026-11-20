@@ -1036,7 +1036,7 @@ evaluation decides. It is cheap enough that the cost is nearly zero either
 way.
 
 **The fallback: `deepseek/deepseek-v4.1-flash-1017`**, a dated snapshot
-($0.036 / M in, $0.50 / M out, per OpenRouter's listing on 2026-11-19; the
+($0.036 / M in, $0.50 / M out, per OpenRouter's listing when this was written; the
 undated `deepseek/deepseek-v4-flash` is not used, so the evaluated model
 cannot move), a chat model with `response_format`
 (JSON schema) support, which rewrites each item as owner, task, due. Strict
