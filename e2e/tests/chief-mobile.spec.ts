@@ -21,13 +21,12 @@ import { agentMenu, openAgentMenu } from '../lib/agent-menu';
 //           agent_header_folded.go): account, failover marker with its whole
 //           line, and Terminal are in the ⋯ menu, one TAP away (a title=
 //           tooltip never shows on a touch screen).
-//   asks    the heading wrapped beside a bordered "Hide until next ask"
-//           button, a long question ran past the block's scroll box so it read
-//           as cut off mid-sentence, and the block left the conversation a
-//           sliver. Now: a one-line heading and a text button, each question's
-//           body clamped with its "Show more" INSIDE its own card, and past the
-//           first question the rest behind one "Show N more" — so the composer
-//           and some of the conversation stay on screen.
+//   asks    the block of waiting questions above the composer took the screen
+//           (a long question read as cut off mid-sentence, the conversation
+//           left a sliver, the composer pushed under the bottom bar). Now
+//           there is NO block (operator decision): the header counts them in a
+//           badge that opens the Asks page filtered to them, and the composer
+//           and the conversation keep the room they have with none waiting.
 //
 // ⚠ THE AGENT HERE IS NOT THE CHIEF (its display name is its slug): the page a
 // DISPATCHED claude-code agent draws, which folds the same way the chief's does
@@ -62,11 +61,8 @@ const question = (i: number) =>
   `right now (one rolling out node updates, one draining a pool). Should I cordon it and page the owner, or leave it for the rollout?`;
 // Every question offers two long options, as a real chief's does (a live card
 // with these is what clipped at 0.148.0: the fixture had none).
-// The conversation's floor while the asks block shows one REAL card: #chat-log's
-// own min-height (7.5rem, internal/ui agentChatPane). The block is capped at
-// 40dvh on an agent's page and scrolls inside (operator decision,
-// chief-header-chats-sheet, superseding fix/asks-block-real-card's "the block
-// grows to fit its one card"), so the conversation keeps more than this.
+// The conversation's floor: #chat-log's own min-height (7.5rem, internal/ui
+// agentChatPane).
 const MIN_LOG = 120;
 const OPTIONS = ['agent_dispatch on pod/gateway: start a new agent on it', 'agent_dispatch on pod/claude-code: start a new agent on it'];
 // The chief: a claude-code agent displayed as "chief".
@@ -119,13 +115,23 @@ async function shot(page: Page, name: string) {
 // ⋯ trigger sits in.
 const headerRow = (page: Page) => page.locator('header > div').filter({ has: page.locator('#agent-actions-open') });
 
+// badge is the header's asks badge (ui.AskerAsksBadge).
+const badge = (page: Page) => page.locator('header [data-asker-asks-link]');
+
 async function open(page: Page) {
   await signIn(page, origin);
   await page.goto(origin + '/agents/' + NAME);
   await expect(page.locator('header #agent-actions-open')).toBeVisible();
-  await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(ASKS);
+  await expect(badge(page)).toHaveAttribute('data-count', String(ASKS));
   // The page reveals its transcript and composer once laid out.
   await expect(page.locator('#chat-form')).toBeVisible();
+}
+
+// noAsksBlock: the page draws no asks block and no ask card — the asks are the
+// header's badge alone.
+async function noAsksBlock(page: Page) {
+  await expect(page.locator('#asker-asks, #asker-asks-chip, [data-asker-asks-hide]'), 'no asks block').toHaveCount(0);
+  await expect(page.locator('main [data-attention-item]'), 'no ask card on the page').toHaveCount(0);
 }
 
 // noSideScroll: nothing on the page is wider than the viewport.
@@ -151,15 +157,13 @@ async function headerIsOneLine(page: Page, how: 'click' | 'tap') {
   await expect(agentMenu(page)).toBeHidden();
 }
 
-// asksLeaveTheComposer: the asks block ends above the composer, the composer
-// is on screen, and the conversation keeps real room.
-async function asksLeaveTheComposer(page: Page, minLog: number) {
+// composerOnScreen: the composer is on screen and the conversation keeps real
+// room.
+async function composerOnScreen(page: Page, minLog: number) {
   const vh = page.viewportSize()!.height;
   const compose = (await page.locator('#chat-form').boundingBox())!;
-  const asks = (await page.locator('#asker-asks').boundingBox())!;
   const log = (await page.locator('#chat-log').boundingBox())!;
   expect.soft(compose.y + compose.height, 'the composer is on screen').toBeLessThanOrEqual(vh + 1);
-  expect.soft(asks.y + asks.height, 'the asks block ends above the composer').toBeLessThanOrEqual(compose.y + 1);
   expect.soft(log.height, 'the conversation keeps room').toBeGreaterThanOrEqual(minLog);
 }
 
@@ -191,91 +195,12 @@ test.describe('on a phone', () => {
     await expect(detail).toBeHidden();
   });
 
-  test('the asks are one card at a time, clamped in place, and leave the composer on screen', async ({ page }) => {
+  test('seven questions waiting draw no block: the header counts them and the composer stays on screen', async ({ page }) => {
     await open(page);
     await noSideScroll(page);
-
-    // The asks: a one-line heading with its hide beside it.
-    const block = page.locator('#asker-asks');
-    const heading = block.locator('[data-asker-asks-heading]');
-    await expect.soft(heading).toHaveText(`${ASKS} questions waiting`);
-    const hb = (await heading.boundingBox())!;
-    const hide = (await block.getByRole('button', { name: 'Hide until next ask' }).boundingBox())!;
-    expect.soft(hb.height, 'the heading is one line').toBeLessThanOrEqual(24);
-    expect.soft(Math.abs(hb.y + hb.height / 2 - (hide.y + hide.height / 2)), 'the hide sits on the heading\'s line').toBeLessThanOrEqual(4);
-    await asksLeaveTheComposer(page, MIN_LOG);
-
-    // 🔴 THE BLOCK IS CAPPED AT 40dvh ON AN AGENT'S PAGE AND SCROLLS INSIDE
-    // (operator decision, chief-header-chats-sheet: with questions waiting the
-    // composer slid under the bottom bar). This replaced "one card fits the
-    // block whole" — the one-card raise to 65dvh is not applied on the page,
-    // so the real card scrolls inside the block, and Answer and Dismiss are
-    // reached by scrolling the block, never cut off from it.
-    const vh0 = page.viewportSize()!.height;
-    const bb = (await block.boundingBox())!;
-    expect.soft(bb.height, 'the asks block is within its 40dvh cap').toBeLessThanOrEqual(vh0 * 0.4 + 1);
-    // Answer and Dismiss share one row (the card's footer).
-    const first0 = block.locator('[data-attention-item]').first();
-    await first0.getByRole('button', { name: 'Answer', exact: true }).scrollIntoViewIfNeeded();
-    const card = (await first0.boundingBox())!;
-    const ans = (await first0.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
-    const dis = (await first0.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
-    expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
-    await wordsAreWhole(first0);
-    // THE REAL CARD (what clipped live): two long options and the answer box's
-    // mic are in it — the positive control that this card is production's size.
-    await expect(first0.locator('[data-attention-option]')).toHaveCount(OPTIONS.length);
-    await expect(first0.locator('[id^="answer-"][id$="-dictate"]')).toBeVisible();
-    // Scrolled to, Answer and Dismiss are wholly on screen, inside the block's
-    // box, and nothing covers them (the block's own scroll edge, the
-    // conversation, the composer).
-    const vp = page.viewportSize()!;
-    for (const [name, b] of [['Answer', ans], ['Dismiss', dis]] as const) {
-      expect.soft(b.y >= 0 && b.y + b.height <= vp.height && b.x >= 0 && b.x + b.width <= vp.width, `${name} is wholly inside the viewport`).toBe(true);
-      expect.soft(b.y >= bb.y - 0.5 && b.y + b.height <= bb.y + bb.height + 0.5, `${name} is inside the block's box`).toBe(true);
-    }
-    const hits = await first0.evaluate((li) => {
-      const out: Record<string, boolean> = {};
-      for (const b of Array.from(li.querySelectorAll<HTMLElement>('button'))) {
-        const name = b.getAttribute('aria-label') || (b.textContent || '').trim();
-        if (name !== 'Answer' && name !== 'Dismiss without answering') continue;
-        const r = b.getBoundingClientRect();
-        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        out[name] = !!at && (at === b || b.contains(at));
-      }
-      return out;
-    });
-    expect.soft(hits, 'a tap on each lands on it (nothing covers them)').toEqual({ Answer: true, 'Dismiss without answering': true });
-    expect.soft(card.y + card.height, 'the card\'s bottom border is on screen').toBeLessThanOrEqual(vp.height);
-
-    // The first question: its body clamped, "Show more" INSIDE its card, and
-    // a tap opens it in place.
-    const items = block.locator('[data-attention-item]');
-    const first = items.first();
-    await first.locator('[data-attention-text]').scrollIntoViewIfNeeded();
-    const text = first.locator('[data-attention-text]');
-    const more = first.getByRole('button', { name: 'Show more' });
-    await expect(more).toBeVisible();
-    const [sh, ch] = await text.evaluate((el) => [el.scrollHeight, el.clientHeight]);
-    expect.soft(sh, 'the body is clamped').toBeGreaterThan(ch + 1);
-    const cb = (await first.boundingBox())!;
-    const mb = (await more.boundingBox())!;
-    expect.soft(mb.y >= cb.y && mb.y + mb.height <= cb.y + cb.height + 0.5, '"Show more" is inside its card').toBe(true);
-    await more.tap();
-    await expect(first.getByRole('button', { name: 'Show less' })).toBeVisible();
-    const [sh2, ch2] = await text.evaluate((el) => [el.scrollHeight, el.clientHeight]);
-    expect.soft(sh2, 'the body is open').toBeLessThanOrEqual(ch2 + 1);
-    await first.getByRole('button', { name: 'Show less' }).tap();
-    await expect(more).toBeVisible();
-
-    // Past the first, the rest wait behind one "Show N more", which opens them.
-    await expect.soft(items.nth(1)).toBeHidden();
-    const rest = block.locator('[data-asks-more]');
-    await expect(rest).toHaveText(`Show ${ASKS - 1} more`);
-    await rest.tap();
-    for (let i = 0; i < ASKS; i++) await expect(items.nth(i)).toBeVisible();
-    await asksLeaveTheComposer(page, MIN_LOG);
-    await noSideScroll(page);
+    await noAsksBlock(page);
+    await expect(badge(page)).toHaveText(String(ASKS));
+    await composerOnScreen(page, MIN_LOG);
   });
 
   test('the Asks queue draws the same compact answer form', async ({ page }) => {
@@ -283,9 +208,12 @@ test.describe('on a phone', () => {
     await theQueueDrawsTheCompactForm(page, 'attention-phone.png');
   });
 
+  // The answer box is the Asks card's now (the session page has none).
   test('the answer box grows as it is typed into, up to its cap', async ({ page }) => {
-    await open(page);
-    const box = page.locator('#asker-asks [data-attention-item]').first().locator('textarea[name="answer"]');
+    await signIn(page, origin);
+    await page.goto(origin + '/attention');
+    const box = page.locator('[data-attention-item]').filter({ hasText: 'Question 1:' }).locator('textarea[name="answer"]');
+    await box.scrollIntoViewIfNeeded();
     const h0 = (await box.boundingBox())!.height;
     await box.fill('one\ntwo\nthree');
     await expect.poll(async () => (await box.boundingBox())!.height, 'three lines are taller than one').toBeGreaterThan(h0 + 20);
@@ -310,8 +238,9 @@ test.describe('on a desktop', () => {
     await expect(page.locator('[data-failover-detail]')).toContainText(FAILOVER);
     await page.locator('#agent-actions-open').click();
     await expect(page.locator('[data-failover-detail]')).toBeHidden();
-    await expect(page.locator('#asker-asks [data-asker-asks-heading]')).toHaveText(`${ASKS} questions waiting`);
-    await asksLeaveTheComposer(page, MIN_LOG);
+    await noAsksBlock(page);
+    await expect(badge(page)).toHaveText(String(ASKS));
+    await composerOnScreen(page, MIN_LOG);
     await theQueueDrawsTheCompactForm(page, 'attention-desktop.png');
   });
 });
@@ -352,11 +281,15 @@ async function theQueueDrawsTheCompactForm(page: Page, name: string) {
 //   chats    that icon's sheet has three tabs — Chats | Your messages | Focus
 //            history — and Chats is where the primary and side chats are
 //            switched, made and archived; no chat bar over the transcript.
-//   layout   with questions waiting, the composer stays above the bottom bar
-//            (the session switcher) and inside the viewport: it used to slide
-//            under the bar. Measured at 1 and 3 questions, at four sizes — a
-//            phone, the same phone's visible area under its browser's toolbars,
-//            the phone held sideways, and a desktop.
+//   layout   with questions waiting, the page draws NO asks block (operator
+//            decision: it took too much of the screen and pushed the composer
+//            under the bottom bar): the composer keeps the place and the
+//            height it has with none waiting, above the bottom bar (the
+//            session switcher) and inside the viewport, and the header counts
+//            the questions. Measured at 0, 1 and 3 questions and on a live
+//            arrival, at four sizes — a phone, the same phone's visible area
+//            under its browser's toolbars, the phone held sideways, and a
+//            desktop.
 
 // The chief's asks, by id, so a case can set how many wait.
 const chiefAsks: string[] = [];
@@ -367,28 +300,24 @@ function setChiefAsks(n: number) {
   while (chiefAsks.length > n) go('./e2e/pluginfix', 'rmask', OWNER, chiefAsks.pop()!);
 }
 
-async function openChiefPage(page: Page, asks: number) {
+async function openChiefPage(page: Page) {
   await signIn(page, origin);
   await page.goto(origin + '/agents/' + CHIEF);
   await expect(page.locator('#chat-form')).toBeVisible();
-  await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(asks);
   await expect(page.locator('#session-switcher')).toBeVisible();
 }
 
 // composerClearsTheBar: the composer is wholly on screen and wholly above the
 // session switcher (bounding boxes, and what a tap at the box's centre hits),
-// the asks block is inside its 40dvh cap, and the conversation keeps its floor.
+// and the conversation keeps its floor.
 async function composerClearsTheBar(page: Page, label: string) {
   const vp = page.viewportSize()!;
   const form = (await page.locator('#chat-form').boundingBox())!;
   const bar = (await page.locator('#session-switcher').boundingBox())!;
-  const asks = (await page.locator('#asker-asks').boundingBox())!;
   const log = (await page.locator('#chat-log').boundingBox())!;
   expect.soft(form.y + form.height, `${label}: the composer's bottom is at or above the bottom bar's top`).toBeLessThanOrEqual(bar.y + 0.5);
   expect.soft(form.y >= 0 && form.y + form.height <= vp.height + 0.5, `${label}: the composer is wholly inside the viewport`).toBe(true);
   expect.soft(bar.y + bar.height, `${label}: the bottom bar is inside the viewport`).toBeLessThanOrEqual(vp.height + 0.5);
-  expect.soft(asks.y + asks.height, `${label}: the asks block ends above the composer`).toBeLessThanOrEqual(form.y + 0.5);
-  expect.soft(asks.height, `${label}: the asks block is within its 40dvh cap`).toBeLessThanOrEqual(vp.height * 0.4 + 1);
   expect.soft(log.height, `${label}: the conversation keeps its floor`).toBeGreaterThanOrEqual(MIN_LOG - 0.5);
   const hit = await page.locator('#chat-input').evaluate((el) => {
     const r = el.getBoundingClientRect();
@@ -396,6 +325,21 @@ async function composerClearsTheBar(page: Page, label: string) {
     return !!at && (at === el || el.contains(at));
   });
   expect.soft(hit, `${label}: a tap on the message box lands on it (the bar does not cover it)`).toBe(true);
+}
+
+// layoutOf is where the composer and the conversation are, and how tall.
+async function layoutOf(page: Page) {
+  const form = (await page.locator('#chat-form').boundingBox())!;
+  const log = (await page.locator('#chat-log').boundingBox())!;
+  return { formY: form.y, formH: form.height, logY: log.y, logH: log.height };
+}
+
+// sameLayout: the composer and the conversation are where, and as tall as,
+// they were with no question waiting (to a pixel).
+function sameLayout(label: string, got: Awaited<ReturnType<typeof layoutOf>>, want: Awaited<ReturnType<typeof layoutOf>>) {
+  for (const k of ['formY', 'formH', 'logY', 'logH'] as const) {
+    expect.soft(Math.abs(got[k] - want[k]), `${label}: ${k} is ${got[k]}, ${want[k]} with none waiting`).toBeLessThanOrEqual(1);
+  }
 }
 
 for (const vp of [
@@ -408,60 +352,35 @@ for (const vp of [
   test.describe(`the chief's page on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    test('with 1 and with 3 questions waiting, the composer stays above the bottom bar', async ({ page }) => {
+    // 🔴 RED at origin/main: the asks block sat above the composer, taking the
+    // conversation's height, and the header had no linked count.
+    test('with 1 and with 3 questions waiting, no asks block: the composer keeps its place and its full height', async ({ page }) => {
       test.setTimeout(120_000);
-      setChiefAsks(1);
-      await openChiefPage(page, 1);
-      await expect(page.locator('#asker-asks [data-asks-fold]'), 'one question: nothing to fold').toHaveCount(0);
-      await composerClearsTheBar(page, '1 question');
-      await shot(page, `chief-asks-1-${vp.name.replace(/ /g, '-')}.png`);
+      setChiefAsks(0);
+      await openChiefPage(page);
+      await expect(badge(page), 'none waiting: no count').toHaveCount(0);
+      await composerClearsTheBar(page, 'none waiting');
+      const none = await layoutOf(page);
+      for (const n of [1, 3]) {
+        setChiefAsks(n);
+        await openChiefPage(page);
+        await noAsksBlock(page);
+        await composerClearsTheBar(page, `${n} waiting`);
+        sameLayout(`${n} waiting`, await layoutOf(page), none);
+        await noSideScroll(page);
+        // The header counts them instead.
+        await expect(badge(page)).toHaveAttribute('data-count', String(n));
+        await shot(page, `chief-asks-${n}-${vp.name.replace(/ /g, '-')}.png`);
+      }
 
-      setChiefAsks(3);
-      await openChiefPage(page, 3);
-      await composerClearsTheBar(page, '3 questions');
-      await shot(page, `chief-asks-3-${vp.name.replace(/ /g, '-')}.png`);
-      // More than one: the "3 questions waiting" header folds the block to its
-      // own row, and opens it again.
-      const fold = page.locator('#asker-asks [data-asks-fold]');
-      await expect(fold).toHaveText('3 questions waiting');
-      await expect(fold).toHaveAttribute('aria-expanded', 'true');
-      await fold.click();
-      await expect(fold).toHaveAttribute('aria-expanded', 'false');
-      await expect(page.locator('#asker-asks')).toHaveAttribute('data-asks-folded', '');
-      await expect(page.locator('#asker-asks [data-attention-item]').first()).toBeHidden();
-      await composerClearsTheBar(page, '3 questions, folded');
-      await fold.click();
-      await expect(fold).toHaveAttribute('aria-expanded', 'true');
-      await expect(page.locator('#asker-asks [data-attention-item]').first()).toBeVisible();
-      await noSideScroll(page);
-
-      // The fold across the block's live refreshes (the same partial its
-      // attention_queue.changed refresh swaps in): the same questions keep it
-      // folded; a NEW question unfolds it, so the fold never hides it.
-      const items = page.locator('#asker-asks [data-attention-item]');
-      const refresh = () => page.evaluate(() => (window as any).htmx.ajax('GET',
-        document.getElementById('asker-asks')!.getAttribute('data-src'), { target: '#asker-asks', swap: 'innerHTML' }));
-      await fold.click();
-      await expect(fold).toHaveAttribute('aria-expanded', 'false');
-      await refresh();
-      await expect(items).toHaveCount(3);
-      await expect(fold, 'the same questions: still folded').toHaveAttribute('aria-expanded', 'false');
-      await expect(page.locator('#asker-asks')).toHaveAttribute('data-asks-folded', '');
+      // A question arriving while the page is open: the header's count
+      // follows (its live refresh), and nothing in the column moves.
       setChiefAsks(4);
-      await refresh();
-      await expect(items).toHaveCount(4);
-      await expect(fold).toHaveText('4 questions waiting');
-      await expect(fold, 'a new question unfolds the block').toHaveAttribute('aria-expanded', 'true');
-      await expect(page.locator('#asker-asks')).not.toHaveAttribute('data-asks-folded', '');
-      await expect(items.first()).toBeVisible();
-      // Folded, then down to one (no fold control) and back up: not folded.
-      await fold.click();
-      await expect(fold).toHaveAttribute('aria-expanded', 'false');
-      setChiefAsks(1);
-      await refresh();
-      await expect(items).toHaveCount(1);
-      await expect(page.locator('#asker-asks')).not.toHaveAttribute('data-asks-folded', '');
-      await expect(items.first()).toBeVisible();
+      await page.evaluate(() => (window as any).htmx.trigger(document.querySelector('[data-asker-asks-refresh]'), 'sse:attention_queue.changed'));
+      await expect(badge(page)).toHaveAttribute('data-count', '4');
+      await noAsksBlock(page);
+      sameLayout('4 waiting, live', await layoutOf(page), none);
+      setChiefAsks(0);
     });
   });
 }
@@ -473,21 +392,19 @@ for (const vp of [
   test.describe(`the chief's chats on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    test('one list icon opens Chats | Your messages | Focus history: switch, create and archive a chat', async ({ page }) => {
+    // The chats are a strip of chips under the header, not a sheet (operator:
+    // "a simpler ui/ux to manage sidechats, no modal"). The header keeps its
+    // one row and its one list icon, whose sheet is Your messages and Focus
+    // history only. (e2e chief-ux drives the strip's +, chips and ⋯ menus.)
+    test('the strip is one row under the one-row header, every target 44px, and the sheet holds no chats', async ({ page }) => {
       test.setTimeout(120_000);
       setChiefAsks(0);
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + CHIEF);
       await expect(page.locator('#chat-form')).toBeVisible();
-      const sheet = page.locator('#chat-index');
-      const chats = sheet.locator('[data-chief-chats]');
-      const open = async () => {
-        await page.locator('header #chat-index-open').click();
-        await expect(sheet).toBeVisible();
-        await sheet.locator('[role="tab"][data-tab="chats"]').click();
-        await expect(chats).toBeVisible();
-      };
-      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
+      const strip = page.locator('[data-chief-chat-strip]');
+      await expect(strip).toHaveCount(1);
+      await expect(strip).toHaveAttribute('data-chief-chat-kind', 'primary');
 
       // The header: the one list icon, no ＋ / clock / target; the context
       // row under the title; no chat bar over the transcript.
@@ -498,93 +415,31 @@ for (const vp of [
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
 
-      // The sheet: three tabs, in order.
-      await open();
-      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'What it worked on']);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
-      // Fresh primary keeps its confirm: the confirm is asked, and dismissed,
-      // nothing happens.
-      const here0 = page.url();
-      const asked: string[] = [];
-      page.once('dialog', (d) => { asked.push(d.type()); void d.dismiss(); });
-      await chats.getByRole('button', { name: 'Fresh primary' }).click();
-      await expect.poll(() => asked, { message: 'Fresh primary asks its confirm' }).toEqual(['confirm']);
-      await page.waitForTimeout(300);
-      expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here0);
+      // The strip: under the header, one 52px row, the ★ Primary chip current
+      // with its ⋯, then "+"; every target 44px.
+      const hb = (await page.locator('header').boundingBox())!;
+      const sb = (await strip.boundingBox())!;
+      expect.soft(sb.y, 'the strip starts under the header').toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
+      expect.soft(sb.height, 'the strip is one row').toBeLessThanOrEqual(52.5);
+      await expect(strip.locator('[aria-current="true"]')).toContainText('★Primary');
+      const targets = await strip
+        .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat]')
+        .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width }; }));
+      expect(targets.length, 'the primary\'s link, its ⋯, and +').toBe(3);
+      for (const t of targets) {
+        expect.soft(t.h, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(t.w, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(Math.abs(t.top - targets[0].top), 'on one row').toBeLessThanOrEqual(1);
+      }
       await noSideScroll(page);
+      await shot(page, `chief-chips-${vp.name}.png`);
 
-      // Create side chat A, then give it a line so the next New side chat is
-      // a new chat (an empty newest side chat is reused).
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => u.toString() !== here0);
-      const sideA = sessionOf(page.url())!;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      appendToLatest(CHIEF, `side A's line (${vp.name})`);
-      await page.reload();
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'no Fresh primary off the primary').toHaveCount(0);
-      const rowA = chats.locator(`[data-chief-chat-row="${sideA}"]`);
-      await expect(rowA).toHaveAttribute('aria-current', 'page');
-      await expect(rowA.locator('[data-chief-chat-current]')).toHaveText('Current');
-
-      // Create side chat B.
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      const sideB = sessionOf(page.url())!;
-      expect(sideB, 'B is a new chat').not.toBe(sideA);
-
-      // Switch to A from its row.
-      await open();
-      await chats.locator(`[data-chief-chat-row="${sideA}"]`).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) === sideA);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-
-      // Escape: the open ⋯ menu closes, the sheet stays; again: the sheet goes.
-      await open();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      const menuB = page.locator(`#chief-chat-menu-${sideB}`);
-      await expect(menuB).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(menuB).toBeHidden();
-      await expect(sheet, 'Escape on the menu leaves the sheet open').toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(sheet).toBeHidden();
-
-      // ON A, archive B from its row's ⋯ menu: B moves into the collapsed
-      // Archived group, and the page STAYS ON A (it used to jump to the primary).
-      await open();
-      const archivedBefore = await chats.locator('[data-chief-archived] [data-chief-chat-row]').count();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      await expect(menuB).toBeVisible();
-      // The answer is HX-Redirect to A — this page — so htmx loads it again.
-      const reloaded = page.waitForEvent('load');
-      await menuB.getByRole('menuitem', { name: 'Archive' }).click();
-      await reloaded;
-      expect(sessionOf(page.url()), 'archiving another chat stays on the open one').toBe(sideA);
-      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${sideB}"]`)).toHaveCount(1);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      const group = chats.locator('[data-chief-archived]');
-      await expect(group).not.toHaveAttribute('open', '');
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeHidden();
-      await group.locator('summary').click();
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeVisible();
-      expect(await chats.locator('[data-chief-archived] [data-chief-chat-row]').count()).toBe(archivedBefore + 1);
-
-      // Archiving the OPEN chat (A, from its own row) lands on the primary.
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideA}"]`).click();
-      const toPrimary = page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      await page.locator(`#chief-chat-menu-${sideA}`).getByRole('menuitem', { name: 'Archive' }).click();
-      await toPrimary;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await open();
-
-      // The other two tabs are the mirrored session's.
-      await sheet.locator('[role="tab"][data-tab="messages"]').click();
-      await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeVisible();
+      // The sheet: two tabs, in order, and nothing chat-related.
+      await page.locator('header #chat-index-open').click();
+      const sheet = page.locator('#chat-index');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Your messages', 'What it worked on']);
+      await expect(sheet.locator('[data-chief-chats], [data-chief-side-chat], [data-chief-chat-row]')).toHaveCount(0);
       await sheet.locator('[role="tab"][data-tab="focus"]').click();
       await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();
       await page.keyboard.press('Escape');

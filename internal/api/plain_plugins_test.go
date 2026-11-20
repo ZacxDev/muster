@@ -130,30 +130,35 @@ func TestTheUsageTotalsAndDaysArePlain(t *testing.T) {
 }
 
 // TestADraftCardNamesItsOfficer (U-25): an officer's outbound draft is headed
-// by what the officer is for ("Marketing officer (Acme)"), never its agent's
-// slug, and its target reads "New post on X" — not "Outbound · x · New
-// post"; its Attention line is "New post on X by the Marketing officer
-// (Acme)".
+// by the officer's display name — "Your officer" without one (main's
+// officerWords rule: never its id, not even in words) — never its agent's
+// slug; its target reads "New post on X", not "Outbound · x · New post"; its
+// Attention line is "New post on X by <the same name>".
 func TestADraftCardNamesItsOfficer(t *testing.T) {
 	officer, venue, plugin := "marketing:acme", "x", int64(3)
-	c := plugins.DraftCard{Draft: plugins.Draft{ID: 11, AgentName: "marketing-acme-1", Body: "Hello from acme/api.", Status: plugins.DraftPending,
-		CreatedAt: plainDay, ExpiresAt: plainDay.Add(72 * time.Hour), Officer: &officer, Venue: &venue, PluginID: &plugin},
-		PluginLabel: "Acme social"}
-	card := draftCardHTMLAt(c, plainDay.Add(time.Hour))
-	for _, want := range []string{
-		`data-draft-agent>Marketing officer (Acme)</span>`,
-		`data-draft-outbound-what>New post on X</span>`,
+	for _, c := range []struct{ display, head, by string }{
+		{"Marketing for Acme", "Marketing for Acme", "Marketing for Acme"},
+		{"", "Your officer", "your officer"},
 	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the draft card has no %s\n%s", want, card)
+		card := plugins.DraftCard{Draft: plugins.Draft{ID: 11, AgentName: "marketing-acme-1", Body: "Hello from acme/api.", Status: plugins.DraftPending,
+			CreatedAt: plainDay, ExpiresAt: plainDay.Add(72 * time.Hour), Officer: &officer, Venue: &venue, PluginID: &plugin},
+			PluginLabel: "Acme social", OfficerDisplay: c.display}
+		h := draftCardHTMLAt(card, plainDay.Add(time.Hour))
+		for _, want := range []string{
+			`data-draft-agent>` + c.head + `</span>`,
+			`data-draft-outbound-what>New post on X</span>`,
+		} {
+			if !strings.Contains(h, want) {
+				t.Errorf("display %q: the draft card has no %s\n%s", c.display, want, h)
+			}
 		}
-	}
-	for _, gone := range []string{"marketing-acme-1", "Outbound · ", "UTC"} {
-		if strings.Contains(card, gone) {
-			t.Errorf("the draft card still says %q", gone)
+		for _, gone := range []string{"marketing-acme-1", "marketing:acme", "Outbound · ", "UTC"} {
+			if strings.Contains(h, gone) {
+				t.Errorf("display %q: the draft card still says %q", c.display, gone)
+			}
 		}
-	}
-	if got, want := outboundAttentionText(c), "New post on X by the Marketing officer (Acme)"; got != want {
-		t.Errorf("the Attention line = %q, want %q", got, want)
+		if got, want := outboundAttentionText(card), "New post on X by "+c.by; got != want {
+			t.Errorf("display %q: the Attention line = %q, want %q", c.display, got, want)
+		}
 	}
 }

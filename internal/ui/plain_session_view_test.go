@@ -70,7 +70,7 @@ func TestTheModelPickerSaysChooseAModel(t *testing.T) {
 // TestTheChiefPanelSaysWhatTheChiefDoes (F045): the line under "Chief" is
 // "keeps an eye on all your agents", not "the fleet's orchestrator".
 func TestTheChiefPanelSaysWhatTheChiefDoes(t *testing.T) {
-	panel := renderString(t, ChiefPanel(false))
+	panel := renderString(t, ChiefPanel(false, false))
 	if !strings.Contains(panel, `<span class="text-[10px] text-muted">keeps an eye on all your agents</span>`) {
 		t.Errorf("the chief panel's subtitle is not the plain one:\n%.3000s", panel)
 	}

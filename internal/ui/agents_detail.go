@@ -148,6 +148,9 @@ type AgentDetailView struct {
 	// chat only, nil on every other agent's — which keeps the header's ＋ and
 	// draws no bar.
 	ChiefChat *ChiefChatBar
+	// FocusComposer: the server asks for the cursor in #chat-input on arrival
+	// (the side chat route's answer: ComposerFocusParam, chief_chats.go).
+	FocusComposer bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -189,9 +192,10 @@ type AgentDetailView struct {
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
-	// Asks is the agent's OPEN attention asks as the queue draws them, with
-	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
-	// is that block's fragment URL, "" when the queue is not served (no block).
+	// Asks is the header's asks badge (AskerAsksBadgeHTML: the count of the
+	// agent's OPEN attention asks, linking to the Asks page filtered to them;
+	// internal/api attention_asker.go), "" for none; AsksSrc is the badge's
+	// fragment URL, "" when the queue is not served (no badge).
 	Asks    string
 	AsksSrc string
 	// Switcher is the session switcher below the chat form (switcher.go), on
@@ -207,8 +211,8 @@ type AgentDetailView struct {
 	Card AgentCardView
 	// StepUp is the "Confirm it's you" dialog the page's step-up gated forms
 	// ask with before they submit (StepUpFormScript): the ⋯ menu's Rotate
-	// credentials (agentRotateConfirm), a team card in the asks block. The
-	// server sets it only for a page that can draw such a form. nil: none.
+	// credentials (agentRotateConfirm). The server sets it only for a page
+	// that can draw such a form. nil: none.
 	StepUp *StepUpView
 }
 
@@ -315,6 +319,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
+				// A chief's chats, as a strip of chips under the header
+				// (chief_chats.go): switch, "+", and each chip's ⋯.
+				chiefPageStrip(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
 				// the (server-rendered) transcript is clamped and scrolled to its end
@@ -363,11 +370,11 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
 				// focusHistoryButton opens. The chief's page has the mirrored
-				// session's sheet instead (chat_index.go), its Chats tab first and
-				// its focus history a tab.
+				// session's sheet instead (chat_index.go): Your messages and Focus
+				// history. Its chats are the strip under the header, not a tab.
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
-				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chiefChatsPanel(v), chatIndexPartialPage)),
+				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
 				g.If(v.ChiefChat != nil, chatIndexScript()),
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
@@ -426,6 +433,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				agentTitle(v),
 				// The viewer's tags on the agent (session_tags.go), after the title.
 				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
+				// The agent's open asks, a count that opens the Asks page
+				// filtered to them (AskerAsksBadge), as the folded header's.
+				g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
@@ -489,16 +499,16 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 		gap = "gap-1 "
 	}
 	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
-	// header has (chatIndexButton), opening the same sheet — with its Chats tab
-	// first, where the chief's chats are switched, made and archived
-	// (chief_chats.go), then Your messages and Focus history. No ＋, no clock,
-	// no target: the operator asked for the same icons a mirrored session has,
-	// and for the chat management in one place. Every other agent is unchanged.
+	// header has (chatIndexButton), opening the same sheet — Your messages and
+	// Focus history. No ＋, no clock, no target: the operator asked for the same
+	// icons a mirrored session has. The chief's chats are switched, made and
+	// archived on the strip of chips under the header (chief_chats.go), never in
+	// a sheet. Every other agent is unchanged.
 	if v.ChiefChat != nil {
 		return Div(
 			g.Attr("data-header-tools", ""),
 			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
-			chatIndexButtonNamed("chat-log", chatIndexChatsLabel),
+			chatIndexButton("chat-log"),
 		)
 	}
 	n := 2
@@ -964,12 +974,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// WHAT PINS THE COMPOSER ABOVE THE BAR (an operator report: with questions
 		// waiting, the message bar was pushed down under the bottom bar). The bar
 		// is absolute in the padding; the column's in-flow content — the
-		// transcript, the asks block, the composer last — is laid out in the
-		// content box above it, so the composer's box ends at the bar's top. The
-		// form used to carry the padding itself, which put the bar inside the
-		// form's own box and let an overgrown column carry the composer down
-		// under it. With the asks block shrinking (askerAsksSection) and the
-		// transcript's floor (#chat-log), the content never outgrows the column.
+		// transcript, the composer last — is laid out in the content box above
+		// it, so the composer's box ends at the bar's top. The form used to carry
+		// the padding itself, which put the bar inside the form's own box and let
+		// an overgrown column carry the composer down under it. (The asks block
+		// that grew the column is gone: the asks are a badge in the header.)
 		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative "+switcherRoom(false))),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
@@ -980,19 +989,20 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		//
-		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the header sheet's Chats tab
-		// (chiefChatsPanel), and nothing there opens a drawer.
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
+		// header (chiefPageStrip), and nothing there opens a drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
-		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
-		// session does, with the chip in its header (foldedHeader); see below.
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// The header's asks badge's live refresh, which must sit INSIDE this
+		// SSE section (askerAsksRefresh). No asks block: the asks are the
+		// header's badge, answered on the Asks page.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", askerAsksRefresh(v.AsksSrc)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// 🔴 NO CHAT BAR OVER A CHIEF'S TRANSCRIPT: its chats are managed in the
-		// header sheet's Chats tab (page) or under the panel's thread list, and
-		// its context chip is in the header (chief_chats.go).
+		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the strip of chips
+		// under the page's header (chiefPageStrip) or over the panel's pane
+		// (chiefPanelBody), and its context chip is in the header (chief_chats.go).
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
@@ -1002,12 +1012,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// other session (an operator report). py-1 keeps a focus ring at the
 			// scroll edge from being clipped; the column's own gutter is the sides'.
 			//
-			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. Beside it the
-			// asks block shrinks (askerAsksSection) and the composer does not, so
-			// what is left after the composer and this floor is all the asks block
-			// can take — the conversation keeps a strip on screen however many
-			// questions wait, and the column's in-flow content never outgrows it
-			// (which is what slid the composer under the switcher).
+			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. The
+			// conversation keeps a strip on screen whatever else the column holds
+			// (a notice, the drift banner), and the column's in-flow content never
+			// outgrows it (which is what slid the composer under the switcher,
+			// when an asks block shared the column).
 			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-[7.5rem] [&[data-cg-unlaid]>*]:invisible"),
 			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
 			// can paint mid-document — under load, between any two tags — and a
@@ -1055,11 +1064,6 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// when what it would draw is still exactly this.
 			chatLogVersioned(v),
 		),
-		// A claude-code agent's asks: between the transcript and the composer, where a
-		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
-		// question never sits between the header and the conversation. Its
-		// "N waiting" chip is the header's badge (askerAsksBadge).
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -1152,6 +1156,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 				// the paper-plane icon button, named by aria-label and title.
 				Textarea(
 					ID("chat-input"),
+					g.If(v.FocusComposer, g.Attr("autofocus", "")),
 					Name("text"),
 					Rows("1"),
 					g.Attr("enterkeyhint", "send"),
@@ -1195,6 +1200,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
+		g.If(v.FocusComposer, composerFocusScript(v.Surface)),
 		// The session switcher, below the input (switcher.go): the page's
 		// only — the chief panel is a pane inside another page. After the
 		// draft's script, which must size a restored draft before anything
@@ -3108,4 +3114,18 @@ func agentChatScript(name string) g.Node {
   }
 })();
 `))
+}
+
+// composerFocusScript puts the cursor in #chat-input, after the pane is laid
+// out (the page's form is invisible until window.__cgLayoutLog, so autofocus
+// alone can miss it, and an htmx swap — the chief panel's body — never honours
+// autofocus). On the page it also drops ComposerFocusParam from the address,
+// so a reload of it does not take the focus again. Drawn only when the server
+// set FocusComposer.
+func composerFocusScript(surface ChatSurface) g.Node {
+	drop := ""
+	if surface == ChatSurfacePage {
+		drop = `try { var u = new URL(location.href); if (u.searchParams.has('` + ComposerFocusParam + `')) { u.searchParams.delete('` + ComposerFocusParam + `'); history.replaceState(history.state, '', u); } } catch (e) {}`
+	}
+	return Script(g.Raw(`(function () { var i = document.getElementById('chat-input'); if (i) i.focus({ preventScroll: true }); ` + drop + ` })();`))
 }

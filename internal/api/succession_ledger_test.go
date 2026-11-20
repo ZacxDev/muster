@@ -34,7 +34,9 @@ func TestTheSuccessionWritersAreALedger(t *testing.T) {
 	// reached only from the wake loop's officerFleet.Stop:
 	// TestTheHostOfficerSeamsAreALedger; docs/design/officers-on-hosts.md,
 	// open question 1).
-	assertCallers(t, ".", "CloseAgent", []string{"end_session.go:closeEndedWindow", "officer_host.go:hostStop"})
+	// And a fleet wrap's close step, on the owner's tap on its card, once the
+	// session's handoff turn ended (fleet_actions.go fleetWrapClose).
+	assertCallers(t, ".", "CloseAgent", []string{"end_session.go:closeEndedWindow", "fleet_actions.go:fleetCloseSession", "officer_host.go:hostStop"})
 	assertCallers(t, ".", "closeEndedWindow", []string{"end_session.go:acceptEndSession"})
 	assertCallers(t, ".", "acceptEndSession", []string{"chief_proposal.go:acceptProposal"})
 	assertCallers(t, ".", "DeclineProposal", []string{"chief_proposal.go:proposalForAnswer"})

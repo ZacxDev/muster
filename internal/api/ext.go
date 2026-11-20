@@ -397,6 +397,22 @@ type Extensions struct {
 	// MUSTER_PR_MAIL_SENDERS): without that a session has no pull requests, and
 	// the digest's Waiting on CI and Done groups stay empty whatever the App.
 	FleetPRStates PRStateReader
+	// FleetPropose turns on fleet proposals (MUSTER_FLEET_ORCHESTRATION=
+	// propose; fleet_actions.go): the chief's fleet write tools
+	// (session_instruct, session_answer, session_wrap, work_reassign, fleet_actions_list),
+	// the digest's proposal cards and their routes, the deterministic handoff
+	// proposals of the session-state pass, and the batched push. False, the
+	// default, is the build before it: no tool listed, no card, no
+	// fleet_actions write. It needs FleetDigest (refused at boot without).
+	FleetPropose bool
+	// FleetActions is the fleet's action log (internal/fleet, migration
+	// 0158). nil (no database): fleet proposals are off whatever FleetPropose.
+	FleetActions fleet.Actions
+	// FleetChecks is the GitHub App's CI read of one commit (fleet_answers.go
+	// fleetCIRead: ci_result), read only for an
+	// owner the App admits (githubAppForOwner), behind a two-minute cache.
+	// nil — no GitHub App — reads every commit's CI as unknown.
+	FleetChecks CIReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
@@ -548,6 +564,16 @@ type JobWorkspace interface {
 	// is not there is not an error. removed is false (with a nil error) for a
 	// tracked file, which is left in place.
 	RemoveUntrackedWorkspaceFile(ctx context.Context, a agents.Agent, rel string) (removed bool, err error)
+}
+
+// JobWorktreeSweeper is the optional part of a JobWorkspace that removes the
+// job worktrees and refs earlier jobs left behind (*agentprovision.Adapter
+// implements it). A JobWorkspace without it gets no sweep.
+type JobWorktreeSweeper interface {
+	// SweepJobWorktrees removes every job worktree of a's checkout and every
+	// refs/muster-jobs/* ref, returning what it removed. The runner calls it
+	// only while a's current job still reads running, so none is in use.
+	SweepJobWorktrees(ctx context.Context, a agents.Agent) ([]string, error)
 }
 
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken

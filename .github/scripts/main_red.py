@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep ONE open `main-red` issue while `main` is red, and close it when `main` is green.
 
-    main_red.py --repo OWNER/NAME --sha SHA --run-url URL --assignee LOGIN   (reads `needs` as JSON from $NEEDS)
+    main_red.py --repo OWNER/NAME --sha SHA --run-number N --run-url URL --assignee LOGIN
+                (reads `needs` as JSON from $NEEDS)
 
 🔴 WHY. Nothing told anyone when a push to `main` went red: main HEAD 4c3d54f
 (2026-11-17) was red and nobody was notified. GitHub notifies a repository's
@@ -21,10 +22,27 @@ docshots (pinned by TestCIMainRedNeedsWhatPublishGateNeeds):
 The issue is assigned to --assignee (the repository owner): GitHub notifies an
 assignee whether or not they watch the repository.
 
-🔴 ONLY THE CURRENT HEAD OF `main` DECIDES. Runs finish out of order; an older
-run finishing red after a newer one went green must not reopen the issue. So the
-script acts only when SHA is main's head at the time it runs; any other sha (or a
-failed head lookup) is a no-op that says so.
+🔴 THE NEWEST FINISHED VERDICT DECIDES. Runs finish out of order, and a main run
+usually finishes AFTER a newer push has landed (see ci.yml's concurrency). The
+first rule here was "act only if SHA is still main's head", and that never let a
+green run close the issue during a burst of merges: each green finished behind a
+newer push, so the issue stayed open through an hour of green (#843). Now this
+run acts unless a NEWER `main` push run of ci.yml (higher run number) has already
+DECIDED: its own `main-red` job has completed successfully. That is the job, not
+the run: a run only completes ~10 min after its main-red acted (the image jobs run
+after it), and keying on the run let an older run act in that window and flap
+the issue the newer one had just set (audit round 1 on #872). A newer run whose
+main-red has not finished does not stop this one, because it will decide in turn;
+a newer run that was cancelled (its main-red skipped) decides nothing. A failed
+lookup is a no-op that says so.
+
+⚠ Two main-red jobs running at the same moment (seconds apart) can both act, in
+either order: neither has completed when the other looks.
+
+⚠ It does not classify an infrastructure failure (a download that failed in a
+setup step) as anything but red. The run's failed step names are readable, but
+they mix setup with deliberate checks, so no reliable rule tells them apart; such
+a red opens or comments on the issue like any other.
 
 ACTIONS
   red, no open issue     create it (title "main is red", label main-red)
@@ -76,15 +94,42 @@ def verdict(needs_json: str) -> str:
     return "green"
 
 
-def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "") -> str:
+JOB_NAME = "main red? (open or close the main-red issue)"  # ci.yml's main-red job's name
+
+
+def newer_finished(repo: str, run_number: int, gh: Gh) -> tuple[bool, str]:
+    """(ok, what): whether a newer `main` push run of ci.yml has already DECIDED,
+    i.e. its own main-red job completed successfully. ok is False when a list
+    cannot be read."""
+    rc, out = gh(["api", f"repos/{repo}/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50",
+                  "--jq", '.workflow_runs[] | "\\(.run_number) \\(.id)"'])
+    if rc != 0:
+        return False, ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        n, run_id = int(parts[0]), parts[1]
+        if n <= run_number:
+            continue
+        rc, jobs = gh(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+                       "--jq", f'.jobs[] | select(.name == "{JOB_NAME}") | "\\(.status) \\(.conclusion)"'])
+        if rc != 0:
+            return False, ""
+        if any(j.split() == ["completed", "success"] for j in jobs.splitlines()):
+            return True, f"run #{n}, whose main-red has already acted"
+    return True, ""
+
+
+def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "", *,
+        run_number: int) -> str:
     if state == "none":
         return "no verdict (a job was cancelled, or the needs context was unreadable): nothing to do"
-    rc, head = gh(["api", f"repos/{repo}/commits/main", "--jq", ".sha"])
-    head = head.strip()
-    if rc != 0 or not head:
-        return "could not read main's head: nothing to do"
-    if head != sha:
-        return f"{sha[:12]} is not main's head ({head[:12]}): a newer run decides"
+    ok, newer = newer_finished(repo, run_number, gh)
+    if not ok:
+        return "could not list ci.yml's main runs: nothing to do"
+    if newer:
+        return f"{sha[:12]} (run #{run_number}) is older than {newer}: nothing to do"
     rc, out = gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                   "--json", "number", "--jq", ".[].number"])
     if rc != 0:
@@ -115,11 +160,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", required=True)
     ap.add_argument("--sha", required=True)
+    ap.add_argument("--run-number", type=int, required=True)
     ap.add_argument("--run-url", required=True)
     ap.add_argument("--assignee", default="")
     a = ap.parse_args()
     state = verdict(os.environ.get("NEEDS", ""))
-    print(f"main-red: verdict={state}: {act(a.repo, a.sha, a.run_url, state, assignee=a.assignee)}")
+    print(f"main-red: verdict={state}: {act(a.repo, a.sha, a.run_url, state, assignee=a.assignee, run_number=a.run_number)}")
     return 0
 
 

@@ -34,8 +34,11 @@ RUN npm install --no-audit --no-fund
 # internal/ui/**/*.go (where essentially every class is written) and
 # internal/api/login.go (the one document rendered outside internal/ui — the
 # sign-in page, which nothing else would notice losing).
-COPY tailwind.config.js Makefile ./
+COPY tailwind.config.js tailwind.pages.config.js Makefile ./
 COPY web/ ./web/
+# The pages content document's committed stylesheet, which css-check compares
+# against a fresh build (its one content entry, markdown.go, is in internal/ui).
+COPY internal/pages/content_theme.css ./internal/pages/content_theme.css
 COPY internal/ui/ ./internal/ui/
 COPY internal/api/login.go ./internal/api/login.go
 # The gotrue-mode sign-in, claim and account pages (accounts PR 4).

@@ -1466,8 +1466,56 @@ func (s *Server) removeJobWorktree(ctx context.Context, a agents.Agent, j jobs.J
 			o.Error = note
 		}
 	}
+	s.sweepJobWorktrees(ctx, a, j)
 	return o
 }
+
+// sweepJobWorktrees removes the worktrees and refs earlier jobs of a left
+// behind (JobWorktreeSweeper.SweepJobWorktrees), logging what went.
+//
+// 🔴 WHY HERE: a job's own removal is a deferred call in the server running
+// it, so a server that stops or crashes mid-turn leaves that job's worktree
+// and refs for ever. This runs while j still reads `running`, and the job store
+// starts no other job of a on any server until it is finished (Heads), so every
+// other worktree is an orphan. (A turn the reaper failed may still be running
+// in ccd in its worktree; its output is discarded either way.) It does not
+// change j's outcome.
+//
+// 🔴 AND ONLY WHILE THAT HOLDS, SO IT IS CHECKED, NOT ASSUMED. Two ways j stops
+// reading running while this runner is still alive, each letting another
+// server start the agent's NEXT job, whose worktree and refs a sweep would
+// then delete under it:
+//   - a graceful shutdown: StopJobs, then FailOwnJobs fails j while its turn
+//     unwinds — so a stopping server never sweeps;
+//   - the reaper failing j past its deadline — so j is re-read, and swept for
+//     only while it still reads running. (Between that read and the sweep is a
+//     window of one store round trip; a server ending j inside it is the
+//     shutdown case, already excluded.)
+func (s *Server) sweepJobWorktrees(ctx context.Context, a agents.Agent, j jobs.Job) {
+	h, ok := s.ext.JobWorkspace.(JobWorktreeSweeper)
+	if !ok || s.jobsStopping.Load() || s.ext.Jobs == nil {
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobWorktreeSweepTimeout)
+	defer cancel()
+	if cur, err := s.ext.Jobs.Get(rctx, j.ID); err != nil || cur.Status != jobs.StatusRunning {
+		if err != nil {
+			s.logger.Printf("jobs: %d: not sweeping the job worktrees of %q: the job could not be re-read: %v", j.ID, a.Name, err)
+		}
+		return
+	}
+	gone, err := h.SweepJobWorktrees(rctx, a)
+	if len(gone) > 0 {
+		s.logger.Printf("jobs: %d: swept what earlier jobs of %q left: %s", j.ID, a.Name, strings.Join(gone, "; "))
+	}
+	if err != nil {
+		s.logger.Printf("jobs: %d: sweep the job worktrees of %q: %v", j.ID, a.Name, err)
+	}
+}
+
+// jobWorktreeSweepTimeout bounds the sweep: removing a few left-behind
+// worktrees of a large checkout takes longer than one job's removal.
+const jobWorktreeSweepTimeout = 2 * time.Minute
 
 // JobWorktreeRemoveFailedPrefix opens the note a job's error carries when its
 // worktree could not be removed.

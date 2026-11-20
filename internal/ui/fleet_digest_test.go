@@ -26,10 +26,10 @@ func TestTheSkeletonNamesTheFleetPackagesGroups(t *testing.T) {
 // slot (the skeleton, state loading) BEFORE the chat body, outside it — a
 // thread switch swaps the body and leaves the card.
 func TestThePanelPinsTheDigestAboveTheChat(t *testing.T) {
-	if off := renderString(t, ChiefPanel(false)); strings.Contains(off, `id="`+fleetDigestSlotID+`"`) || strings.Contains(off, "data-fleet-") {
+	if off := renderString(t, ChiefPanel(false, false)); strings.Contains(off, `id="`+fleetDigestSlotID+`"`) || strings.Contains(off, "data-fleet-") {
 		t.Fatalf("MUSTER_FLEET_DIGEST off: the panel draws the digest slot:\n%s", off)
 	}
-	html := renderString(t, ChiefPanel(true))
+	html := renderString(t, ChiefPanel(true, false))
 	slot := strings.Index(html, `id="`+fleetDigestSlotID+`"`)
 	body := strings.Index(html, `id="`+chiefPanelBodyID+`"`)
 	if slot < 0 || body < 0 || slot > body {
@@ -88,7 +88,7 @@ func TestTheCardsStatesAndAnUnavailableCard(t *testing.T) {
 // script dispatches exactly that name. The browser fact (one fetch on a
 // restored-open load) is e2e/tests/chief-fleet-digest.spec.ts.
 func TestTheFleetCardLoadsOnItsOwnEvent(t *testing.T) {
-	html := renderString(t, fleetDigestSlot())
+	html := renderString(t, fleetDigestSlot(false))
 	if !strings.Contains(html, `hx-trigger="`+fleetOpenEvent+` from:document,`) {
 		t.Errorf("the slot does not load on %s:\n%s", fleetOpenEvent, html)
 	}

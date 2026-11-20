@@ -300,18 +300,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/chief/fleet":         classList,
 	"GET /ui/chief/fleet/session": classList,
 	"POST /ui/chief/fleet/chat":   classList,
-	"GET /ui/connector-requests":  classList,
-	"GET /ui/connectors":          classList,
-	"GET /ui/connectors/new":      classList,
-	"GET /ui/notifications":       classList,
-	"GET /ui/tags":                classList,
-	"GET /ui/tasks":               classList,
-	"GET /ui/tasks/new":           classList,
-	"GET /ui/tasks/review-count":  classList,
-	"POST /chief/provision":       classList,
-	"POST /connectors":            classList,
-	"POST /tasks":                 classList,
-	"POST /tasks/merge":           classList, // the form names A's task as the loser
+	// Fleet proposals' cards (fleet_cards.go): each acts on the principal's
+	// own fleet_actions row by id (forced row-level security: another owner's
+	// id is not found), and the dialog route reads nothing.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": classParam,
+	"POST /ui/chief/fleet/bulk":                classList,
+	"GET /ui/chief/fleet/stepup":               classList,
+	"GET /ui/connector-requests":               classList,
+	"GET /ui/connectors":                       classList,
+	"GET /ui/connectors/new":                   classList,
+	"GET /ui/notifications":                    classList,
+	"GET /ui/tags":                             classList,
+	"GET /ui/tasks":                            classList,
+	"GET /ui/tasks/new":                        classList,
+	"GET /ui/tasks/review-count":               classList,
+	"POST /chief/provision":                    classList,
+	"POST /connectors":                         classList,
+	"POST /tasks":                              classList,
+	"POST /tasks/merge":                        classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,
@@ -489,10 +495,12 @@ var isolationClasses = map[string]routeClass{
 	// JSON API is a personal token only; the runner door is a runner token
 	// only. Each names A's job (or A's runner token) by id.
 	"GET /flows":                            classList,
-	"POST /flows/jobs":                      classList,
 	"POST /flows/runner-tokens":             classList,
 	"POST /flows/jobs/{id}/cancel":          classParam,
 	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	// Running a task by hand from the page is an admin's (requireAdminRole,
+	// operator decision 2026-11-18); connecting one's own browser is not.
+	"POST /flows/jobs": classAdminOnly,
 	// An agent's request is decided by its owner only (PR 4).
 	"POST /flows/requests/{id}/approve": classParam,
 	"POST /flows/requests/{id}/deny":    classParam,
@@ -706,7 +714,7 @@ var isolationClasses = map[string]routeClass{
 	// The Log tab's panel reads the caller's own asks (row-level security;
 	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
 	"GET /attention/log": classList,
-	// A session page's asks block names its asker by query (?agent=): A's
+	// A session page's asks badge names its asker by query (?from=agent:): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":      classParam,
 	"GET /attention/open/{key}": classParam,
@@ -794,6 +802,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/{officer}/resume":                  classParam,
 	"POST /officers/{officer}/mode":                    classParam,
 	"POST /officers/{officer}/run":                     classParam,
+	"POST /officers/{officer}/raise-cap":               classParam,
 	"POST /officers/{officer}/delete":                  classParam,
 	"POST /officers/{officer}/schedules":               classParam,
 	"POST /officers/{officer}/schedules/{name}/delete": classParam,
@@ -816,8 +825,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /s/{token}/upload":                           classPublic,
 
 	// Needs you (officer_needs_you.go): {item} is a refusal of A's officer.
-	"POST /officers/{officer}/refusals/{item}/refile": classParam,
-	"POST /officers/{officer}/refusals/{item}/drop":   classParam,
+	"POST /officers/{officer}/refusals/{item}/refile":    classParam,
+	"POST /officers/{officer}/refusals/{item}/drop":      classParam,
+	"POST /officers/{officer}/chat":                      classParam,
+	"POST /officers/{officer}/chat/cards/{card}/approve": classParam,
+	"POST /officers/{officer}/chat/cards/{card}/reject":  classParam,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -852,9 +864,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block and A's ask's own page show
-	// A's canary-carrying question. (The tap on A's ask opens that page, by
-	// its id — controlMarkers has its own control.)
+	// The attention asks: A's agent's asks badge (its link names the agent)
+	// and A's ask's own page (its canary-carrying question) show A's data.
+	// (The tap on A's ask opens that page, by its id — controlMarkers has its
+	// own control.)
 	"GET /attention/asker", "GET /attention/asks/{id}",
 	// The attention summary through A's personal token: A's canary-carrying
 	// ask is on it (its why is the question).
@@ -1865,8 +1878,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path = strings.NewReplacer("{officer}", url.PathEscape(o.officer), "{name}", "nightly").Replace(path)
 	}
 	if path == "/attention/asker" {
-		// The asks block of A's agent (the agent page's), by name.
-		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
+		// The asks badge of A's agent (the agent page's), by name.
+		path += "?" + askerRef{agent: o.agentName}.query()
 	}
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
@@ -2158,6 +2171,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
+	// with fleet proposals off, so every id answers 404 for A and the ghost
+	// alike. That another owner's tap on A's proposal decides nothing and sends
+	// nothing (forced row-level security on fleet_actions) is
+	// TestAnotherOwnersProposalCannotBeDecided's.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": "fleet proposals off in the walk: controlled in TestAnotherOwnersProposalCannotBeDecided",
 	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
 	// session the host lists, which the walk names none of, so A's own call and
 	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the

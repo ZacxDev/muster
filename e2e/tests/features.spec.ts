@@ -94,7 +94,7 @@ for (const size of [
       await expect(row(page, 'mirror')).toHaveAttribute('data-state', 'on');
       await expect(row(page, 'suggested-replies')).toHaveAttribute('data-state', 'off');
       // The setup is in each row's ⓘ sheet (closed: read as text, not seen).
-      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('needs MUSTER_AGENT_OPENROUTER_KEY');
+      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('Needs MUSTER_AGENT_OPENROUTER_KEY');
       await expect(page.locator('section[data-feature][data-state="misconfigured"]')).toHaveCount(0);
       await expect(page.locator('[data-features-counts]')).toContainText('0 need setup');
       const chief = row(page, 'chief');

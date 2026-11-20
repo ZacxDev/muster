@@ -371,7 +371,9 @@ as **payload v2**:
 ## Installable app (PWA)
 
 - **The manifest** (`/manifest.webmanifest`) declares a standalone display, any
-  and maskable icons at 192 and 512 px, and two narrow screenshots. Neither the
+  and maskable icons at 192 and 512 px (muster's mark, [brand.md](brand.md)),
+  and two narrow screenshots. A notification's small badge is the mark in
+  white, `badge-72.png`. Neither the
   manifest nor `/sw.js` needs a session. On a server with a [logo](branding.md) its icons are the logo's
   192 and 512 px squares (purpose `any`, no maskable icon), and every
   Web Push notification's `icon` is the logo's too. The Android payload (v2)

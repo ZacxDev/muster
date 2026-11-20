@@ -184,7 +184,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/drafts",
 		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
 		"GET /attention/log",
-		// A session page's asks block (attention_asker.go).
+		// A session page's asks badge (attention_asker.go).
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
@@ -302,11 +302,15 @@ var routeVias = map[authz.Via][]string{
 		"POST /officers/{officer}/resume",
 		"POST /officers/{officer}/mode",
 		"POST /officers/{officer}/run",
+		"POST /officers/{officer}/raise-cap",
 		"POST /officers/{officer}/delete",
 		"POST /officers/{officer}/schedules",
 		"POST /officers/{officer}/schedules/{name}/delete",
 		"POST /officers/{officer}/refusals/{item}/refile",
 		"POST /officers/{officer}/refusals/{item}/drop",
+		"POST /officers/{officer}/chat",
+		"POST /officers/{officer}/chat/cards/{card}/approve",
+		"POST /officers/{officer}/chat/cards/{card}/reject",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",
@@ -417,6 +421,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/chief/fleet",
 		"GET /ui/chief/fleet/session",
 		"POST /ui/chief/fleet/chat",
+		"POST /ui/chief/fleet/actions/{id}/{verb}",
+		"POST /ui/chief/fleet/bulk",
+		"GET /ui/chief/fleet/stepup",
 		"GET /ui/connector-requests",
 		"GET /ui/connectors",
 		"GET /ui/connectors/new",

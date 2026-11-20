@@ -274,9 +274,10 @@ func TestAFeatureOffRouteAnswersATypedNotFound(t *testing.T) {
 			}
 		})
 	}
-	// A document navigation gets the notice page.
+	// A document navigation gets the notice page (renderFeatureOff); the
+	// operator's session is an admin's, so its ⓘ holds the line.
 	page := sessionGet(h, s, "/plugins", true)
-	if page.Code != http.StatusNotFound || !strings.Contains(page.Body.String(), "Plugins is off on this server") ||
+	if page.Code != http.StatusNotFound || !strings.Contains(page.Body.String(), FeatureOffNoticeText) ||
 		!strings.Contains(page.Body.String(), "EXAMPLE_PLUGINS=1") {
 		t.Fatalf("GET /plugins as a page: %d %s", page.Code, page.Body)
 	}

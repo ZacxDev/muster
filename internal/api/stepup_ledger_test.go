@@ -45,6 +45,7 @@ var stepUpChannels = map[string]stepUpChannel{
 	"team_dispatch.go:teamCardRefusal":                    {how: "form", proof: "TestATeamsCardsConfirmInPlaceForAnOperator"},
 	"outreach_batch.go:handleOutreachBatchDecide":         {how: "form", proof: "TestATeamsCardsConfirmInPlaceForAnOperator"}, // the Asks page's dialog, drawn with plugins off too
 	"plugin_drafts.go:decideDraft":                        {how: "form", proof: "e2e/tests/plugins.spec.ts"},
+	"officer_operator_chat.go:handleOfficerChatCard":      {how: "form", proof: "TestAConfirmCardApprovalNeedsARecentSignIn"}, // the officer page draws draftStepUpHTML with an open card
 	"plugin_pairing.go:decidePairForm":                    {how: "form", proof: "TestThePluginsPagePairingApproveConfirmsInPlace"},
 	"team_admin.go:handleAgentRotateCredentials":          {how: "form", proof: "TestTheAgentPageOffersRotateCredentialsToThoseWhoMayRotate"},
 	"team_connectors.go:decideTeamConnector":              {how: "form", proof: "TestTheTeamConnectorsPageConfirmsInPlace"},
@@ -63,6 +64,10 @@ var stepUpChannels = map[string]stepUpChannel{
 	"chief_owner_release.go:typerSpeaksForOwner":          {how: "none"}, // whether a typed chat turn speaks for the owner
 	"plugin_handoffs.go:handlePluginHandoffMint":          {how: "none"}, // records stepped_up on the hand-off; refuses nobody
 	"mirror.go:freshForMillis":                            {how: "none"}, // how long the sign-in stays fresh, for the page's dialog
+
+	// A fleet proposal's card (fleet_cards.go): the chief panel's script reads
+	// the 403 and asks the page's dialog, or loads it (FleetStepUpPath).
+	"fleet_cards.go:fleetCardGate": {how: "script", gap: "no browser test drives a stale approval to the dialog (the chief panel's script asks; the server's 403 is TestAnEditedTextRequiresAFreshSignIn)"},
 
 	// A plugin's chief instructions (0141): the owner approves one exact text.
 	"plugin_chief_instructions.go:handleChiefInstructionsApprove": {how: "form", proof: "TestThePluginsPageChiefInstructionsApproveConfirmsInPlace"},

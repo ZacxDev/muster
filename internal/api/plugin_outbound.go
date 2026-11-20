@@ -620,7 +620,11 @@ const ExpiredDetail = "not sent within 7 days of being written: it expired undec
 //     whether it posted it, so it MAY be live. No follow-up is queued (a
 //     redraft would be a blind re-post) and the item is escalated to the
 //     officer's owner, who checks the venue and answers.
-func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, detail string) builtin.DraftEnd {
+//
+// retryAt, when the plugin's refusal named one (parseRetryAt), is carried in
+// the follow-up's payload as `retry_at` (RFC 3339, UTC): the owner's Re-file
+// offers it first.
+func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, detail string, retryAt *time.Time) builtin.DraftEnd {
 	id := strconv.FormatInt(d.ID, 10)
 	e := builtin.DraftEnd{Officer: officer, Draft: d.ID, Max: maxOpenRefusedItems, ClaimedAt: d.ClaimedAt}
 	if d.OfficerItemID != nil {
@@ -651,8 +655,12 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 		}
 		e.Ended = "draft " + id + " was " + ended + ", not posted."
 	}
-	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
-		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
+	fields := map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
+		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail}
+	if retryAt != nil {
+		fields["retry_at"] = retryAt.UTC().Format(time.RFC3339)
+	}
+	payload, _ := json.Marshal(fields)
 	e.FollowUp = &builtin.NewItem{Officer: officer, Kind: draftRefusedKind, SubjectKey: "draft:" + id, Payload: payload}
 	if by == settledByOwner {
 		// The owner rejected it: their redraft request is their own item, so it
@@ -674,7 +682,7 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 // the follow-up is HELD until one of them is finished (the officer sweep
 // delivers it, promoteHeldRefusals) — the caller's push says so. Best
 // effort: the draft's own state is already recorded.
-func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) (held bool) {
+func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string, retryAt *time.Time) (held bool) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
 		return false
 	}
@@ -724,7 +732,7 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	// follow-up is STILL filed, HELD (not claimable) until one of them is
 	// finished — never dropped (operator decision) — and the item the draft
 	// was for is finished naming it.
-	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail), now)
+	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail, retryAt), now)
 	if err != nil {
 		s.logger.Printf("plugins: draft %d ended unsent (by %s); %s and its item left as they are: %v", d.ID, by, officer, err)
 		return false
@@ -765,7 +773,7 @@ func (l officerPluginLink) DraftEndedTx(ctx context.Context, tx pgx.Tx, d plugin
 	if d.Officer == nil || !d.IsOutbound() {
 		return nil
 	}
-	_, err := l.store.DraftEndedTx(ctx, tx, d.OwnerID, draftEndFor(d, *d.Officer, how, "", ""), l.now())
+	_, err := l.store.DraftEndedTx(ctx, tx, d.OwnerID, draftEndFor(d, *d.Officer, how, "", "", nil), l.now())
 	return err
 }
 
@@ -795,10 +803,10 @@ func outboundAttentionText(c plugins.DraftCard) string {
 	}
 	who := ""
 	if d.Officer != nil {
-		who = " by the " + ui.OfficerSourceName(*d.Officer)
+		who = " by " + officerWords(c)
 	}
-	// In words (the jargon audit's U-25): "New post on X by the Marketing
-	// officer (Acme)", not "Outbound new post on x by officer marketing:acme".
+	// In words (the jargon audit's U-25): "New post on X by Marketing for
+	// Acme", not "Outbound new post on x by officer marketing:acme".
 	return strings.ToUpper(what[:1]) + what[1:] + " on " + venueName(d.VenueText()) + who
 }
 
@@ -809,6 +817,36 @@ func venueName(v string) string {
 		return "its plugin"
 	}
 	return strings.ToUpper(v[:1]) + v[1:]
+}
+
+// officerWords is how a card names the officer that filed draft card c: its
+// display name (DraftCard.OfficerDisplay), else "your officer" — never its id,
+// which is a details-layer fact (the top layer carries no ids).
+func officerWords(c plugins.DraftCard) string {
+	if n := strings.TrimSpace(c.OfficerDisplay); n != "" {
+		return n
+	}
+	return "your officer"
+}
+
+// officerDisplayName is owner's officer id's display name: its declared
+// type's name (the name its page heads it with), "" when it has none (a
+// MUSTER_OFFICERS officer, or one muster does not know).
+func (s *Server) officerDisplayName(owner int64, id string) string {
+	if st, ok := s.officerRT.declaredView(owner, id); ok {
+		return strings.TrimSpace(st.row.TypeName)
+	}
+	return ""
+}
+
+// withDraftOfficerNames sets each officer card's OfficerDisplay
+// (officerDisplayName). In memory: no query.
+func (s *Server) withDraftOfficerNames(cards []plugins.DraftCard) {
+	for i := range cards {
+		if d := cards[i].Draft; d.Officer != nil {
+			cards[i].OfficerDisplay = s.officerDisplayName(d.OwnerID, *d.Officer)
+		}
+	}
 }
 
 // pluginDeliverToFieldHTML is the create form's "Send to" choice, drawn only

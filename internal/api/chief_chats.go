@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,17 +93,37 @@ func sideChatRuntime(a agents.Agent) string {
 	return agents.SessionRuntimeLegacy
 }
 
-// openSideChat opens a new side chat of chief a: its own session key, and on a
-// claude-code chief its own lane.
+// sideChatModel is the model the side chat route was asked to open its chat on
+// (the "+" menu's pick): "" (the chief's own, today's "+"), or a model checked
+// by runtimeSessionModel on the claude-code runtime, the one runtime a model is
+// picked for.
+//
+// 🔴 A MODEL IS REFUSED, NOT IGNORED, WHERE THE PICKER IS NOT OFFERED (the
+// runtimes gate off, or a gateway chief): a chat's model is fixed once it is
+// made, so a pick quietly dropped would open, for good, a chat on a model the
+// caller did not ask for. "+" offers no menu there, so only a hand-made request
+// meets the refusal.
+func (s *Server) sideChatModel(ctx context.Context, a agents.Agent, model string) (string, error) {
+	if strings.TrimSpace(model) == "" {
+		return "", nil
+	}
+	return s.runtimeSessionModel(ctx, a, agents.SessionRuntimeClaudeCode, model)
+}
+
+// openSideChat opens a new side chat of chief a on model (sideChatModel; ""
+// the chief's own): its own session key, and on a claude-code chief its own
+// lane, started with --model when model is set.
 //
 // ⚠ THE NEWEST SIDE CHAT IS REUSED WHILE IT IS EMPTY, as POST
 // /agents/{id}/sessions reuses an empty latest one: a double tap opens one chat.
-func (s *Server) openSideChat(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+// Only on the same runtime AND model: both are fixed for a chat's life, so an
+// empty chat on another model is not what was picked.
+func (s *Server) openSideChat(ctx context.Context, a agents.Agent, model string) (agents.ChatSession, error) {
 	runtime := sideChatRuntime(a)
 	if cs, ok := s.chiefChatStore(); ok {
 		if list, err := cs.ListChats(ctx, a.ID); err == nil {
 			sw := agents.SwitcherOrder(list)
-			if len(sw.Side) > 0 && sw.Side[0].Runtime == runtime {
+			if len(sw.Side) > 0 && sw.Side[0].Runtime == runtime && sw.Side[0].Model == model {
 				if msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, sw.Side[0].ID, 1); err == nil && len(msgs) == 0 {
 					return sw.Side[0].ChatSession, nil
 				}
@@ -116,30 +137,52 @@ func (s *Server) openSideChat(ctx context.Context, a agents.Agent) (agents.ChatS
 	if !ok {
 		return s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
 	}
-	return st.CreateSessionOn(ctx, a.ID, a.Name, runtime, "")
+	return st.CreateSessionOn(ctx, a.ID, a.Name, runtime, model)
 }
 
-// handleChiefSideChat handles POST /agents/{id}/sessions/side.
+// handleChiefSideChat handles POST /agents/{id}/sessions/side, with an
+// optional model (the "+" menu's pick: sideChatModel), checked before anything
+// is written: a refused model opens no chat and elects no primary.
 func (s *Server) handleChiefSideChat(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.chiefFor(w, r)
 	if !ok {
 		return
 	}
 	ctx := r.Context()
+	model, err := s.sideChatModel(ctx, a, r.FormValue("model"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	// The primary is elected first, so the new chat can never be taken for it.
 	if _, err := s.primarySession(ctx, a); err != nil {
 		s.logger.Printf("chief chats: primary of %d: %v", a.ID, err)
 		http.Error(w, "could not open the primary chat", http.StatusInternalServerError)
 		return
 	}
-	sess, err := s.openSideChat(ctx, a)
+	sess, err := s.openSideChat(ctx, a, model)
 	if err != nil {
 		s.logger.Printf("chief chats: side chat of %d: %v", a.ID, err)
 		http.Error(w, "could not open a side chat", http.StatusInternalServerError)
 		return
 	}
-	s.logger.Printf("chief chats: %s: side chat %d (runtime %q)", a.Name, sess.ID, sess.Runtime)
-	s.answerSessionOpened(ctx, w, r, a, sess)
+	s.logger.Printf("chief chats: %s: side chat %d (runtime %q, model %q)", a.Name, sess.ID, sess.Runtime, sess.Model)
+	s.answerSideChatOpened(ctx, w, r, a, sess)
+}
+
+// answerSideChatOpened is answerSessionOpened for the side chat route, asking
+// the view it lands on to put the cursor in the message box: the page by
+// ui.ComposerFocusParam on its HX-Redirect, the panel by the flag on the body it
+// renders. 🔴 "+" MUST VISIBLY LAND: the operator tapped New side chat, the page
+// moved, and nothing said so. Only this route asks; a plain load of the chat
+// does not take the focus.
+func (s *Server) answerSideChatOpened(ctx context.Context, w http.ResponseWriter, r *http.Request, a agents.Agent, sess agents.ChatSession) {
+	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
+		s.writeChiefPanelBodyWith(ctx, w, a, strconv.FormatInt(sess.ID, 10), "", true)
+		return
+	}
+	w.Header().Set("HX-Redirect", ui.AgentSessionHref(a.Name, sess.ID)+"&"+ui.ComposerFocusParam+"=1")
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleChiefChatArchive handles POST /agents/{id}/sessions/{sid}/archive,
@@ -199,7 +242,7 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 
 // stayOnCurrent is the chat an action on chat touched leaves the operator on:
 // the chat they were ON (?current=, ui.ChiefCurrentParam) when the action was
-// on another chat — a Chats-tab row's ⋯ menu archiving, unarchiving or making
+// on another chat — a chat chip's ⋯ menu archiving, unarchiving or making
 // primary a chat that is not the open one — else fallback (the action's own
 // answer: the primary after archiving the open chat, the chat itself after
 // unarchiving or making it primary).
@@ -442,9 +485,18 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 // ctx's viewer is offered it: a member on a team's chief (memberOnTeamAgent)
 // is in its one shared room, and offered none of the chat actions the server
 // refuses them (teamAgentRoutes).
-func chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
-	return &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
+//
+// NewChatModels is the "+" menu's models (agents.ClaudeCodeModels, the one list
+// the New session picker offers too) where a side chat's model may be picked,
+// i.e. the runtimes gate offers claude-code to this chief (sideChatModel's own
+// test), and none elsewhere: "+" then opens a chat at once, as before.
+func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
+	b := &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
 		Primary: sess.IsDefault, Archived: sess.ArchivedAt != nil, SharedRoom: memberOnTeamAgent(ctx, a)}
+	if slices.Contains(s.sessionRuntimesFor(ctx, a), agents.SessionRuntimeClaudeCode) {
+		b.NewChatModels = agents.ClaudeCodeModels
+	}
+	return b
 }
 
 // chiefContextReader is the telemetry store's context read (chiefusage.PGStore).
