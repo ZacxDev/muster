@@ -271,6 +271,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.handleGoTrueLogout(w, r)
 		return
 	}
+	// 🔴 A sign-out READS the session (and deletes this browser's push
+	// subscription with it), so a sibling page must not be able to post one:
+	// the central origin check's rule (cross_origin.go), as on every cookie
+	// write. The GoTrue path checks isSameOrigin itself.
+	if s.refuseCrossOriginWrite(w, r) {
+		return
+	}
 	// This browser's push subscription goes with its session (push_routes.go).
 	if s.hasValidSession(r) {
 		s.forgetPushDevice(w, r, s.sessionUserID(r))
@@ -432,8 +439,8 @@ func writeDocumentHeaders(w http.ResponseWriter, code int) {
 	// A login page must never be cached: a shared or restored cache entry would
 	// show a stale form (or a stale error) to the next person at this origin.
 	w.Header().Set("Cache-Control", "no-store")
-	// 🔴 same-origin, OVERRIDING securityHeaders' no-referrer, FOR THESE PAGES
-	// ONLY. Under no-referrer a browser sends `Origin: null` on a form POST
+	// 🔴 same-origin, set here as well as by securityHeaders (whose default
+	// was no-referrer until the central origin check). Under no-referrer a browser sends `Origin: null` on a form POST
 	// navigation, so the gotrue sign-in, claim and sign-out forms — which
 	// refuse a POST whose Origin is not muster's (login CSRF) — refused
 	// muster's OWN forms. Measured in Chromium by the e2e spec: the claim POST

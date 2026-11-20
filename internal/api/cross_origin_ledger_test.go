@@ -36,8 +36,10 @@ const csrfLedgerPath = "testdata/csrf_ledger.golden"
 // check does not guard it. Exact: a route missing here, or listed and not an
 // unauthenticated write, fails.
 var unauthenticatedWriteReasons = map[string]string{
-	"POST /login":                "how a visitor stops being anonymous; refuses a cross-origin sign-in itself (isSameOrigin)",
-	"POST /logout":               "clears this browser's own cookies; a forced sign-out is its only effect",
+	"POST /login": "how a visitor stops being anonymous. GoTrue mode checks isSameOrigin; password mode does NOT, and reads the " +
+		"session only in passwordGate, to exempt a signed-in browser from the sign-in throttle (sessionReaders)",
+	"POST /logout": "reads the session to forget this browser's push subscription, so it applies the central check itself " +
+		"(refuseCrossOriginWrite) in password mode and isSameOrigin in GoTrue mode, before either read",
 	"POST /auth/claim":           "a single-use claim link, held by a visitor with no session; same-origin checked in the handler",
 	"POST /invite":               "a single-use invite link, held by a visitor with no session; same-origin checked in the handler",
 	"POST /auth/reset":           "a single-use reset link, held by a visitor with no session; same-origin checked in the handler",

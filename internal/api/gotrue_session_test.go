@@ -720,10 +720,10 @@ func TestTheGoTrueFormsRefuseACrossSitePost(t *testing.T) {
 	}
 }
 
-// TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin: securityHeaders sets
-// no-referrer everywhere, under which a browser sends `Origin: null` on a form
-// POST — and the gotrue forms refuse that. The auth documents must override it
-// to same-origin, through the REAL middleware chain.
+// TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin: under no-referrer a browser
+// sends `Origin: null` on a form POST — and the gotrue forms refuse that. The
+// auth documents are served same-origin (their own header, and securityHeaders'
+// default since the central origin check), through the REAL middleware chain.
 func TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin(t *testing.T) {
 	f := newGoTrueFixture(t)
 	for _, target := range []string{"/login", ClaimPath} {
@@ -732,9 +732,11 @@ func TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin(t *testing.T) {
 			t.Errorf("GET %s: Referrer-Policy %q, want same-origin", target, got)
 		}
 	}
-	// Control: an ordinary response keeps the global no-referrer.
-	if got := do(f.edge, "GET", "/health", nil).Header().Get("Referrer-Policy"); got != "no-referrer" {
-		t.Fatalf("control: /health Referrer-Policy %q, want no-referrer", got)
+	// And the global default is same-origin too (securityHeaders; it was
+	// no-referrer until the central origin check needed a real Origin on a
+	// plain-http native form): a page with no override of its own keeps it.
+	if got := do(f.edge, "GET", "/health", nil).Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("/health Referrer-Policy %q, want the global same-origin", got)
 	}
 	// And a POST whose Origin is the literal "null" is refused (what a form
 	// under no-referrer would have sent).

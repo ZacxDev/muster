@@ -87,7 +87,7 @@ func (s *Server) crossOriginWriteRefusal(r *http.Request) string {
 		if strings.TrimSpace(r.Header.Get("Referer")) == "" {
 			return csrfReasonNoHeaders
 		}
-		if s.isSameOrigin(r) {
+		if s.isOwnOriginURL(r.Header.Get("Referer"), r) {
 			return ""
 		}
 		return csrfReasonReferer
@@ -105,16 +105,47 @@ func (s *Server) crossOriginWriteRefusal(r *http.Request) string {
 // origin (MUSTER_PUBLIC_URL) trusted: behind a proxy that rewrites Host, the
 // browser's Origin is the public one. The request's own Host is compared by
 // the check itself. Built per write; it is a map and a mutex.
+//
+// ⚠ A TRUSTED ORIGIN IS ADMITTED WHATEVER Sec-Fetch-Site SAYS (the standard
+// library exempts it before reading the header's value). That is safe: a
+// browser sets Origin itself, so only a page ON muster's public origin can
+// send it.
 func (s *Server) crossOriginProtection() *http.CrossOriginProtection {
 	c := http.NewCrossOriginProtection()
-	if base := s.ext.PublicURL; base != "" {
-		if u, err := url.Parse(base); err == nil && u.Scheme != "" && u.Host != "" {
-			// An origin that does not parse as one is refused by
-			// AddTrustedOrigin; nothing is trusted in its place.
-			_ = c.AddTrustedOrigin(u.Scheme + "://" + u.Host)
-		}
+	if o := s.publicOrigin(); o != "" {
+		// An origin that does not parse as one is refused by
+		// AddTrustedOrigin; nothing is trusted in its place.
+		_ = c.AddTrustedOrigin(o)
 	}
 	return c
+}
+
+// publicOrigin is MUSTER_PUBLIC_URL's origin, lowercased as a browser sends
+// it ("" when unset or not a URL).
+func (s *Server) publicOrigin() string {
+	if base := s.ext.PublicURL; base != "" {
+		if u, err := url.Parse(base); err == nil && u.Scheme != "" && u.Host != "" {
+			return strings.ToLower(u.Scheme + "://" + u.Host)
+		}
+	}
+	return ""
+}
+
+// isOwnOriginURL is the Origin step's own-origin rule applied to a Referer
+// (step 3), so the two agree: its host is the request's Host (compared as
+// CrossOriginProtection compares Origin with Host), or its scheme and host are
+// MUSTER_PUBLIC_URL's origin. (requireSameOrigin's isSameOrigin is looser: any
+// scheme, host compared without case. It is left as it is.)
+func (s *Server) isOwnOriginURL(raw string, r *http.Request) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	if u.Host == r.Host {
+		return true
+	}
+	po := s.publicOrigin()
+	return po != "" && strings.ToLower(u.Scheme+"://"+u.Host) == po
 }
 
 // refuseCrossOriginCookieWrite answers 403 and reports true when p was
@@ -130,6 +161,13 @@ func (s *Server) refuseCrossOriginCookieWrite(w http.ResponseWriter, r *http.Req
 	if p.Via != authz.ViaSession {
 		return false
 	}
+	return s.refuseCrossOriginWrite(w, r)
+}
+
+// refuseCrossOriginWrite applies the check to r whoever admitted it, and
+// answers, counts and logs a refusal. admit's cookie door calls it, and so
+// does password-mode POST /logout, which reads the session itself.
+func (s *Server) refuseCrossOriginWrite(w http.ResponseWriter, r *http.Request) bool {
 	reason := s.crossOriginWriteRefusal(r)
 	if reason == "" {
 		return false

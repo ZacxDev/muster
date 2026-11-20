@@ -218,7 +218,7 @@ for (const vp of [
       test.setTimeout(120_000);
       await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
-      const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
+      const started = await page.request.post(`${origin}/agents/${agent.id}/start`, { headers: { Origin: origin } });
       expect(started.status(), await started.text()).toBe(200);
       // The status promoter ticks every 10 s.
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
@@ -426,7 +426,7 @@ for (const vp of [
       test.setTimeout(120_000);
       await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
-      const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
+      const started = await page.request.post(`${origin}/agents/${agent.id}/start`, { headers: { Origin: origin } });
       expect(started.status(), await started.text()).toBe(200);
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
 
@@ -469,7 +469,7 @@ for (const vp of [
       test.setTimeout(120_000);
       await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
-      expect((await page.request.post(`${origin}/agents/${agent.id}/start`)).status()).toBe(200);
+      expect((await page.request.post(`${origin}/agents/${agent.id}/start`, { headers: { Origin: origin } })).status()).toBe(200);
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
 
       const ctx = await browser.newContext({ ...vp.use, javaScriptEnabled: false });

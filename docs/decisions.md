@@ -262,8 +262,9 @@ lost answer is delivered once.
 The app-wide `Referrer-Policy: no-referrer` turned out to make a browser send
 `Origin: null` on its own form submits, which the same-origin check
 (`requireSameOrigin`) refuses. So pages that carry a message box are served
-`same-origin` instead. The central origin check every cookie-authenticated
-write passes reads `Sec-Fetch-Site` before `Origin` for the same reason
+`same-origin` instead, and later `same-origin` became the app-wide default.
+The central origin check every cookie-authenticated write passes reads
+`Sec-Fetch-Site` before `Origin` for the same reason
 ([auth.md](auth.md#cross-origin-writes)).
 
 ## Plugins pull; muster never calls out
