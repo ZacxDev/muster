@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
@@ -177,5 +180,88 @@ func TestEveryKnownCapabilityIsStorable(t *testing.T) {
 	slices.Sort(inGo)
 	if !slices.Equal(inDB, inGo) {
 		t.Fatalf("plugins_capabilities_known names %v; KnownCapabilities is %v (constraint: %s)", inDB, inGo, def)
+	}
+}
+
+// TestConcurrentAppMintsStopAtFive: 20 app mints for ONE owner at once, three
+// rounds, leave exactly MaxAppPlugins live each round. Red if the advisory
+// lock in appMintChecks goes: every mint counts the same committed rows and
+// most pass (measured in audit: 20, 18 and 14 of 20 without it).
+func TestConcurrentAppMintsStopAtFive(t *testing.T) {
+	s, pool, _ := pgStore(t)
+	const n = 20
+	for round := 1; round <= 3; round++ {
+		start := make(chan struct{})
+		errs := make(chan error, n)
+		for i := 0; i < n; i++ {
+			go func(i int) {
+				<-start
+				_, _, err := s.CreatePlugin(session(2), appIn(fmt.Sprintf("app-r%d-%d", round, i)))
+				errs <- err
+			}(i)
+		}
+		close(start)
+		ok := 0
+		for i := 0; i < n; i++ {
+			err := <-errs
+			switch {
+			case err == nil:
+				ok++
+			case !errors.Is(err, ErrInvalid):
+				t.Fatalf("round %d: a concurrent mint failed otherwise: %v", round, err)
+			}
+		}
+		var live int
+		if err := pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM plugins
+			WHERE owner_id = 2 AND revoked_at IS NULL AND 'app' = ANY (capabilities)`).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if ok != MaxAppPlugins || live != MaxAppPlugins {
+			t.Fatalf("round %d: %d of %d concurrent app mints succeeded, %d live; want exactly %d", round, ok, n, live, MaxAppPlugins)
+		}
+		list, err := s.List(session(2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range list {
+			if _, err := s.Revoke(session(2), p.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// TestTheAppCapCountIsReadCommitted: on a server whose default isolation is
+// REPEATABLE READ, CreatePlugin still mints (it begins READ COMMITTED
+// itself), and appMintChecks refuses a transaction at any other level rather
+// than count from a snapshot that may predate another mint's commit.
+func TestTheAppCapCountIsReadCommitted(t *testing.T) {
+	_, _, dsn := pgStore(t)
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	// db.Connect, so the pool carries muster's principal wiring; an unknown
+	// DSN parameter is a runtime parameter to pgx.
+	rr, err := db.Connect(context.Background(), dsn+sep+"default_transaction_isolation=repeatable%20read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rr.Close)
+	var def string
+	if err := rr.QueryRow(context.Background(), `SHOW default_transaction_isolation`).Scan(&def); err != nil || def != "repeatable read" {
+		t.Fatalf("control: the pool's default isolation is %q (%v); want repeatable read", def, err)
+	}
+	s := NewPG(rr)
+	if _, _, err := s.CreatePlugin(session(2), appIn("app-rr")); err != nil {
+		t.Fatalf("an app mint on a repeatable-read-default server: %v; want minted", err)
+	}
+	tx, err := rr.BeginTx(session(2), pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := s.appMintChecks(session(2), tx, false); err == nil || !strings.Contains(err.Error(), "read committed") {
+		t.Fatalf("appMintChecks in a repeatable read transaction: %v; want refused naming read committed", err)
 	}
 }

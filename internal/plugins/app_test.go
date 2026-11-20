@@ -22,18 +22,25 @@ func TestValidAppLabel(t *testing.T) {
 		}
 	}
 	for why, bad := range map[string]string{
-		"empty":               "",
-		"25 characters":       strings.Repeat("m", MaxAppLabelRunes+1),
-		"markup":              "<b>Meetings",
-		"two spaces":          "Team  calls",
-		"a leading space":     " Meetings",
-		"a trailing space":    "Meetings ",
-		"a bidi override":     "Meet‮ings",
-		"a tab":               "Meet\tings",
-		"a zero-width joiner": "Meet‍ings",
-		"an emoji":            "Meetings 📹",
-		"a slash":             "calls/notes",
-		"invalid UTF-8":       "Meet\xffings",
+		"empty":                        "",
+		"25 characters":                strings.Repeat("m", MaxAppLabelRunes+1),
+		"markup":                       "<b>Meetings",
+		"two spaces":                   "Team  calls",
+		"a leading space":              " Meetings",
+		"a trailing space":             "Meetings ",
+		"a bidi override":              "Meet‮ings",
+		"a tab":                        "Meet\tings",
+		"a zero-width joiner":          "Meet‍ings",
+		"an emoji":                     "Meetings 📹",
+		"a slash":                      "calls/notes",
+		"invalid UTF-8":                "Meet\xffings",
+		"Hangul filler U+3164 alone":   "\u3164",
+		"Hangul fillers U+115F U+1160": "\u115f\u1160",
+		"halfwidth filler U+FFA0":      "\uffa0\uffa0",
+		"a filler inside a word":       "Meet\u3164ings",
+		"a soft hyphen":                "Meet\u00adings",
+		"a variation selector":         "Meet\ufe0fings",
+		"a braille blank":              "\u2800",
 	} {
 		if err := ValidAppLabel(bad); !errors.Is(err, ErrInvalid) {
 			t.Errorf("ValidAppLabel(%s, %q) = %v; want ErrInvalid", why, bad, err)

@@ -267,14 +267,18 @@ type NewPlugin struct {
 const ViewerOnlyDataScope = "none"
 
 func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
-	var tok string
-	var p Plugin
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		tok, p, err = s.createPluginTx(ctx, tx, in)
-		return err
-	})
+	// READ COMMITTED, explicitly: the app cap's count (appMintChecks) relies on
+	// it, whatever the server's default_transaction_isolation says.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
+		return "", Plugin{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tok, p, err := s.createPluginTx(ctx, tx, in)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", Plugin{}, err
 	}
 	return tok, p, nil

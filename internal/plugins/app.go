@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -87,6 +88,16 @@ func ValidAppLabel(label string) error {
 		return invalid("a tab label has no space at either end and no two spaces in a row")
 	}
 	for _, r := range label {
+		// Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) are letters to
+		// Unicode yet draw nothing: a label of them is an invisible tab.
+		// Other_Default_Ignorable_Code_Point holds them. Unicode derives
+		// Default_Ignorable_Code_Point from it plus format characters (Cf) and
+		// variation selectors (Mn), neither a letter nor a digit, so the loop
+		// below refuses those: each character left is visible, and there is at
+		// least one (trimmed, not empty).
+		if unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
+			return invalid("a tab label may not carry invisible characters")
+		}
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != ' ' && !strings.ContainsRune(appLabelPunct, r) {
 			return invalid("a tab label is letters, digits, spaces and - . & ' only")
 		}
@@ -98,10 +109,21 @@ func ValidAppLabel(label string) error {
 // caller's transaction: a person's plugin only (a team's tab is later work,
 // decision 14), and at most MaxAppPlugins live ones per owner. The owner's
 // app mints are serialised by an advisory lock, so two at once cannot both
-// see four.
+// see four. 🔴 The lock only works under READ COMMITTED, where the count
+// after the lock sees the other mint's commit; under REPEATABLE READ or
+// SERIALIZABLE the snapshot could predate it. CreatePlugin begins its
+// transaction READ COMMITTED explicitly, and this refuses any other level
+// rather than depend on the server's default.
 func (s *PGStore) appMintChecks(ctx context.Context, tx pgx.Tx, team bool) error {
 	if team {
 		return invalid("an app tab is a person's: a team's plugin cannot have one")
+	}
+	var iso string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&iso); err != nil {
+		return err
+	}
+	if iso != "read committed" {
+		return fmt.Errorf("plugins: an app mint needs a read committed transaction, not %s", iso)
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.plugin_app:' || coalesce(`+principalOwner+`, 0)::text, 0))`); err != nil {
 		return err
