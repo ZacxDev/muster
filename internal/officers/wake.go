@@ -69,6 +69,13 @@ type InstanceState struct {
 	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
 	// instance and not yet delivered. Such an instance is not re-prompted.
 	PromptPending bool
+	// LimitParked is why the instance's pane is on a STALE usage-limit menu
+	// ("" when it is not): ccd refuses its turns from the CLI's limit menu,
+	// it has been parked there since before a newer live reading showed its
+	// account usable, and it was still seen there after that reading
+	// (internal/limitpark Board.Stuck). The loop restarts such an instance
+	// (restartLimitParked): nothing else ends the menu.
+	LimitParked string
 	// Spent, for an instance of a fresh_session_per_item pool: its current
 	// conversation has claimed its one item (Officer.FreshSessionPerItem).
 	// Held by no live claim, it is done with that item however the hold
@@ -811,6 +818,9 @@ type officerState struct {
 	// (startReason). Cleared when it starts; a restart of muster forgets it,
 	// and the fleet's own reason then speaks.
 	scaledDown map[string]string
+	// limitRestarts is each instance's restarts off a stale usage-limit menu
+	// (restartLimitParked) on the current UTC day, by instance agent name.
+	limitRestarts map[string]limitRestartDay
 	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
 	// logged (once per officer per process).
 	unclockedLogged bool
@@ -1187,6 +1197,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		return r.scaleDownForFault(ctx, o, err, refusal)
 	}
 	r.noteErrors(o, pools, obs)
+	r.restartLimitParked(ctx, pools, obs, now)
 	if r.observed != nil {
 		// Chat claims are the chat runner's (ChatHolder), never an
 		// instance's primary session's: the transcript forwarder and the LLM

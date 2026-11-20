@@ -829,6 +829,34 @@ its slot and is NOT restarted …"), and `muster_officer_error_slots` counts the
 slots so held across all officers: the officer runs below target until the
 instance recovers or an operator acts.
 
+**An instance parked on a stale usage-limit menu is restarted.** When a turn
+meets its account's usage limit, the CLI raises its usage-limit menu in that
+session, and the menu stays until someone answers it, past the limit's reset
+too: ccd refuses every later prompt from it (`409 rate_limited`, nothing
+typed). With the usage poller on (`MUSTER_CC_USAGE_POLL`), muster remembers
+since when each instance's pane has been parked there, and the poller's latest
+good reading of each account. Once a reading **newer than the park** shows the
+account usable for the limit the menu names (the rule that clears a mark early,
+[configuration](configuration.md)), and the pane still refuses a prompt from
+the menu after that reading, with no turn on the account hitting the limit
+again since:
+
+- that refusal **marks nothing and moves no agent** — it says nothing the live
+  reading did not already overrule (before, it marked the account again
+  within minutes of every clear);
+- the wake loop **stops the instance**, releases any claim it held, and starts
+  it again when work waits — the Stop and Start an operator would do. One log
+  line per restart names the park and the reading ("stopped instance N to
+  restart it (k of 4 today): …").
+
+Decided by timestamps only: a typed turn that hit the limit (a `429`) always
+marks, and so does any refusal from a pane parked after the reading. At most 4
+such restarts per instance per UTC day; past that the instance is held (logged
+once that day) until an operator acts. An instance in `error` is never
+restarted this way. The record is in memory: a restarted muster marks the
+account on the pane's next refusal as before, and the poller's next clear
+(within `MUSTER_CC_USAGE_POLL_INTERVAL`) makes the park stale again.
+
 **Starting** an instance that does not exist creates it, with its first message
 (below) as the kickoff. Starting one that exists **re-arms** its first message
 (`agents.PGStore.RearmKickoff`: the pending note is replaced and the kickoff

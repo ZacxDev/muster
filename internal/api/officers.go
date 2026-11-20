@@ -1007,6 +1007,11 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
 			PromptPending: ok && promptPending(a),
 			Spent:         f.s.officerRT.spent(o, name)}
+		if ok && f.s.ext.LimitParks != nil {
+			if why, stuck := f.s.ext.LimitParks.Stuck(a.ID); stuck {
+				in.LimitParked = why
+			}
+		}
 		switch {
 		case in.Up:
 		case !ok:
@@ -1122,6 +1127,9 @@ func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kick
 	}
 	if err := re.RearmKickoff(octx, a.ID, kickoff); err != nil {
 		return fmt.Errorf("officers: re-arm %s: %w", name, err)
+	}
+	if f.s.ext.LimitParks != nil {
+		f.s.ext.LimitParks.Clear(a.ID)
 	}
 	return f.s.ext.Provisioner.Start(octx, a.ID)
 }
@@ -1344,6 +1352,10 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
+	// Its CLI goes with the pod: whatever menu its pane was parked on.
+	if f.s.ext.LimitParks != nil {
+		f.s.ext.LimitParks.Clear(a.ID)
+	}
 	return f.s.ext.Provisioner.Stop(octx, a.ID)
 }
 

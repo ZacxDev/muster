@@ -513,6 +513,18 @@ type Extensions struct {
 	// provisioner): a job whose account hit its limit fails as before, and the
 	// agent page shows no failovers.
 	AccountFailover AccountFailover
+	// LimitParks is the limit-park board (internal/limitpark.Board): which
+	// agents' panes are parked on a STALE usage-limit menu. The officer
+	// runtime reads it into each instance's state (InstanceState.LimitParked,
+	// which the wake loop restarts) and forgets an instance's park when it
+	// stops or starts one. nil (no usage poller): nothing is ever stale.
+	LimitParks LimitParks
+}
+
+// LimitParks is the part of internal/limitpark.Board this package uses.
+type LimitParks interface {
+	Stuck(agentID int64) (string, bool)
+	Clear(agentID int64)
 }
 
 // AccountFailover is the part of internal/ccfailover.Service this package uses:

@@ -184,6 +184,33 @@ type Gateway struct {
 	// noAccount says an agent runs on none of the shared Claude accounts
 	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
 	noAccount func(context.Context, agents.Agent) bool
+	// parks tells a pane still on an old usage-limit menu from a live limit
+	// (UseLimitParks); nil = every usage-limit failure marks, as before.
+	parks LimitParks
+}
+
+// LimitParks is internal/limitpark.Board: which agents' panes are parked on
+// their account's usage-limit menu, and whether a refusal from one is STALE —
+// the pane parked since before a newer live reading showed the account
+// usable. The gateway records every usage-limit failure there, and a stale
+// one marks no account and moves no agent.
+type LimitParks interface {
+	NoteLimit(ctx context.Context, agentID, owner int64, account, detail string, menu bool) (stale bool, why string)
+	Clear(agentID int64)
+}
+
+// UseLimitParks installs the limit-park board (cmd/muster-server, beside the
+// usage poller that feeds it its readings). A second call replaces the first.
+func (g *Gateway) UseLimitParks(p LimitParks) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.parks = p
+}
+
+func (g *Gateway) limitParks() LimitParks {
+	g.failoverMu.RLock()
+	defer g.failoverMu.RUnlock()
+	return g.parks
 }
 
 // AccountFailover is what the gateway tells after a usage limit (a
@@ -402,12 +429,32 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if !errors.As(err, &rt) {
 		return err
 	}
+	parks := g.limitParks()
+	if parks != nil && t.agentID > 0 && rt.Status == http.StatusConflict && rt.Type == "busy" {
+		// ccd says a turn is running in the session (or a dialog other than
+		// the limit menu is up): the pane is not refusing from a limit menu.
+		parks.Clear(t.agentID)
+	}
 	// 🔴 NOT EVERY rate_limited: only the account's usage limit marks it and
 	// fails the agent over (ccpool.AccountFailure, the one place that decides).
 	// A transient 429 marks nothing; the caller retries on the same account.
 	failure := ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status)
 	if failure == "" {
 		return err
+	}
+	// 🔴 A STALE MENU MARKS NOTHING. A 409 rate_limited is ccd refusing a turn
+	// because the pane still shows the usage-limit menu, which stays until
+	// someone answers it. When the pane has been parked there since before a
+	// newer live reading showed the account usable (limitpark, by timestamps),
+	// the refusal is not evidence about the account: marking it again undid
+	// the usage poller's clear every interval and kept every agent on the
+	// account from being placed. The wake loop restarts such an officer
+	// instance instead (internal/officers restartLimitParked). A 429 — a turn
+	// that was typed and hit the limit — is always recorded and always marks.
+	if failure == ccpool.FailureRateLimited && parks != nil && t.agentID > 0 {
+		if stale, _ := parks.NoteLimit(ctx, t.agentID, t.owner, t.account, rt.Message, rt.Status == http.StatusConflict); stale {
+			return err
+		}
 	}
 	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
 	defer cancel()
@@ -454,7 +501,14 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 // turn's, as noteFailure's mark does, so a caller that hangs up on the reply
 // does not cancel it.
 func (g *Gateway) noteSuccess(ctx context.Context, t Target, reply string, err error) {
-	if err != nil || strings.TrimSpace(reply) == "" || g.kickoff == nil || t.agentID <= 0 {
+	if err != nil || strings.TrimSpace(reply) == "" || t.agentID <= 0 {
+		return
+	}
+	// A completed turn: the pane is not on a limit menu.
+	if parks := g.limitParks(); parks != nil {
+		parks.Clear(t.agentID)
+	}
+	if g.kickoff == nil {
 		return
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)

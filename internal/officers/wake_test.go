@@ -40,6 +40,9 @@ type fakeFleet struct {
 	busy      map[int]bool // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
 	errored   map[int]bool // the instance is in error (holds its slot)
 	down      map[int]string // why a down instance is down (InstanceState.Down)
+	// limitParked: the instance's pane is on a stale usage-limit menu
+	// (InstanceState.LimitParked); a Stop ends it, as the real fleet's does.
+	limitParked map[int]string
 }
 
 func newFleet() *fakeFleet {
@@ -69,7 +72,7 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 	var out []officers.InstanceState
 	for n := 1; n <= o.Slots(); n++ {
 		out = append(out, officers.InstanceState{N: n, Name: officers.InstanceName(o.ID, n), Exists: f.exists[n], Up: f.up[n] || f.errored[n],
-			Error: f.errored[n], PromptPending: f.pending[n], Down: f.down[n]})
+			Error: f.errored[n], PromptPending: f.pending[n], Down: f.down[n], LimitParked: f.limitParked[n]})
 	}
 	return out, nil
 }
@@ -78,6 +81,7 @@ func (f *fakeFleet) Start(_ context.Context, o officers.Officer, n int, kickoff 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.up[n], f.exists[n] = true, true
+	delete(f.limitParked, n)
 	f.starts = append(f.starts, n)
 	f.kickoff = append(f.kickoff, kickoff)
 	return nil
@@ -87,6 +91,7 @@ func (f *fakeFleet) Stop(_ context.Context, o officers.Officer, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.up[n] = false
+	delete(f.limitParked, n)
 	f.stops = append(f.stops, n)
 	return nil
 }

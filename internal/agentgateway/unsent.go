@@ -47,7 +47,8 @@ func (u unresolved) Unwrap() error { return u.err }
 //   - a 409 `rate_limited`: ccd's refusal from a pane parked on the CLI's usage-limit menu
 //     (cmd/ccd failure.go limitMenuFailure), also before anything is typed. It reads as
 //     [UnsentBusy], so a deliverer queues the message again as it did when ccd answered that
-//     menu `busy`; the gateway has already marked the account and failed the agent over.
+//     menu `busy`; the gateway has already marked the account and failed the agent over
+//     (unless the menu is stale — parked since before a newer usable reading, internal/limitpark).
 //     A rate-limited turn that WAS pasted is a 429 and is not read here;
 //   - a dial error is a connection that was never opened, so no byte of the request left;
 //   - a [Gateway.Resolve] failure, from a turn that resolves its agent itself, contacted nothing.
