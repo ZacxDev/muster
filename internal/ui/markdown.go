@@ -213,9 +213,15 @@ func mdInlineWith(escaped string, mc *mentionCtx) string {
 		if g == nil {
 			return m
 		}
+		// A session card marker, or a raw session reference that resolves
+		// exactly, alone in a code span (session_card.go).
+		if card, ok := sessionCardCode(g[1], v, mc); ok {
+			return card
+		}
 		return v.stash(`<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">` +
 			g[1] + `</code>`)
 	})
+	s = mdSessionCards(s, v, mc)
 	s = mdLinkify(s, v)
 	s = mdAutolink(s, v)
 	s = mdMention(s, v, mc)
@@ -696,6 +702,11 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			i++
 		}
 		out.WriteString(`<p class="my-1">` + mdInlineWith(strings.Join(para, "<br>"), mc) + `</p>`)
+	}
+	// The session cards' ⓘ sheets, after the message: each is a <div>, which
+	// may not sit inside the paragraph its card is in (session_card.go).
+	if mc != nil {
+		out.WriteString(strings.Join(mc.sheets, ""))
 	}
 	return out.String()
 }

@@ -41,7 +41,8 @@ import (
 // (the side chat route's answer carries the flag: ComposerFocusParam), on the
 // new chat or on the empty one the server reused.
 //
-// The context chip stays in the header (chiefContextSlot).
+// How much context the chat uses is in the header's ⋯ menu, and only when it
+// is high (chiefMemorySlot); the header carries no chip.
 //
 // 🔴 THE SAME ROUTES ON BOTH SURFACES, ANSWERED THE WAY EACH SURFACE NEEDS:
 // on the page an action's answer is HX-Redirect to the chat it leaves you on;
@@ -104,8 +105,6 @@ const (
 	// chiefChipModelAttr marks a chip's model tag, valued with the model.
 	chiefChipModelAttr = "data-chief-chip-model"
 	chiefContextID     = "chief-context"
-	chiefContextChipID = "chief-context-chip"
-	chiefContextPopID  = "chief-context-detail"
 )
 
 // The kinds data-chief-chat-kind names, and what each is called.
@@ -148,7 +147,8 @@ func withCurrent(path string, cur int64) string {
 	return path + sep + ChiefCurrentParam + "=" + strconv.FormatInt(cur, 10)
 }
 
-// ChiefContextPath is the context chip's partial for chat sid of agent name.
+// ChiefContextPath is the ⋯ menu's memory line's partial for chat sid of agent
+// name (chiefMemorySlot).
 func ChiefContextPath(name string, sid int64) string {
 	return "/ui/agents/" + url.PathEscape(name) + "/chat-context?session=" + strconv.FormatInt(sid, 10)
 }
@@ -653,84 +653,65 @@ func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, clau
 	)
 }
 
-// chiefContextSlot is where the context chip lives — the chief page's header,
-// under the title (where a mirrored session's chip is), and the chief panel's
-// title bar: an empty slot that loads
-// the chip (ChiefContextChip) on load and again whenever a turn of the chief
-// starts or ends or a reply is stored — so the chip follows the turn that just
-// ended without a reload. innerHTML into the slot: the slot keeps its triggers
-// (an outerHTML swap of an element with a `load` trigger would load for ever).
-func chiefContextSlot(name string, sid int64) g.Node {
+// THE CHIEF'S MEMORY IN THE ⋯ MENU, ONLY WHEN IT IS HIGH (operator decision,
+// #871). The header used to carry a raw token-count chip ("45k") under
+// the chief's title, always. It is gone from the header and from the panel's
+// title bar; the chief page's ⋯ menu says "Memory used: 362k" in plain words
+// — and only while the chat's latest turn sent more than ChiefMemoryShowAbove
+// tokens, the point where a fresh chat is worth thinking about.
+//
+// The menu holds an empty slot (chiefMemorySlot) that loads its line
+// (RenderChiefMemoryLine, internal/api handleChiefChatContext) on load and
+// again whenever a turn of the chief starts or ends or a reply is stored, so
+// the line follows the turn that just ended without a reload. innerHTML into
+// the slot: the slot keeps its triggers.
+
+// ChiefMemoryShowAbove is the context, in tokens, past which the ⋯ menu says
+// how much of it the chief's chat uses. At or below it, nothing.
+const ChiefMemoryShowAbove int64 = 350_000
+
+// ChiefMemoryAttr marks the menu's memory line.
+const ChiefMemoryAttr = "data-chief-memory"
+
+// chiefMemorySlot is the ⋯ menu's slot for chat sid's memory line. peer: the
+// slot is the menu's only extra item, so the divider under the extras hides
+// while it is empty (agentActionsMenuWith's peer-empty:hidden).
+func chiefMemorySlot(name string, sid int64, peer bool) g.Node {
 	quoted := strconv.Quote(name)
-	return Span(
+	cls := "block empty:hidden"
+	if peer {
+		cls += " peer"
+	}
+	return Div(
 		ID(chiefContextID),
-		Class("inline-flex min-w-0"),
+		Class(cls),
 		hx("hx-get", ChiefContextPath(name, sid)),
 		hx("hx-trigger", "load, sse:chat.turn[JSON.parse(detail.data).id==="+quoted+"] from:body, "+
 			"sse:chat.reply[JSON.parse(detail.data).id==="+quoted+"] from:body"),
-		// 🔴 ITS OWN TARGET, SPELLED: inside the chief panel, #chief-panel-body
-		// declares hx-target="this", which htmx INHERITS — without this the chip's
-		// answer replaced the whole panel body (the chat with it).
+		// 🔴 ITS OWN TARGET, SPELLED: an inherited hx-target would put the line's
+		// answer over whatever declared it.
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 	)
 }
 
-// RenderChiefContextChip writes the context chip for c — nothing when c is nil
-// (no turn of the chat has reported usage yet).
-func RenderChiefContextChip(w io.Writer, c *ContextView) error {
-	if c == nil {
+// RenderChiefMemoryLine writes the ⋯ menu's memory line for a chat whose
+// latest turn sent tokens of context — nothing at or below
+// ChiefMemoryShowAbove.
+func RenderChiefMemoryLine(w io.Writer, tokens int64) error {
+	if tokens <= ChiefMemoryShowAbove {
 		return nil
 	}
-	return chiefContextChip(c).Render(w)
+	return P(
+		g.Attr(ChiefMemoryAttr, strconv.FormatInt(tokens, 10)),
+		Class("px-3 py-2 text-xs text-fg2"),
+		g.Text("Memory used: "+chiefMemoryWords(tokens)),
+	).Render(w)
 }
 
-// ChiefContextView is the chief chat's context readout: contextView, THE
-// readout #601's chip draws for a mirrored session, so the chief's chip says
-// the same thing the same way — the model then used/window, amber from
-// ContextWarnPct, red from ContextDangerPct, the exact counts on tap.
-func ChiefContextView(tokens, window int64, model string) *ContextView {
-	return contextView(tokens, window, model, ChiefContextTitle)
-}
-
-// ChiefContextTitle is how the chief chip's number is derived.
-const ChiefContextTitle = "Context used by this chat's latest turn: its last request's input + cache read + cache write tokens " +
-	"(output is not counted: it is in the next request's input), of the model's context window."
-
-// chiefContextChip is the chip itself: mirrorContextChip's markup and classes,
-// filled on the server rather than by a page script.
-func chiefContextChip(c *ContextView) g.Node {
-	if c == nil {
-		return nil
-	}
-	return g.Group{
-		Button(
-			ID(chiefContextChipID),
-			Type("button"),
-			g.Attr("title", c.Detail),
-			g.Attr("popovertarget", chiefContextPopID),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", chiefContextPopID),
-			g.Attr("aria-expanded", "false"),
-			g.If(c.Level != "", g.Attr("data-level", c.Level)),
-			Class("press relative inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+
-				"data-[level=warn]:bg-st-warning-bg data-[level=warn]:text-st-warning-fg data-[level=warn]:ring-st-warning-fg/40 "+
-				"data-[level=danger]:bg-st-error-bg data-[level=danger]:text-st-error-fg data-[level=danger]:ring-st-error-fg/40"),
-			g.If(c.Name != "", Span(g.Attr("data-ctx-name", ""), Class("min-w-0 truncate"), g.Text(c.Name))),
-			g.If(c.Name != "", Span(g.Attr("data-ctx-sep", ""), Class("shrink-0"), g.Text(contextSep))),
-			Span(g.Attr("data-ctx-count", ""), Class("shrink-0 whitespace-nowrap"), g.Text(c.Count)),
-		),
-		Div(
-			ID(chiefContextPopID),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Context used"),
-			g.Attr("data-floating-menu", ""),
-			Class(fullTitlePopoverClass),
-			Span(g.Attr("data-ctx-detail", ""), Class("[overflow-wrap:anywhere] text-sm font-semibold tabular-nums"), g.Text(c.Detail)),
-			g.If(c.Title != "", Span(g.Attr("data-ctx-how", ""), Class("text-xs text-muted"), g.Text(c.Title))),
-		),
-	}
+// chiefMemoryWords is tokens in thousands, rounded: "362k".
+func chiefMemoryWords(tokens int64) string {
+	return strconv.FormatInt((tokens+500)/1000, 10) + "k"
 }
 
 // chiefChatRowExtras is what a chief chat's switcher row adds after its title:

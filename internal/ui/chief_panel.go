@@ -447,22 +447,13 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
-		// A chief chat's context chip (chief_chats.go), where the page draws it
-		// in its header. Its new chat is the "+" on the chip strip over the
-		// transcript (chiefChatStrip); the title bar keeps the thread list.
-		g.If(v.Configured, chiefPanelContext(v.Chat.ChiefChat)),
+		// No context chip (removed in #871: the page says it in its ⋯ menu,
+		// and only when it is high). Its new chat is the "+" on the chip strip
+		// over the transcript (chiefChatStrip); the title bar keeps the thread
+		// list.
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
-}
-
-// chiefPanelContext is the panel title bar's context chip slot; nothing off a
-// chief's chat.
-func chiefPanelContext(b *ChiefChatBar) g.Node {
-	if b == nil {
-		return nil
-	}
-	return Span(Class("mr-1 inline-flex min-w-0"), chiefContextSlot(b.AgentName, b.SessionID))
 }
 
 // chiefNewThreadButton opens a fresh thread WITHOUT leaving the grid.
