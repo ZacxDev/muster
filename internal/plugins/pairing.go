@@ -180,18 +180,25 @@ func (in *PairIn) validate() error {
 	if err := ValidScope(in.DataScope); err != nil {
 		return err
 	}
-	if !slices.Contains(in.Capabilities, CapMessages) {
-		return invalid("capabilities must include messages")
+	// tasks is pairable as messages is (0166): it widens no page policy.
+	if !slices.Contains(in.Capabilities, CapMessages) && !slices.Contains(in.Capabilities, CapTasks) {
+		return invalid("capabilities must include messages or tasks")
 	}
 	for _, c := range in.Capabilities {
-		if c != CapMessages && c != CapDraftChecks {
-			return invalid("a paired plugin may have messages and draft_checks only")
+		if c != CapMessages && c != CapDraftChecks && c != CapTasks {
+			return invalid("a paired plugin may have messages, draft_checks and tasks only")
 		}
+	}
+	if slices.Contains(in.Capabilities, CapDraftChecks) && !slices.Contains(in.Capabilities, CapMessages) {
+		return invalid("draft_checks needs messages: only a plugin that brings messages has reply drafts to check")
 	}
 	slices.Sort(in.Capabilities)
 	in.Capabilities = slices.Compact(in.Capabilities)
 	if err := ValidDeliverTo(in.DeliverTo); err != nil {
 		return err
+	}
+	if in.DeliverTo != "" && !slices.Contains(in.Capabilities, CapMessages) {
+		return invalid("only a plugin with messages can be bound to an officer")
 	}
 	if strings.TrimSpace(in.Owner) == "" || len(in.Owner) > 320 {
 		return invalid("owner is the owner's login (their email)")

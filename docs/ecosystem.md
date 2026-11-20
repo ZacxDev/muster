@@ -93,7 +93,7 @@ The minimum bar, checked when the row is reviewed:
   muster, what it sends where, and **the muster version you tested it
   against**.
 - **A stated token scope.** Which [capabilities](plugins.md#capabilities) it
-  needs (`messages`, `draft_checks`, `viewer`, `chief_extension`) and why each
+  needs (`messages`, `draft_checks`, `viewer`, `chief_extension`, `tasks`) and why each
   one, and whether it is meant to be [bound to an officer](plugins.md#a-plugin-bound-to-an-officer).
   Ask for the fewest that work.
 - **No telemetry to third parties without saying so.** If the plugin sends

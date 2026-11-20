@@ -396,6 +396,7 @@ POST /plugins/{id}/chief-extension
 POST /plugins/{id}/deliver-to
 POST /plugins/{id}/draft-checks
 POST /plugins/{id}/revoke
+POST /plugins/{id}/tasks
 POST /rules/{id}/delete
 POST /rules/{id}/disable
 POST /rules/{id}/enable

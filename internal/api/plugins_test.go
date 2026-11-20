@@ -34,10 +34,12 @@ const (
 	pgnChecksTok = "mpl_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
 	// pgnExtTok is a live token with chief_extension alone.
 	pgnExtTok = "mpl_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-	pgnSvc    = "plugins-test-service-token-0123456789abcd"
-	pgnRunner = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
-	pgnAgent  = "plugins-test-agent-own-token-0123456789"
-	pgnMsg    = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
+	// pgnTasksTok is a live token with tasks alone (0166).
+	pgnTasksTok = "mpl_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+	pgnSvc      = "plugins-test-service-token-0123456789abcd"
+	pgnRunner   = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	pgnAgent    = "plugins-test-agent-own-token-0123456789"
+	pgnMsg      = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
 )
 
 func (c *countingPlugins) note(ctx context.Context, m string) {
@@ -74,6 +76,9 @@ func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins
 	case pgnExtTok:
 		return plugins.Plugin{ID: 7, OwnerID: authz.OperatorUserID, Name: "example-guide", Label: "Example guide",
 			Capabilities: []plugins.Capability{plugins.CapChiefExtension}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnTasksTok:
+		return plugins.Plugin{ID: 8, OwnerID: authz.OperatorUserID, Name: "example-filer", Label: "Example filer",
+			Capabilities: []plugins.Capability{plugins.CapTasks}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

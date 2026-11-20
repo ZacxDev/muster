@@ -270,3 +270,38 @@ func TestAPairingRequestNamingATeamIsADecoy(t *testing.T) {
 		t.Fatalf("control: naming the operator filed %d requests; want 1", n)
 	}
 }
+
+// TestATasksPluginIsPairable (docs/design/meetings.md decision 11): a pairing
+// request for tasks alone is filed (202), approved with its code, and hands
+// out a token whose capabilities are exactly [tasks]. tasks beside draft_checks
+// without messages, tasks bound to an officer, and viewer are 400.
+func TestATasksPluginIsPairable(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	c, rec := w.pair(`{"owner":"operator","name":"example-filer","label":"Example filer","capabilities":["tasks"]}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("a tasks pairing request: %d %s; want 202", rec.Code, rec.Body.String())
+	}
+	if rec := w.approvePair(w.pairID(c.RequestID), c.Code); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approving it: %d %s; want 303", rec.Code, rec.Body.String())
+	}
+	got, code := w.poll(c.RequestID, c.PollSecret)
+	tok, _ := got["token"].(string)
+	if code != http.StatusOK || got["status"] != "approved" || !plugins.TokenShapeOK(tok) {
+		t.Fatalf("collecting the token: %d %v", code, got)
+	}
+	if rec := w.do("GET", "/plugin/v1/self", "", bearerTok(tok)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"capabilities":["tasks"]`) {
+		t.Fatalf("the paired token: %d %s; want it live with tasks alone", rec.Code, rec.Body.String())
+	}
+	for why, caps := range map[string]string{
+		"draft_checks without messages": `["tasks","draft_checks"]`,
+		"viewer":                        `["tasks","viewer"]`,
+		"neither messages nor tasks":    `["draft_checks"]`,
+	} {
+		if _, rec := w.pair(`{"owner":"operator","name":"example-bad","label":"Example","capabilities":` + caps + `}`); rec.Code != http.StatusBadRequest {
+			t.Errorf("a pairing request with %s: %d; want 400", why, rec.Code)
+		}
+	}
+	if _, rec := w.pair(`{"owner":"operator","name":"example-bad","label":"Example","capabilities":["tasks"],"deliver_to":"officer:marketing:example"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("a tasks-only pairing request bound to an officer: %d; want 400", rec.Code)
+	}
+}

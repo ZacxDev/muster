@@ -12,7 +12,8 @@ import (
 )
 
 // pluginRouteCapabilities is THE LEDGER of what each /plugin/v1/* route needs
-// (plugins.capabilities, migrations 0102, 0112): "messages", "viewer", "draft_checks", or "any" for a route every
+// (plugins.capabilities, migrations 0102, 0112, 0141, 0166): "messages", "viewer", "draft_checks",
+// "chief_extension", "messages or tasks" (POST /plugin/v1/tasks, decision 11), or "any" for a route every
 // live plugin token opens. It is written out here by hand, not read from the
 // registration, so a route moving between capabilities is a diff a person reads.
 var pluginRouteCapabilities = map[string]string{
@@ -21,7 +22,7 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/drafts/claim":                 "messages",
 	"POST /plugin/v1/drafts/{id}/result":           "messages",
 	"POST /plugin/v1/drafts/{id}/renew":            "messages",
-	"POST /plugin/v1/tasks":                        "messages",
+	"POST /plugin/v1/tasks":                        "messages or tasks",
 	"GET /plugin/v1/tasks":                         "messages",
 	"POST /plugin/v1/task-writes/claim":            "messages",
 	"POST /plugin/v1/task-writes/{id}/result":      "messages",
@@ -100,7 +101,25 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 		path := strings.ReplaceAll(pattern, "{id}", "5")
 		viewerRefused, viewerCode := capabilityRefused(h, method, path, pgnViewerTok)
 		messagesRefused, messagesCode := capabilityRefused(h, method, path, pgnTok)
+		tasksRefused, tasksCode := capabilityRefused(h, method, path, pgnTasksTok)
 		switch want := pluginRouteCapabilities[route]; want {
+		case "any", "none", "messages or tasks":
+			if tasksRefused {
+				t.Errorf("%s with a tasks-only token: refused (%d); want it past the capability check", route, tasksCode)
+			}
+		default:
+			if !tasksRefused {
+				t.Errorf("%s with a tasks-only token: %d; want 403, the route needs %s", route, tasksCode, want)
+			}
+		}
+		switch want := pluginRouteCapabilities[route]; want {
+		case "messages or tasks":
+			if !viewerRefused {
+				t.Errorf("%s with a viewer-only token: %d; want 403, the route needs messages or tasks", route, viewerCode)
+			}
+			if messagesRefused {
+				t.Errorf("CONTROL %s with a messages token: refused (%d); want it past the capability check (messages still files tasks)", route, messagesCode)
+			}
 		case "messages":
 			if !viewerRefused {
 				t.Errorf("%s with a viewer-only token: %d; want 403, the route needs messages", route, viewerCode)
@@ -198,5 +217,59 @@ func TestPluginSelfNamesTheTokensPluginAndOwner(t *testing.T) {
 		if rec := pServe(h, "GET", "/plugin/v1/self", "", c); rec.Code != http.StatusUnauthorized {
 			t.Errorf("GET /plugin/v1/self with %s: %d; want 401", name, rec.Code)
 		}
+	}
+}
+
+// TestATasksTokenIsRefusedOnEveryOtherPluginRoute (docs/design/meetings.md
+// decision 11): every /plugin/v1/* route the REAL registration records (the
+// mux, not the golden nor a hand list) is classified in the ledger — a new
+// plugin route nobody classified turns it red — and a tasks-only token,
+// DRIVEN at each one, is past the capability check on POST /plugin/v1/tasks,
+// GET /plugin/v1/self and the token-less pairing routes alone, and 403 naming
+// the capability on every other. The controls: the same driver sees the tasks
+// token admitted (the tasks route), and sees the messages token admitted on
+// POST /plugin/v1/messages, so a 403 is the door's answer and not the driver's.
+func TestATasksTokenIsRefusedOnEveryOtherPluginRoute(t *testing.T) {
+	var recorded []string
+	for _, p := range recordRoutes(t) {
+		if _, path, ok := strings.Cut(p, " "); (ok && strings.HasPrefix(path, pluginAPIPrefix+"/")) || strings.HasPrefix(p, pluginAPIPrefix+"/") {
+			recorded = append(recorded, p)
+		}
+	}
+	if len(recorded) < 8 {
+		t.Fatalf("positive control: the mux records %d plugin routes; want every one (at least 8)", len(recorded))
+	}
+	_, h, _ := newPluginsDoorServer(t, &countingPlugins{})
+	admitted, refused := 0, 0
+	for _, route := range recorded {
+		want, ok := pluginRouteCapabilities[route]
+		if !ok {
+			t.Errorf("%s is a plugin route the capability ledger does not classify: say which capability opens it, and whether a tasks token may", route)
+			continue
+		}
+		method, pattern, _ := strings.Cut(route, " ")
+		path := strings.NewReplacer("{id}", "5", "{request_id}", "AAAAAAAAAAAAAAAAAAAAAA").Replace(pattern)
+		isRefused, code := capabilityRefused(h, method, path, pgnTasksTok)
+		switch route {
+		case "POST /plugin/v1/tasks", "GET /plugin/v1/self", "POST /plugin/v1/pair", "GET /plugin/v1/pair/{request_id}":
+			if isRefused {
+				t.Errorf("%s (%s) with a tasks-only token: refused (%d); want it past the capability check", route, want, code)
+			}
+			admitted++
+		default:
+			if !isRefused {
+				t.Errorf("%s (%s) with a tasks-only token: %d; want 403, a tasks token opens POST /plugin/v1/tasks only", route, want, code)
+			}
+			refused++
+		}
+	}
+	if isRefused, code := capabilityRefused(h, "POST", "/plugin/v1/tasks", pgnTasksTok); isRefused {
+		t.Errorf("CONTROL: the tasks token on its own route: %d", code)
+	}
+	if isRefused, code := capabilityRefused(h, "POST", "/plugin/v1/messages", pgnTok); isRefused {
+		t.Errorf("CONTROL: the messages token on POST /plugin/v1/messages: %d; want past the capability check", code)
+	}
+	if admitted != 4 || refused < 8 {
+		t.Errorf("drove %d admitted and %d refused routes; want exactly 4 admitted and every other refused", admitted, refused)
 	}
 }
