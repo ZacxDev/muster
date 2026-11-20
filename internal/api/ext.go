@@ -566,6 +566,16 @@ type JobWorkspace interface {
 	RemoveUntrackedWorkspaceFile(ctx context.Context, a agents.Agent, rel string) (removed bool, err error)
 }
 
+// JobWorktreeSweeper is the optional part of a JobWorkspace that removes the
+// job worktrees and refs earlier jobs left behind (*agentprovision.Adapter
+// implements it). A JobWorkspace without it gets no sweep.
+type JobWorktreeSweeper interface {
+	// SweepJobWorktrees removes every job worktree of a's checkout and every
+	// refs/muster-jobs/* ref, returning what it removed. The runner calls it
+	// only while a's current job still reads running, so none is in use.
+	SweepJobWorktrees(ctx context.Context, a agents.Agent) ([]string, error)
+}
+
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken
 // for none, a revoked one included). It runs under the system scope.
 type MirrorTokenAuth interface {
