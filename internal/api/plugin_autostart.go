@@ -106,7 +106,9 @@ type autostartRequest struct {
 // started; nothing happens at all when p is not opted in.
 func (s *Server) autostartPluginTask(ctx context.Context, p plugins.Plugin, n notes.Note, req autostartRequest) bool {
 	store := s.autostarts()
-	if store == nil || s.ext.ChiefDispatch == nil || s.ext.Notes == nil {
+	// A plugin without messages never auto-starts, whatever its row says
+	// (plugins.AutostartAllowed: the one predicate the card and SetAutostart use).
+	if store == nil || s.ext.ChiefDispatch == nil || s.ext.Notes == nil || !plugins.AutostartAllowed(p.Capabilities) {
 		return false
 	}
 	cfg, err := store.AutostartOf(ctx, p.ID)
@@ -435,7 +437,7 @@ func (s *Server) autostartUnavailable(ctx context.Context) string {
 // card, and whether it draws a form that needs a fresh sign-in (Turn on).
 func (s *Server) pluginAutostartHTML(r *http.Request, p plugins.Plugin) (string, bool) {
 	store := s.autostarts()
-	if store == nil || !p.Has(plugins.CapMessages) {
+	if store == nil || !plugins.AutostartAllowed(p.Capabilities) {
 		return "", false
 	}
 	ctx := r.Context()

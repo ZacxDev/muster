@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -271,6 +272,10 @@ func (s *Server) pendingPairItems(ctx context.Context) ([]attentionItem, error) 
 }
 
 // pairSectionHTML is /plugins' pending pairing requests.
+// PairFilesTasksOnly is a pairing card's line for a request without
+// messages: it brings nothing to the chief, it files tasks.
+const PairFilesTasksOnly = "files tasks only: brings nothing to your chief"
+
 func (s *Server) pairSectionHTML(r *http.Request) string {
 	ps := s.pairs()
 	if ps == nil {
@@ -296,13 +301,18 @@ func (s *Server) pairSectionHTML(r *http.Request) string {
 		for _, c := range p.Capabilities {
 			caps = append(caps, string(c))
 		}
-		deliver := "your chief"
+		// What the token will do with what it brings: deliver messages (to the
+		// chief or its officer), or — without messages — file tasks only.
+		deliver := "delivers to your chief"
 		if p.DeliverTo != nil {
-			deliver = *p.DeliverTo
+			deliver = "delivers to " + *p.DeliverTo
+		}
+		if !slices.Contains(p.Capabilities, plugins.CapMessages) {
+			deliver = PairFilesTasksOnly
 		}
 		b.WriteString(`<li id="` + pairKey(p.ID) + `" class="` + flowsCardClass + `" data-pair-id="` + id + `">
 <span class="break-all text-sm font-semibold text-fg">` + esc(p.Label) + ` <span class="font-mono text-xs text-fg2">` + esc(p.Name) + `</span></span>
-<span class="text-xs text-fg2">can: ` + esc(strings.Join(caps, ", ")) + ` · delivers to ` + esc(deliver) + ` · expires ` +
+<span class="text-xs text-fg2">can: ` + esc(strings.Join(caps, ", ")) + ` · ` + esc(deliver) + ` · expires ` +
 			p.ExpiresAt.UTC().Format("15:04") + ` UTC</span>
 <form method="POST" action="` + pluginsPath + `/pair/` + id + `/approve" data-step-up-form class="flex flex-wrap items-center gap-2">` +
 			`<label class="text-xs text-fg2">Code the plugin printed <input name="code" maxlength="20" autocomplete="off" placeholder="ABCD-EFGH" class="` + flowsInputClass + `" data-pair-code></label>` +
