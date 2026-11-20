@@ -8,7 +8,10 @@ design. The operator answered the first round of open questions on
 this page says how muster works today, it cites `file:line` at commit
 `5fd6f7632`, and the code is the authority ([decisions.md](../decisions.md)).
 A claim nothing confirmed is marked **UNVERIFIED**, and each one has a
-[phase 0 spike](#phase-0-spikes) that settles it.
+[phase 0 spike](#phase-0-spikes) that settles it. **The spikes have run**:
+their results are folded in below and summarised in
+[phase 0 results](#phase-0-results); what they could not measure is listed
+there as still owed.
 
 This page proposes a **meetings plugin**: a tab in muster's sidebar where the
 owner starts a call, shares a link, and later reads what was said and what was
@@ -221,7 +224,7 @@ mode.
 | LiveKit server | the upstream image, one node | rooms, media routing, TURN |
 | LiveKit Egress | the upstream image | recordings (room composite, MP4), and the per-track audio feed to the STT bridge |
 | Redis | the upstream image | LiveKit ↔ Egress coordination (Egress requires it) |
-| Streaming STT | a GPU service on the GPU host | speech to text, one stream per participant |
+| Streaming STT | a GPU service on **the GPU host that already runs `stt-cohere`** (decision 18) | speech to text, one stream per participant |
 | OpenRouter | the internet | action items and the summary |
 
 ### Why these boundaries
@@ -525,9 +528,19 @@ closes a gap that exists today on any deployment with a sibling host
   is why the rule does not start with `Origin`. Android's WebView is Chromium
   and sends `Sec-Fetch-Site`; the installed PWA is the browser. An older
   browser without `Sec-Fetch-Site` falls to `Origin`, then `Referer`. The muster CLI and
-  `muster-mirror` use bearer tokens. Each of these is a case in the tests
-  below (the WebView by its user agent and headers as recorded from the app,
-  **UNVERIFIED** until captured; spike S7).
+  `muster-mirror` use bearer tokens.
+- **Measured (spike S7), headless Chromium 156, Firefox 157 and WebKit 27.2,
+  under `Referrer-Policy: no-referrer`:** `fetch`, an htmx-style XHR and a
+  native form `POST` all carried `Sec-Fetch-Site: same-origin`; the native
+  form carried **`Origin: null`** in all three engines, so the
+  `Sec-Fetch-Site`-first order is required, not a preference. A `POST` from a
+  sibling origin (`meet.` → muster) **carried the `SameSite=Lax` session
+  cookie** with `Sec-Fetch-Site: same-site`: the gap 1g closes is real, and
+  step 1 refuses it. **Still owed, on devices:** the Android app's WebView,
+  the installed PWA, and Safari with its tracking protections on. By
+  documentation the WebView mirrors Chrome for Android (`Sec-Fetch-Site`
+  since 76), and Safari's privacy settings change `Referer` and cookies, not
+  `Sec-Fetch-*`; neither is measured. They are a 1g go-live check.
 - **`requireSameOrigin` and `requireOperatorWrite` stay** where they are; they
   become redundant for cookie requests, and the ledger records that.
 - **The route ledger.** A test enumerates every route registered on the mux
@@ -569,14 +582,22 @@ wildcard pattern.
   the frame's microphone. On `/apps/{id}` only:
 
   ```
-  Permissions-Policy: microphone=(self "<O>"), camera=("<O>"), display-capture=("<O>"),
+  Permissions-Policy: microphone=(self "<O>"), camera=(self "<O>"), display-capture=(self "<O>"),
                       fullscreen=(self "<O>"), autoplay=(self "<O>"), clipboard-write=(self "<O>")
   ```
 
-  `microphone` keeps `self` so muster's own dictation code path is not
-  changed by the page existing. `camera` and `display-capture` do not include
-  `self`: muster's own page has no use for them. Every other response keeps
-  exactly `microphone=(self)`.
+  **Every feature keeps `self`** (spike S5). Chromium lets a parent delegate
+  only a feature it holds itself: under `camera=("<O>")` without `self` the
+  frame's `getUserMedia` returned audio with **no video track and no error**,
+  and `getDisplayMedia` was refused by policy. With `self` added, camera,
+  microphone and screen share all worked in the frame, and both negative
+  controls (no `display-capture` in `allow`; no frame origin in the header)
+  still refused. Holding `self` gives muster's own page nothing in practice:
+  its code never asks for a camera or a screen, and the frame is the only
+  delegate. Every other response keeps exactly `microphone=(self)`.
+  Firefox and Safari do not implement the `Permissions-Policy` header, so
+  there the `allow` attribute is the only control, and the frame-attribute
+  golden is the security-relevant test for those engines.
 - **The page's CSP** gains `frame-src <O>` (no `'self'`: nothing of muster's
   is framed on this page). `frame-ancestors 'none'` and `X-Frame-Options:
   DENY` stay: nothing may frame muster's page. Every other page's CSP is
@@ -608,8 +629,11 @@ reload re-enters through muster's page, which re-mints.
 The app opens every origin but muster's in the system browser, and its
 `ShellChromeClient` grants only the microphone, only to the muster origin
 (`ShellChromeClient.kt`, `grantsMicrophone`). A framed meeting would be denied
-its camera and microphone, and Android's WebView has no screen capture
-(**UNVERIFIED**: [spike S5](#phase-0-spikes)).
+its camera and microphone, and Android's WebView has **no screen capture**:
+by MDN's compatibility data it mirrors Chrome for Android, whose
+`getDisplayMedia` is unsupported (spike S5, documented, not run on a
+device). So "Open in browser" stays the v1 answer, and phase 7 can offer
+camera and microphone in-app at most, never screen share.
 
 - **v1: open in the browser.** Where `window.musterApp` exists, `/apps/{id}`
   draws no frame. It draws a card, "Meetings opens in your browser", and one
@@ -863,7 +887,7 @@ Guest and machine routes:
 | `POST /j/{code}/knock` · `GET /j/{code}/wait` | above |
 | `POST /j/{code}/events {"ticket"}` | event stream (read with `fetch`) for an admitted guest: transcript, items, and the current notice state |
 | `POST /livekit/webhook` | LiveKit's events; the `Authorization` JWT is verified against the API secret and the body's SHA-256 inside it; anything else `401` |
-| `GET /healthz`, `GET /metrics`, `WS /stt/ingest/<track>` | on an **internal** port only. The ingest also requires a shared secret (`MEETINGS_INGEST_SECRET`, sent by Egress as a header on the websocket upgrade); without it, `401` |
+| `GET /healthz`, `GET /metrics`, `WS /stt/ingest/<track>` | on an **internal** port only. The ingest URL is `/stt/ingest/<track>/<token>`, where `<token>` is an HMAC of the track id and an expiry under `MEETINGS_INGEST_SECRET`: Egress sends **no** `Authorization` header or any other credential on its websocket upgrade (spike S2), so the URL is the only place a secret can go. Wrong or expired token: `401`. The plugin's access log records `/stt/ingest/<track>` only, never the token; Egress's own log does record the full URL it was given, so tokens are per track and expire with the meeting |
 
 Every page sets its own strict CSP (`default-src 'self'`; `connect-src 'self'
 wss://meet-rtc.<muster host> https://meet-rtc.<muster host>`, the second for
@@ -881,44 +905,93 @@ dead once redeemed.
 - **LiveKit server**, one node, its config from a mounted file: API key and
   secret from a secret, `room.empty_timeout`, `room.max_participants`, the
   webhook URL `http://muster-meetings:…/livekit/webhook`, Redis address.
-- **Ports.** Media on **one UDP port with muxing** (`rtc.udp_port`, e.g.
-  `7882/udp`), TCP fallback `7881/tcp`, TURN/UDP `3478/udp`, TURN/TLS `443`
-  on its own host name. One UDP port, not a range, because the deployment
-  reaches the internet through a relay, and one forwarded port is what a
-  relay can carry cleanly.
-- **Through the relay.** The relay forwards `7882/udp`, `3478/udp` and
-  `7881/tcp` to the SFU, and passes TLS for `meet-turn.<muster host>` and `meet-rtc.<muster host>`
-  through by SNI. LiveKit must advertise the relay's **public** address as its
-  node IP (`rtc.node_ip`), not its pod address. If the relay can carry only
-  TCP, everything still works over TURN/TLS on 443, with more latency
-  ([spike S1](#phase-0-spikes) measures both).
+- **The public media path is TURN over TLS on 443, and nothing else**
+  (decision 17). The deployment reaches the internet through a relay that
+  carries **TCP only**; v1 opens **no UDP port** on the public node. So:
+  - one **SNI-passthrough** route on the relay's existing TCP 443:
+    `meet-turn.<muster host>` → LiveKit's built-in TURN/TLS listener on the
+    server host. The relay does not terminate TLS;
+  - a **publicly trusted** certificate for `meet-turn.<muster host>`,
+    mounted into LiveKit (`turn.cert_file`, `turn.key_file`). Chromium
+    validates it: with a self-signed certificate the TURN/TLS connection
+    failed (S1);
+  - LiveKit **always advertises `turns:<turn.domain>:443`**, whatever
+    `turn.tls_port` is (measured), which is exactly the port the route
+    serves;
+  - **TURN relay allocations stay local to the server host.** A TURN client's
+    relay candidate is on the server host itself, and the SFU reaches it
+    there, so no relay port range is forwarded anywhere. `rtc.node_ip` is the
+    server host's own address, and LiveKit's built-in TURN refuses private
+    peer addresses unless listed, so that address goes in
+    `turn.allow_restricted_peer_cidrs`. `rtc.interfaces` is pinned (the UDP
+    mux otherwise binds every interface separately).
+  - Signalling (`wss://meet-rtc.<muster host>`) goes through the ordinary
+    HTTPS ingress, as `meet.<muster host>` does.
+- **What that costs.** Every remote participant's media is TCP inside TLS,
+  relayed. On a LAN, joining took **251 ms** over forced TURN/TLS against
+  **123 ms** over the UDP mux (S1, pod to pod), and TCP adds head-of-line
+  delay under packet loss. Real-network round trips (a phone on a mobile
+  network, a UDP-blocked laptop) are still owed: they need the route live.
+  Direct UDP (`7882/udp` mux) and TCP (`7881/tcp`) stay enabled for clients
+  that can reach the server host directly, and opening UDP publicly is a
+  later decision, not v1.
 - **TURN: LiveKit's built-in TURN, not coturn.** It shares LiveKit's
   credentials (no separate TURN secret to rotate) and is one fewer service.
-  Coturn is the fallback only if S1 shows the built-in TURN cannot be
-  reached through the relay.
+  It worked for TURN/UDP and TURN/TLS in S1.
 - **Recording: room composite Egress** (a headless Chrome rendering the
   default grid layout) to MP4 in the meetings bucket, key
   `meetings/<owner_id>/<meeting_id>/recording.mp4`. Started when the first
   guest is admitted with **Record** on, stopped at end.
-- **Egress capacity is reserved, not measured.** Egress admits a job only if
-  its configured CPU cost fits: `roomCompositeCpuCost = 4`, `trackCpuCost =
-  0.5`, `maxCpuUtilization = 0.8` (`pkg/config/service.go:32-39` in
-  `livekit/egress`, read 2026-11-20). So one recorded 8-person meeting
-  reserves **4 + 8 × 0.5 = 8 CPU** (composite plus one track egress per
-  microphone), and an unrecorded one still reserves 4 CPU for the STT track
-  egresses. With the 0.8 ceiling, that is a 10-CPU Egress node per recorded
-  meeting. The costs are configurable and may be lowered if S3 shows real use
-  is far below; S3 measures both the composite and the per-track jobs.
+- **Egress capacity: a 15-second admission hold, not a reservation**
+  (spike S3). Egress admits a job if `total × 0.8 − Σ max(pending cost, last
+  measured CPU)` covers the job's cost (`roomCompositeCpuCost = 4`,
+  `trackCpuCost = 0.5`, `maxCpuUtilization = 0.8`,
+  `pkg/config/service.go:32-39`; the check in `pkg/stats/monitor.go`). The
+  cost is held **only for a job's first 15 s**; after that the job counts at
+  its **measured** CPU. Measured for one 8-person meeting:
+
+  | load | CPU (cores) | memory |
+  |---|---|---|
+  | recorded: room composite + 8–9 track egresses (10 min steady) | **1.41 avg, 1.69 peak** | **1.56 GiB** |
+  | one track egress | **≈ 0.02 avg**, 0.07 peak | ≈ 85 MB |
+  | unrecorded: track egresses only | ≈ 0.2 for nine | ≈ 350 MiB |
+
+  The recording is H.264 720p30 at ~3 Mb/s plus AAC: **~1.4 GB per recorded
+  hour**, which sizes the bucket and retention. The real risk is a **burst
+  of starts**: at meeting start the `track_published` webhooks arrive
+  together, and on a 6-CPU Egress node 7 of 8 track starts beside a
+  composite were refused, then all accepted 20 s later. So the deployment
+  sets `cpu_cost.track_cpu_cost` to **0.1** (measured peak 0.07) and keeps
+  `room_composite_cpu_cost` at its default, **and** the plugin retries a
+  refused track start with backoff (1, 2, 4 … 30 s), marking a transcript
+  gap until it succeeds. Track egress stays the STT feed: the Go-SDK
+  participant is not needed on cost grounds.
 - **Audio for STT: track Egress to a websocket** (per audio track, raw PCM to
-  `ws://muster-meetings:…/stt/ingest/<track>`), started by the plugin on
-  every `track_published` webhook for a microphone track. No browser, but
-  0.5 CPU **reserved** per track (above). **UNVERIFIED** (S2): if the PCM
-  format, its reliability or the reservation is not acceptable, the fallback
-  is a server-side participant built on LiveKit's Go SDK with an Opus
-  decoder, which reserves nothing in Egress. Egress authenticates to the
-  ingest with `MEETINGS_INGEST_SECRET`; on Kubernetes a NetworkPolicy admits
-  only Egress to the ingest port, and in Compose the ingest port is on an
-  internal network only Egress joins.
+  `ws://muster-meetings:…/stt/ingest/<track>/<token>`), started by the plugin
+  on every `track_published` webhook for a microphone track. Confirmed for
+  31 minutes beside nine other track egresses and a composite (spike S2),
+  with these rules, each measured:
+  - **Format:** binary frames of **1920 bytes every 10 ms**, interleaved
+    **16-bit little-endian stereo at 48 kHz**, the two channels identical
+    (the mono track duplicated). No header, no text frames, no timestamps.
+    The ingest takes one channel and resamples (24 kHz for `kyutai`, 16 kHz
+    for `utterance`).
+  - **No credential is sent** on the upgrade, so the secret is the URL's
+    `<token>` ([the route](#the-plugins-http-api)).
+  - **The ingest must not ping.** Egress never answers websocket pings and
+    never reconnects: with a 20 s ping interval and 20 s timeout every stream
+    died at exactly 40 s. The ingest server runs with pings and pong
+    timeouts off.
+  - **A dropped stream ends that egress for good,** so the plugin handles
+    `egress_ended` / `egress_failed` for an STT track by starting a new track
+    egress, and marks the transcript gap until audio flows again.
+  - **Timestamp by sample count** from the stream's start, never by arrival:
+    under host contention frames arrived in bursts after stalls of up to
+    7 s (late, not lost; every stream recovered). The ingest buffers several
+    seconds.
+
+  On Kubernetes a NetworkPolicy admits only Egress to the ingest port, and
+  in Compose the ingest port is on an internal network only Egress joins.
 - **The object store** is a bucket of its own (`meetings`), with an access
   key scoped to `meetings/*` that only the plugin and Egress hold. muster's
   own upload key is not reused and gains nothing.
@@ -949,12 +1022,34 @@ Sources: [Kyutai repo](https://github.com/kyutai-labs/delayed-streams-modeling),
 [Moonshine v2](https://arxiv.org/html/2602.12241v1),
 [LiveKit STT plugins](https://docs.livekit.io/agents/models/stt.md).
 
-**Recommendation: Kyutai `stt-1b-en_fr` on `moshi-server`, on the GPU host.**
-It is the only option that streams natively, ships its own websocket server,
-and batches many concurrent streams on one GPU, which is exactly the shape of
-one stream per participant. The 0.5 s delay makes captions feel live. Its
-memory on our GPU, next to `stt-cohere`, is **UNVERIFIED** (S4). Fallback:
-Nemotron Speech Streaming behind Riva if S4 fails on accuracy or memory.
+**Recommendation: Kyutai `stt-1b-en_fr` on `moshi-server`, on the GPU host
+that runs `stt-cohere`** (decision 18). It is the only option that streams
+natively, ships its own websocket server, and batches many concurrent streams
+on one GPU, which is exactly the shape of one stream per participant.
+Measured in spike S4 (`moshi-server` 0.6.4, a 16 GB GPU of the same model as
+the `stt-cohere` host's):
+
+- **Memory is set by `batch_size`, preallocated:** the upstream default of
+  64 takes **~9.7–10 GB** whether or not anyone is speaking, which would
+  leave under 1 GB spare beside `stt-cohere` (about 10.9 GB was free beside
+  it when measured). **`batch_size` 8 takes 3.6 GB.** The deployment sets
+  **8–16** explicitly and never inherits 64.
+- **`batch_size` is a hard cap on concurrent streams:** a ninth stream on a
+  batch-8 server was closed at once (websocket 1005, no status), not queued.
+  So the `kyutai` engine has an **at-capacity path**: when a stream is
+  refused, that participant falls back to the `utterance` engine on
+  `stt-cohere`, and the panel shows "Captions delayed" until a slot frees.
+  Size `batch_size` to `room.max_participants` × the concurrent meetings
+  wanted.
+- **Latency: word-emit p95 0.91 s at 8 concurrent streams** (0.89 s at one),
+  GPU under 80% busy; concurrency did not change per-channel WER.
+- **Accuracy is not yet established.** On AMI headset audio stitched from
+  utterances, pooled WER was 24.7% (median 18%); 16.4% without two channels
+  where the model emitted nothing for their first 40–60 s of normal speech
+  (cause not found). That corpus is not the evaluation the bar describes,
+  so the [STT evaluation](#stt-evaluation) on **continuous** headset
+  channels is still owed before the bar is called passed or failed.
+  Nemotron Speech Streaming stays the fallback if it fails.
 Rejected: Whisper emulation (re-decoding costs GPU per stream, and its
 maintainers call the LocalAgreement approach outdated); Voxtral Realtime
 (16 GB is too much beside the existing service; revisit for multilingual).
@@ -967,7 +1062,7 @@ type Engine interface {
     Open(ctx context.Context, track TrackRef) (Stream, error)
 }
 type Stream interface {
-    Write(pcm []float32) error          // mono at the engine's rate: 24 kHz for kyutai, 16 kHz for utterance (resampled from Egress' rate)
+    Write(pcm []float32) error          // mono at the engine's rate: 24 kHz for kyutai, 16 kHz for utterance (one channel of Egress' S16LE stereo 48 kHz, resampled)
     Segments() <-chan Segment           // partial and final, with start/end ms
     Close() error
 }
@@ -975,7 +1070,7 @@ type Stream interface {
 
 | engine | `MEETINGS_STT_ENGINE` | output | use |
 |---|---|---|---|
-| `kyutai` | `kyutai` + `MEETINGS_STT_URL` (`wss://…`) | word-level partials, finals at semantic end of turn | live captions (recommended) |
+| `kyutai` | `kyutai` + `MEETINGS_STT_URL` (`wss://…`) | word-level, each word emitted once and never revised | live captions (recommended); falls back per participant to `utterance` when the server is at its `batch_size` cap |
 | `utterance` | `utterance` + `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN` pointed at the existing `stt-cohere` | one final per utterance, after a pause (≤15 s segments, energy-based endpointing) | zero new service; dev; Compose without a second GPU service |
 | `fake` | `fake` | scripted text per participant | tests only; refuses to start unless `MEETINGS_TEST_MODE=1` |
 
@@ -1010,39 +1105,67 @@ proposal.
 ### What ScaleDown Extract is
 
 `scaledown/extract` is a model on OpenRouter from the provider ScaleDown
-([OpenRouter page](https://openrouter.ai/scaledown/extract/api), fetched
-2026-11-19; also in OpenRouter's `/api/v1/models`). It is **description-driven
+([OpenRouter page](https://openrouter.ai/scaledown/extract/api); also in
+OpenRouter's `/api/v1/models`, canonical slug `scaledown/extract-20260928` when
+measured). It is **description-driven
 entity extraction**: the caller describes the fields it wants in plain
-English, and it returns **spans copied from the input**, each with a type, a
-confidence and character offsets
+English, and it returns **spans with character offsets into the input**, each
+with a type and a confidence
 ([ScaleDown docs](https://docs.scaledown.ai/api-reference/extract-overview)).
 
 - Price: $0.04 per million input tokens, output free (OpenRouter's listing).
 - Context: 1M tokens. Listed parameters: `max_tokens` only; no
-  `response_format`, `tools` or structured outputs through OpenRouter. The
-  fields are passed in `provider.options.scaledown.entities`; the exact
-  payload shape through OpenRouter is **UNVERIFIED** (no example found).
-- Response: `{"entities": [{"text", "type", "confidence", "start", "end"}]}`.
-- OpenRouter publishes no latency for it yet (its field reads `null`); a
-  "0.85 s P50" figure in search results was not confirmed by any page.
+  `response_format`, `tools` or structured outputs through OpenRouter.
+- **Request shape (spike S6):** the fields are a **record, name →
+  description**, in `provider.options.scaledown.entities`:
+
+  ```json
+  {"model": "scaledown/extract",
+   "messages": [{"role": "user", "content": "[s1] Ada: I'll send the deck by Friday.\n…"}],
+   "provider": {"data_collection": "deny",
+                "options": {"scaledown": {"entities": {"action_item": "<definition>",
+                                                       "due_date": "<definition>"}}}}}
+  ```
+
+  A list is refused `400`; no entities is refused `400`. It answered under
+  `data_collection: deny`.
+- **Response:** `choices[0].message.content` is a JSON **string**,
+  `{"entities": [{"text", "type", "confidence", "start", "end", "context"}], …}`.
+- 🔴 **`text` is not always copied from the input.** In 1 of 22 entities it
+  was a rewrite ("Fay will have a draft Tuesday" where `input[start:end]` was
+  "I'll have a draft Tuesday"). The adapter maps spans to segments **by
+  `start`/`end` only**, checks the offsets fall inside the window, and shows
+  `input[start:end]`, never `text`, as the item.
+- Latency 0.6–2.7 s per call, p50 0.69 s over 10 windows.
 - Not context compression: that is the separate `scaledown/compress`.
 
-**What that means here.** Extract can only return text that is in the
-transcript. "Ada: sure, I'll send the deck Friday" becomes the span "I'll send
+**What that means here.** Extract's items are spans of the transcript. "Ada: sure, I'll send the deck Friday" becomes the span "I'll send
 the deck Friday", not "Ada to send the deck by Friday". The assignee then
 comes from the segment's speaker (which we know from the track), and the due
 date from a second entity type. Whether that reads well enough is what the
 evaluation decides. It is cheap enough that the cost is nearly zero either
 way.
 
-**The fallback: `deepseek/deepseek-v4.1-flash-1017`**, a dated snapshot
-($0.036 / M in, $0.50 / M out, per OpenRouter's listing when this was written; the
-undated `deepseek/deepseek-v4-flash` is not used, so the evaluated model
-cannot move), a chat model with `response_format`
-(JSON schema) support, which rewrites each item as owner, task, due. Strict
-schema enforcement on its route is **UNVERIFIED** until one live request
-with `strict: true` (S6). The `~deepseek/deepseek-flash-latest` alias is not
-used: a model that moves under a passed evaluation invalidates it.
+**The fallback: `deepseek/deepseek-v4.1-flash-1017`**, a dated snapshot, a
+chat model with `response_format` (JSON schema) support, which rewrites each
+item as owner, task, due.
+
+- **Price: $0.30 / M in, $1.20 / M out at peak, $0.15 / $0.60 off-peak**
+  (OpenRouter's time-of-day pricing, when measured). An earlier revision of
+  this page quoted $0.036 / $0.50: that was the `:batch` variant, which is not
+  used (its latency is untested).
+- **Schema honoured:** strict JSON schema answered valid JSON 14 of 14 times
+  in S6, including against a prompt telling it to break the shape, and a
+  hidden required field came back every time, so the schema reaches the
+  provider. Strict decoding on every provider is not shown at that sample
+  size.
+- 🔴 **The weights are pinned; the serving is not.** The dated slug is
+  served by about 50 providers at mixed quantizations (fp4, mxfp4, fp8), and
+  the answering provider changed on nearly every S6 request. So
+  `MEETINGS_ITEMS_PROVIDER_PREFS` **pins the provider** for it
+  (`order` with `allow_fallbacks: false`, or `quantizations`), and the
+  evaluation runs under exactly that pin. The undated slug and the
+  `~deepseek/deepseek-flash-latest` alias are not used.
 
 ### The worker
 
@@ -1071,7 +1194,7 @@ used: a model that moves under a passed evaluation invalidates it.
   | `MEETINGS_ITEMS_ADAPTER` | derived from the slug | `extract` or `chat_json` |
   | `MEETINGS_ITEMS_EVERY` | `10s` | window period |
   | `OPENROUTER_API_KEY` | — | required unless `off` |
-  | `MEETINGS_ITEMS_PROVIDER_PREFS` | `{"data_collection": "deny"}` | passed as OpenRouter's `provider` object, so only providers that do not retain prompts are used |
+  | `MEETINGS_ITEMS_PROVIDER_PREFS` | `{"data_collection": "deny"}` plus, for a multi-provider model, a provider pin (`order` + `allow_fallbacks: false`, or `quantizations`) | passed as OpenRouter's `provider` object: only providers that do not retain prompts, and for DeepSeek the one provider the evaluation ran on. Per-request `deny` makes routing independent of the account's own privacy setting |
 
 - **Live:** each new item is sent on the meeting's SSE stream as it is stored,
   and appears in the panel with a short highlight. Its source lines are linked
@@ -1124,11 +1247,23 @@ code** (guards and dedupe included), so it measures what ships.
   production (`MEETINGS_ITEMS_PROVIDER_PREFS`, default `{"data_collection":
   "deny"}`), so a model that passes is one that routes under that policy.
   The report records which provider answered each request. `scaledown/extract`
-  has a **single provider** (ScaleDown); if it does not satisfy
-  `data_collection: deny`, every request fails in the harness as it would in
-  production, and that is a failed run, not a skipped one. A model that
+  has a **single provider** (ScaleDown), and it answered under
+  `data_collection: deny` in S6; if that ever stops, every request fails in
+  the harness as it would in production, and that is a failed run, not a
+  skipped one. DeepSeek is evaluated under the **pinned** provider only. A model that
   passes only with looser preferences is a decision for the operator, not a
   default.
+- **Smoke result, not the gate (S6):** on 10 synthetic windows with 11
+  labelled items, `scaledown/extract` scored precision 0.91 / recall 0.91
+  (assignee 0.80), and `deepseek/deepseek-v4.1-flash-1017` 1.00 / 1.00
+  (assignee 1.00), both at 0 duplicates and 0 schema failures. Extract kept a
+  retracted commitment, missed an implicit "I'll pair with you", and assigned
+  "please write up your goals" to the speaker instead of the person asked;
+  its confidence did not separate true from false items, so no threshold is
+  used. Estimated cost per meeting-hour at these window sizes: ≈ $0.005
+  (extract), ≈ $0.025 (DeepSeek at peak). n = 10, one run each: it points
+  the same way as the fallback choice but decides nothing. **The full
+  evaluation above is still the gate.**
 - **Choice:** `scaledown/extract` if it passes every gate; else
   `deepseek/deepseek-v4.1-flash-1017` if it does; if both pass, the one with the
   better recall, then the cheaper. If neither passes, action items ship
@@ -1160,7 +1295,14 @@ code** (guards and dedupe included), so it measures what ships.
   left beside `stt-cohere`.
 - **Controls:** a silent channel must produce no text; a channel of a known
   read passage must produce WER under 10%; the harness must report a higher
-  WER when fed the wrong channel's reference (it can go red).
+  WER when fed the wrong channel's reference (it can go red). All three
+  behaved in S4 (silence: 0 words; wrong reference: WER 0.90–1.21).
+- **Silent start check** (from S4): the harness, and production telemetry,
+  flag a track with speech energy but no words for more than 20 s. Two of
+  eight S4 channels showed exactly this and it would otherwise surface only
+  as a missing transcript.
+- **Status:** memory and latency met in S4; **the WER run on continuous
+  channels is owed** (phase 3c).
 
 ## Extras: what is included and why
 
@@ -1309,17 +1451,48 @@ subdomains of muster's own host.
   means updating both. It calls muster at muster's in-namespace Service.
   An ingress rule for `meet.<muster host>`, beside muster's own rule for
   `<muster host>`; an internal port for the webhook, STT ingest and metrics.
-- LiveKit server: the upstream Helm chart or a plain Deployment, with
-  `hostNetwork` or a `LoadBalancer`/`NodePort` Service for `7882/udp`,
-  `7881/tcp` and `3478/udp`; TLS for `meet-rtc.<muster host>` and
-  `meet-turn.<muster host>` through the ingress or by SNI passthrough at the
-  relay.
+- LiveKit server: the upstream Helm chart or a plain Deployment on the
+  server host, TURN/TLS on `5349` with a publicly trusted certificate for
+  `meet-turn.<muster host>`, `rtc.node_ip` the server host's own address
+  (listed in `turn.allow_restricted_peer_cidrs`), `rtc.interfaces` pinned,
+  `cpu_cost.track_cpu_cost: 0.1` on Egress. Signalling for
+  `meet-rtc.<muster host>` through the ordinary HTTPS ingress. **No public
+  UDP** in v1 ([media](#media-livekit-turn-egress)); the only public media
+  path is the relay route below.
+
+**Phase-2 deploy item: the `meet-turn` route (operator steps).** Each is
+outward-facing or touches shared infrastructure, so each is the operator's,
+in this order:
+
+1. **Certificate:** issue a publicly trusted certificate for
+   `meet-turn.<muster host>` (a DNS-01 challenge, since nothing serves
+   port 80 for that name), mount it into LiveKit as `turn.cert_file` /
+   `turn.key_file`, and set up its renewal.
+2. **LiveKit config:** `turn.enabled: true`, `turn.domain:
+   meet-turn.<muster host>`, `turn.tls_port: 5349`, `rtc.node_ip` and
+   `turn.allow_restricted_peer_cidrs` as above, `rtc.interfaces` pinned. Roll
+   it out; nothing public changes yet.
+3. **Relay route:** on the relay's existing TCP 443, add **one SNI
+   passthrough** route: SNI `meet-turn.<muster host>` → the server host's
+   TURN/TLS port `5349` over the existing private path. TLS is **not**
+   terminated at the relay. Every other SNI on 443 is unchanged. Use the
+   relay's own safe-change sequence (it carries other services).
+4. **DNS:** an A record for `meet-turn.<muster host>` pointing at the relay's
+   public address, **not proxied** by any CDN (a proxy carries neither
+   TURN nor raw TLS passthrough).
+5. **Firewall:** nothing new: 443/tcp is already open; no UDP port and no
+   relay port range is opened.
+6. **Verify (the S1 still owed):** a phone on a mobile network (Wi-Fi off)
+   and a laptop with UDP egress blocked join one room; each client's
+   `getStats()` shows a selected pair of type `relay` over `tls`; pass = both
+   connect and the round-trip p95 is under 300 ms. Record the numbers here.
 - LiveKit Egress: a Deployment, sized for the number of concurrent
   recordings. Redis: a single small instance of its own (not muster's, if
   muster has one).
-- The streaming STT: a GPU workload on the GPU host, ClusterIP only. Where
-  the tenant has no GPU of its own, the `utterance` engine against muster's
-  existing STT service is the fallback.
+- The streaming STT: `moshi-server` with `batch_size` 8–16 on **the GPU host
+  that runs `stt-cohere`** (decision 18), reachable only from the plugin.
+  Where a tenant has no GPU, the `utterance` engine against muster's existing
+  STT service is the fallback.
 - NetworkPolicies: the plugin may reach muster's Service, LiveKit's API, the
   STT service, the object store and the internet (OpenRouter) only; Egress may
   reach LiveKit, the object store and the plugin's ingest port; STT is
@@ -1332,9 +1505,11 @@ subdomains of muster's own host.
 so its services join muster's project and network: `muster-meetings`,
 `livekit`, `egress`, `redis-meetings`, and optionally `stt-kyutai` (NVIDIA
 runtime). muster's own file is unchanged. Without a GPU service it runs the
-`utterance` engine against muster's `stt-cohere`. Ports published on the
-host: the three media ports, and HTTPS for the three subdomains through the
-stack's reverse proxy.
+`utterance` engine against muster's `stt-cohere`. Published on the host:
+HTTPS for `meet.` and `meet-rtc.` through the stack's reverse proxy, and
+TURN/TLS for `meet-turn.` as an SNI passthrough on 443 (the same shape as
+the Kubernetes route above). The UDP mux and TCP media ports are for LAN
+clients only and are not published by default.
 
 **muster's side:** add exactly `https://meet.<muster host>` to
 `MUSTER_PLUGIN_ORIGINS`, `meetings` to `MUSTER_PLUGIN_TASK_NAMESPACES`, turn on
@@ -1348,7 +1523,7 @@ with the test plan's tests included.
 
 | phase | PR | repository | size |
 |---|---|---|---|
-| **0: spikes** | S1–S7 below; results written into this page | — | M |
+| **0: spikes** | S1–S7: **done** ([results](#phase-0-results)); what they could not measure is carried into 2c, 3c, 4c and 1g's go-live check | — | done |
 | **1: core** | 1g: **central origin check for cookie-authenticated writes** (R1): the check in `admit` (`Sec-Fetch-Site` first, on `net/http.CrossOriginProtection`, plus the no-header refusal), the GoTrue path, method-less patterns, the route ledger, the sibling-origin negative controls, `muster_csrf_refusals_total`. Pre-existing hardening; ship first. **Gates the subdomain's go-live** | muster | L |
 | | 1f: **`__Host-` cookie names** (decision 16): the per-deployment name rule (on the resolved secure-cookie setting), the registrable-domain boot refusal, the loopback-http refusal on prefixed deployments, all seven literals, the host-only cookie golden, expiring the old names, e2e helpers, release note. **Gates the subdomain's go-live** | muster | M |
 | | 1a: migration, `app` capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
@@ -1358,11 +1533,11 @@ with the test plan's tests included.
 | | 1e: knock notification (decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md, **and the new paired-device TLS push sink for e2e** ([knock push spec](#the-knock-push-spec)). **Needs 1a** (the `app` capability) **and 1b** (the `?ref=` page) | muster | L |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
-| | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress and TURN/relay notes | muster-meetings | M |
+| | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress, the TURN/TLS-only LiveKit config, Egress `cpu_cost`s, and the **`meet-turn` route** ([operator steps](#deployment)), then the owed real-network S1 run | muster-meetings + operator | M |
 | | 2d: e2e click path without transcript or recording | muster-meetings | M |
-| **3: transcription** | 3a: track Egress ingest, `Engine` interface, `utterance` and `fake` engines, transcript panel for owner and guests, archive view and export | muster-meetings | M |
-| | 3b: `kyutai` engine, partial captions | muster-meetings | M |
-| | 3c: `stt-eval` and its run on the GPU host | muster-meetings | M |
+| **3: transcription** | 3a: track Egress ingest (URL token, no pings, S16LE-stereo-48k parsing, sample-count timestamps, egress restart and start retry), `Engine` interface, `utterance` and `fake` engines, transcript panel for owner and guests, archive view and export | muster-meetings | M |
+| | 3b: `kyutai` engine (`batch_size` 8–16, the at-capacity fallback to `utterance`, the silent-start check), captions | muster-meetings | M |
+| | 3c: `stt-eval` and its run on the `stt-cohere` GPU host, **on continuous AMI headset channels** (the WER result S4 could not give) | muster-meetings | M |
 | **4: action items** | 4a: `items-eval`, the corpus, the controls | muster-meetings | L |
 | | 4b: worker, guards, `extract` and `chat_json` adapters, live panel for owner and guests, the per-meeting **AI action items** switch | muster-meetings | M |
 | | 4c: run the evaluation, set the default model, commit the result | muster-meetings | S |
@@ -1404,6 +1579,24 @@ Each answers one **UNVERIFIED** claim above, with a go/no-go.
 | S5 | In Chrome, Firefox and Safari: camera, microphone and `getDisplayMedia` inside the sandboxed cross-origin frame with the `allow` and `Permissions-Policy` above; Android WebView `getDisplayMedia` | all three desktop browsers work (Safari's screen share is the likeliest gap); the Android result decides whether phase 7 is worth it |
 | S6 | One live request each: `scaledown/extract` with `provider.options.scaledown.entities`, and `deepseek/deepseek-v4.1-flash-1017` with a strict JSON schema | both answer in the documented shape |
 | S7 | The headers a cookie-authenticated `POST` actually carries (`fetch`, htmx and a native form) from Android's WebView (the muster app), the installed PWA, and Safari with strict privacy settings | under 1g's rule each is admitted: `Sec-Fetch-Site: same-origin`, or, where that header is absent, muster's own `Origin`, or a same-origin `Referer`. Any client that falls through to "none of the three" is a no-go for 1g as written |
+
+### Phase 0 results
+
+All seven spikes have run, on throwaway infrastructure (nothing shipped and
+nothing outward-facing changed), against this page as it stood at commit
+`b834602f6`. Versions measured: LiveKit server 1.13.11, Egress on the LiveKit
+Go SDK 2.18.2, `moshi-server` 0.6.4, Chromium 156, Firefox 157, WebKit 27.2.
+The design above already carries each change; this table is the index.
+
+| spike | verdict | what changed in this design | still owed |
+|---|---|---|---|
+| S1 media and TURN | works on a LAN for the UDP mux, TCP, TURN/UDP and TURN/TLS; a self-signed TURN certificate fails in Chromium; LiveKit always advertises `turns:…:443` | the public path is TURN/TLS on 443 only, by one SNI-passthrough route, publicly trusted certificate, relay allocations local ([media](#media-livekit-turn-egress), decision 17) | the real-network run (phone on a mobile network, UDP-blocked laptop) once the route is live ([deployment](#deployment), step 6) |
+| S2 track Egress PCM | **confirmed** for 31 min: 1920 B / 10 ms, S16LE stereo 48 kHz, identical channels | URL token (Egress sends no header), no pings, restart failed egresses, timestamp by sample count | mute/unmute and publisher reconnect (needs a browser publisher) |
+| S3 Egress cost | the reservation model was wrong: recorded 8-person ≈ 1.41 cores avg / 1.69 peak / 1.56 GiB; ≈ 0.02 core per track; cost held only 15 s | `track_cpu_cost` 0.1 and a start retry; the Go-SDK fallback dropped as a cost argument | a 1-hour run with real browser publishers and screen share |
+| S4 Kyutai STT | memory and latency **confirmed** (3.6 GB at batch 8; p95 0.91 s at 8 streams); `batch_size` is a hard stream cap | runs on the `stt-cohere` GPU host (decision 18), batch 8–16, at-capacity fallback, silent-start check | **WER on continuous AMI headset channels** (phase 3c) |
+| S5 frame media | the first revision's header was **refuted** in Chromium (no video, no screen share); with `self` it works; Firefox passes at the policy gate; Android WebView has no `getDisplayMedia` (documented) | `self` kept on every feature; e2e asserts tracks, not "no error" ([the frame](#the-frame-exactly)) | real Safari on macOS; actual capture in Firefox (headless has no screen source) |
+| S6 Extract and DeepSeek | **confirmed** shapes under `data_collection: deny`; Extract `text` can be a rewrite; DeepSeek is $0.30 / $1.20 per M and served by ~50 providers | map by offset; provider pin; price corrected; a 10-window smoke (0.91 / 0.91 against 1.00 / 1.00) | the full [action-item evaluation](#action-item-evaluation), under the pinned provider |
+| S7 cookie `POST` headers | **confirmed** on the three desktop engines: `Sec-Fetch-Site: same-origin` everywhere, native form `Origin: null`; a sibling `POST` carries the cookie | none needed: 1g's order already matches | the Android WebView, the installed PWA, Safari with tracking protections (a 1g go-live check) |
 
 ## Test plan
 
@@ -1548,13 +1741,22 @@ each result to the test:
 
 - the tab appears, is the last section link, and opens `/apps/{id}` full
   width at 390×844 and 1280×800;
-- **positive:** inside the frame all three media calls succeed (Chromium with
+- **positive:** inside the frame (Chromium with
   `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream
-  --auto-select-desktop-capture-source=…`); the redeem answered purpose
-  `app`;
-- **negative control:** the same stub framed from a page without the `allow`
-  attribute (a test-only route) is denied all three, so the positive above is
-  not the fake-UI flags granting everything;
+  --auto-select-desktop-capture-source=…`) `getUserMedia({audio, video})`
+  returns a stream with **one live audio and one live video track**, and
+  `getDisplayMedia` **resolves** to a video track. "No error" is not the
+  assertion: under the broken header of the first revision (S5) the call
+  succeeded with the video track silently missing. `document.featurePolicy
+  .allowsFeature()` is true for `camera`, `microphone` and `display-capture`
+  in the frame; the redeem answered purpose `app`;
+- **negative controls:** the same stub framed from a page without the `allow`
+  attribute (a test-only route) is denied all three; one with
+  `display-capture` dropped from `allow` gets `NotAllowedError` from
+  `getDisplayMedia` only; and one whose header omits `self` (the first
+  revision's `camera=("<O>")`) gets no video track. So the positive above is
+  not the fake-UI flags granting everything, and a regression to the broken
+  header goes red;
 - revoking the plugin on `/plugins` in a second tab removes the frame within
   35 s and the stub reports its tracks ended;
 - with `window.musterApp` injected, no frame is drawn, the **Open** card is,
@@ -1619,8 +1821,32 @@ redeem, self and tasks) and a fake LiveKit server API:
   `Range` (a `206` for `bytes=0-99`); an expired, tampered, or other
   meeting's signature is `403`; the URL is minted only for the owner's own
   meeting. *Red if:* the expiry or the path is left out of the HMAC.
-- **Ingest secret:** a websocket upgrade to `/stt/ingest/…` without
-  `MEETINGS_INGEST_SECRET` is `401`. *Red if:* the check is removed.
+- **Ingest token:** an upgrade to `/stt/ingest/<track>/<token>` with a
+  wrong, expired or other track's token is `401`, and with the right one is
+  accepted (no header is ever required, since Egress sends none). The access
+  log line for it contains `/stt/ingest/<track>` and not the token. *Red
+  if:* the check is removed, or the token is logged.
+- **The ingest never pings:** an Egress-like client that only writes, never
+  reads, stays connected for 120 s (a fake clock may shorten it). *Red if:*
+  the server's ping/pong timeout is left at a library default (the stream
+  dies at its timeout, as S2's did at 40 s).
+- **Real bytes:** a recorded fixture of Egress' own frames (1920 B, S16LE
+  stereo 48 kHz, identical channels) parses to the expected mono samples and
+  resamples to 24 kHz and 16 kHz with the expected lengths. A fixture whose
+  channels differ is still read from the first channel only.
+- **Timestamps by sample count:** a fixture delivered with a 7 s stall and
+  then a burst yields segment times equal to the same fixture delivered
+  evenly. *Red if:* times come from arrival.
+- **Egress restart and start retry:** an `egress_failed` webhook for an STT
+  track starts a new track egress and stores a gap marker that clears when
+  audio flows; a refused start is retried with backoff until accepted. *Red
+  if:* either handler is a no-op.
+- **STT at capacity:** a fake `moshi-server` that closes the ninth stream
+  with 1005 sends that participant to the `utterance` engine and shows
+  "Captions delayed"; the first eight stay on `kyutai`. *Red if:* the
+  fallback is removed (the ninth participant gets no transcript).
+- **Silent start:** a track with speech energy and no words for 20 s raises
+  the flag; a silent track does not (the positive and negative cases).
 - **No ticket in URLs or logs:** every route that takes a ticket refuses it
   in the query string, and a captured access log of a full meeting contains
   no ticket or join code.
@@ -1645,7 +1871,10 @@ redeem, self and tasks) and a fake LiveKit server API:
   pairwise distinct, so a hardcoded result cannot pass both.
 - **ScaleDown adapter:** spans map to the right segment ids by offset,
   including a span crossing two segments, and an offset past the end is
-  dropped.
+  dropped. A fixture whose `text` differs from `input[start:end]` (the
+  rewrite S6 saw) shows `input[start:end]`. *Red if:* the adapter uses
+  `text`. The request body is the pinned S6 shape (entities as a record);
+  a list is never sent.
 - **Retention sweeper:** with a fake clock and a fake store, objects past
   `purge_recording_at` are deleted, objects one second short are not, and a
   "forever" meeting is never touched. *Red if:* the comparison's direction
@@ -1817,7 +2046,13 @@ positive control):
 | core CSRF order | read `Origin` before `Sec-Fetch-Site`; admit `Sec-Fetch-Site: none` | "the central origin check" positive form case; negative `none` case |
 | core CSRF ledger | label a `cookie` route `bearer-only`; skip method-less patterns | "route ledger" bearer-only and method-less cases |
 | reconcile | remove the `ListParticipants` loop | "reconcile" |
-| ingest | remove the secret check | "ingest secret" |
+| ingest | remove the token check; log the full ingest URL | "ingest token" (one each) |
+| ingest pings | enable the library's default ping/pong timeout | "the ingest never pings" |
+| ingest time | timestamp by arrival | "timestamps by sample count" |
+| egress restart | ignore `egress_failed` for STT tracks; drop the start retry | "egress restart and start retry" (one each) |
+| STT capacity | drop the `utterance` fallback | "STT at capacity" |
+| extract text | display `text` instead of `input[start:end]` | "ScaleDown adapter" |
+| frame header | drop `self` from `camera` or `display-capture` | `plugin-app.spec.ts` positive (video track, resolved `getDisplayMedia`) and the Permissions-Policy golden |
 | AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
 ## Open questions
@@ -1826,7 +2061,8 @@ None open. Every question so far has been answered (decisions 6–16).
 
 ## Decisions
 
-Decisions 1–5 are from the operator's brief. Decisions 6–16 are the operator's answers
+Decisions 1–5 are from the operator's brief. Decisions 17–18 followed the
+phase-0 spikes. Decisions 6–16 are the operator's answers
 to the open questions, given **2026-11-20**. All are binding on this
 design.
 
@@ -1881,3 +2117,13 @@ design.
     with its tests, and everyone signs in again once. It must be released and
     deployed before `meet.<muster host>` goes live
     ([design](#core-seam-__host--cookie-names)).
+17. **(operator, after the phase-0 spikes) The public media path is TURN over
+    TLS on 443 only,** through one SNI-passthrough route for
+    `meet-turn.<muster host>` on the relay's existing TCP 443, with a
+    publicly trusted certificate. No UDP is opened on the public node in v1.
+    LiveKit advertises `turns:<turn domain>:443`, and TURN relay allocations
+    stay local to the server host ([media](#media-livekit-turn-egress),
+    [operator steps](#deployment)).
+18. **(operator, after the phase-0 spikes) The streaming STT runs on the GPU
+    host that already runs `stt-cohere`,** beside it, with an explicit
+    `batch_size` of 8–16 ([choice](#choosing-the-streaming-stt-model)).
