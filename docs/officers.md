@@ -1066,9 +1066,9 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   muster's 1 MiB answer cap is asked again at half the size, down to one
   item. (It used to read pages of 100, and one page of 100 large escalated
   items was over the cap: the whole re-run gave up and nothing was re-run.)
-- **Retried.** When the record or HQ's items cannot be read, the re-run logs
-  why and tries again after 1, 4, 15 and 60 minutes. If every try fails it
-  says so in the log, and the blocked items stay unsettled.
+- **Not retried.** When the record or HQ's items cannot be read, the re-run
+  logs one line naming the grant and why; the blocked items stay unsettled
+  for the grant's next approval or the route below.
 - **Re-run by hand.** `POST /ui/connector-grants/{id}/rerun` re-runs an
   APPROVED officer grant's still-unsettled blocked items exactly as its
   approval does: for an approval whose re-run could not read HQ, or one made

@@ -172,44 +172,13 @@ func (s *Server) goRerunBlocked(ctx context.Context, g connectors.Grant) {
 	ctx = context.WithoutCancel(ctx)
 	safeGo(s.logger, "officer grant re-runs", func() {
 		defer rt.blockWork.Done()
-		s.rerunBlockedRetrying(ctx, rt, o, g)
+		// One try: a failed read is not retried. Its items stay unsettled,
+		// so the grant's next approval, or the re-run route, reads again.
+		if err := s.rerunBlocked(ctx, rt, o, g); err != nil {
+			s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read (%v); they stay unsettled: "+
+				"re-run them with POST /ui/connector-grants/%d/rerun once HQ answers", g.ID, o.ID, err, g.ID)
+		}
 	})
-}
-
-// rerunRetryDelays is how long a grant's re-run waits before each retry after
-// a failed READ (the block record, or HQ's items): one try, then four more
-// over about 80 minutes. Every failure is logged; the last says the blocked
-// items stay unsettled and how to re-run them (POST
-// /ui/connector-grants/{id}/rerun). A var so a test can shorten it.
-var rerunRetryDelays = []time.Duration{time.Minute, 4 * time.Minute, 15 * time.Minute, time.Hour}
-
-// rerunBlockedRetrying is rerunBlocked, tried again after each delay of
-// rerunRetryDelays while it fails to read what it needs, until it reads or the
-// delays run out. A shutdown ends the wait (the items stay unsettled, so the
-// next approval or a re-trigger re-runs them).
-func (s *Server) rerunBlockedRetrying(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) {
-	for attempt := 0; ; attempt++ {
-		err := s.rerunBlocked(ctx, rt, o, g)
-		if err == nil {
-			return
-		}
-		if attempt >= len(rerunRetryDelays) {
-			s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read after %d tries (%v); they stay unsettled: "+
-				"re-run them with POST /ui/connector-grants/%d/rerun once HQ answers", g.ID, o.ID, attempt+1, err, g.ID)
-			return
-		}
-		wait := rerunRetryDelays[attempt]
-		s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read (%v); retrying in %s (try %d of %d)",
-			g.ID, o.ID, err, wait, attempt+2, len(rerunRetryDelays)+1)
-		t := time.NewTimer(wait)
-		select {
-		case <-t.C:
-		case <-s.streams.context().Done():
-			t.Stop()
-			s.logger.Printf("officers: grant %d: shutting down before its re-run retry; %s's blocked items stay unsettled", g.ID, o.ID)
-			return
-		}
-	}
 }
 
 // WaitForConnectorBlocks waits for every refusal's record and every
@@ -239,7 +208,7 @@ var blockStatuses = []string{officers.StatusEscalated, officers.StatusDone, offi
 // and the approved grant's items were never re-run.
 //
 // It returns an error only when it could not READ (the block record, or HQ's
-// items), for rerunBlockedRetrying to try again; everything else is logged.
+// items), which goRerunBlocked logs; everything else is logged here.
 func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) error {
 	octx := s.officerPrincipal(ctx, o.Owner)
 	st := rt.connectorBlocks()
@@ -329,9 +298,8 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 // handleConnectorGrantRerun is POST /ui/connector-grants/{id}/rerun: re-run
 // the items approved grant id blocked that are still unsettled, exactly as
 // its approval does (goRerunBlocked) — for an approval whose re-run could not
-// read HQ (its retries ran out, or muster restarted meanwhile). Settled items
-// are never re-run twice: HQ's re-run key is the grant's, and muster settles
-// each block HQ answered.
+// read HQ, or one made before a fix. Settled items are never re-run twice:
+// HQ's re-run key is the grant's, and muster settles each block HQ answered.
 //
 // 🔴 AN OPERATOR WRITE: a signed-in session from muster's own origin
 // (requireOperatorWrite). The grant is read under the caller's principal, so

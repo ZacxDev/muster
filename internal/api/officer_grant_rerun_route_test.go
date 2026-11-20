@@ -7,23 +7,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
 )
-
-// shortRetries makes the re-run's retry waits test-sized.
-func shortRetries(t *testing.T, n int) {
-	t.Helper()
-	saved := rerunRetryDelays
-	rerunRetryDelays = make([]time.Duration, n)
-	for i := range rerunRetryDelays {
-		rerunRetryDelays[i] = 5 * time.Millisecond
-	}
-	t.Cleanup(func() { rerunRetryDelays = saved })
-}
 
 // failItemReads makes HQ answer 503 to the first n item-list reads from now.
 func (r *rerunRig) failItemReads(n int32) {
@@ -36,36 +24,13 @@ func (r *rerunRig) failItemReads(n int32) {
 	}
 }
 
-// TestAFailedReadOfTheBlockedItemsIsRetried: HQ cannot list the items when
-// the grant is approved; the re-run does not give up silently — it logs the
-// failure, waits, reads again, and re-runs the blocked item once HQ answers.
-// Before, one failed read ended the re-run for good.
-func TestAFailedReadOfTheBlockedItemsIsRetried(t *testing.T) {
-	shortRetries(t, 4)
-	r := newRerunRig(t)
-	item := r.held("example-org/example-infra#4401")
-	r.refuse(officers.GitHubConnector)
-	r.hq.Escalate(item)
-	r.failItemReads(2)
-	r.approve(rrGitHub)
-	if got := r.hq.Reruns(); len(got) != 1 || got[0].Item != item {
-		t.Fatalf("re-runs %+v after HQ failed twice then answered; want item %s re-run. log:\n%s", got, item, r.logs.String())
-	}
-	if n := strings.Count(r.logs.String(), "could not be read"); n != 2 {
-		t.Fatalf("%d failed-read lines, want one per failed try (2):\n%s", n, r.logs.String())
-	}
-	if !strings.Contains(r.logs.String(), "retrying in ") {
-		t.Fatalf("no retry line:\n%s", r.logs.String())
-	}
-}
-
-// TestARerunThatNeverReadsSaysSoAndTheRouteReRunsItLater: HQ stays down for
-// every try: the last line says the items stay unsettled and names the route;
-// nothing is settled. Once HQ answers, POST /ui/connector-grants/{id}/rerun
+// TestARerunThatCannotReadSaysSoAndTheRouteReRunsItLater: HQ cannot list the
+// items when the grant is approved: the re-run logs ONE line naming the grant,
+// saying its items stay unsettled and naming the route, and does not try
+// again; nothing is settled. Once HQ answers, POST /ui/connector-grants/{id}/rerun
 // re-runs them. The route refuses a grant that is not approved (409) and one
 // it cannot read (404).
-func TestARerunThatNeverReadsSaysSoAndTheRouteReRunsItLater(t *testing.T) {
-	shortRetries(t, 2)
+func TestARerunThatCannotReadSaysSoAndTheRouteReRunsItLater(t *testing.T) {
 	r := newRerunRig(t)
 	item := r.held("example-org/example-infra#4402")
 	r.refuse(officers.GitHubConnector)
@@ -76,8 +41,15 @@ func TestARerunThatNeverReadsSaysSoAndTheRouteReRunsItLater(t *testing.T) {
 		t.Fatalf("re-ran %+v while HQ never listed the items", got)
 	}
 	route := "POST /ui/connector-grants/" + strconv.FormatInt(rrGitHub, 10) + "/rerun"
-	if !strings.Contains(r.logs.String(), "after 3 tries") || !strings.Contains(r.logs.String(), route) {
-		t.Fatalf("the give-up line does not say how many tries or name the route:\n%s", r.logs.String())
+	want := "officers: grant " + strconv.FormatInt(rrGitHub, 10) + " approved: "
+	var lines []string
+	for _, l := range strings.Split(r.logs.String(), "\n") {
+		if strings.Contains(l, "could not be read") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], want) || !strings.Contains(lines[0], "stay unsettled") || !strings.Contains(lines[0], route) {
+		t.Fatalf("want ONE failed-read line naming grant %d, saying its items stay unsettled and naming %q; got %q", rrGitHub, route, lines)
 	}
 	if r.blocks(rrGitHub) != 1 {
 		t.Fatalf("%d unsettled blocks, want the 1 never re-run", r.blocks(rrGitHub))
