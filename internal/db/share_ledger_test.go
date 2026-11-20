@@ -156,7 +156,7 @@ var personalOwned = []string{
 	// 0166: scheduled host jobs and their runs; a job writes one of its
 	// owner's personal pages, so a team host's jobs are refused.
 	"host_jobs", "host_job_runs",
-	// 0167: an officer's auto-restart record; only its owner's loop writes it.
+	// 0169: an officer's auto-restart record; only its owner's loop writes it.
 	"officer_auto_restarts",
 }
 

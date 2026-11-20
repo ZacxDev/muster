@@ -270,3 +270,62 @@ func TestAPairingRequestNamingATeamIsADecoy(t *testing.T) {
 		t.Fatalf("control: naming the operator filed %d requests; want 1", n)
 	}
 }
+
+// TestATasksPluginIsPairable (docs/design/meetings.md decision 11): a pairing
+// request for tasks alone is filed (202), approved with its code, and hands
+// out a token whose capabilities are exactly [tasks]. tasks beside draft_checks
+// without messages, tasks bound to an officer, and viewer are 400.
+func TestATasksPluginIsPairable(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	c, rec := w.pair(`{"owner":"operator","name":"example-filer","label":"Example filer","capabilities":["tasks"]}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("a tasks pairing request: %d %s; want 202", rec.Code, rec.Body.String())
+	}
+	// The card says what the token will do: file tasks — never "delivers to
+	// your chief", which a tasks token cannot. Control: a messages request's
+	// card names where it delivers.
+	mc, _ := w.pair(pairBody)
+	page := w.do("GET", "/plugins", "", w.operatorForm).Body.String()
+	card := func(pub string) string {
+		at := strings.Index(page, `data-pair-id="`+strconv.FormatInt(w.pairID(pub), 10)+`"`)
+		if at < 0 {
+			t.Fatalf("no pairing card for %s on /plugins", pub)
+		}
+		end := strings.Index(page[at:], "</li>")
+		return page[at : at+end]
+	}
+	if tc := card(c.RequestID); !strings.Contains(tc, PairFilesTasksOnly) || strings.Contains(tc, "delivers to") {
+		t.Fatalf("the tasks pairing card says %q; want %q and no delivery", tc, PairFilesTasksOnly)
+	}
+	if mcard := card(mc.RequestID); !strings.Contains(mcard, "delivers to officer:marketing:example") || strings.Contains(mcard, PairFilesTasksOnly) {
+		t.Fatalf("CONTROL: the messages pairing card says %q; want it to name its delivery", mcard)
+	}
+	if rec := w.approvePair(w.pairID(c.RequestID), c.Code); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approving it: %d %s; want 303", rec.Code, rec.Body.String())
+	}
+	got, code := w.poll(c.RequestID, c.PollSecret)
+	tok, _ := got["token"].(string)
+	if code != http.StatusOK || got["status"] != "approved" || !plugins.TokenShapeOK(tok) {
+		t.Fatalf("collecting the token: %d %v", code, got)
+	}
+	if rec := w.do("GET", "/plugin/v1/self", "", bearerTok(tok)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"capabilities":["tasks"]`) {
+		t.Fatalf("the paired token: %d %s; want it live with tasks alone", rec.Code, rec.Body.String())
+	}
+	// The refusals come from another source address: the pairing door allows 5
+	// requests per address in 10 minutes, and the two above are this one's.
+	badPair := func(body string) *httptest.ResponseRecorder {
+		return w.do("POST", "/plugin/v1/pair", body, func(r *http.Request) { r.RemoteAddr = "192.0.2.11:5000" })
+	}
+	for why, caps := range map[string]string{
+		"draft_checks without messages": `["tasks","draft_checks"]`,
+		"viewer":                        `["tasks","viewer"]`,
+		"neither messages nor tasks":    `["draft_checks"]`,
+	} {
+		if rec := badPair(`{"owner":"operator","name":"example-bad","label":"Example","capabilities":` + caps + `}`); rec.Code != http.StatusBadRequest {
+			t.Errorf("a pairing request with %s: %d; want 400", why, rec.Code)
+		}
+	}
+	if rec := badPair(`{"owner":"operator","name":"example-bad","label":"Example","capabilities":["tasks"],"deliver_to":"officer:marketing:example"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("a tasks-only pairing request bound to an officer: %d; want 400", rec.Code)
+	}
+}

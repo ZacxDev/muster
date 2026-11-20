@@ -41,7 +41,7 @@ The whole loop:
 | door | who | routes |
 |---|---|---|
 | The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Drafts tab): approve or reject reply drafts, and see what became of each under Archived |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/drafts/{id}/renew`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/drafts/{id}/renew`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks` (with `messages` or `tasks`), `GET /plugin/v1/self` |
 | A plugin **pairing** | none (then a poll secret) | `POST /plugin/v1/pair`, `GET /plugin/v1/pair/{request_id}`: [pairing a plugin](#pairing-a-plugin-without-handling-its-token) |
 
 A plugin token is shown once, when you create it. muster stores only its
@@ -66,19 +66,23 @@ A plugin token opens only the routes its **capabilities** allow:
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
 | `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
+| `tasks` | [`POST /plugin/v1/tasks`](#post-pluginv1tasks-one-task-per-upstream-record) only: filing a task and commenting on it by key. Nothing else: a `tasks` token is `403` on every other route but `GET /plugin/v1/self`, and on `POST /plugin/v1/tasks` it may not send `route_to_chief` or `reference` (`400`), which need `messages`. For a plugin that files tasks without bringing messages (migration `0167`). It never [auto-starts](#auto-start) an agent: auto-start needs `messages`. A `comment` lands on the open task carrying `key` among **all** your tasks, whichever plugin or person filed it, as with `messages` |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
-token is minted, with two exceptions: `draft_checks` and `chief_extension`,
-which you can turn on or off for an existing plugin (below).
+token is minted, with three exceptions: `draft_checks`, `chief_extension`
+and `tasks`, which you can turn on or off for an existing plugin (below).
 
 On `/plugins`, the `messages`/`viewer` choice is drawn only while
 `MUSTER_PLUGIN_ORIGINS` is set
 ([configuration.md](configuration.md#muster-server-optional-features)); without
 it every new token gets `messages`. The **Checks replies** box adds
-`draft_checks`, and the **Chief instructions** box adds `chief_extension`,
-whatever that variable says.
+`draft_checks`, the **Chief instructions** box adds `chief_extension`, and
+the **Files tasks** box adds `tasks`, whatever that variable says. Ticked
+with no other capability chosen, **Files tasks** takes the place of the
+`messages` default: the token files tasks and does nothing else, and its data
+scope is stored as `none`.
 
 An existing plugin can gain or lose `draft_checks` with no new token. Each live
 plugin with `messages` has a **Turn on Checks replies** (or **Turn off**) button
@@ -93,6 +97,13 @@ row with the old and new sets. Turning it **off** lapses every draft of the
 plugin still awaiting a check, as its deadline would. Each becomes an ordinary
 pending draft, and you get the usual push, noting that the plugin no longer
 checks replies.
+
+`tasks` is changed the same way: **Turn on Files tasks** (or **Turn off**),
+`POST /plugins/{id}/tasks`, `on=1` or `0`, with the same gate, owner and
+`plugin.capability.changed` audit row. The button is drawn only on a plugin
+without `messages` (which already files tasks), and a plugin whose only
+capability is `tasks` has no Turn off; revoke it instead. Tasks it already
+filed stay.
 
 A `viewer` token also carries:
 
@@ -1240,7 +1251,7 @@ or seen by anyone — the plugin receives it straight from muster.
 | `owner` | yes | the owner's login (their email, as `GET /plugin/v1/self` names it) |
 | `name`, `label` | yes | as on `/plugins` |
 | `data_scope` | no | as on `/plugins`; default the `name` |
-| `capabilities` | yes | `messages`, optionally with `draft_checks`. `viewer` cannot be paired |
+| `capabilities` | yes | `messages` or `tasks` or both; `draft_checks` only beside `messages`. `viewer` cannot be paired, and a plugin without `messages` cannot be bound to an officer (`deliver_to`) |
 | `deliver_to` | no | `officer:<id>`, checked again when the owner approves |
 
 | answer | meaning |
@@ -1289,7 +1300,10 @@ defined for you. Each decision writes a `plugin.pair.approved` or
 
 Some upstreams send **notices about a record** rather than messages for your
 chief to judge, such as "ticket 4711 was assigned to you". Each notice maps
-to exactly one task, so the plugin files it here directly. Nothing reaches
+to exactly one task, so the plugin files it here directly. The route takes a
+token with `messages` or `tasks`
+([capabilities](#capabilities)); a `tasks` token without `messages` gets
+`400` for `route_to_chief` and for `reference`. Nothing reaches
 the chief, unless the plugin asks for it with `route_to_chief` and the server
 runs task routing ([below](#routing-a-task-to-the-chief)).
 

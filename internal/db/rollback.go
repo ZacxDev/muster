@@ -433,12 +433,12 @@ const teamPagesMigrationVersion = 165
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const hostJobsMigrationVersion = 166
 
-// officerAutoRestartsMigrationVersion is 0167: officer_auto_restarts (the
+// officerAutoRestartsMigrationVersion is 0169: officer_auto_restarts (the
 // wake loop's bounded auto-restart, internal/officers autorestart.go), owned
 // and under the same row-level security, personal; same treatment again. Its
 // body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerAutoRestartsMigrationVersion = 167
+const officerAutoRestartsMigrationVersion = 169
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

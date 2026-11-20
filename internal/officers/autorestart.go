@@ -55,7 +55,7 @@ import (
 // stopped instance's name while another claims it.
 //
 // 🔴 THE COUNTS OUTLIVE THE PROCESS (Config.Restarts: officer_auto_restarts,
-// migration 0167). A muster restarted mid-day reads the day's restarts per
+// migration 0169). A muster restarted mid-day reads the day's restarts per
 // instance — the cap's sum, each backoff's exponent — and which held notices
 // were told, so a rollout neither resets the cap nor re-pushes a notice. Only
 // the clock of an error ALREADY in progress starts again when a new process
@@ -211,7 +211,7 @@ type RestartRecord struct {
 }
 
 // MaxRestartErrorText bounds the error text a RestartStore keeps (migration
-// 0167's CHECK is 2,000 characters).
+// 0169's CHECK is 2,000 characters).
 const MaxRestartErrorText = 1000
 
 // RestartStore persists the auto-restart book (officer_auto_restarts,

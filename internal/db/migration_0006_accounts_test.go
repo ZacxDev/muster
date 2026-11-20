@@ -126,7 +126,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - morning_reports (0161, one morning report per user per day).
 //   - page_assets, page_version_assets (0164, a page's author assets and the versions using them).
 //   - host_jobs, host_job_runs (0166, scheduled host jobs and their runs).
-//   - officer_auto_restarts (0167, the wake loop's auto-restart record per officer, day and instance).
+//   - officer_auto_restarts (0169, the wake loop's auto-restart record per officer, day and instance).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -243,7 +243,7 @@ var wantForeignKeys = []string{
 	"host_jobs|host_jobs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"host_job_runs|host_job_runs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"host_job_runs|host_job_runs_job_fkey|FOREIGN KEY (owner_id, job_id) REFERENCES host_jobs(owner_id, id) ON DELETE CASCADE",
-	// 0167: an owner's auto-restart record goes with them.
+	// 0169: an owner's auto-restart record goes with them.
 	"officer_auto_restarts|officer_auto_restarts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

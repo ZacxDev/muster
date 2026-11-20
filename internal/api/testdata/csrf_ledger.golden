@@ -200,6 +200,7 @@ cookie POST /plugins/{id}/chief-extension
 cookie POST /plugins/{id}/deliver-to
 cookie POST /plugins/{id}/draft-checks
 cookie POST /plugins/{id}/revoke
+cookie POST /plugins/{id}/tasks
 cookie POST /rules/{id}/delete
 cookie POST /rules/{id}/disable
 cookie POST /rules/{id}/enable

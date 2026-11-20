@@ -165,6 +165,31 @@ func validatePluginTask(in pluginTaskIn) string {
 	return ""
 }
 
+// PluginTasksOnlyRouteRefusal and PluginTasksOnlyReferenceRefusal are the 400
+// bodies for a token with `tasks` and not `messages` asking for a messages
+// power on POST /plugin/v1/tasks.
+const (
+	PluginTasksOnlyRouteRefusal     = "route_to_chief needs the \"messages\" capability: a \"tasks\" token files and comments on tasks only"
+	PluginTasksOnlyReferenceRefusal = "reference needs the \"messages\" capability: a reference's writes are claimed on the task-writes queue, which a \"tasks\" token does not open"
+)
+
+// pluginTasksOnlyRefusal is the 400 message when p files with `tasks` alone
+// (no `messages`) and asks for what only `messages` may: routing the notice to
+// the chief (route_to_chief), or a task reference (its queued writes are
+// collected on /plugin/v1/task-writes, a messages route). "" otherwise.
+func pluginTasksOnlyRefusal(p plugins.Plugin, in pluginTaskIn) string {
+	if p.Has(plugins.CapMessages) {
+		return ""
+	}
+	switch {
+	case in.RouteToChief:
+		return PluginTasksOnlyRouteRefusal
+	case in.Reference != nil:
+		return PluginTasksOnlyReferenceRefusal
+	}
+	return ""
+}
+
 // pluginCommentAuthor is the author of a comment this route writes: the plugin's
 // own name, so the thread says which plugin wrote it and the duplicate check is
 // per plugin.
@@ -207,6 +232,10 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := pluginFromContext(r.Context())
+	if msg := pluginTasksOnlyRefusal(p, in); msg != "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
+		return
+	}
 	ctx := r.Context()
 	if in.Reference != nil {
 		s.handlePluginReference(w, r, p, in)

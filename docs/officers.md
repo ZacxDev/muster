@@ -995,7 +995,7 @@ its slot until an operator acts. The boot banner says which
 (`officers: auto-restart ON — …` or `OFF`).
 
 **It survives a rollout.** The record is kept in the database
-(`officer_auto_restarts`, migration 0167), one row per officer, UTC day and
+(`officer_auto_restarts`, migration 0169), one row per officer, UTC day and
 instance: its restarts that day (the cap's sum, the backoff's exponent), the
 last one's time, whether its held notice was told, and its last error (at
 most 1,000 characters). A restarted muster, or another replica, reads the

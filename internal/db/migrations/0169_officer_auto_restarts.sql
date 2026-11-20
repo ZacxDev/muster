@@ -1,4 +1,4 @@
--- muster 0167 — THE OFFICER WAKE LOOP'S BOUNDED AUTO-RESTART, PERSISTED
+-- muster 0169 — THE OFFICER WAKE LOOP'S BOUNDED AUTO-RESTART, PERSISTED
 -- (internal/officers autorestart.go, restarts_pg.go; docs/officers.md "An
 -- instance in error").
 --
@@ -22,13 +22,13 @@
 -- shape). rollback/rls_off.sql turns it off with the rest, and --rls-on
 -- re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after its predecessor, 0166_host_jobs (the contiguity
+-- Must apply after its predecessor, 0168 (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT (and
 -- db.officerAutoRestartsMigrationVersion) at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE public.officer_auto_restarts;
---   DELETE FROM schema_migrations WHERE version = 167;
+--   DELETE FROM schema_migrations WHERE version = 169;
 
 SET LOCAL lock_timeout = '3s';
 

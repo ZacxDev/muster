@@ -317,7 +317,7 @@ type OfficersConfig struct {
 	// tiers.judgement.max_sessions_per_day.
 	Sessions officers.SessionStore
 	// Restarts is the auto-restart's record (officers.PGRestartStore,
-	// migration 0167); nil keeps it in memory, per process.
+	// migration 0169); nil keeps it in memory, per process.
 	Restarts officers.RestartStore
 	// PRLoops keeps draft officers' review-loop announcements
 	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
