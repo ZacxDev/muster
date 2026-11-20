@@ -958,6 +958,24 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
   An item HQ does not list in any status stays unsettled too. A builtin
   officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+- **Reads only what it needs, a small page at a time.** How each recorded
+  item stands is read by paging each status list (escalated, done, open,
+  claimed, waiting) to its end, 25 items a page (`officers.StatusPageLimit`),
+  and stopping as soon as every recorded item is found. A page still over
+  muster's 1 MiB answer cap is asked again at half the size, down to one
+  item. (It used to read pages of 100, and one page of 100 large escalated
+  items was over the cap: the whole re-run gave up and nothing was re-run.)
+- **Retried.** When the record or HQ's items cannot be read, the re-run logs
+  why and tries again after 1, 4, 15 and 60 minutes. If every try fails it
+  says so in the log, and the blocked items stay unsettled.
+- **Re-run by hand.** `POST /ui/connector-grants/{id}/rerun` re-runs an
+  APPROVED officer grant's still-unsettled blocked items exactly as its
+  approval does: for an approval whose re-run could not read HQ, or one made
+  before a fix. It needs a signed-in session from muster's own origin (for
+  example `fetch('/ui/connector-grants/32/rerun', {method: 'POST'})` from a
+  muster page's console). It answers `202` and logs each item; `409` for a
+  grant that is not approved or not an officer instance's, `404` for one you
+  cannot read. Settled items are never re-run twice.
 
 A different connector's grant, or another agent's, re-runs nothing: the
 record is keyed by the grant id.

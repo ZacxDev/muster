@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -171,8 +172,44 @@ func (s *Server) goRerunBlocked(ctx context.Context, g connectors.Grant) {
 	ctx = context.WithoutCancel(ctx)
 	safeGo(s.logger, "officer grant re-runs", func() {
 		defer rt.blockWork.Done()
-		s.rerunBlocked(ctx, rt, o, g)
+		s.rerunBlockedRetrying(ctx, rt, o, g)
 	})
+}
+
+// rerunRetryDelays is how long a grant's re-run waits before each retry after
+// a failed READ (the block record, or HQ's items): one try, then four more
+// over about 80 minutes. Every failure is logged; the last says the blocked
+// items stay unsettled and how to re-run them (POST
+// /ui/connector-grants/{id}/rerun). A var so a test can shorten it.
+var rerunRetryDelays = []time.Duration{time.Minute, 4 * time.Minute, 15 * time.Minute, time.Hour}
+
+// rerunBlockedRetrying is rerunBlocked, tried again after each delay of
+// rerunRetryDelays while it fails to read what it needs, until it reads or the
+// delays run out. A shutdown ends the wait (the items stay unsettled, so the
+// next approval or a re-trigger re-runs them).
+func (s *Server) rerunBlockedRetrying(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) {
+	for attempt := 0; ; attempt++ {
+		err := s.rerunBlocked(ctx, rt, o, g)
+		if err == nil {
+			return
+		}
+		if attempt >= len(rerunRetryDelays) {
+			s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read after %d tries (%v); they stay unsettled: "+
+				"re-run them with POST /ui/connector-grants/%d/rerun once HQ answers", g.ID, o.ID, attempt+1, err, g.ID)
+			return
+		}
+		wait := rerunRetryDelays[attempt]
+		s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read (%v); retrying in %s (try %d of %d)",
+			g.ID, o.ID, err, wait, attempt+2, len(rerunRetryDelays)+1)
+		t := time.NewTimer(wait)
+		select {
+		case <-t.C:
+		case <-s.streams.context().Done():
+			t.Stop()
+			s.logger.Printf("officers: grant %d: shutting down before its re-run retry; %s's blocked items stay unsettled", g.ID, o.ID)
+			return
+		}
+	}
 }
 
 // WaitForConnectorBlocks waits for every refusal's record and every
@@ -191,39 +228,49 @@ var blockStatuses = []string{officers.StatusEscalated, officers.StatusDone, offi
 // rerunBlocked asks HQ to re-run each item recorded as blocked on approved
 // grant g of officer o's instance that finished escalated, newest first,
 // within the bounds; it settles every one HQ answered and every one it skips
-// for good. An item HQ did not list in any status (past the pages read, or
-// gone) stays unsettled.
-func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) {
+// for good. An item HQ did not list in any status (gone) stays unsettled.
+//
+// 🔴 IT READS ONLY THE ITEMS THE GRANT BLOCKED, A SMALL PAGE AT A TIME. How
+// each recorded item stands is read with officers.StatusesOf: every status
+// list paged to its end at officers.StatusPageLimit (halved for a page still
+// over the answer cap), stopping once every recorded item is found. It used
+// to read each status as up to five pages of 100 (AllItems), and one page of
+// 100 escalated items was over muster's 1 MiB cap: the whole re-run gave up,
+// and the approved grant's items were never re-run.
+//
+// It returns an error only when it could not READ (the block record, or HQ's
+// items), for rerunBlockedRetrying to try again; everything else is logged.
+func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) error {
 	octx := s.officerPrincipal(ctx, o.Owner)
 	st := rt.connectorBlocks()
 	since := rt.clock().Add(-officers.RerunWindow)
 	// Skips do not count against the cap, so read past it.
 	blocks, err := st.BlocksForGrant(octx, o.ID, g.ID, since, 4*officers.RerunMaxPerApproval)
 	if err != nil {
-		s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read: %v", g.ID, o.ID, err)
-		return
+		return fmt.Errorf("the block record: %w", err)
 	}
 	if len(blocks) == 0 {
-		return
+		return nil
 	}
 	b0 := rt.hq.Backend(o)
 	rb, err := officers.Serves[officers.RerunBackend](b0, officers.CapRerun)
 	if err != nil {
 		s.logger.Printf("officers: grant %d approved: %s's backend re-runs no item (%v); %d blocked item(s) stay as they are", g.ID, o.ID, err, len(blocks))
-		return
+		return nil
 	}
-	status := map[officers.ItemID]string{}
-	for _, st := range blockStatuses {
-		cctx, cancel := context.WithTimeout(octx, connectorBlockTimeout)
-		items, err := b0.AllItems(cctx, st)
-		cancel()
-		if err != nil {
-			s.logger.Printf("officers: grant %d approved: %s's %s items could not be read, so its blocked items stay as they are: %v", g.ID, o.ID, st, err)
-			return
-		}
-		for _, it := range items {
-			status[it.ID] = it.Status
-		}
+	want := make(map[officers.ItemID]bool, len(blocks))
+	for _, b := range blocks {
+		want[b.Item] = true
+	}
+	// Each page on its own budget: a long list is many short reads.
+	page := func(ctx context.Context, q officers.ItemsQuery) (officers.ItemsPage, error) {
+		cctx, cancel := context.WithTimeout(ctx, connectorBlockTimeout)
+		defer cancel()
+		return b0.Items(cctx, q)
+	}
+	status, err := officers.StatusesOf(octx, page, blockStatuses, want)
+	if err != nil {
+		return fmt.Errorf("HQ's items: %w", err)
 	}
 	req := officers.RerunRequest{Key: officers.GrantRerunKey(g.ID),
 		Reason: "connector " + g.Connector + " grant " + strconv.FormatInt(g.ID, 10) + " was approved; the item had escalated while refused it"}
@@ -237,7 +284,8 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 		switch status[b.Item] {
 		case officers.StatusEscalated:
 		case "":
-			s.logger.Printf("officers: grant %d approved: HQ listed no %s item %s; left for the grant's next approval", g.ID, o.ID, b.Item)
+			s.logger.Printf("officers: grant %d approved: HQ listed no %s item %s in any status read; left unsettled (the grant's next approval or POST /ui/connector-grants/%d/rerun tries again)",
+				g.ID, o.ID, b.Item, g.ID)
 			continue
 		default:
 			// The operator's rule (2026-11-17, "only escalated ones"): an item
@@ -275,4 +323,56 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 		s.logger.Printf("officers: grant %d approved: %s has more than %d escalated blocked items within %s; re-ran the newest %d, %d left unsettled",
 			g.ID, o.ID, officers.RerunMaxPerApproval, officers.RerunWindow, officers.RerunMaxPerApproval, left)
 	}
+	return nil
+}
+
+// handleConnectorGrantRerun is POST /ui/connector-grants/{id}/rerun: re-run
+// the items approved grant id blocked that are still unsettled, exactly as
+// its approval does (goRerunBlocked) — for an approval whose re-run could not
+// read HQ (its retries ran out, or muster restarted meanwhile). Settled items
+// are never re-run twice: HQ's re-run key is the grant's, and muster settles
+// each block HQ answered.
+//
+// 🔴 AN OPERATOR WRITE: a signed-in session from muster's own origin
+// (requireOperatorWrite). The grant is read under the caller's principal, so
+// row-level security makes another owner's grant 404, as a missing one. Only
+// an approved grant of an officer instance is re-run (409 otherwise); the
+// answer is 202 — the re-run runs in the background and logs each item.
+func (s *Server) handleConnectorGrantRerun(w http.ResponseWriter, r *http.Request) {
+	if s.ext.Connectors == nil {
+		http.Error(w, ConnectorsUnconfigured, http.StatusServiceUnavailable)
+		return
+	}
+	if s.officerRT == nil || s.ext.Agents == nil {
+		http.Error(w, "no officers run here, so no grant has blocked items to re-run", http.StatusConflict)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	g, err := s.ext.Connectors.GetGrant(r.Context(), id)
+	if err != nil {
+		http.Error(w, "no such grant", http.StatusNotFound)
+		return
+	}
+	if g.Status != connectors.StatusApproved {
+		http.Error(w, "grant "+strconv.FormatInt(id, 10)+" is "+g.Status+": only an approved grant's blocked items are re-run", http.StatusConflict)
+		return
+	}
+	a, err := s.ext.Agents.Get(r.Context(), g.AgentID)
+	if err != nil {
+		http.Error(w, "the grant's agent could not be read", http.StatusConflict)
+		return
+	}
+	if _, _, ok := s.officerOf(a); !ok {
+		http.Error(w, "grant "+strconv.FormatInt(id, 10)+" is not an officer instance's: it blocks no item", http.StatusConflict)
+		return
+	}
+	s.logger.Printf("officers: grant %d: re-running its blocked items, asked for by the operator", id)
+	s.goRerunBlocked(r.Context(), g)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("re-running grant " + strconv.FormatInt(id, 10) + "'s blocked items; each is logged\n"))
 }

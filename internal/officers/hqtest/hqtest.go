@@ -1491,10 +1491,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			start = len(items)
 		}
 		items = items[start:]
+		// The page is the request's `limit` (as HQ honours it) or PageSize,
+		// whichever is smaller; neither set: every item.
+		size := s.PageSize
+		if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && (size == 0 || l < size) {
+			size = l
+		}
 		var next any
-		if s.PageSize > 0 && len(items) > s.PageSize {
-			items = items[:s.PageSize]
-			next = strconv.Itoa(start + s.PageSize)
+		if size > 0 && len(items) > size {
+			items = items[:size]
+			next = strconv.Itoa(start + size)
 		}
 		s.write(w, http.StatusOK, map[string]any{"items": items, "next": next})
 	case len(parts) == 4 && parts[1] == "items" && r.Method == http.MethodPost:

@@ -491,6 +491,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /tasks/{id}/complete",
 		"POST /tasks/{id}/edit",
 		"POST /tasks/{id}/tags",
+		"POST /ui/connector-grants/{id}/rerun",
 		"POST /ui/connector-requests/{id}/approve",
 		"POST /ui/connector-requests/{id}/deny",
 		// Browser flows (0012): the page and its forms.
