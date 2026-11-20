@@ -1,9 +1,16 @@
 package ui
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // TestTheSignInPageKeepsTheHandoffUnderTheSwitchersKey: the sign-in page's
@@ -26,9 +33,9 @@ func TestTheSignInPageKeepsTheHandoffUnderTheSwitchersKey(t *testing.T) {
 	}
 }
 
-// TestTheServerRowIsAnnouncedOnce: the row's button is named by its own text
-// ("Server in view:" and the label) and carries no aria-describedby pointing
-// back into itself, which read the hint twice.
+// TestTheServerRowIsAnnouncedOnce: the row's button is named by its
+// aria-label ("Switch server, current: <name>") and carries no
+// aria-describedby pointing back into itself, which read the name twice.
 func TestTheServerRowIsAnnouncedOnce(t *testing.T) {
 	page := renderString(t, serverSwitcher(Brand{Name: "Team Example"}))
 	start := strings.Index(page, `<button id="server-switcher-toggle"`)
@@ -39,8 +46,315 @@ func TestTheServerRowIsAnnouncedOnce(t *testing.T) {
 	if strings.Contains(tag, "aria-describedby") {
 		t.Errorf("the row button has a description: %s", tag)
 	}
-	if strings.Count(page, "Server in view:") != 1 {
-		t.Errorf("the hint appears %d times", strings.Count(page, "Server in view:"))
+	if !strings.Contains(tag, `aria-label="Switch server, current: Team Example"`) {
+		t.Errorf("the row button is not named for the server in view: %s", tag)
+	}
+}
+
+// TestTheRowIsTheLogoOnly pins the row button for each branding state, by
+// literal: its accessible name and tooltip, the picture it draws (the logo,
+// the monogram, or muster's square mark: never the lockup), no colour dot,
+// the monogram's letters and colour, and
+// NO text at all on screen (no name, no address: the operator's ask, "just
+// show the logo"). The monogram is drawn in every state, hidden behind a
+// picture, for servers.js to show when the logo fails.
+//
+// 🔴 REGRESSION TEST: on origin/main the button held a dot, "Server in view:"
+// and the name as text, no aria-label, and no picture.
+func TestTheRowIsTheLogoOnly(t *testing.T) {
+	cases := []struct {
+		name      string
+		b         Brand
+		label     string // the accessible name's server
+		picture   string // the visible picture's src prefix; "" = the monogram
+		letters   string
+		colour    string // the monogram's background class
+		monoShown bool
+	}{
+		{"a logo and a name", Brand{Name: "Example Studio", ETag: "e1"}, "Example Studio", "/brand/logo.png?v=e1", "ES", "bg-server-1", false},
+		{"a name only", Brand{Name: "Example Studio"}, "Example Studio", "", "ES", "bg-server-1", true},
+		{"a logo only", Brand{ETag: "e1"}, "This server", "/brand/logo.png?v=e1", "TS", "bg-server-0", false},
+		{"no branding", Brand{}, "This server", "/static/icons/favicon.svg?v=", "TS", "bg-server-0", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := parseFragment(t, renderString(t, serverSwitcher(c.b)))
+			btn := byID(root, "server-switcher-toggle")
+			if btn == nil {
+				t.Fatal("no row button")
+			}
+			if v, _ := nodeAttr(btn, "aria-label"); v != "Switch server, current: "+c.label {
+				t.Errorf("aria-label %q", v)
+			}
+			if v, _ := nodeAttr(btn, "title"); v != c.label {
+				t.Errorf("title %q", v)
+			}
+			// No text on screen: the only text node in the button is the
+			// monogram's (aria-hidden, and hidden behind a picture).
+			mono := findAttr(btn, "data-server-monogram")
+			if mono == nil {
+				t.Fatal("no monogram")
+			}
+			if got := focusNodeText(btn); got != c.letters {
+				t.Errorf("the button's text is %q, want the monogram's %q alone", got, c.letters)
+			}
+			var colours []string
+			for _, cls := range strings.Fields(attrOf(mono, "class")) {
+				if strings.HasPrefix(cls, "bg-") {
+					colours = append(colours, cls)
+				}
+			}
+			if strings.Join(colours, " ") != c.colour {
+				t.Errorf("monogram background %v, want %s alone", colours, c.colour)
+			}
+			if _, hidden := nodeAttr(mono, "hidden"); hidden == c.monoShown {
+				t.Errorf("monogram hidden=%v, want shown=%v", hidden, c.monoShown)
+			}
+			var imgs []string
+			walkNodes(btn, func(n *html.Node) bool {
+				if n.Type == html.ElementNode && n.DataAtom == atom.Img {
+					src, _ := nodeAttr(n, "src")
+					imgs = append(imgs, src)
+				}
+				return true
+			})
+			switch {
+			case c.picture == "" && len(imgs) != 0:
+				t.Errorf("a monogram row draws images %v", imgs)
+			case c.picture != "" && (len(imgs) != 1 || !strings.HasPrefix(imgs[0], c.picture)):
+				t.Errorf("the row draws %v, want one image at %s…", imgs, c.picture)
+			}
+			for _, banned := range []string{"data-server-label", "data-server-host", "data-brand-name", "data-brand-mark", "data-server-dot"} {
+				if findAttr(btn, banned) != nil {
+					t.Errorf("the row button carries [%s]", banned)
+				}
+			}
+		})
+	}
+}
+
+// TestTheSidebarTopIsOneRow: the sidebar's first child is the switcher, and
+// its first row holds, in order, the logo button, the search button and the
+// close button — the brand row and the server row are one. Nothing else in
+// the sidebar draws the brand (no second logo, no name).
+//
+// 🔴 REGRESSION TEST: on origin/main the brand row (logo, name, search,
+// close) came first and the server row second.
+func TestTheSidebarTopIsOneRow(t *testing.T) {
+	feat := featuresAllOn
+	feat.Brand = Brand{Name: "Example Studio", ETag: "e1"}
+	doc, err := html.Parse(strings.NewReader(renderString(t, Page(defaultTab, feat))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := byID(doc, "sidebar")
+	if side == nil {
+		t.Fatal("no #sidebar")
+	}
+	first := side.FirstChild
+	for first != nil && first.Type != html.ElementNode {
+		first = first.NextSibling
+	}
+	if v, _ := nodeAttr(first, "id"); v != "server-switcher" {
+		t.Fatalf("the sidebar's first child is #%s, want #server-switcher", v)
+	}
+	row := first.FirstChild
+	var ids []string
+	for c := row.FirstChild; c != nil; c = c.NextSibling {
+		if v, ok := nodeAttr(c, "id"); ok {
+			ids = append(ids, v)
+		}
+	}
+	if strings.Join(ids, " ") != "server-switcher-toggle sidebar-search sidebar-close" {
+		t.Errorf("the top row holds %v, want the logo button, search, close", ids)
+	}
+	var logos, names int
+	walkNodes(side, func(n *html.Node) bool {
+		if _, ok := nodeAttr(n, "data-brand-logo"); ok {
+			logos++
+		}
+		if _, ok := nodeAttr(n, "data-brand-name"); ok {
+			names++
+		}
+		return true
+	})
+	if logos != 1 || names != 0 {
+		t.Errorf("the sidebar draws %d logos and %d names, want 1 and 0", logos, names)
+	}
+}
+
+// TestTheListDrawsNoAddressUnlessNamesCollide: a menu entry's address slot
+// starts hidden (servers.js shows it only where two names collide), and an
+// entry draws a monogram and a logo slot.
+func TestTheListDrawsNoAddressUnlessNamesCollide(t *testing.T) {
+	page := renderString(t, serverSwitcher(Brand{}))
+	i := strings.Index(page, `<template id="server-item-tpl">`)
+	if i < 0 {
+		t.Fatal("no item template")
+	}
+	item := page[i : i+strings.Index(page[i:], "</template>")]
+	for _, want := range []string{`<span data-server-host="" hidden`, `<span data-server-monogram="" aria-hidden="true"`, `<img data-server-logo="" alt="" hidden`, `<span data-server-dot="" aria-hidden="true"`} {
+		if !strings.Contains(item, want) {
+			t.Errorf("the item template lacks %s:\n%s", want, item)
+		}
+	}
+}
+
+// serverTokens is web/css/tokens.css's --mu-server-<i> values, as lower-case
+// hex, once per theme block that defines them.
+func serverTokens(t *testing.T) [][]string {
+	t.Helper()
+	css, err := os.ReadFile("../../web/css/tokens.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`--mu-server-(\d): (\d+) (\d+) (\d+);`)
+	var out [][]string
+	for _, m := range re.FindAllStringSubmatch(string(css), -1) {
+		i, _ := strconv.Atoi(m[1])
+		if i == 0 {
+			out = append(out, nil)
+		}
+		if len(out) == 0 || len(out[len(out)-1]) != i {
+			t.Fatalf("--mu-server-%s out of order", m[1])
+		}
+		var px [3]int
+		for k := range px {
+			px[k], _ = strconv.Atoi(m[2+k])
+		}
+		out[len(out)-1] = append(out[len(out)-1], fmt.Sprintf("#%02x%02x%02x", px[0], px[1], px[2]))
+	}
+	return out
+}
+
+// TestTheMonogram holds serverMonogram and serverMonogramColour to the
+// literal table servers.js is held to as well (e2e/servers.test.mjs): the
+// letters, and the colour the class names (its --mu-server-<i> value).
+func TestTheMonogram(t *testing.T) {
+	raw, err := os.ReadFile("testdata/server-monograms.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct {
+		Cases []struct{ Name, Letters, Colour string }
+	}
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Cases) < 10 {
+		t.Fatalf("%d cases: the table did not load", len(table.Cases))
+	}
+	tokens := serverTokens(t)
+	if len(tokens) == 0 {
+		t.Fatal("no --mu-server-<i> tokens")
+	}
+	colours := map[string]bool{}
+	for _, c := range table.Cases {
+		if got := serverMonogram(c.Name); got != c.Letters {
+			t.Errorf("serverMonogram(%q) = %q, want %q", c.Name, got, c.Letters)
+		}
+		i := serverMonogramColour(c.Name)
+		if i < 0 || i >= len(tokens[0]) || tokens[0][i] != c.Colour {
+			t.Errorf("serverMonogramColour(%q) = %d (%s), want %s", c.Name, i, serverMonogramClasses[i], c.Colour)
+		}
+		colours[c.Colour] = true
+	}
+	// A table whose cases all land on one colour cannot see a hard-coded one.
+	if len(colours) < 5 {
+		t.Errorf("the table covers %d colours", len(colours))
+	}
+}
+
+// TestTheMonogramPaletteIsTheScripts: the stylesheet's server colours (the
+// classes the server draws a monogram with) are servers.js's PALETTE (the
+// colours the script redraws it with), colour for colour and in order, in
+// every theme; and the script names the row as ServerSwitcherLabel does.
+func TestTheMonogramPaletteIsTheScripts(t *testing.T) {
+	src, err := os.ReadFile("../../web/static/servers.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`var PALETTE = \[([^\]]*)\];`).FindStringSubmatch(string(src))
+	if m == nil {
+		t.Fatal("servers.js has no PALETTE")
+	}
+	var palette []string
+	for _, q := range strings.Split(m[1], ",") {
+		palette = append(palette, strings.ToLower(strings.Trim(strings.TrimSpace(q), "'")))
+	}
+	if len(palette) != len(serverMonogramClasses) {
+		t.Fatalf("servers.js has %d colours, the server %d classes", len(palette), len(serverMonogramClasses))
+	}
+	tokens := serverTokens(t)
+	if len(tokens) != 2 {
+		t.Fatalf("--mu-server-<i> is defined in %d theme blocks, want 2 (dark and light)", len(tokens))
+	}
+	for k, theme := range tokens {
+		if strings.Join(theme, " ") != strings.Join(palette, " ") {
+			t.Errorf("theme %d's server colours %v are not servers.js's %v", k, theme, palette)
+		}
+	}
+	// The monogram's letters are black (text-black): each colour must carry
+	// them at the AA minimum, in both themes (the same values).
+	dark, light := themes(t)
+	for i := range serverMonogramClasses {
+		for name, th := range map[string]themeTokens{"dark": dark, "light": light} {
+			bg, ok := th[fmt.Sprintf("server-%d", i)]
+			if !ok {
+				t.Fatalf("no %s --mu-server-%d", name, i)
+			}
+			if r := contrast(rgb{0, 0, 0}, bg); r < 4.5 {
+				t.Errorf("black on %s server-%d is %.2f:1, under 4.5", name, i, r)
+			}
+		}
+	}
+	for i, cls := range serverMonogramClasses {
+		if cls != fmt.Sprintf("bg-server-%d", i) {
+			t.Errorf("class %d is %q", i, cls)
+		}
+	}
+	if !strings.Contains(string(src), "var TOGGLE_LABEL = '"+ServerSwitcherLabel("")+"';") {
+		t.Errorf("servers.js does not name the row as ServerSwitcherLabel does (%q)", ServerSwitcherLabel(""))
+	}
+}
+
+// TestTheMonogramLetters holds serverMonogram, code point by code point, to
+// the table of every one-code-point name from U+0000 to U+04FF that was
+// generated apart from it (Python's full case mapping) and that servers.js is
+// held to as well: the blocks where case changes, and every separator there.
+// Plus the two shapes the rule exists for, past those blocks: a letter newer
+// than Go's tables, and an iota-subscript letter, each kept as it is.
+func TestTheMonogramLetters(t *testing.T) {
+	raw, err := os.ReadFile("testdata/server-monogram-letters.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct{ Letters []string }
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Letters) != 0x500 {
+		t.Fatalf("%d entries, want 0x500", len(table.Letters))
+	}
+	changed, bad := 0, 0
+	for cp, want := range table.Letters {
+		if got := serverMonogram(string(rune(cp))); got != want {
+			if bad++; bad <= 20 {
+				t.Errorf("serverMonogram(U+%04X) = %q, want %q", cp, got, want)
+			}
+		}
+		if want != "?" && want != string(rune(cp)) {
+			changed++
+		}
+	}
+	// Positive control: the table does upper-case (a-z alone is 26).
+	if changed < 200 {
+		t.Errorf("only %d code points change case in the table", changed)
+	}
+	for _, c := range []struct{ name, want string }{{"ᲊ", "ᲊ"}, {"ᾳ", "ᾳ"}, {"\U00010d70", "\U00010d70"}} {
+		if got := serverMonogram(c.name); got != c.want {
+			t.Errorf("serverMonogram(%q) = %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 
@@ -64,5 +378,60 @@ func TestTheOfferClaimsNoOrigin(t *testing.T) {
 	}
 	if !strings.Contains(offer, `id="server-offer-dismiss"`) || !strings.Contains(offer[strings.Index(offer, `id="server-offer-dismiss"`):], "autofocus") {
 		t.Errorf("Not now does not take the focus: %s", offer)
+	}
+}
+
+// TestTheServerRowsShowANameAndNoAddressLine (jargon audit F028): a Manage
+// servers row has no second line for the server's address
+// ([data-server-host]); it carries the address ⓘ instead — the shared
+// InfoSheet, with a Copy and an (empty, script-filled) code row — and the
+// menu row, a link, carries no ⓘ (a button inside a link is invalid).
+//
+// The menu row's address line is the ONE exception, by the operator's
+// decision on #877 (D3): it is drawn HIDDEN, and servers.js shows it only
+// where two entries' names collide, or the two would read the same
+// (TestTheListDrawsNoAddressUnlessNamesCollide; e2e "two servers with the
+// same name"). So the menu template's every address line must start hidden.
+func TestTheServerRowsShowANameAndNoAddressLine(t *testing.T) {
+	menu := renderString(t, serverSwitcher(Brand{Name: "Team Example"}))
+	dialogs := renderString(t, serverSwitcherDialogs())
+	if strings.Contains(dialogs, "data-server-host") {
+		t.Errorf("dialogs: a Manage row still has an address line (data-server-host)")
+	}
+	if n, hidden := strings.Count(menu, "data-server-host"), strings.Count(menu, `data-server-host="" hidden`); n != hidden || n != 1 {
+		t.Errorf("menu: %d address lines, %d of them hidden; want one, hidden (shown only on a name collision)", n, hidden)
+	}
+	i := strings.Index(dialogs, `id="server-manage-row-tpl"`)
+	if i < 0 {
+		t.Fatal("no Manage row template")
+	}
+	row := dialogs[i:]
+	row = row[:strings.Index(row, "</template>")]
+	want := InfoSheetHTML(serverAddressSheet())
+	if !strings.Contains(row, want) {
+		t.Errorf("the Manage row lacks the address sheet:\n%s", row)
+	}
+	for _, part := range []string{`data-info-code=""`, `data-info-copy=""`, `popovertarget="` + ServerAddressSheetTpl + `"`} {
+		if !strings.Contains(row, part) {
+			t.Errorf("the Manage row's sheet lacks %s", part)
+		}
+	}
+	j := strings.Index(menu, `id="server-item-tpl"`)
+	item := menu[j:]
+	item = item[:strings.Index(item, "</template>")]
+	if strings.Contains(item, "data-info-open") {
+		t.Errorf("the menu row (a link) carries an ⓘ button: %s", item)
+	}
+}
+
+// TestTheManageRowsAddressSheetIsTheOneServersJSRenames: servers.js renames
+// the row template's sheet by the id the template draws it with.
+func TestTheManageRowsAddressSheetIsTheOneServersJSRenames(t *testing.T) {
+	src, err := os.ReadFile("../../web/static/servers.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "var ADDRESS_TPL = '"+ServerAddressSheetTpl+"';") {
+		t.Fatalf("servers.js does not rename the sheet the template draws (%q)", ServerAddressSheetTpl)
 	}
 }

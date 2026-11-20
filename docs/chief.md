@@ -999,6 +999,12 @@ unlike [replacing the chief](#replacing-the-chief-on-another-kind).
   succeeds. `muster-ops chief-restart` remains the check that the running image
   equals the configured one.
 
+  It asks no phone, from any machine: a machine whose other owner-authority
+  calls are [confirmation cards](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)
+  (one that starts agents for the chief, runs a host officer, or a remote
+  caller) restarts the chief at once too, `force` included
+  ([why](mirroring.md#chief_restart-is-not-gated)).
+
   It is refused while the chief is mid-turn: a plugin message, its kickoff or a
   memo being delivered, or a chat turn running. Retry when the turn ends, or pass
   `force: true` to cut the turn off, which is what the browser's Stop does.
@@ -1187,8 +1193,12 @@ fixed for the session's life:
 
 Open one from the chief panel: its thread list has a **New session** picker.
 Each thread names its runtime and model. The route underneath is
-`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A session's
-runtime and model never change; open a new session to use another.
+`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A side
+chat can be opened on a model from the chat strip's **+** too
+([Primary and side chats](#primary-and-side-chats)): its route,
+`POST /agents/{id}/sessions/side`, takes an optional `model` field, checked the
+same way. A session's runtime and model never change; open a new session to use
+another.
 
 A turn for a `claude-code` session runs in a CLI of its own (tmux session
 `cc-<id>`, started with the session's `--model`); a turn for a session with no
@@ -1267,6 +1277,17 @@ transcript in the chief panel. There is no sheet or dialog for them:
   newest side chat is still empty, **+** takes you back to that one instead
   of opening a second (a double tap opens one chat), and still puts the cursor
   in its box.
+- **Pick a model from +.** Where the deployment offers the Claude Code session
+  runtime to a claude-code chief (`MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`,
+  [the runtime picker](#sessions-on-more-than-one-runtime)), **+** opens a
+  small menu instead: **Default** (the chief's own model, what **+** opens
+  everywhere else), **Opus**, **Sonnet** and **Haiku**. Picking one opens the
+  side chat on that model and puts the cursor in its message box. A chat's
+  model is fixed once it is made, and its chip shows the model as a small tag
+  (for example `sonnet`); a chat on the chief's own model has none. The empty
+  newest side chat is reused only when it is on the model you picked. Without
+  that setting, **+** opens a chat at once as before, and the route refuses a
+  model (`400`) rather than open a chat on one you did not get.
 - **Archived (n)** is the last chip. Tap it to show the archived chats' chips
   in the strip, and again to hide them. The chat you are on is never hidden
   there.
@@ -1279,7 +1300,7 @@ you stay on the grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty) |
+| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
 | the primary | **Fresh primary** | the primary chip's ⋯ | after a confirm, starts a new primary chat (below) |
 | a side chat | **Make primary** | its chip's ⋯ | makes it the primary (you stay on the chat you are on) |
 | a side chat | **Archive** | its chip's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
@@ -1291,22 +1312,34 @@ The primary cannot be archived. The strip puts the primary first, marked
 last, behind **Archived (n)**. The panel's thread list (its title bar's list
 button) lists the same chats in the same order, for search.
 
-**The context chip.** The chief page's header shows, under the title (where a
-mirrored session's header shows its own), how full the chat's context is; the
-panel shows it in its title bar. The chip shows the
-model, then `used/window` (`152k/200k`), amber from 70% of the window and red
-from 90%; tap it for the exact count. It reads the chat's latest turn's usage
+**Memory used.** When the chat's context is high — its latest turn sent more
+than 350k tokens — the chief page's ⋯ menu says so in plain words ("Memory
+used: 362k"); below that it says nothing, and the header carries no token
+count (operator decision, #871). It reads the chat's latest turn's usage
 row (`chief_turn_usage`; migration 0115 adds the chat, the model and
 `context_tokens` to it): the context the turn's LAST model request was sent —
 its input + cache read + cache write — not the turn's total, which with tool
 calls counts the conversation once per request. `ccd` reports the last call's
 fill beside the turn's totals (`context_tokens` in its usage); a Responses-API
 gateway reports one response per request, whose own tokens are that request's.
-It updates when a turn of the chief ends. The window is known for Claude models
-named by an alias or id (200k, or 1M with `[1m]`) and for OpenRouter models
-(the catalogue's `context_length`). With no model known — a `claude-code`
-chief on its CLI's default model — or no window known, the chip shows the
-count alone and is never tinted.
+It updates when a turn of the chief ends.
+
+**Sessions the chief names are cards.** When the chief names one of your
+sessions it writes a marker, `[[session:<id>]]`, with the session's id as its
+tools give it (`mirror:…`, `agent:…`). The chat draws it as a compact card —
+the session's name, its computer and a status dot (busy, idle, waiting on
+you) — that opens the session on a tap; its terminal address is behind the
+card's ⓘ. The marker is resolved on the server against YOUR OWN sessions only:
+a marker naming anything else (another person's or a team's session, an ended
+one) is drawn as the words "a session", never as a card. An older reply's raw
+`tmux <session>:<index> @ <host>` or `mirror:<id>` becomes the same card only
+when it is exactly one of your sessions.
+
+**A routed answer is shown once.** A session's answer to a request the chief
+routed is its "From <session>" card; the chief is told not to repeat it, and a
+reply after the card that repeats it anyway has the repeat collapsed to "See
+the answer above". The chief's newest reply is always shown in full; older long
+replies fold under "Show more".
 
 **Fresh primary.** When the primary gets heavy, **Fresh primary** starts a new
 one:
@@ -1476,6 +1509,147 @@ Nothing in the digest acts on a session.
 The routes: `GET /ui/chief/fleet` (the card), `GET /ui/chief/fleet/session?id=`
 (a drill-in) and `POST /ui/chief/fleet/chat` (the Fleet chat). Each reads only
 your own fleet.
+
+## Fleet proposals
+
+**Off by default:** `MUSTER_FLEET_ORCHESTRATION=propose` turns it on, and it
+needs the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and session
+state (`MUSTER_SESSION_STATE=1`): the server refuses to boot with it on and
+either of them off. Unset (or `off`): the chief's fleet
+tools are not listed, the digest has no Proposed group, and nothing is written
+to the fleet's action log.
+
+With it on, the chief can **propose** what to send each of your sessions, and
+muster proposes a handoff for each finished session itself. **Every proposal
+is a card; nothing is sent until you tap Approve.** There is no automatic tier
+yet.
+
+**The chief's tools** (chief-only, your own sessions only):
+
+| tool | proposes |
+|---|---|
+| `session_instruct {subject, class, text?, reason}` | one message to a stopped session. `class` is `continue`, `handoff` or `stop_note` (muster's fixed texts, below) or `custom` (the chief's own text, at most 4 KiB) |
+| `session_wrap {subject, reason}` | **one** card, "Write handoff, then close": the handoff text; once the session's handoff turn has ended (it worked, then stopped again), muster closes it — a Claude Code window gets `/exit` at an idle prompt, an opencode window is closed, an agent is stopped and removed. It is left open, and the card says why, if it then has an open pull request, a queued message or background work, or if no handoff turn ends within 24 hours |
+| `session_answer {subject, answer_kind, ask_id?, text?, option?, reason}` | an answer to the question a stopped session holds. `continue` (`Yes, continue.`) and `composed` (the chief's own words, at most 4 KiB) answer an **open plain-text question** of the session's stop, from muster's [ask log](features.md#ask-log) (`MUSTER_ASK_LOG`): `ask_id`, or the session's one open question. With none (or the ask log off) the call is refused `no_question`: telling a session something is `session_instruct`'s. If the question is answered or ended before the paste, nothing is sent (`moved_on`). `pick`, for a session showing a picker (AskUserQuestion): `option` must be one of **that picker's own options**, byte for byte, or the call is refused `not_an_option`. On your tap a pick is typed into the picker exactly as your own tap on the picker's card types it |
+| `work_reassign {task_id, from, to, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task), then `from` told the task moved and asked for its handoff. To move work to a **new** session, the chief calls `agent_dispatch` (its own card) and proposes `from`'s handoff |
+| `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed. `subject` is one session's fleet id, matched exactly (`agent:4` is agent 4's stops, never agent 42's) |
+
+`subject` is a session's `fleet_list` id. Every write answers `{action_id,
+state, refused?, card?}`. A proposal is filed only on a **stop**: a session
+that is working is refused `not_stopped`. Another owner's session, a team's
+window, the chief and an officer's instance (a dispatched one, or a window
+the officer runtime spawned on your host) are all refused `not_found`, the
+same answer for each. A session muster can only watch (an opencode pane its
+host does not send to, or a read-only host) is refused `view_only`, and no
+card is filed. There is at most one open proposal per session and class; a
+second is refused `already_proposed`.
+
+**The fixed texts**, byte for byte, each after muster's first line:
+
+| class | text |
+|---|---|
+| `continue` | `Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task.` |
+| `handoff` | `Your PR #<n> is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop.` (`closed` for a pull request closed unmerged; with no pull request known, only the second sentence) |
+| `stop_note` | `Stop after this step and wait for your owner's next message. Do not start anything new; ask with attention_ask if something cannot wait.` |
+| answer `continue` | `Yes, continue.` |
+| `ci_result` | `CI finished on #<n> at <sha12>: ok=<k> bad=<m> (<failed check names>). Continue.` (no parenthesis when nothing failed) |
+
+There is no "merge when green" answer yet: it returns once muster can read the
+audit ladder's verdict, not only the CI
+([ask-autoapproval.md](design/ask-autoapproval.md)).
+
+**Outside your turn.** `route_to_session {text}`, `route_many` and
+`end_session_propose`, called when the message the chief answers is not one you
+typed, used to refuse. With fleet proposals on, they file cards instead: a
+**custom** card per session (the chief's text, at most 4 KiB, sent on your tap with muster's
+first line — not a route: no answer is relayed back) and a **close** card
+(nothing typed; the session closed on your tap, unless an open pull request, a
+queued message or background work holds it). Each needs a stopped session.
+
+Every text a card sends starts with a line muster writes,
+`[Chief, approved by <you> at HH:MM UTC]`, never in your voice. muster counts
+that line as one of its own pastes, so a chief text is never later quoted as
+your words (the stall nudges' "your messages" rule,
+[chief-nudges.md](chief-nudges.md)).
+
+**muster's own proposals.** For an owner with a chief, the session-state pass
+proposes, with no model, the one card **"Write handoff, then close"** for each
+session the digest counts **Done** — its latest pull request merged or
+closed, nothing queued to it — that is stopped with no background work, no open
+ask and no turn error. Once per stop: a stop you already decided on is not
+proposed again. If you approve it and no handoff turn comes within 24 hours,
+its close is offered on its own, as a **Close** card (nothing is typed; the
+window is closed on your tap, unless an open pull request, a queued message or
+background work holds it).
+
+**CI finished (`ci_result`).** For a stopped Claude Code session whose latest
+pull request is open, muster reads its head's CI (the GitHub App, for an owner
+the App admits, reused for two minutes). When every check has finished and at
+least one finished **after** the session stopped — so it stopped while CI ran
+— a `ci_result` card is proposed with the fixed text above: the counts and the
+failed checks' names are facts muster read, no model. Once per stop.
+
+**The chief still judges stops.** Turning proposals on changes nothing about
+how a stop is judged: the chief's stall nudges, a stop's push wait and the
+per-stop pushes are exactly as with them off. The proposals run alongside.
+(Letting the fleet judge stops in the chief's place waits for its own triage, a
+later phase; an owner with a running [Session minder](officers-builtin.md) keeps
+the minder either way.)
+
+**The cards.** The digest's **Proposed** group, after Needs you, lists each
+open proposal: the session, the class as a verb ("Continue", "Write handoff,
+then close"), the one-line reason, and **exactly what will be sent**, in full.
+
+- **Approve** sends it. It needs a sign-in from the last `MUSTER_STEPUP_WINDOW`
+  (usually free); on a stale one muster asks "Confirm it's you" and taps again.
+- **Edit** opens the text in a box; **Send as mine** sends your text as your
+  own message — no chief line — with the same sign-in check. A card that
+  types nothing, routes a task or picks an option (Close, a task move, a
+  pick) and a dispatched agent's card have no Edit.
+- **Reject** sends nothing.
+- **Open session** goes to the session's rendered view.
+- **Approve all** and **Reject all** act on every card the group shows, after a
+  confirm that lists each one. Each is checked on its own; the note says, for
+  example, "3 sent, 1 skipped (moved on)".
+
+On a phone the group opens in a bottom sheet, and every button is full width
+and 44 px tall. There is no swipe: a proposal is approved only by a tap, with
+its text on screen. **A phone's notification can never approve one**: the card
+routes refuse a paired phone's signed action, and the push carries no action.
+
+**Checked twice.** When you tap, and again when the message is pasted, muster
+reads the session: the same stop, the same idle streak and, when one was
+recorded, the same pull-request head. If anything changed, nothing is sent and
+the proposal ends `suppressed:moved_on` ("Not sent: the session moved on…").
+
+**Expiry.** A proposal expires when its stop ends, when its evidence changes
+(a new message or a new pull-request head), or after 12 hours. Expired
+proposals leave the group.
+
+**Delivery**, per kind of session:
+
+| session | how |
+|---|---|
+| mirrored Claude Code (opened by hand, or dispatched on a host) | the send queue (a row with origin `fleet_action_id`, a server-stamped sign-in time, never edited or retried), typed through the Claude prompt guard |
+| mirrored opencode, launcher-bound, host running `-opencode-send` | the same queue row, sent through opencode's API |
+| any other opencode pane, or a read-only host | not delivered: refused `view_only`, no card |
+| a dispatched agent | a turn, as the chief's nudges start one |
+
+**The push.** At most every 30 minutes, and only when a new proposal arrived,
+one push: "N proposals waiting". Tapping it opens the chief panel. Beside it,
+**one** Attention item says the same: each push replaces it with the new count
+(never a second one), and it is withdrawn once no proposal waits. The per-stop
+pushes are unchanged.
+
+**The action log**, `fleet_actions` ([schema.md](schema.md)), is append-only:
+one row per proposal with its state (`proposed`, `approved`, `rejected`,
+`expired`, `queued`, `sent`, `failed`, `suppressed:<why>`), and one
+`audit_log` row (`fleet.<class>.<state>`) per change, carrying ids only.
+
+The routes: `POST /ui/chief/fleet/actions/{id}/approve`, `…/edit` (`text=`),
+`…/reject`, `POST /ui/chief/fleet/bulk` (`op=approve|reject`, `id=` for each
+card) and `GET /ui/chief/fleet/stepup` (the confirm dialog). Each answers 404
+with the flag off.
 
 ## Replacing the chief on another kind
 

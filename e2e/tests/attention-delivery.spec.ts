@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { Page } from '@playwright/test';
+import { Frame, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { attentionDeliveryConnectPort, attentionDeliveryFakePort, attentionDeliveryPort, dsn, repoRoot, versionTerm } from '../lib/env';
@@ -166,20 +166,21 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   await expect(log).toContainText(REPLY);
 });
 
-// ANSWERED ON THE CHIEF'S OWN PAGE (attention_asker.go): the notification's
-// URL, /attention/open/<key>, resolves the chief's ask to its own page, whose
-// context link is /agents/<chief>, when
-// tapped (attention_push_target.go). The page shows the ask with
-// the queue's own buttons; the operator taps one there, lands back on the
-// chief's page, the ask leaves it, and the chief's session receives the
-// answer as a turn — once.
+// ANSWERED FROM THE CHIEF'S HEADER BADGE (attention_asker.go): the chief's page
+// draws no asks block — its header counts the chief's open asks, live (a new
+// ask raises it and an ask answered elsewhere lowers it, with no reload, and
+// the shell's Asks badge follows too: the badge's refresh is what relays the
+// queue's event to the sidebar on this page). A tap on the count opens the
+// Asks page filtered to the chief's asks; the operator taps an option there,
+// the card leaves, and the chief's session receives the answer as a turn —
+// once.
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ]) {
   test.describe(`on a ${vp.name}`, () => {
     test.use(vp.use);
-    test('the operator answers the chief on the chief\'s own page and the chief receives it', async ({ page }) => {
+    test('the operator answers the chief from its page\'s asks badge and the chief receives it', async ({ page }) => {
       test.setTimeout(120_000);
       await signIn(page, origin);
 
@@ -194,48 +195,56 @@ for (const vp of [
       await page.waitForURL(origin + `/attention/asks/${id}`);
       await page.locator('[data-ask-context]').click();
       await page.waitForURL(onChief);
-      const item = page.locator(`#asker-asks #ask-${id}`);
-      await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
-      // The composer is still reachable below the block.
-      const size = page.viewportSize()!;
-      const input = (await page.locator('#chat-input').boundingBox())!;
-      expect(input.y + input.height, 'the chat input is on screen').toBeLessThanOrEqual(size.height + 1);
+      const count = page.locator('header [data-asker-asks-link]');
+      await expect(count).toHaveAttribute('data-count', '1');
+      await expect(page.locator('#asker-asks'), 'no asks block').toHaveCount(0);
+      await expect(page.locator(`#ask-${id}`), 'no ask card on the chief\'s page').toHaveCount(0);
 
-      // LIVE, both ways, with no reload: a second ask arrives on the open page,
-      // and leaves it when answered somewhere else (here: the queue's own
-      // answer route, as the /attention page or another device would post it);
-      // the shell's badge follows.
+      // LIVE, both ways, with no reload: a second ask raises the count, and
+      // answered somewhere else (here: the queue's own answer route, as the
+      // /attention page or another device would post it) lowers it; the
+      // shell's badge follows.
       let navigations = 0;
-      page.on('framenavigated', (f) => {
+      const nav = (f: Frame) => {
         if (f === page.mainFrame()) navigations++;
-      });
-      const badge = page.locator('#attention-badge');
+      };
+      page.on('framenavigated', nav);
+      const shell = page.locator('#attention-badge');
       const second = await mcpCall('attention_ask', { question: `And task 44 (${vp.name})?` });
       const id2 = (JSON.parse(second.text) as { id: number }).id;
-      await expect(page.locator(`#asker-asks #ask-${id2}`)).toBeVisible({ timeout: 15_000 });
-      await expect(badge).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      await expect(count).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      await expect(shell).toHaveAttribute('data-count', '2', { timeout: 15_000 });
       const answered = await page.request.post(origin + `/attention/asks/${id2}/answer`, {
         form: { answer: 'later' },
         headers: { Origin: origin },
         maxRedirects: 0,
       });
       expect(answered.status()).toBe(303);
-      await expect(page.locator(`#ask-${id2}`)).toHaveCount(0, { timeout: 15_000 });
-      await expect(badge).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+      await expect(count).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+      await expect(shell).toHaveAttribute('data-count', '1', { timeout: 15_000 });
       expect(navigations, 'the page was not reloaded').toBe(0);
+      page.off('framenavigated', nav);
 
+      // The tap: the Asks page filtered to the chief's asks.
       await Promise.all([
-        page.waitForURL((u) => onChief(u) && u.searchParams.has('session')),
-        item.getByRole('button', { name: 'dispatch a new agent' }).click(),
+        page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
+        vp.use.hasTouch ? count.tap() : count.click(),
       ]);
-      await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
-      // The chief has nothing else open: the block takes no room.
-      await expect(page.locator('#asker-asks')).toBeHidden();
+      await expect(page.locator('[data-testid="asks-filter"]')).toBeVisible();
+      const item = page.locator(`#attention-items #ask-${id}`);
+      await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
+      await item.getByRole('button', { name: 'dispatch a new agent' }).click();
+      await expect(page.locator(`#ask-${id}`)).toHaveCount(0, { timeout: 15_000 });
       await expect
         .poll(() => turns.filter((b) => b.includes(`your owner answered attention #${id}`)).length, { timeout: 30_000 })
         .toBe(1);
       const carrying = turns.find((b) => b.includes(`your owner answered attention #${id}`))!;
       expect(carrying).toContain('dispatch a new agent');
+      // Back on the chief's page, nothing is open: no count.
+      await page.goto(origin + '/agents/' + chiefName);
+      await expect(page.locator('#chat-form')).toBeVisible();
+      await expect(count).toHaveCount(0);
     });
   });
 }
+

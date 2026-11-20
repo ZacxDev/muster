@@ -71,11 +71,8 @@ func TestMetricsAreServedOnlyOnTheMetricsListener(t *testing.T) {
 // status and nothing else — no build version, no reason. The probe still
 // works: 200 ready, 503 not ready.
 func TestReadyzAnswersTheStatusOnly(t *testing.T) {
-	old := BuildVersion
-	BuildVersion = "9.9.9-exposure-test"
-	t.Cleanup(func() { BuildVersion = old })
-
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+	s.buildVersion = "9.9.9-exposure-test"
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if w.Code != http.StatusOK {

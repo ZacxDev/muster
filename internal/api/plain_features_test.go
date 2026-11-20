@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plainscan"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // A PLAIN FEATURES PAGE (operator rule: muster is for people who are not
@@ -174,6 +175,13 @@ func TestAMembersFeaturesPageCarriesNoSetup(t *testing.T) {
 	s, _ := featureServer(t, Extensions{}, plainFeatureSet(t))
 	needles := []string{"MUSTER_", "COMPOSE_PROFILES", "docker compose", "data-info-code"}
 	member := scriptBlock.ReplaceAllString(sessionBody(t, featuresPageAs(t, s, authz.RoleMember)), "")
+	// The sidebar's server-address ⓘ (empty; the person's own browser-kept
+	// server list, not setup) is set aside as its exact string, so any other
+	// code row still fails.
+	member, sidebarSheet := ui.WithoutServerAddressSheet(member)
+	if !sidebarSheet {
+		t.Errorf("CONTROL: the member's page has no server-address sheet to set aside")
+	}
 	for _, n := range needles {
 		if i := strings.Index(member, n); i >= 0 {
 			t.Errorf("a member's Features page carries %q: …%s…", n, member[max(0, i-160):min(len(member), i+60)])
@@ -186,9 +194,13 @@ func TestAMembersFeaturesPageCarriesNoSetup(t *testing.T) {
 		}
 	}
 	// Six of the eight are not on and not replaced; each row says to ask
-	// the admin (and its sheet says it again).
-	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to turn this on.</p>`); n != 6 {
-		t.Errorf("a member's page has %d \"Ask your admin to turn this on.\" row line(s), want one per feature that is not on and not replaced (6)", n)
+	// the admin (and its sheet says it again): to turn it on for the five
+	// that are off, to finish setting it up for the misconfigured one.
+	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to turn this on.</p>`); n != 5 {
+		t.Errorf("a member's page has %d \"Ask your admin to turn this on.\" row line(s), want one per feature that is off and not replaced (5)", n)
+	}
+	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to finish setting it up.</p>`); n != 1 {
+		t.Errorf("a member's page has %d \"Ask your admin to finish setting it up.\" row line(s), want one, for the misconfigured feature", n)
 	}
 	if strings.Contains(admin, ">Ask your admin to turn this on.</p>") {
 		t.Error("the admin's page tells the admin to ask their admin")

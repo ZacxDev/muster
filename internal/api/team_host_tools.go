@@ -76,12 +76,14 @@ var teamHostTools = map[string]teamHostRule{
 	officers.ToolContactsList: teamKept(whyOfficer),
 	officers.ToolContactNote:  teamKept(whyOfficer),
 
-	// Every owner-authority tool (all of hostStepUpTools).
+	// Every owner-authority tool: all of hostStepUpTools, and chief_restart,
+	// which the step-up gate exempts (an owner's session restarts their chief
+	// at once) but a team host is still refused, as before.
 	attentionAnswerTool:           teamRefused(whyOwnerAuthority),
 	connectorRequestDecideTool:    teamRefused(whyOwnerAuthority),
 	pluginDraftDecideTool:         teamRefused(whyOwnerAuthority),
 	agentDestroyTool:              teamRefused(whyOwnerAuthority),
-	chiefRestartTool:              teamRefused(whyOwnerAuthority),
+	chiefRestartTool:              teamRefused("an owner's restart of their own chief: a team decides through a member in muster's web UI, never through a host"),
 	dispatchApproveTool:           teamRefused(whyOwnerAuthority),
 	routeReplyToolName:            teamRefused(whyOwnerAuthority + "; and it relays text to an outside party as the team with no manager's approval (operator decision G2)"),
 	pluginMessageRouteTool:        teamRefused(whyOwnerAuthority),

@@ -2,16 +2,21 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // INSTANT SHARE (docs/pages.md#sharing): an owner's opt-in to their agents sharing without asking, the
@@ -130,14 +135,15 @@ func TestAnOptedInOwnersAgentSharesAtOnce(t *testing.T) {
 	}
 }
 
-// TestAnOwnerWhoDidNotOptInIsStillAsked: owner A opted in, owner B did not.
-// B's agent still files the pending link and the owner card; A's shares at
-// once — on the same server, at the same time.
+// TestAnOwnerWhoDidNotOptInIsStillAsked: owner A opted in, owner B turned it
+// off. B's agent still files the pending link and the owner card; A's shares
+// at once — on the same server, at the same time.
 func TestAnOwnerWhoDidNotOptInIsStillAsked(t *testing.T) {
 	f := newPageFixture(t).keyed(t)
 	f.optIn(t, f.owner, true)
+	f.optIn(t, f.other, false)
 	if f.optedIn(f.other) {
-		t.Fatal("B starts opted in")
+		t.Fatal("B is still opted in")
 	}
 	a := f.create(t, f.agent, "A's page", `[{"type":"markdown","text":"a"}]`)
 	b := f.create(t, f.otherAgent, "B's page", `[{"type":"markdown","text":"b"}]`)
@@ -154,18 +160,27 @@ func TestAnOwnerWhoDidNotOptInIsStillAsked(t *testing.T) {
 	}
 }
 
-// TestOnlyTheOwnerFlipsTheirOwnOptIn: a member's POST sets their own opt-in
-// and nobody else's; it is off for everyone until then; the route takes no
-// agent's, anonymous or cross-origin request; and the store refuses a read of
-// another user's row.
+// TestOnlyTheOwnerFlipsTheirOwnOptIn: a member's POST sets their own switch
+// and nobody else's; it is ON for everyone until then (migration 0163), and
+// the Account page draws it on for a member who never chose; the route takes
+// no agent's, anonymous or cross-origin request; and the store refuses a read
+// of another user's row.
 func TestOnlyTheOwnerFlipsTheirOwnOptIn(t *testing.T) {
 	f := newPageFixture(t)
-	if f.optedIn(f.owner) || f.optedIn(f.other) {
-		t.Fatal("the opt-in is not off by default")
+	if !f.optedIn(f.owner) || !f.optedIn(f.other) {
+		t.Fatal("the switch is not on by default")
 	}
-	f.optIn(t, f.other, true)
-	if !f.optedIn(f.other) || f.optedIn(f.owner) {
-		t.Fatalf("B's POST: B %v, A %v; want B on and A untouched", f.optedIn(f.other), f.optedIn(f.owner))
+	// A new member's Account page: the switch on, its button "Turn off".
+	acct := f.get(t, accountPath, f.ownerHdr()).Body.String()
+	if !strings.Contains(acct, `id="`+pagesAgentShareID+`" data-testid="`+pagesAgentShareID+`" data-state="on"`) {
+		t.Fatalf("a new member's Account page lacks the switch, on")
+	}
+	if i := strings.Index(acct, `id="`+pagesAgentShareID+`-toggle"`); i < 0 || !strings.Contains(acct[i:min(len(acct), i+600)], "Turn off") {
+		t.Fatalf("a new member's Account page: the switch's button does not say Turn off")
+	}
+	f.optIn(t, f.owner, false)
+	if f.optedIn(f.owner) || !f.optedIn(f.other) {
+		t.Fatalf("A's POST: A %v, B %v; want A off and B untouched", f.optedIn(f.owner), f.optedIn(f.other))
 	}
 	body := url.Values{"on": {"1"}}.Encode()
 	ct := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
@@ -179,7 +194,7 @@ func TestOnlyTheOwnerFlipsTheirOwnOptIn(t *testing.T) {
 		}
 	}
 	if f.optedIn(f.owner) {
-		t.Fatal("a refused request turned A's opt-in on")
+		t.Fatal("a refused request turned A's switch back on")
 	}
 	// The store: B's principal cannot read A's row, nor write it.
 	if _, err := f.srv.ext.NotifyPrefs.PagesAgentShare(f.as(f.other, authz.ViaSession), f.owner); err == nil {
@@ -187,11 +202,11 @@ func TestOnlyTheOwnerFlipsTheirOwnOptIn(t *testing.T) {
 	}
 	_ = f.srv.ext.NotifyPrefs.SetPagesAgentShare(f.as(f.other, authz.ViaSession), f.owner, true)
 	if f.optedIn(f.owner) {
-		t.Fatal("B wrote A's opt-in")
+		t.Fatal("B wrote A's switch")
 	}
 	// The Account page draws the switch in the caller's own state.
 	f.session = f.other
-	acct := f.get(t, accountPath, f.ownerHdr()).Body.String()
+	acct = f.get(t, accountPath, f.ownerHdr()).Body.String()
 	if !strings.Contains(acct, `id="`+pagesAgentShareID+`" data-testid="`+pagesAgentShareID+`" data-state="on"`) || !strings.Contains(acct, pagesAgentShareLabel) {
 		t.Fatalf("B's Account page lacks the switch, on")
 	}
@@ -203,17 +218,20 @@ func TestOnlyTheOwnerFlipsTheirOwnOptIn(t *testing.T) {
 }
 
 // TestTheOptInIsThePageOwners: page_share_request reads the PAGE OWNER's
-// opt-in — not the operator's, not anybody else's. The operator (user 1) opted
-// in and the page's owner did not: asked. Then the owner opts in and the
-// operator out: live. (The mutation check in the PR: read
+// switch — not the operator's, not anybody else's. The operator (user 1) is
+// on and the page's owner turned it off: asked. Then the owner turns it on
+// and the operator off: live. (The mutation check in the PR: read
 // authz.OperatorUserID's instead of p.OwnerID's, and this goes red.)
 func TestTheOptInIsThePageOwners(t *testing.T) {
-	f := newPageFixture(t).keyed(t)
+	f := newPageFixture(t).keyed(t).askFlow(t)
 	op := f.as(authz.OperatorUserID, authz.ViaSession)
 	if err := f.srv.ext.NotifyPrefs.SetPagesAgentShare(op, authz.OperatorUserID, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = f.srv.ext.NotifyPrefs.SetPagesAgentShare(op, authz.OperatorUserID, false) })
+	// Back to the operator's default (no row) after.
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notify_preferences WHERE owner_id = $1`, authz.OperatorUserID)
+	})
 	id := f.create(t, f.agent, "Whose setting", `[{"type":"markdown","text":"x"}]`)
 	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id}); r["status"] != "pending" {
 		t.Fatalf("the operator opted in, the owner did not: %v (want pending)", r)
@@ -249,12 +267,54 @@ func TestTheToolsReadRightInBothStates(t *testing.T) {
 		n, _ := out["next"].(string)
 		return n
 	}
+	if n := next(); !strings.Contains(n, "its link is live at once, and your owner is told") || strings.Contains(n, "approves") {
+		t.Fatalf("next, an owner who never chose (on): %s", n)
+	}
+	f.optIn(t, f.owner, false)
 	if n := next(); !strings.Contains(n, "your owner is asked, and approves the link") || strings.Contains(n, "live at once") {
-		t.Fatalf("next, not opted in: %s", n)
+		t.Fatalf("next, turned off: %s", n)
 	}
 	f.optIn(t, f.owner, true)
 	if n := next(); !strings.Contains(n, "its link is live at once, and your owner is told") || strings.Contains(n, "approves") {
-		t.Fatalf("next, opted in: %s", n)
+		t.Fatalf("next, turned on again: %s", n)
+	}
+}
+
+// TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce: an owner with NO
+// notify_preferences row at all — they never touched any switch — gets the
+// default, on (migration 0163): their agent's page_share_request through the
+// real tool path makes the link live, files no attention ask, and a stranger
+// opens it.
+func TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce(t *testing.T) {
+	f := newPageFixture(t)
+	var rows int
+	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT count(*) FROM notify_preferences WHERE owner_id = $1`, f.owner).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("fixture: the owner has %d preference row(s) (%v), want none", rows, err)
+	}
+	id := f.create(t, f.agent, "Never chose", `[{"type":"markdown","text":"x"}]`)
+	before := f.asksOf(t, f.owner)
+	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
+	if req["status"] != "live" || req["ask_id"] != nil {
+		t.Fatalf("page_share_request for an owner who never chose: %v, want live with no ask", req)
+	}
+	if n := f.asksOf(t, f.owner); n != before {
+		t.Fatalf("it filed %d attention ask(s)", n-before)
+	}
+	if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusOK {
+		t.Fatalf("the link does not serve a stranger: %d", w.Code)
+	}
+	// Another owner whose row was CREATED by another switch (Show tmux
+	// sessions, saved first): the row takes the column's default, on.
+	if err := f.srv.ext.NotifyPrefs.SetTmuxAddress(f.as(f.other, authz.ViaSession), f.other, true); err != nil {
+		t.Fatal(err)
+	}
+	var share bool
+	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT pages_agent_share FROM notify_preferences WHERE owner_id = $1`, f.other).Scan(&share); err != nil || !share {
+		t.Fatalf("a row the tmux switch created: pages_agent_share=%v (%v), want true", share, err)
+	}
+	ob := f.create(t, f.otherAgent, "Row from tmux", `[{"type":"markdown","text":"x"}]`)
+	if r := f.tool(t, f.otherAgent, pageShareRequestTool, map[string]any{"page_id": ob}); r["status"] != "live" {
+		t.Fatalf("an owner whose row another switch created: %v, want live", r)
 	}
 }
 
@@ -343,10 +403,10 @@ func TestTheOwnersShareButtonGivesOneReusableLink(t *testing.T) {
 	if w := f.get(t, pages.LinkPath(tok), nil); w.Code != http.StatusOK {
 		t.Fatalf("the shared link does not serve: %d", w.Code)
 	}
-	// The page's screen holds its link in the ⓘ beside Share / Copy link —
-	// never drawn in its top layer.
-	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `data-info-code="">`+first["url"].(string)+`</code>`) ||
-		strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") || !strings.Contains(d, "data-page-copy") {
+	// The page's screen copies its link from its row under Links — never
+	// drawn in its top layer, and no longer in an ⓘ or a Copy link.
+	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `data-copy-text="`+first["url"].(string)+`" data-link-copy`) ||
+		strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") || strings.Contains(d, "data-page-copy") {
 		t.Fatalf("the page's screen does not show its link: %s", d)
 	}
 	if l := f.get(t, "/pages", f.ownerHdr()).Body.String(); !strings.Contains(l, `data-share-url="`+first["url"].(string)+`"`) {
@@ -456,5 +516,119 @@ func TestTheNavHasPages(t *testing.T) {
 	body := f.get(t, "/pages", f.ownerHdr()).Body.String()
 	if !strings.Contains(body, `id="sidebar-pages" href="/pages"`) || !strings.Contains(body, `href="/pages" hx-boost="false" aria-current="page"`) {
 		t.Fatalf("the Pages screen's nav has no current Pages entry")
+	}
+}
+
+// TestATeamOwnedAgentsShareIsAlwaysAsked: a TEAM-owned agent's
+// page_share_request, through the real tool path as the team acting
+// principal, stays PENDING — an attention ask is filed and no link serves —
+// with the team's preferences row absent AND with it forced to true (a team
+// is never auto-shared, whatever is stored: nobody signs in as a team). The
+// control: a person beside it, with no row, shares at once.
+func TestATeamOwnedAgentsShareIsAlwaysAsked(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	sys := authz.System(context.Background())
+	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+	team, err := users.NewPG(f.pool).CreateTeam(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, "pages team "+sfx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM pages WHERE owner_id = $1`, `DELETE FROM attention_asks WHERE owner_id = $1`,
+			`DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM notify_preferences WHERE owner_id = $1`,
+			`DELETE FROM team_members WHERE team_id = $1`, `DELETE FROM audit_log WHERE team_id = $1::bigint`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = f.pool.Exec(sys, q, team.ID)
+		}
+	})
+	teamCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team.ID, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
+	ta, err := agents.NewPG(f.pool).Create(teamCtx, agents.Agent{Name: "pgt-" + sfx, Namespace: "devpod-pgt-" + sfx,
+		Status: agents.StatusRunning, HooksToken: "pgt-" + sfx + "-token"})
+	if err != nil || ta.OwnerID != team.ID {
+		t.Fatalf("the team's agent: owner %d (want %d), %v", ta.OwnerID, team.ID, err)
+	}
+	call := func(name string, args map[string]any) map[string]any {
+		t.Helper()
+		return f.toolAs(t, teamCtx, callerOfAgent(ta), name, args)
+	}
+	out := call(pageCreateTool, map[string]any{"title": "Team page", "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+	id := pnum(out["page_id"])
+	if id <= 0 {
+		t.Fatalf("page_create as the team's agent: %v", out)
+	}
+	for _, state := range []string{"no row", "row forced true"} {
+		if state == "row forced true" {
+			if _, err := f.pool.Exec(sys, `INSERT INTO notify_preferences (owner_id, pages_agent_share) VALUES ($1, true)
+				ON CONFLICT (owner_id) DO UPDATE SET pages_agent_share = true`, team.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := f.asksOf(t, team.ID)
+		req := call(pageShareRequestTool, map[string]any{"page_id": id})
+		if req["status"] != "pending" || pnum(req["ask_id"]) <= 0 {
+			t.Fatalf("%s: a team agent's page_share_request: %v, want pending with an ask", state, req)
+		}
+		if n := f.asksOf(t, team.ID); n != before+1 {
+			t.Fatalf("%s: %d ask(s) filed, want 1", state, n-before)
+		}
+		if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusNotFound {
+			t.Fatalf("%s: the team's pending link serves: %d", state, w.Code)
+		}
+	}
+	// The control: a person with no row shares at once.
+	pid := f.create(t, f.agent, "Person page", `[{"type":"markdown","text":"x"}]`)
+	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": pid}); r["status"] != "live" {
+		t.Fatalf("control: a person with no row: %v, want live", r)
+	}
+}
+
+// TestAStepUpCoveredCallerIsAlwaysAsked: with the owner's switch ON
+// (explicitly), a mirrored session the step-up gate covers — a host whose
+// token is marked as having started agents for the chief, and a remote caller
+// (a session mirrored to another muster) — gets status "pending" and files
+// exactly one ask; page_create's hint says it will be asked. The control: a
+// mirrored session on an UNCOVERED host of the same owner, same switch, goes
+// live. (operator decision, #847 round 1; pageShareGoesLive.)
+func TestAStepUpCoveredCallerIsAlwaysAsked(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	f.optIn(t, f.owner, true)
+	base := f.as(f.owner, authz.ViaMirrorHost)
+	spawned := time.Now().Add(-time.Hour)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		c    toolCaller
+	}{
+		{"a host that started agents for the chief",
+			context.WithValue(base, mirrorHostCtxKey{}, mirror.Token{ID: 9, OwnerID: f.owner, Host: "host-spawner", SpawnedAt: &spawned}),
+			mirrorCaller("host-spawner", "0d1e2f3a-aaaa-4bbb-8ccc-000000000101")},
+		{"a remote caller", base, func() toolCaller {
+			c := mirrorCaller("host-elsewhere", "0d1e2f3a-aaaa-4bbb-8ccc-000000000102")
+			c.remote = true
+			return c
+		}()},
+	} {
+		out := f.toolAs(t, tc.ctx, tc.c, pageCreateTool, map[string]any{"title": "Covered " + tc.name, "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+		id := pnum(out["page_id"])
+		if n, _ := out["next"].(string); id <= 0 || !strings.Contains(n, "your owner is asked") {
+			t.Fatalf("%s: page_create: %v (want its hint to say the owner is asked)", tc.name, out)
+		}
+		before := f.asksOf(t, f.owner)
+		req := f.toolAs(t, tc.ctx, tc.c, pageShareRequestTool, map[string]any{"page_id": id})
+		if req["status"] != "pending" || pnum(req["ask_id"]) <= 0 {
+			t.Fatalf("%s, switch on: page_share_request %v, want pending with an ask", tc.name, req)
+		}
+		if n := f.asksOf(t, f.owner); n != before+1 {
+			t.Fatalf("%s: %d ask(s) filed, want 1", tc.name, n-before)
+		}
+		if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusNotFound {
+			t.Fatalf("%s: the pending link serves: %d", tc.name, w.Code)
+		}
+	}
+	// The control: an uncovered host of the same owner, the same switch.
+	ctx := context.WithValue(base, mirrorHostCtxKey{}, mirror.Token{ID: 10, OwnerID: f.owner, Host: "host-plain"})
+	c := mirrorCaller("host-plain", "0d1e2f3a-aaaa-4bbb-8ccc-000000000103")
+	out := f.toolAs(t, ctx, c, pageCreateTool, map[string]any{"title": "Uncovered", "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+	if r := f.toolAs(t, ctx, c, pageShareRequestTool, map[string]any{"page_id": pnum(out["page_id"])}); r["status"] != "live" {
+		t.Fatalf("control: an uncovered host, switch on: %v, want live", r)
 	}
 }

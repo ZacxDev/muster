@@ -129,7 +129,29 @@ test('a member reads plain rows, is told to ask their admin, and is sent no setu
   await expect(dictation.locator('[data-feature-ask]')).toHaveText('Ask your admin to turn this on.');
 
   // The setup is absent from what the server sent, not hidden in it.
-  const html = (await page.content()).replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
+  // The sidebar's Manage servers ⓘ is set aside first, exactly: the row
+  // template's sheet (id server-address-tpl, empty as sent) and the copies
+  // servers.js made of it for the rows (id server-address-<n>, in
+  // #server-manage-list, holding the server addresses this person keeps in
+  // this browser — not setup). Any OTHER code row still fails below.
+  const { html: page0, tpl, rows: addrRows, listed } = await page.evaluate(() => {
+    const root = document.documentElement.cloneNode(true) as HTMLElement;
+    const drop = (scope: ParentNode, id: string) => {
+      const s = scope.querySelector(`[data-info-sheet][id="${id}"]`);
+      if (!s) return 0;
+      s.remove();
+      scope.querySelector(`[data-info-open][id="${id}-open"]`)?.remove();
+      return 1;
+    };
+    const t = root.querySelector('template#server-manage-row-tpl') as HTMLTemplateElement | null;
+    const tpl = t ? drop(t.content, 'server-address-tpl') : 0;
+    const items = Array.from(root.querySelectorAll('#server-manage-list > li'));
+    const rows = items.reduce((n, li, i) => n + drop(li, `server-address-${i}`), 0);
+    return { html: root.outerHTML, tpl, rows, listed: items.length };
+  });
+  expect(tpl, 'CONTROL: the Manage servers row template carried its address sheet').toBe(1);
+  expect(addrRows, 'each listed server row carried its own address sheet').toBe(listed);
+  const html = page0.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
   for (const needle of ['MUSTER_', 'COMPOSE_PROFILES', 'docker compose', 'data-info-code']) {
     expect(html, `a member's Features page carries ${needle}`).not.toContain(needle);
   }

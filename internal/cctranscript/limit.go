@@ -82,10 +82,26 @@ func (r Record) text() string {
 	return strings.Join(parts, "\n")
 }
 
+// IsLimitText reports whether msg — the CLI's own text for a failed turn —
+// says an account usage limit was hit (limitText). It is how ccd tells a
+// usage limit from any other 429 (cmd/ccd classifyAPIError): the CLI gives a
+// transient "API Error: Request rate limited" the same error code
+// (rate_limit) as a usage limit, so the code alone cannot tell them apart.
+func IsLimitText(msg string) bool { return limitText.MatchString(msg) }
+
 // limitText is a usage-limit message: "You've hit your session limit · …",
-// "You've hit your weekly limit · …" (the CLI's words now), and the earlier
-// CLI's "Claude usage limit reached. …" and "5-hour limit reached ∙ …".
-var limitText = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your\b[^\n·∙.]{0,40}?\blimit\b|\busage limit reached\b|\blimit reached\b`)
+// "You've hit your weekly limit · …", "You've hit your limit · …" (the CLI's
+// words now), and the earlier CLI's "Claude usage limit reached. …" and
+// "5-hour limit reached ∙ …".
+//
+// 🔴 "limit reached" ONLY AFTER THE NAME OF A USAGE LIMIT: usage, a window
+// (session, weekly, N-hour) or a model's own limit (opus, sonnet: the usage
+// endpoint's seven_day_opus / seven_day_sonnet, internal/ccusage). A bare
+// "limit reached" also reads "Rate limit reached" — a transient request rate
+// limit — which ccd would then mark as the
+// account's usage limit (cmd/ccd classifyAPIError), cooling the account down
+// and failing its agents over for a passing throttle.
+var limitText = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your\b[^\n·∙.]{0,40}?\blimit\b|\b(?:usage|session|weekly|opus|sonnet|\d+-hour)\s+limit reached\b`)
 
 // resetText is the reset time a limit message names: "resets 9:20pm (Zone)",
 // "resets 10pm (Zone)", "resets Oct 15, 10pm (Zone)", "will reset at 3pm

@@ -120,7 +120,11 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //     chief's OpenRouter sessions spend, and hold in flight).
 //   - fleet_owner_marks (0147, the fleet digest's marks).
 //   - officer_seen (0156, when each person last looked at each officer's page).
-//   - page_assets, page_version_assets (0161, a page's author assets and the versions using them).
+//   - officer_cap_raises (0157, an owner's raise of an officer's daily budget for one UTC day).
+//   - fleet_actions (0158, the fleet's action log).
+//   - officer_chat_cards (0160, the confirm cards an officer asked for in a person's chat with it).
+//   - morning_reports (0161, one morning report per user per day).
+//   - page_assets, page_version_assets (0164, a page's author assets and the versions using them).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -151,6 +155,9 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"fleet_owner_marks",
 	"officer_connector_blocks",
 	"officer_seen",
+	"officer_cap_raises", "fleet_actions",
+	"officer_chat_cards",
+	"morning_reports",
 	"page_assets", "page_version_assets"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -223,10 +230,16 @@ var wantForeignKeys = []string{
 	"officer_connector_blocks|officer_connector_blocks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0156: a person's looks at officers go with them.
 	"officer_seen|officer_seen_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
+	// 0157: an owner's cap raises go with them.
+	"officer_cap_raises|officer_cap_raises_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
+	// 0160: a person's confirm cards go with them.
+	"officer_chat_cards|officer_chat_cards_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"fleet_actions|fleet_actions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_fleet_chat_id_fkey|FOREIGN KEY (fleet_chat_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
+	"morning_reports|morning_reports_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0128: an agent's credentials are its own and its owner's, and go with it.
@@ -256,7 +269,7 @@ var wantForeignKeys = []string{
 	"page_responses|page_responses_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"page_responses|page_responses_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
 	"page_responses|page_responses_link_fkey|FOREIGN KEY (link_id, owner_id) REFERENCES page_links(id, owner_id) ON DELETE CASCADE",
-	// 0161: an asset names its page, and a version's reference its version
+	// 0164: an asset names its page, and a version's reference its version
 	// and its asset, by the composite key — so none names another owner's,
 	// and a reference names only its OWN page's asset (NO ACTION: a version
 	// keeps its asset).

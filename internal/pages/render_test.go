@@ -237,8 +237,8 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 		`R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);`,
 		`waiting=Object.create(null)`, `P=W.Promise`,
 		// Round 3's 🟢-2: the SDK waits longer than the owner's bar (600000),
-		// so it never says "muster did not answer" while the bar is open.
-		`c(false,"muster did not answer");}},1800000]);`,
+		// so it never says "No answer came back" while the bar is open.
+		`c(false,"No answer came back. Try again.");}},1800000]);`,
 	} {
 		if !strings.Contains(sdk, want) {
 			t.Errorf("the SDK lacks %q", want)

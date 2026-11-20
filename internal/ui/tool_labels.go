@@ -67,8 +67,15 @@ var musterToolLabels = map[string]string{
 	"page_asset_delete":  "Removed an image or video from a page",
 
 	// Sessions and agents.
-	"fleet_list":          "Looked over your sessions",
-	"fleet_report":        "Reported on your sessions",
+	"fleet_list":   "Looked over your sessions",
+	"fleet_report": "Reported on your sessions",
+	// Fleet proposals (internal/api fleet_actions.go): each only files a
+	// card; nothing is sent until the owner taps it.
+	"session_instruct":    "Proposed a message to a session",
+	"session_wrap":        "Proposed wrapping up a session",
+	"session_answer":      "Proposed an answer to a session",
+	"work_reassign":       "Proposed moving a task",
+	"fleet_actions_list":  "Looked over its proposals",
 	"focus_search":        "Looked up what sessions are working on",
 	"sessions_overview":   "Checked what your sessions are doing",
 	"session_context":     "Looked at a session",
@@ -125,6 +132,10 @@ var musterToolLabels = map[string]string{
 	"officer_contact_get":             "Looked up a person",
 	"officer_contact_note":            "Made a note about a person",
 	"officer_post_draft":              "Asked to post something",
+	"officer_my_state":                "Looked at its own work",
+	"officer_confirm_card":            "Asked you to approve something",
+	"officer_refusal_refile":          "Filed a refused post again",
+	"officer_refusal_drop":            "Dropped a refused post",
 	"officer_flood_block_propose":     "Suggested blocking a traffic flood",
 	"officer_kube_read":               "Checked a server",
 	"officer_obs_queries":             "Looked at monitoring checks",
@@ -140,7 +151,7 @@ var musterToolLabels = map[string]string{
 	"officer_tag_release":             "Tagged a release",
 	"officer_release_evaluation":      "Reported on a release",
 	"officer_rollout_status":          "Checked a release's rollout",
-	"officer_rollout_promote_propose": "Suggested releasing to everyone",
+	"officer_rollout_evidence_attach": "Attached evidence for a release",
 	"officer_spawn_share":             "Managed shared helper sessions",
 
 	// The MCP transport's own tool.

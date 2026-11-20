@@ -1,4 +1,4 @@
--- muster 0161 — A PAGE'S AUTHOR ASSETS (internal/pages asset.go; docs/pages.md
+-- muster 0164 — A PAGE'S AUTHOR ASSETS (internal/pages asset.go; docs/pages.md
 -- "Images and video").
 --
 --   page_assets   an image or video the page's AUTHOR (the agent or mirrored
@@ -26,17 +26,16 @@
 -- tables' share class). rollback/rls_off.sql turns it off with the rest, and
 -- --rls-on re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Numbered 0161 because open pull requests claim 0157-0160 (main was at
--- 0156). Until they merge, the tree has a gap, which the contiguity test
--- refuses (a gap bricks a deploy that applies a higher number first). 🔴
--- RENUMBER IT (and db.pageAssetsMigrationVersion) at merge to the next free
--- number after main's newest.
+-- Written as 0161, renumbered 0164 at merge (main took 0157 to 0163 first).
+-- Must apply after its predecessor, 0163 (the contiguity test refuses a gap:
+-- a gap bricks a deploy that applies a higher number first). 🔴 RENUMBER IT
+-- (and db.pageAssetsMigrationVersion) at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them):
 --   DROP TABLE IF EXISTS public.page_version_assets;
 --   DROP TABLE IF EXISTS public.page_assets;
 --   DROP INDEX IF EXISTS public.page_versions_page_version_owner_key;
---   DELETE FROM schema_migrations WHERE version = 161;
+--   DELETE FROM schema_migrations WHERE version = 164;
 -- 🔴 AND THE OBJECTS: an asset's bytes stay under pages/<page id>/ (and its
 -- uploads row stays, as a viewer's file's does) until its page is deleted.
 -- An older image deletes a page's whole prefix with it, assets included, but

@@ -178,6 +178,8 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	s.registerChiefChatRoutes(mux)
 	// The fleet digest card (fleet_digest.go).
 	s.registerFleetDigestRoutes(mux)
+	s.registerFleetCardRoutes(mux)
+	s.registerMorningReportRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -185,6 +187,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
+	// The agent page's Open button and its panel's Pages tab (plugin_chip.go).
+	mux.HandleFunc("GET /ui/agents/{name}/open-button", s.requireSession(s.handleAgentOpenButton))
+	mux.HandleFunc("GET /ui/agents/{name}/session-pages", s.requireSession(s.handleAgentSessionPages))
 	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
 	// card's own refresh, and the live stream's.
 	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))
@@ -1636,13 +1641,14 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// The chief's chat bar: primary or side chat, its context, the chat
 	// actions (chief_chats.go).
 	if s.isChiefAgent(ctx, a) {
-		view.ChiefChat = chiefChatBarFor(ctx, a, active)
+		view.ChiefChat = s.chiefChatBarFor(ctx, a, active)
 		// The side chat route's answer lands here asking for the cursor in
 		// the message box (answerSideChatOpened).
 		view.FocusComposer = r.URL.Query().Get(ui.ComposerFocusParam) == "1"
 	}
-	// The agent's open attention asks, answerable here (attention_asker.go).
-	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
+	// The header's badge of the agent's open attention asks, opening the Asks
+	// page filtered to them (attention_asker.go).
+	view.Asks, view.AsksSrc = s.askerAsksBadge(op.begin("asks"), askerRef{agent: a.Name})
 	// The session switcher below the chat form (ui/switcher.go).
 	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
 	// The viewer's tags on the agent, in the header (ui/session_tags.go).
@@ -1650,21 +1656,16 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// What the retired Agents list's card showed: the header's status strip,
 	// its ⋯ menu and the notices (ui/agent_actions.go).
 	view.Card = s.agentPageCard(op.begin("card"), a, idx)
-	// The page's step-up gated forms confirm in place: Rotate credentials
-	// (team_admin.go), and — on a TEAM's chief read by an operator or a
-	// manager of the team — the team's end and dispatch cards in its asks
-	// block, which the chief files and which can arrive with the block's live
-	// refresh (teamCardStepUpWhy; each form carries its own sentence).
-	switch {
-	case view.Card.CanRotateCredentials:
+	// The page's step-up gated form confirms in place: Rotate credentials
+	// (team_admin.go). (A team chief's end and dispatch cards are answered on
+	// the Asks page, which draws their dialog: the page has no asks block.)
+	if view.Card.CanRotateCredentials {
 		view.StepUp = s.stepUpView(r)
 		view.StepUp.Why = ui.AgentRotateWhy(view.StepUp.Window)
-	case memberOnTeamAgent(ctx, a) && !teamWatcherOf(ctx, a.OwnerID) && s.isChiefAgent(s.attentionPrincipal(ctx, a.OwnerID, true), a):
-		// (Whether it is the TEAM's chief is read among the team's agents,
-		// as the team: the member's own list mixes in their own.)
-		view.StepUp = s.stepUpView(r)
-		view.StepUp.Why = TeamDispatchCardWhy()
 	}
+	// The header's Open button and its panel: the agent's pages
+	// (plugin_chip.go); nil with pages off.
+	view.Open = s.agentOpenChips(op.begin("pages"), a)
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
@@ -2166,6 +2167,11 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(mctx), agentTurnBudget(a.Kind))
 		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
+		// The chief's reply draws its session cards while it streams, as the
+		// stored reply does (chatMentionIndex).
+		if s.isChiefAgent(ctx, a) {
+			stream.mentions.WithSessionCards(func() map[string]ui.SessionCard { return s.sessionCards(ctx) })
+		}
 		parts, err := func() ([]agents.TurnPart, error) {
 			defer endCount() // a panic must not leave the count up (end is idempotent)
 			return s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
@@ -2531,7 +2537,11 @@ func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKe
 // in which case only the WS translation happens.
 func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) (agents.StreamEmit, *wsChatStream) {
 	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
-	st := newWSChatStream(wsWriter(ctx, c))
+	every := chatStreamHTMLEvery
+	if srv != nil {
+		every = srv.chatStreamEvery()
+	}
+	st := newWSChatStream(wsWriter(ctx, c), every)
 	if srv != nil {
 		// The reply's mentions are linked while it streams (ui/mentions.go).
 		st.mentions = srv.mentionIndex(ctx)

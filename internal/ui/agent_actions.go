@@ -152,7 +152,9 @@ func agentActionsMenuWith(a AgentCardView, align string, extra g.Node) g.Node {
 			// is at its row's END: right edges aligned.
 			g.If(align != "", g.Attr("data-menu-align", align)),
 			Class("invisible hidden [&:popover-open]:flex m-0 "+width+" flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
-			g.If(extra != nil, g.Group{extra, Div(Class("my-0.5 border-t border-line"))}),
+			// peer-empty:hidden: an extra that is only an empty slot (a gateway
+			// chief's memory line, chiefMemorySlot) leaves no divider behind.
+			g.If(extra != nil, g.Group{extra, Div(Class("my-0.5 border-t border-line peer-empty:hidden"))}),
 			Button(
 				Type("button"),
 				g.Attr("role", "menuitem"),

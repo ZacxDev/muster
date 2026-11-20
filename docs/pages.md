@@ -6,9 +6,9 @@ form fields, files, an approval, or whatever its own script sends. You are
 shown it at once — a card in the chat and a push — and it is private until it
 has a live **share link**; anyone with a live link can open it without a
 muster account. Sharing is one tap (**Share**), and an agent's own share
-request waits for your approval unless you turned on **Let my agents share
-pages without asking** — your own choice, on your Account page, off until you
-turn it on ([below](#when-an-agent-shares)). What viewers send comes back to
+request goes live at once unless you turned off **Let my agents share pages
+without asking** — your own choice, on your Account page, on until you turn
+it off; off, the request waits for your approval ([below](#when-an-agent-shares)). What viewers send comes back to
 the agent as data, and you are notified.
 
 The design, with the threat model and the reasoning, is
@@ -41,9 +41,9 @@ proves). Any other page reads as `no such page`.
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. You are notified of each version: *Page updated: <title> (v<N>)*, opening that version, under its own toggle `page_updated` — at most 6 per 10 minutes from one agent or session, the newer replacing the older on your device ([push.md](push.md#an-agent-notifies-you)). |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address), the response count, and the page's [assets](#images-and-video) (`asset_id`, `ref`, name, type, size) with their total. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
+| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who turned **Let my agents share pages without asking** off: asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who left it on (the default): the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent — and what you sent from your own view — oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
-| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
+| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Only the page owner's **Let my agents share pages without asking** (on unless they turned it off) lets a tool make a link live. |
 | `page_asset_upload{page_id, path, content_type?}` | Attaches an image or video file to the page ([below](#images-and-video)) and returns its `ref` (`asset:<id>`), which a block then uses. A mirrored Claude Code session's only, for now: a dispatched agent is not offered it (or `page_asset_delete`). |
 | `page_asset_delete{page_id, asset_id}` | Deletes an asset no version of the page uses (one a version uses is refused, naming the versions), and its bytes. |
 
@@ -254,10 +254,10 @@ one-off live link, so a press or a tab-through would leave links nobody holds
 there the tap alone makes the link. If the tap still beats the fetch, the link is copied in the same
 tap and the sheet is tried when it arrives; if the browser refuses it, the
 toast says the link is copied, and the next tap shares at once. The Pages
-screens draw the address on the button already. A server without the key says
-so on the page's screen in words (*Sharing isn't set up on this server*); the
-setting it needs is in the ⓘ beside that line, for an admin only (anyone else
-is told to ask their admin).
+screens draw the address on the button already. On a server without the key,
+the ⓘ beside Share on the page's screen says so (*Sharing isn't set up on this
+server*) and what Share does there; the setting it needs is in that ⓘ for an
+admin only (anyone else is told to ask their admin).
 
 **Older links** — every link made before reusable links existed, an agent's
 link you approved on Asks, and every link made on a server without the key —
@@ -274,12 +274,21 @@ session.
 
 What an agent's `page_share_request` does is **the page owner's own choice**,
 the switch **Let my agents share pages without asking** in the Pages section of
-their Account page. It is per user, off for every user until they turn it on,
-and only they can flip it (a signed-in, same-origin write of their own row;
-no agent or session token reaches it). It is not a server setting.
+their Account page. It is per user, **on for every user until they turn it
+off**, and only they can flip it (a signed-in, same-origin write of their own
+row; no agent or session token reaches it). It is not a server setting. A
+choice already saved is kept: a user who had it off (including one whose
+preferences row was written, off, before the default changed) stays off until
+they turn it on. A team's pages, if a team-owned agent makes one, ALWAYS get the ask
+flow, whatever is stored: nobody signs in as a team, so nobody could turn it
+off for one. And a session on a machine the [step-up gate](design/officers-on-hosts.md)
+covers — one that runs a host officer or starts agents for the chief, or a
+session mirrored to another muster — ALWAYS asks, even with the switch on: any
+process on such a machine can name your session, so its request proves
+nothing about who sent it.
 
-- **Off** (everyone's default) — the agent asks, and you approve, below.
-- **On** — for your pages the link goes **live at once**, and the agent is given
+- **Off** — the agent asks, and you approve, below.
+- **On** (everyone's default) — for your pages the link goes **live at once**, and the agent is given
   its address: the page's reusable link (the one you may already have shared,
   or a new one the agent made), or, without the key, a new hash-only link. No
   question is filed. 🔴 **No one approves it**: anything the agent publishes is
@@ -362,7 +371,8 @@ answer.*). A viewer through a link sees no bar: what they send is recorded
 as before, turned into JSON the same way.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
-version, when it was made and which is current (the one links show); tapping
+version, when it was made in words (*today at 9:14*, in your own time zone)
+and which is current (the one links show); tapping
 one views it. Under the list are **Share** (the same Share as everywhere else)
 and **Page details**, the page's screen. On a phone the list is a sheet from
 the bottom; Escape, a tap outside or the chip closes it.
@@ -381,31 +391,74 @@ viewer never does.
 
 `/pages/{id}/preview`, the view's former address, redirects to it.
 
+## A session's pages
+
+When you look at a session, the pages it made are a tap away. The session's
+header has one **Open** button (an icon and a count on a phone) that counts
+its [previews](previews.md#what-you-do) and its pages together, and opens a
+panel with two tabs, **Previews** and **Pages** (swipe between them on a
+phone). It is drawn whenever the session has either. Pages need no viewer
+plugin. The panel opens on the tab that has something; when both do, on the
+one you used last on this browser.
+
+The **Pages** tab lists the pages the session **created**, newest first, each
+with its current version and whether it has a live link. Tap one to read it in
+the panel (your own view of it, with its version chip), or **Open full page**
+for `/pages/{id}/view`.
+
+Which session made a page:
+
+- **A dispatched agent's** pages are on its page (`/agents/{name}`): the
+  pages its tools made.
+- **A mirrored window's** pages are every page made **in that window** on
+  that machine (its tmux window), whichever Claude Code (or opencode)
+  session made it, so a `/clear`, a restart or a resume in the window keeps
+  them. muster records the session and the window a page came from when the
+  page is made. The window also lists the pages made by the session running
+  in it now, wherever that session made them.
+- A window on another machine is never the same window, even with the same
+  name. A tmux server restart reuses window ids, so a new window can match
+  an old one of the same tmux session name on the same machine.
+- **A page a mirrored session made before muster recorded sessions** has no
+  session or window to match, so it is listed under no window. A page made
+  after muster recorded sessions but before it recorded windows is listed
+  only while its session runs in the window. Both are still on the Pages
+  screen.
+- Only your own pages are listed. A team session's window lists none: a
+  team's pages are the team's, and its members do not see them.
+
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest
-activity first, with their counts, each with **Share** and **⋯**. A page's
-screen (`/pages/{id}`) has:
+activity first. Each row is the page's title, who made it and when it last
+changed (*today at 9:14*, in your own time zone), and a badge only for what
+is there: the version (**v3**, when there is more than
+one), **Live** (it has a live link), **2 waiting** (links waiting for your
+approval) and **3 replies** (responses). Tapping a row opens [your own
+view](#the-owners-view) of the page; its **⋯** holds **Share**, **Details**
+(the page's screen) and, when the page has its Share link, **Revoke link** and
+**New link**. What the screen is for is behind the **ⓘ** beside its heading.
 
-- **Share**: **Share** and ⋯ — and on a phone, where Share opens the share
-  sheet, **Copy link** (the same link, always to the clipboard; elsewhere
-  Share itself copies). The page's reusable link (when it has one) is in the
-  ⓘ beside them, with its own Copy; it appears there on the first Share and
-  goes on Revoke — the screen never spells an address.
+A page's screen (`/pages/{id}`) has, under the title, who made it and the
+version shown:
 
-- **Open the page**: [your own view](#the-owners-view) of it.
-- **Links**: each link's state, who asked, when it was made in words
-  (*Made today at 9:14*, in your own time zone), whether it is the page's
-  Share link or an earlier one, and Revoke. Its ⓘ holds its exact label —
-  when it was made (UTC) and the first 8 hex digits of its token's hash
-  (`created 2026-11-11 14:02 UTC · 3fa9c2e1`), which tells links apart and
-  opens nothing. (There is no separate "make a link" button: Share and ⋯ → New link
-  make every link.)
-- **Versions**: each version, when it was made, **View** (your view of it),
-  and **Show this version** (a rollback: the version becomes current, every
-  link shows it, nothing is deleted). Its ⓘ holds its exact time and size.
-- **Responses**: everything viewers sent and you sent from your view (marked
-  *Sent by you*), newest first, each as labelled fields named by the page's
+- **Open** — [your own view](#the-owners-view) of the page — and **Share**. When
+  the page has its Share link, a **⋯** beside them has **Revoke link** and
+  **New link**. The screen never spells an address.
+- **Links**, only when the page has one. Each live or waiting link: its state,
+  who asked, when it was made in words (*Made today at 9:14*; the exact time
+  is its tooltip), whether it is the page's Share link or an earlier one,
+  **Copy** on the page's Share link (the one link whose address muster
+  keeps, on any device), and **Revoke**. Revoked and declined links are
+  folded under **Past links (n)**. (There is no separate "make a link"
+  button: Share and ⋯ → New link make every link.)
+- **Versions**, only when there is more than one: one row per version, newest
+  first (*v2 · current · today at 9:14*; its exact time and size are the
+  time's tooltip); tapping a row views that version. An older version's
+  **⋯** has **Make current** (a rollback: the version becomes current, every
+  link shows it, nothing is deleted).
+- **Responses**, only when there is one: everything viewers sent and you sent
+  from your view (marked *Sent by you*), newest first, each as labelled fields named by the page's
   own form (the version it was sent through): a form's field labels, a
   question's *Answer*, a choice's *Chose*, an approval's *Decision* and
   *Comment*; what a page's own script sent, by its keys (followed four levels
@@ -421,7 +474,10 @@ screen (`/pages/{id}`) has:
   (`/pages/{id}/responses/{rid}/raw`, a JSON attachment) when it is longer. A
   response too large to keep is refused with a 413 in plain words.
 
-- **Delete this page**: deletes the page, every version, link and response,
+- **Delete this page** (its ⓘ says what it removes) asks in place: it
+  becomes *Delete this page and its responses?* with **Delete** and
+  **Cancel** (Escape cancels too). Delete deletes the page, every
+  version, link and response,
   and every file sent through it. It cannot be undone. From its first step
   the page takes no new link (an agent's share or a Share is refused), so
   nothing goes live while it is being deleted; a delete that fails leaves it
@@ -435,8 +491,8 @@ front-end telemetry, and the page's screen is never cached.
 When an agent calls `page_create`, `page_update` or `page_share_request`, its
 chat draws a **page card** under the tool's row: the title, what happened (a
 new page, a new version, shared, or waiting for you), **Open** — [your own
-view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
-link, New link, Page settings). It is drawn in a dispatched agent's chat (its
+view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Page
+settings; Revoke link and New link too while the page has a live link). It is drawn in a dispatched agent's chat (its
 stored transcript and its live stream) and in a mirrored Claude Code
 session's view. The card never holds a link's address: Share asks muster for
 the page's current link on each tap, so a card from an hour ago never copies
@@ -535,7 +591,7 @@ serves every upload: to the owner, as an attachment (images inline), under a
   6 per 10 minutes from one agent or session, and each replaces the page's last
   one on your device ([push.md](push.md#an-agent-notifies-you)).
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
-  asking (you opted in) — a new link, or the one you had already shared (the
+  asking (the switch is on) — a new link, or the one you had already shared (the
   push says which) — opening the page's screen, where Revoke is.
 
 They are three toggles on Account → Notifications: **An agent published a page
@@ -595,6 +651,19 @@ request over 64 KiB with its old `{"error":"the request is too large"}`: a
 page over 64 KiB from a mirrored session needs the host's `muster-mirror`
 updated as well as the server.
 
+The other way round, a current `muster-mirror` in front of a muster older
+than v0.239.0: that muster reads at most 64 KiB per request and answers a
+larger one with a bare JSON-RPC `-32700 could not read the request`. The
+host proxy replaces that answer with one that names the muster, the
+request's size and both limits (`muster at <host> could not read this MCP
+request of N bytes: it reads at most 64 KiB per request, so it is probably
+older than v0.239.0 …`). The fix is to upgrade that muster. Every muster the
+host reaches counts, including any extra instance in its MCP targets file
+([mirroring.md](mirroring.md#several-muster-instances)). A `markdown` block
+holds at most 64 KiB on any version, so a probe of one large `markdown` block
+is refused by the page tool even when the transport is fine. Use `html`
+blocks to test a large page.
+
 ## Telemetry
 
 `muster_page_link_requests_total{route,outcome}` (`route` is `shell`,
@@ -602,7 +671,7 @@ updated as well as the server.
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner who opted in) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner whose switch is on) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 

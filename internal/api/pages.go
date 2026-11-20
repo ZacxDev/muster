@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
+
+	g "maragu.dev/gomponents"
 )
 
 // ---------------------------------------------------------------------------
@@ -248,9 +251,14 @@ func servePageContent(w http.ResponseWriter, r *http.Request, body string) bool 
 	return true
 }
 
-// serveShell writes a shell document.
+// serveShell writes a shell document: framed by no page, but the owner's
+// own view in a session's panel (v.Embed) by muster's own pages only.
 func serveShell(w http.ResponseWriter, v pages.ShellView) {
-	pages.SetShellHeaders(w.Header(), v.Nonce)
+	if v.Embed && v.Owner != nil {
+		pages.SetEmbedShellHeaders(w.Header(), v.Nonce)
+	} else {
+		pages.SetShellHeaders(w.Header(), v.Nonce)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, pages.Shell(v))
 }
@@ -688,6 +696,16 @@ func (s *Server) handlePagesList(w http.ResponseWriter, r *http.Request) {
 	s.renderPagesList(w, r, http.StatusOK, "")
 }
 
+// THE OWNER'S PAGES SCREENS: the list (/pages) and one page's screen
+// (/pages/{id}).
+//
+// 🔴 THE TOP LAYER IS PLAIN (the operator rule; internal/plainscan). Each
+// screen says only what the owner acts on: a section with nothing in it is not
+// drawn (no "No links."), a count that is zero is not drawn (no "0
+// responses"), and every explanation is behind an ⓘ (ui.InfoSheet). Times are
+// in words ("today at 9:14", ui.PlainWhenHTML), the exact one in a tooltip.
+// TestThePagesScreensArePlain holds both to it.
+
 func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code int, problem string) {
 	list, err := s.ext.Pages.Pages(r.Context())
 	if err != nil {
@@ -698,52 +716,44 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	if serr != nil {
 		s.logger.Printf("pages: list: share links: %v", serr)
 	}
-	esc := html.EscapeString
-	now := s.now()
-	how := "An agent asks you before a link goes live (you can let your agents share without asking, on <a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
+	// The screen's one explanation, behind the ⓘ beside its heading: who can
+	// see a page, and the Account setting that lets agents share at once.
+	acct := `<a href="` + accountPath + "#" + pagesAgentShareID + `" class="text-accent underline">Account</a>`
+	how := "An agent asks you before a link goes live. You can let your agents share without asking, on " + acct + "."
 	if s.pageAgentShareOn(r.Context(), requestOwner(r.Context())) {
-		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (<a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
+		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (" + acct + ")."
 	}
 	var b strings.Builder
-	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="pages-page">
-<h1 class="text-balance text-base font-semibold text-fg">Pages</h1>
-<p class="text-sm text-fg2">Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. ` + how + ` Share gives you the page's link to send.</p>
+	b.WriteString(`<section class="flex flex-col gap-3" data-testid="pages-page">
+<div class="flex items-center gap-1"><h1 class="text-lg font-semibold text-fg">Pages</h1>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "pages-about", Label: "About pages", Heading: "Pages",
+			Lead:  "Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. Share gives you the page's link to send.",
+			Extra: g.Raw(`<p class="text-sm text-fg2">` + how + `</p>`)}) + `</div>
 `)
 	b.WriteString(problemNode(problem))
-	b.WriteString(`<ul class="flex flex-col gap-2" data-testid="pages">
-`)
 	if len(list) == 0 && problem == "" {
-		b.WriteString(`<li class="text-sm text-fg2">No pages yet.</li>`)
-	}
-	for _, p := range list {
-		id := strconv.FormatInt(p.ID, 10)
-		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
-<a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
-<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
-			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
-			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
-<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
-</li>
+		b.WriteString(`<p class="text-sm text-fg2" data-pages-empty>No pages yet.</p>
 `)
 	}
-	b.WriteString(`</ul>
-</section>`)
-	// secret: each row's Share button carries its page's live link, a bearer
-	// capability, so the screen loads no telemetry (ui.NavDocumentView.Secret).
-	s.writeNavDocument(w, r, code, "Pages", ui.NavPages, true, b.String())
-}
-
-// pageShareControls is a page's Share button and ⋯ menu (ui/page_card.go),
-// carrying its live reusable link's address when it has one (l).
-func (s *Server) pageShareControls(id int64, title string, l pages.Link) string {
-	url := ""
-	if l.Token != "" {
-		url = s.pageLinkURL(l)
+	if len(list) > 0 {
+		b.WriteString(`<ul class="flex flex-col divide-y divide-line" data-testid="pages">
+`)
+		for _, p := range list {
+			v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: pageMakerName(p.Creator.Label, p.Creator.MirrorHost), Updated: p.UpdatedAt, Now: s.now(),
+				Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable()}
+			if l := shared[p.ID]; l.Token != "" {
+				v.ShareURL = s.pageLinkURL(l)
+			}
+			_ = ui.PageRow(v).Render(&b)
+			b.WriteString("\n")
+		}
+		b.WriteString(`</ul>
+`)
 	}
-	var b strings.Builder
-	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
-	_ = ui.PageShareMenu(id, title, false).Render(&b)
-	return b.String()
+	b.WriteString(`</section>` + ui.FloatingMenuScriptHTML())
+	// secret: each row's Share carries its page's live link, a bearer
+	// capability, so the screen loads no telemetry (ui.NavDocumentView.Secret).
+	s.writeNavDocument(w, r, code, "Pages", ui.NavPages, true, b.String(), navWide)
 }
 
 func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
@@ -759,7 +769,9 @@ func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
 	s.renderPageDetail(w, r, id, http.StatusOK, "", "", "")
 }
 
-// renderPageDetail writes /pages/{id}: its versions, links and responses.
+// renderPageDetail writes /pages/{id}: who made it, Open and Share, and —
+// each only when there is one — its open links, its other versions and its
+// responses; then Delete.
 //
 // shown, when not "", is a link's address shown ONCE — the one-off link the
 // owner's Share just made on a server with no link key (handlePageShare's
@@ -791,6 +803,18 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		s.logger.Printf("pages: page %d: %v", id, err)
 		problem = "Part of this page could not be read."
 	}
+	// The page's one reusable link (ui/page_card.go): Share hands it out, its
+	// row in Links copies it, the ⋯ beside Share revokes or replaces it.
+	shared, serr := s.ext.Pages.ShareLinks(ctx)
+	if serr != nil {
+		s.logger.Printf("pages: page %d: share link: %v", id, serr)
+	}
+	cur := shared[id]
+	curURL := ""
+	if cur.Token != "" {
+		curURL = s.pageLinkURL(cur)
+	}
+	reusable := s.ext.Pages.LinksReusable()
 	esc := html.EscapeString
 	pid := strconv.FormatInt(id, 10)
 	base := pagePath(id)
@@ -800,9 +824,23 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	admin := authz.IsAdmin(ctx)
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
-	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
-<h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
+	b.WriteString(`<section class="flex flex-col gap-6" data-testid="page-detail" data-page-id="` + pid + `">
+<div class="flex flex-col gap-2">
+<h1 class="min-w-0 break-words text-lg font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
+<p class="text-sm text-fg2" data-page-meta>` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` · v` + strconv.Itoa(p.CurrentVersion) + `</p>
+<div id="share" class="flex flex-wrap items-center gap-2 pt-1" data-page-share-box data-page-id="` + pid + `">`)
+	_ = ui.PageOpenButton(id).Render(&b)
+	_ = ui.PageShareQuietButton(id, p.Title, curURL, reusable).Render(&b)
+	if m := ui.PageLinkMenu(id, p.Title, cur.Token != ""); m != nil {
+		_ = m.Render(&b)
+	}
+	if !reusable {
+		// No link key: each Share mints a one-off link. Why, and the setting
+		// (an admin's), behind an ⓘ.
+		b.WriteString(ui.InfoSheetHTML(pageShareSetupSheet(admin)))
+	}
+	b.WriteString(`</div>
+</div>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
@@ -812,137 +850,154 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		// 🔴 THE ADDRESS IS IN THE ⓘ AND ON THE COPY BUTTON, NEVER DRAWN in the
 		// top layer: this answer is still the only place the owner sees it.
 		b.WriteString(`<div class="` + flowsCardClass + `" data-link-new>
-<span class="text-sm font-semibold text-fg">Your new link is ready — copy it now. It is shown only this once; if you lose it, make a new one and revoke this one.</span>
+<span class="text-sm font-semibold text-fg">Your new link is ready. Copy it now: it is shown only this once.</span>
 <div class="flex flex-wrap items-center gap-2"><button type="button" class="` + pageQuietButton + `" data-copy-text="` + esc(shown) + `" onclick="window.cgCopy &amp;&amp; window.cgCopy(this)" data-link-copy>Copy link</button>` +
 			ui.InfoSheetHTML(ui.InfoSheet{ID: "page-link-new", Label: "The new link", Heading: "Your new link",
 				Lead: "Anyone with this link can open the page. Copy it now:", Code: shown}) + `</div>
 </div>
 `)
 	}
-	// Share: the page's one reusable link, one tap (ui/page_card.go).
-	shared, serr := s.ext.Pages.ShareLinks(ctx)
-	if serr != nil {
-		s.logger.Printf("pages: page %d: share link: %v", id, serr)
+	// Links: only when the page has one. The open ones (live, or waiting for
+	// the owner) are listed; the past ones (revoked, not approved) are under
+	// a collapsed "Past links (n)".
+	var open, past []pages.Link
+	for _, l := range links {
+		if l.State == pages.LinkLive || l.State == pages.LinkPending {
+			open = append(open, l)
+		} else {
+			past = append(past, l)
+		}
 	}
-	cur := shared[id]
-	b.WriteString(`<section id="share" class="flex flex-col gap-2" data-page-share-box data-page-id="` + pid + `">
-<h2 class="text-sm font-semibold text-fg">Share</h2>
+	if len(links) > 0 {
+		b.WriteString(`<section class="flex flex-col gap-1" data-page-links>
+<div class="flex items-center gap-1"><h2 class="text-sm font-semibold text-fg">Links</h2>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "page-links-about", Label: "About links", Heading: "Links",
+				Lead: "Anyone with a live link can open this page and send responses. Revoking one stops it at once."}) + `</div>
+<ul class="flex flex-col divide-y divide-line" data-testid="page-links">
 `)
-	curURL := ""
-	if cur.Token != "" {
-		curURL = s.pageLinkURL(cur)
+		for _, l := range open {
+			lid := strconv.FormatInt(l.ID, 10)
+			b.WriteString(`<li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2" data-link-id="` + lid + `" data-link-state="` + string(l.State) + `">
+<span class="min-w-0 flex-1"><span class="block text-sm text-fg" data-link-state-text>` + esc(pageLinkStateText(l, p.Creator.MirrorHost)) + `</span>
+<span class="block text-xs text-fg2" data-link-made>` + ui.PlainWhenTitledHTML("Made ", l.CreatedAt, now, "") + `</span></span>
+`)
+			// Copy: the page's Share link, the one link whose address muster
+			// keeps (an older, hash-only one's was shown once, when it was
+			// made). The address is on the button, never drawn.
+			if l.ID == cur.ID && curURL != "" {
+				b.WriteString(`<button type="button" class="` + pageQuietButton + `" data-copy-text="` + esc(curURL) + `" data-link-copy onclick="window.cgCopy &amp;&amp; window.cgCopy(this)">Copy</button>
+`)
+			}
+			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + pageQuietButton + `" data-link-revoke>Revoke</button></form>
+</li>
+`)
+		}
+		b.WriteString(`</ul>
+`)
+		if len(past) > 0 {
+			b.WriteString(`<details data-page-links-past><summary class="press flex min-h-[44px] cursor-pointer list-none items-center text-sm text-fg2 [&::-webkit-details-marker]:hidden" data-page-links-past-summary>Past links (` + strconv.Itoa(len(past)) + `)</summary>
+<ul class="flex flex-col divide-y divide-line" data-testid="page-links-past">
+`)
+			for _, l := range past {
+				b.WriteString(`<li class="py-2" data-link-id="` + strconv.FormatInt(l.ID, 10) + `" data-link-state="` + string(l.State) + `">
+<span class="block text-sm text-fg2" data-link-state-text>` + esc(pageLinkStateText(l, p.Creator.MirrorHost)) + `</span>
+<span class="block text-xs text-fg2" data-link-made>` + ui.PlainWhenTitledHTML("Made ", l.CreatedAt, now, "") + `</span>
+</li>
+`)
+			}
+			b.WriteString(`</ul>
+</details>
+`)
+		}
+		b.WriteString(`</section>
+`)
 	}
-	switch {
-	case cur.Token != "":
-		b.WriteString(`<p class="text-sm text-fg2">Anyone with its link can open the page. Share gives you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
+	// Versions: only when there is more than one, newest first, each row
+	// opening that version in the owner's view; an older one's ⋯ makes it the
+	// current one (what the page's links show).
+	if len(versions) > 1 {
+		b.WriteString(`<section class="flex flex-col gap-1" data-page-versions>
+<h2 class="text-sm font-semibold text-fg">Versions</h2>
+<ul class="flex flex-col divide-y divide-line" data-testid="page-versions">
 `)
-	case s.ext.Pages.LinksReusable():
-		b.WriteString(`<p class="text-sm text-fg2">No link yet. Share makes the page's link — the same one every time after — and hands it to your phone's share sheet, or copies it.</p>
+		for _, v := range pageVersionsNewestFirst(versions) {
+			vn := strconv.Itoa(v.Version)
+			cur := ""
+			if v.Version == p.CurrentVersion {
+				cur = ` · current`
+			}
+			b.WriteString(`<li class="flex items-center gap-1" data-version="` + vn + `">
+<a href="` + pageViewPath(id) + `?v=` + vn + `" class="press flex min-h-[44px] min-w-0 flex-1 items-center gap-1 rounded-lg px-3 text-sm text-fg transition hover:bg-s2" data-version-view>v` + vn +
+				`<span class="text-fg2">` + cur + ` · ` + ui.PlainWhenTitledHTML("", v.CreatedAt, now, uploads.HumanSize(int64(v.SizeBytes))) + `</span></a>
 `)
-	default:
-		// The ⓘ is the paragraph's sibling: a popover sheet is not phrasing
-		// content, so it may not sit inside the <p>.
-		b.WriteString(`<div class="flex items-start gap-1"><p class="min-w-0 flex-1 text-sm text-fg2" data-page-share-setup>Sharing isn't set up on this server, so the page has no lasting link. Share makes a new one-off link and copies it; you can copy each one only when it is made. Revoke the ones you no longer need below.</p>` +
-			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</div>
-`)
-	}
-	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur))
-	// With a link key: Copy link (shown by the page script only where the
-	// browser has a share sheet — elsewhere Share itself copies) and the
-	// link's ⓘ, drawn hidden while the page has no link so the script can
-	// fill it on the first Share and hide it again on Revoke.
-	if s.ext.Pages.LinksReusable() {
-		var c strings.Builder
-		_ = ui.PageCopyButton(id, p.Title, curURL, true).Render(&c)
-		_ = ui.PageLinkSheet(id, curURL).Render(&c)
-		b.WriteString(c.String())
-	}
-	b.WriteString(`</div>
+			if v.Version != p.CurrentVersion {
+				b.WriteString(ui.MoreMenuHTML("version-menu-"+vn, "More for version "+vn,
+					`<form method="POST" action="`+base+`/rollback"><input type="hidden" name="version" value="`+vn+`"><button type="submit" class="`+ui.PageMenuItemClass+`" data-version-current>Make current</button></form>`))
+			}
+			b.WriteString("</li>\n")
+		}
+		b.WriteString(`</ul>
 </section>
 `)
-	// Links.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Links</h2>
-<p class="text-sm text-fg2">Anyone with a live link can open this page and send responses. Revoking one stops it at once.</p>
-<ul class="flex flex-col gap-2" data-testid="page-links">
-`)
-	if len(links) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No links.</li>`)
 	}
-	for _, l := range links {
-		lid := strconv.FormatInt(l.ID, 10)
-		b.WriteString(`<li class="` + flowsCardClass + `" data-link-id="` + lid + `" data-link-state="` + string(l.State) + `">
-<div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
-<span class="text-sm text-fg">` + esc(pageLinkStateText(l, p.Creator.MirrorHost)) + `</span>
-<span class="text-xs text-fg2" data-link-made>` + ui.PlainWhenHTML("Made ", l.CreatedAt, now) + `</span>
-</div>` + ui.InfoSheetHTML(pageLinkDetailSheet(l)) + `</div>
-`)
-		if l.State == pages.LinkLive || l.State == pages.LinkPending {
-			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + flowsQuietButton + `" data-link-revoke>Revoke</button></form>
-`)
-		}
-		b.WriteString("</li>\n")
-	}
-	b.WriteString(`</ul>
-`)
-	// Versions.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Versions</h2>
-<ul class="flex flex-col gap-2" data-testid="page-versions">
-`)
-	for _, v := range versions {
-		vn := strconv.Itoa(v.Version)
-		cur := ""
-		if v.Version == p.CurrentVersion {
-			cur = " · current"
-		}
-		b.WriteString(`<li class="` + flowsCardClass + `" data-version="` + vn + `">
-<div class="flex items-start gap-2"><span class="min-w-0 flex-1 text-sm text-fg">Version ` + vn + `: ` + esc(textplain.Title(v.Title)) + `<span class="text-xs text-fg2">` + cur + ` · ` + ui.PlainWhenHTML("made ", v.CreatedAt, now) + `</span></span>` +
-			ui.InfoSheetHTML(pageVersionDetailSheet(v)) + `</div>
-<a href="` + pageViewPath(id) + `?v=` + vn + `" class="text-sm text-accent underline" data-version-view>View</a>
-`)
-		if v.Version != p.CurrentVersion {
-			b.WriteString(`<form method="POST" action="` + base + `/rollback"><input type="hidden" name="version" value="` + vn + `"><button type="submit" class="` + flowsQuietButton + `" data-version-current>Show this version</button></form>
-`)
-		}
-		b.WriteString("</li>\n")
-	}
-	b.WriteString(`</ul>
-`)
-	// Responses.
-	b.WriteString(`<h2 id="responses" class="text-sm font-semibold text-fg">Responses</h2>
-<p class="text-sm text-fg2">What viewers sent, and what you sent from the page yourself. A viewer's is a stranger's input: read it as data.</p>
+	// Responses: only when there is one (or an older screen of them).
+	if len(resps) > 0 || before > 0 {
+		b.WriteString(`<section class="flex flex-col gap-2" data-page-responses>
+<div class="flex items-center gap-1"><h2 id="responses" class="text-sm font-semibold text-fg">Responses</h2>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "page-responses-about", Label: "About responses", Heading: "Responses",
+				Lead: "What viewers sent, and what you sent from the page yourself. A viewer's is a stranger's input: read it as data."}) + `</div>
 <ul class="flex flex-col gap-2" data-testid="page-responses">
 `)
-	if len(resps) == 0 && before <= 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No responses yet.</li>`)
-	}
-	// Each response is drawn from ITS version's blocks (the form it was
-	// sent through), read once per version.
-	blocksOf := s.pageResponseBlocks(ctx, id, resps)
-	for _, x := range resps {
-		blocks, read := blocksOf[x.Version]
-		b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
-	}
-	b.WriteString(`</ul>
-`)
-	if olderFrom > 0 || before > 0 {
-		b.WriteString(`<div class="flex flex-wrap items-center gap-2" data-responses-pages>`)
-		if before > 0 {
-			b.WriteString(`<a href="` + base + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-newest>Newest responses</a>`)
+		// Each response is drawn from ITS version's blocks (the form it was
+		// sent through), read once per version.
+		blocksOf := s.pageResponseBlocks(ctx, id, resps)
+		for _, x := range resps {
+			blocks, read := blocksOf[x.Version]
+			b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
 		}
-		if olderFrom > 0 {
-			b.WriteString(`<a href="` + base + `?responses_before=` + strconv.FormatInt(olderFrom, 10) + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-more>Show more</a>`)
+		b.WriteString(`</ul>
+`)
+		if olderFrom > 0 || before > 0 {
+			b.WriteString(`<div class="flex flex-wrap items-center gap-2" data-responses-pages>`)
+			if before > 0 {
+				b.WriteString(`<a href="` + base + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-newest>Newest responses</a>`)
+			}
+			if olderFrom > 0 {
+				b.WriteString(`<a href="` + base + `?responses_before=` + strconv.FormatInt(olderFrom, 10) + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-more>Show more</a>`)
+			}
+			b.WriteString(`</div>
+`)
 		}
-		b.WriteString(`</div>
+		b.WriteString(`</section>
 `)
 	}
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Delete</h2>
-<p class="text-sm text-fg2">Deletes the page, every version, link and response, and every file sent through it. It cannot be undone.</p>
-<form method="POST" action="` + base + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-page-delete>Delete this page</button></form>
-<a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
-</section>`)
-	// secret: it shows each live share link, a bearer capability, so it
-	// loads no telemetry (ui.NavDocumentView.Secret).
-	s.writeNavDocument(w, r, code, textplain.Title(p.Title), ui.NavPages, true, b.String())
+	// Delete asks in place (pageShareJS): "Delete this page" becomes the
+	// question with Delete and Cancel; Cancel or Escape puts it back. Only
+	// Delete posts. (The wrappers carry hidden: a display utility on the
+	// buttons would win over the attribute.)
+	b.WriteString(`<div class="flex flex-wrap items-center gap-1 border-t border-line pt-4" data-page-delete-box>
+<span data-page-delete-ask><button type="button" class="` + pageQuietButton + `">Delete this page</button></span>
+<div hidden data-page-delete-confirm><div class="flex flex-wrap items-center gap-2" role="group" aria-label="Delete this page?">
+<span class="text-sm font-semibold text-fg">Delete this page and its responses?</span>
+<form method="POST" action="` + base + `/delete"><button type="submit" class="press inline-flex min-h-[44px] items-center rounded-lg bg-st-error-bg px-4 text-sm font-semibold text-st-error-fg ring-1 ring-inset ring-st-error-fg/40" data-page-delete>Delete</button></form>
+<button type="button" class="` + pageQuietButton + `" data-page-delete-cancel>Cancel</button>
+</div></div>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "page-delete-about", Label: "About deleting", Heading: "Delete this page",
+			Lead: "Deletes the page, every version, link and response, and every file sent through it. It cannot be undone."}) + `
+<a href="` + pagesPath + `" class="ml-auto inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
+</div>
+</section>` + ui.FloatingMenuScriptHTML())
+	// secret: its Share and its Links carry the page's live link, a bearer
+	// capability, so it loads no telemetry (ui.NavDocumentView.Secret).
+	s.writeNavDocument(w, r, code, textplain.Title(p.Title), ui.NavPages, true, b.String(), navWide)
+}
+
+// pageVersionsNewestFirst is versions, the highest version first (the store
+// reads them so; this holds the screen to it whatever the store's order).
+func pageVersionsNewestFirst(versions []pages.Version) []pages.Version {
+	out := slices.Clone(versions)
+	slices.SortStableFunc(out, func(a, b pages.Version) int { return b.Version - a.Version })
+	return out
 }
 
 // pageLinkStateText is a link's state in words: who made it (an agent that
@@ -975,6 +1030,19 @@ func pageLinkStateText(l pages.Link, host string) string {
 	return "Revoked" + by
 }
 
+// pageShellTimes gives the owner's view's version popover its times in words,
+// as the Pages screens say them: the day ("today"), which the shell's script
+// redraws in the reader's own zone with its time ("today at 9:14"). list is
+// handlePageView's, built from versions in the same order, one per version.
+func pageShellTimes(list []pages.ShellVersion, versions []pages.Version, now time.Time) {
+	for i := range list {
+		if i < len(versions) && versions[i].Version == list[i].Version {
+			t := versions[i].CreatedAt
+			list[i].Made, list[i].AtMS = ui.PlainWhen(t, now), t.UnixMilli()
+		}
+	}
+}
+
 // --- the page screen's plain words (the operator rule: no address, id,
 // hash, timestamp, JSON or setting name in the top layer; what is needed is
 // behind an ⓘ, and a setup detail is an admin's) ------------------------------
@@ -986,58 +1054,20 @@ func pageLinkStateText(l pages.Link, host string) string {
 // give it).
 func pageMakerName(label, host string) string { return mirror.PlainStoredLabel(label, host) }
 
-// pageCount is n things in words: "1 response", "3 responses".
-func pageCount(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return strconv.Itoa(n) + " " + many
-}
-
-// pageLinksWords is a list row's sharing state: "not shared", "shared", "2
-// live links", and how many links wait for the owner's approval.
-func pageLinksWords(live, pending int) string {
-	w := "not shared"
-	switch {
-	case live == 1:
-		w = "shared"
-	case live > 1:
-		w = pageCount(live, "live link", "live links")
-	}
-	if pending > 0 {
-		w += " · " + strconv.Itoa(pending) + " waiting for you"
-	}
-	return w
-}
-
 // pageShareSetupKey is the setting that gives each page one reusable link.
 const pageShareSetupKey = "MUSTER_CONNECTOR_ENCRYPTION_KEY"
 
-// pageShareSetupSheet is the ⓘ beside "Sharing isn't set up on this server":
-// the setting, for an admin; anyone else is told to ask theirs
-// (ui.InfoSheet.Withheld: the code is absent, not hidden).
+// pageShareSetupSheet is the ⓘ beside Share on a server with no link key:
+// what Share does there, and the setting, for an admin; anyone else is told
+// to ask theirs (ui.InfoSheet.Withheld: the code is absent, not hidden).
 func pageShareSetupSheet(admin bool) ui.InfoSheet {
-	s := ui.InfoSheet{ID: "page-share-setup", Label: "How to set up sharing", Heading: "Set up sharing", Inline: true,
-		Lead: "To keep one lasting link per page, set this on the server (it also turns on Connectors):", Code: pageShareSetupKey}
+	const what = "Sharing isn't set up on this server, so the page has no lasting link: Share makes a new one-off link and copies it, and you can copy each one only when it is made. Revoke the ones you no longer need under Links."
+	s := ui.InfoSheet{ID: "page-share-setup", Label: "How sharing works here", Heading: "Sharing",
+		Lead: what + " To keep one lasting link per page, set this on the server (it also turns on Connectors):", Code: pageShareSetupKey}
 	if !admin {
-		s.Lead, s.Withheld = "Sharing links that last is not set up on this server.", true
+		s.Lead, s.Withheld = what, true
 	}
 	return s
-}
-
-// pageLinkDetailSheet is a link row's ⓘ: its exact label (when it was made, in
-// UTC, and its token hash's first 8 hex digits — pages.Link.Label, which
-// tells two links apart and opens nothing).
-func pageLinkDetailSheet(l pages.Link) ui.InfoSheet {
-	return ui.InfoSheet{ID: "page-link-detail-" + strconv.FormatInt(l.ID, 10), Label: "Details of this link", Heading: "This link",
-		Lead: "What tells this link apart from the page's others:", Code: l.Label()}
-}
-
-// pageVersionDetailSheet is a version row's ⓘ: its exact time and its size.
-func pageVersionDetailSheet(v pages.Version) ui.InfoSheet {
-	vn := strconv.Itoa(v.Version)
-	return ui.InfoSheet{ID: "page-version-detail-" + vn, Label: "Details of version " + vn, Heading: "Version " + vn,
-		Lead: "When it was made, and its size:", Code: ruleTime(v.CreatedAt) + " · " + uploads.HumanSize(int64(v.SizeBytes))}
 }
 
 // pageResponseBlocks is the blocks of each version resps were sent through
@@ -1181,7 +1211,7 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	}
 	b.WriteString("</div>\n")
 	if x.Kind == pages.KindUpload {
-		b.WriteString(`<a href="` + ui.UploadPath + `/` + url.PathEscape(x.UploadPublicID) + `/file" class="text-sm text-accent underline" data-response-download>Download the file</a>
+		b.WriteString(`<a href="` + ui.UploadPath + `/` + url.PathEscape(x.UploadPublicID) + `/file" class="inline-flex min-h-[44px] items-center self-start text-sm text-accent underline" data-response-download>Download the file</a>
 `)
 	} else {
 		b.WriteString(`<dl class="flex flex-col gap-1" data-response-fields>`)
@@ -1258,14 +1288,14 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 	return "", ""
 }
 
-// pageMadeBy is the page screen's "Made by …": the session, as a link to it
+// pageMadeBy is the page screen's "by …": the session, as a link to it
 // (pageSessionLink) when it resolves, else its label alone. creator and
 // label come escaped; href is escaped here.
 func pageMadeBy(creator, href, label string) string {
 	if href == "" {
-		return "Made by " + creator + "."
+		return "by " + creator
 	}
-	return `Made by <a href="` + html.EscapeString(href) + `" class="text-accent underline" data-page-session>` + label + `</a>.`
+	return `by <a href="` + html.EscapeString(href) + `" class="inline-flex min-h-[44px] items-center text-accent underline" data-page-session>` + label + `</a>`
 }
 
 // pageResponseByAttr marks the owner's own response's row.
@@ -1293,6 +1323,8 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := 0
+	// ?embed=1: framed in a session's panel (ui.SessionPageEmbedPath).
+	embed := r.URL.Query().Get("embed") == "1"
 	if q := r.URL.Query().Get("v"); q != "" {
 		var err error
 		if n, err = strconv.Atoi(q); err != nil || n <= 0 {
@@ -1317,9 +1349,14 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	}
 	list := make([]pages.ShellVersion, 0, len(versions))
 	for _, x := range versions {
-		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion,
-			Href: pageViewPath(id) + "?v=" + strconv.Itoa(x.Version)})
+		href := pageViewPath(id) + "?v=" + strconv.Itoa(x.Version)
+		if embed {
+			// A version picked in the panel's frame stays in the frame.
+			href += "&embed=1"
+		}
+		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion, Href: href})
 	}
+	pageShellTimes(list, versions, s.now())
 	shareURL := ""
 	if shared, serr := s.ext.Pages.ShareLinks(ctx); serr != nil {
 		s.logger.Printf("pages: page %d: share link: %v", id, serr)
@@ -1329,8 +1366,13 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	var share strings.Builder
 	_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
+	if embed {
+		// Framed in the session's own panel: no button back to the session
+		// it is already in.
+		sessHref, sessLabel = "", ""
+	}
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
-	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(),
+	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed,
 		Owner: &pages.OwnerChrome{Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
 			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,17 +93,37 @@ func sideChatRuntime(a agents.Agent) string {
 	return agents.SessionRuntimeLegacy
 }
 
-// openSideChat opens a new side chat of chief a: its own session key, and on a
-// claude-code chief its own lane.
+// sideChatModel is the model the side chat route was asked to open its chat on
+// (the "+" menu's pick): "" (the chief's own, today's "+"), or a model checked
+// by runtimeSessionModel on the claude-code runtime, the one runtime a model is
+// picked for.
+//
+// 🔴 A MODEL IS REFUSED, NOT IGNORED, WHERE THE PICKER IS NOT OFFERED (the
+// runtimes gate off, or a gateway chief): a chat's model is fixed once it is
+// made, so a pick quietly dropped would open, for good, a chat on a model the
+// caller did not ask for. "+" offers no menu there, so only a hand-made request
+// meets the refusal.
+func (s *Server) sideChatModel(ctx context.Context, a agents.Agent, model string) (string, error) {
+	if strings.TrimSpace(model) == "" {
+		return "", nil
+	}
+	return s.runtimeSessionModel(ctx, a, agents.SessionRuntimeClaudeCode, model)
+}
+
+// openSideChat opens a new side chat of chief a on model (sideChatModel; ""
+// the chief's own): its own session key, and on a claude-code chief its own
+// lane, started with --model when model is set.
 //
 // ⚠ THE NEWEST SIDE CHAT IS REUSED WHILE IT IS EMPTY, as POST
 // /agents/{id}/sessions reuses an empty latest one: a double tap opens one chat.
-func (s *Server) openSideChat(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+// Only on the same runtime AND model: both are fixed for a chat's life, so an
+// empty chat on another model is not what was picked.
+func (s *Server) openSideChat(ctx context.Context, a agents.Agent, model string) (agents.ChatSession, error) {
 	runtime := sideChatRuntime(a)
 	if cs, ok := s.chiefChatStore(); ok {
 		if list, err := cs.ListChats(ctx, a.ID); err == nil {
 			sw := agents.SwitcherOrder(list)
-			if len(sw.Side) > 0 && sw.Side[0].Runtime == runtime {
+			if len(sw.Side) > 0 && sw.Side[0].Runtime == runtime && sw.Side[0].Model == model {
 				if msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, sw.Side[0].ID, 1); err == nil && len(msgs) == 0 {
 					return sw.Side[0].ChatSession, nil
 				}
@@ -116,29 +137,36 @@ func (s *Server) openSideChat(ctx context.Context, a agents.Agent) (agents.ChatS
 	if !ok {
 		return s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
 	}
-	return st.CreateSessionOn(ctx, a.ID, a.Name, runtime, "")
+	return st.CreateSessionOn(ctx, a.ID, a.Name, runtime, model)
 }
 
-// handleChiefSideChat handles POST /agents/{id}/sessions/side.
+// handleChiefSideChat handles POST /agents/{id}/sessions/side, with an
+// optional model (the "+" menu's pick: sideChatModel), checked before anything
+// is written: a refused model opens no chat and elects no primary.
 func (s *Server) handleChiefSideChat(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.chiefFor(w, r)
 	if !ok {
 		return
 	}
 	ctx := r.Context()
+	model, err := s.sideChatModel(ctx, a, r.FormValue("model"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	// The primary is elected first, so the new chat can never be taken for it.
 	if _, err := s.primarySession(ctx, a); err != nil {
 		s.logger.Printf("chief chats: primary of %d: %v", a.ID, err)
 		http.Error(w, "could not open the primary chat", http.StatusInternalServerError)
 		return
 	}
-	sess, err := s.openSideChat(ctx, a)
+	sess, err := s.openSideChat(ctx, a, model)
 	if err != nil {
 		s.logger.Printf("chief chats: side chat of %d: %v", a.ID, err)
 		http.Error(w, "could not open a side chat", http.StatusInternalServerError)
 		return
 	}
-	s.logger.Printf("chief chats: %s: side chat %d (runtime %q)", a.Name, sess.ID, sess.Runtime)
+	s.logger.Printf("chief chats: %s: side chat %d (runtime %q, model %q)", a.Name, sess.ID, sess.Runtime, sess.Model)
 	s.answerSideChatOpened(ctx, w, r, a, sess)
 }
 
@@ -384,10 +412,10 @@ func handoverText(parts []agents.TurnPart, err error) string {
 }
 
 // handleChiefChatContext serves GET /ui/agents/{name}/chat-context?session=N:
-// the chief chat's context chip (ui.RenderChiefContextChip), from the latest
+// the ⋯ menu's memory line (ui.RenderChiefMemoryLine), from the latest
 // chief_turn_usage row of THAT session that reported usage — input + cache
-// read + cache write, the chip's Claude derivation — of the model's window
-// (modelContextWindow). Nothing (an empty 200) before any turn reported usage.
+// read + cache write. Nothing (an empty 200) before any turn reported usage,
+// and while it is at or below ui.ChiefMemoryShowAbove.
 func (s *Server) handleChiefChatContext(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -415,9 +443,8 @@ func (s *Server) handleChiefChatContext(w http.ResponseWriter, r *http.Request) 
 	if !found {
 		return
 	}
-	window := s.modelContextWindow(ctx, c.model)
-	if err := ui.RenderChiefContextChip(w, ui.ChiefContextView(c.tokens, window, c.model)); err != nil {
-		s.logger.Printf("chief chats: render context chip: %v", err)
+	if err := ui.RenderChiefMemoryLine(w, c.tokens); err != nil {
+		s.logger.Printf("chief chats: render the memory line: %v", err)
 	}
 }
 
@@ -457,9 +484,18 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 // ctx's viewer is offered it: a member on a team's chief (memberOnTeamAgent)
 // is in its one shared room, and offered none of the chat actions the server
 // refuses them (teamAgentRoutes).
-func chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
-	return &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
+//
+// NewChatModels is the "+" menu's models (agents.ClaudeCodeModels, the one list
+// the New session picker offers too) where a side chat's model may be picked,
+// i.e. the runtimes gate offers claude-code to this chief (sideChatModel's own
+// test), and none elsewhere: "+" then opens a chat at once, as before.
+func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
+	b := &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
 		Primary: sess.IsDefault, Archived: sess.ArchivedAt != nil, SharedRoom: memberOnTeamAgent(ctx, a)}
+	if slices.Contains(s.sessionRuntimesFor(ctx, a), agents.SessionRuntimeClaudeCode) {
+		b.NewChatModels = agents.ClaudeCodeModels
+	}
+	return b
 }
 
 // chiefContextReader is the telemetry store's context read (chiefusage.PGStore).
@@ -488,39 +524,4 @@ func (s *Server) chatContext(ctx context.Context, sess agents.ChatSession) (sess
 		return sessionContextFill{}, false
 	}
 	return sessionContextFill{tokens: c.Tokens, model: c.Model, at: c.At}, true
-}
-
-// modelContextWindow is model's context window in tokens, where muster knows
-// it, 0 where it does not (the chip then shows the count alone, untinted):
-//
-//   - a Claude model — an alias, a claude-* id, "claude" — by
-//     agents.ClaudeContextWindow (Claude Code reports no window);
-//   - an OpenRouter model ("openrouter/<id>") by its catalogue entry's
-//     context_length (CatalogModel.ContextLength), read from the process's one
-//     catalogue cache with a short bound, so a cold cache costs the chip, not
-//     the page (the chip loads on its own request).
-//
-// The only other place muster knows windows is a mirrored opencode session's
-// own provider list (internal/opencodehost ContextLimit), which is not the
-// chief's.
-func (s *Server) modelContextWindow(ctx context.Context, model string) int64 {
-	if w := agents.ClaudeContextWindow(model); w > 0 {
-		return w
-	}
-	id, ok := strings.CutPrefix(model, "openrouter/")
-	if !ok || s.ext.ModelCatalog == nil {
-		return 0
-	}
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	list, err := s.ext.ModelCatalog.Models(cctx)
-	if err != nil {
-		return 0
-	}
-	for _, m := range list {
-		if m.ID == id {
-			return m.ContextLength
-		}
-	}
-	return 0
 }

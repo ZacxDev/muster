@@ -132,8 +132,14 @@ type server struct {
 	// a refusal is never only a silent retry: a dialog no hook announced — or a
 	// screen ccd misreads as one — shows on the agent's card.
 	screenBlocked bool
-	clock         func() time.Time
-	pending       *pendingTurn
+	// limitParked: ccd's last paste was refused because the pane showed the
+	// CLI's usage-limit menu (pasteRefused), and no paste since went through.
+	// The menu stays until someone answers it — past the limit's reset too —
+	// so a LANE left on it is stopped once no turn holds it (lanes.release),
+	// and its next turn resumes the conversation in a fresh CLI.
+	limitParked bool
+	clock       func() time.Time
+	pending     *pendingTurn
 	// clearWait is startNewConversation's wait for the CLI's /clear, while it
 	// waits (nil otherwise): handleHook hands it the new session id of a
 	// SessionStart with source "clear" that the primary CLI's own process
@@ -817,7 +823,7 @@ func (s *server) startNewConversation(ctx context.Context, pane paneRef) *failur
 	if err != nil {
 		return s.pasteRefused(err)
 	}
-	s.setScreenBlocked(false, "")
+	s.pasted()
 	deadline := time.NewTimer(s.cfg.SubmitTimeout)
 	defer deadline.Stop()
 	select {
@@ -861,6 +867,9 @@ func (s *server) pasteRefused(err error) *failure {
 	// the account's limit, not an approval (dialog.go limitMenuShown).
 	var lm *limitMenuShown
 	if errors.As(err, &lm) {
+		s.mu.Lock()
+		s.limitParked = true
+		s.mu.Unlock()
 		s.setScreenBlocked(true, err.Error())
 		f := limitMenuFailure(lm)
 		s.auth.observeTurn(f)
@@ -874,6 +883,23 @@ func (s *server) pasteRefused(err error) *failure {
 		return paneNotReady(err.Error())
 	}
 	return &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
+}
+
+// pasted records a paste the pane took: no dialog, and no usage-limit menu,
+// refuses turns now.
+func (s *server) pasted() {
+	s.mu.Lock()
+	s.limitParked = false
+	s.mu.Unlock()
+	s.setScreenBlocked(false, "")
+}
+
+// parkedOnLimitMenu reports whether ccd's last paste found the pane on the
+// CLI's usage-limit menu, with no paste through since (limitParked).
+func (s *server) parkedOnLimitMenu() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limitParked
 }
 
 // runTurn drives one prompt through the session and returns its reply or a
@@ -936,7 +962,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
 		return turnOutcome{}, s.pasteRefused(err)
 	}
-	s.setScreenBlocked(false, "")
+	s.pasted()
 
 	// Wait for the CLI to accept the prompt. One extra Enter half-way through
 	// covers an Enter that landed while the TUI was still ingesting the paste; an

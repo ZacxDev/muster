@@ -12,8 +12,9 @@
 //
 //   - Select: which account should a NEW claude-code agent use?
 //   - Token: which setup-token does a pod on account X get?
-//   - MarkFailure: ccd reported `rate_limited` or `auth_failed` for an agent on
-//     account X — remember it, with a timestamp, in Postgres.
+//   - MarkFailure: ccd reported the account's usage limit (a `rate_limited`
+//     [AccountFailure] reads as one, never a transient 429) or `auth_failed`
+//     for an agent on account X — remember it, with a timestamp, in Postgres.
 //
 // # Whose accounts (bring-your-own, migration 0011)
 //
@@ -92,7 +93,7 @@
 // once, before the agent's row exists; the row stores the NAME
 // (agents.cc_account) and migration 0003's trigger refuses any later change
 // except the failover's (internal/ccfailover, migration 0066), which moves an
-// agent off an account that answered rate_limited or auth_failed onto one
+// agent off an account that hit its usage limit or answered auth_failed onto one
 // [ChooseFailover] picks. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.
 //
@@ -116,6 +117,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -133,6 +135,58 @@ const (
 	FailureRateLimited = "rate_limited"
 	FailureAuthFailed  = "auth_failed"
 )
+
+// AccountFailure is what a runtime's typed failure says about the Claude
+// ACCOUNT its turn ran on: [FailureAuthFailed], [FailureRateLimited] when it
+// is the account's USAGE LIMIT, or "" when it says nothing about the account.
+// failureType, usageLimit and status are the typed failure's own fields
+// (agents.RuntimeError Type, UsageLimit, Status), never its text.
+//
+// 🔴 THIS IS THE ONE PLACE THAT DECIDES WHICH rate_limited IS A USAGE LIMIT.
+// Its answer, never the raw type, is what marks an account ([Pool.MarkFailure],
+// from internal/agentgateway), fails an agent over (internal/ccfailover, from
+// the gateway and the job runner) and tells an officer chat its accounts are
+// at their limit (internal/api chatTurnUsageLimit).
+//
+// A rate_limited is the usage limit when:
+//
+//   - ccd marked it `usage_limit` (the CLI's own text said a limit was hit,
+//     cctranscript.IsLimitText, or the pane shows the usage-limit menu); or
+//   - its status is 409: ccd answers rate_limited with a 409 only for a pane
+//     parked on the usage-limit menu (cmd/ccd limitMenuFailure), and has done
+//     so since before the mark existed.
+//
+// Any other rate_limited — a transient request rate limit (a 429 the CLI codes
+// rate_limit exactly like a usage limit) — is "": it marks nothing and moves
+// no agent, and the turn's caller retries on the same account as for any other
+// failed turn. Marking it would cool the account down and fail every agent on
+// it over, and with one account left with room, one passing 429 would leave
+// every agent with nowhere to run until another account reset.
+//
+// ⚠ A ccd FROM BEFORE `usage_limit` SENDS NO MARK, so its 429 reads as
+// transient here even when it was a usage limit. The account is marked only
+// when a turn meets the CLI's usage-limit menu: the CLI raises it in the
+// session that hit the limit, and that session's next turn is refused with the
+// 409 above, which every ccd that fails over sends. A turn in a FRESH session
+// (each job's, a new chat's) has no menu on its pane and may 429 unmarked, but
+// its retries go to the same session (internal/api runJobTurn, the officer
+// chat runner), so they meet the menu if the CLI raised it. ccd stops an idle
+// lane parked on the menu (cmd/ccd lanes.release) only after refusing a turn
+// with that 409, so the mark is already written. Nothing else marks an account
+// (the usage poller, internal/ccusage, only clears a mark): under such a ccd,
+// an account whose CLI raises no menu stays unmarked until its image is
+// updated.
+func AccountFailure(failureType string, usageLimit bool, status int) string {
+	switch failureType {
+	case FailureAuthFailed:
+		return FailureAuthFailed
+	case FailureRateLimited:
+		if usageLimit || status == http.StatusConflict {
+			return FailureRateLimited
+		}
+	}
+	return ""
+}
 
 // ErrNoUsableAccount is returned by Select when automatic selection has nothing
 // to choose from. It is a dispatch REFUSAL, surfaced to the operator.
@@ -524,6 +578,14 @@ const maxClockResetAhead = 12 * time.Hour
 // 9am (UTC)". Groups: month, day, hour, minute, am/pm, zone.
 var resetRe = regexp.MustCompile(`resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),\s+)?(\d{1,2})(?::(\d{2}))?\s*([aApP][mM])\s*\(([^)\s]+)\)`)
 
+// ResetPhrase is the reset detail states as the CLI wrote it ("resets Nov 23,
+// 1am (UTC)"), "" when it states none [statedReset] could read the shape of:
+// what an officer chat tells the member it waits for (internal/officers
+// ChatRateLimitedReply), with the same one pattern the pool reads it by.
+func ResetPhrase(detail string) string {
+	return strings.TrimSpace(resetRe.FindString(detail))
+}
+
 // statedReset is the reset time detail states, resolved against at (when the
 // account was marked): the next such clock time (or date and time) after at,
 // in the stated zone. ok is false when detail states none this can read — no
@@ -786,6 +848,9 @@ const maxDetail = 300
 // MarkFailure records a typed ccd failure against owner's account. Types other
 // than [FailureRateLimited] and [FailureAuthFailed] are ignored (nil): only
 // those two say something about the ACCOUNT rather than about the turn.
+//
+// 🔴 failure IS [AccountFailure]'s ANSWER, NOT THE RUNTIME'S RAW TYPE: a
+// transient 429 is typed rate_limited too, and must not cool the account down.
 func (p *Pool) MarkFailure(ctx context.Context, owner int64, account, failure, detail string) error {
 	if failure != FailureRateLimited && failure != FailureAuthFailed {
 		return nil

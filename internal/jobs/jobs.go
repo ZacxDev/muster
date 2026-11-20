@@ -42,6 +42,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // Statuses. A job moves queued → running → one of the three terminal ones, or
@@ -127,9 +128,13 @@ const (
 	// ReapSlack is how long past a running job's own deadline (started_at +
 	// timeout_s) the reaper waits before failing it. A live runner is done by
 	// then: the job's context ends the checkout, the turn and the read at the
-	// deadline, and recording the outcome is a few bounded write attempts
-	// (internal/api's jobFinishAttempts × jobFinishTimeout, well under a minute).
-	// The rest is margin for clock skew between the processes and the database.
+	// deadline, and what runs after it is bounded on contexts of its own, in
+	// internal/api: the worktree's removal (jobWorktreeRemoveTimeout, 30 s), the
+	// sweep of left-behind worktrees with its re-read of the job
+	// (jobWorktreeSweepTimeout, 2 min), and recording the outcome
+	// (jobFinishAttempts × jobFinishTimeout plus the pauses, ~32 s) — about 3 of
+	// the 5 minutes. The rest is margin for clock skew between the processes and
+	// the database. Lengthening any of those bounds eats that margin.
 	ReapSlack = 5 * time.Minute
 	// MaxQueueWait is how long a job may stay queued (from created_at) before the
 	// reaper fails it. A queued job waits for the jobs ahead of it on the same
@@ -289,6 +294,13 @@ type Outcome struct {
 	Result string
 	Reason string
 	Error  string
+	// AccountFailure is what the failed turn said about its Claude account
+	// (ccpool.AccountFailure of the runtime's typed failure): rate_limited only
+	// for the account's usage limit, auth_failed, or "". It is what the job
+	// runner fails the worker over on (internal/api failoverJob), so a
+	// transient 429 — Reason rate_limited too — moves nothing. In this process
+	// only: it is not stored.
+	AccountFailure string
 }
 
 // ErrNotFound is Get's answer for an id the caller cannot see.
@@ -396,7 +408,8 @@ func Classify(reply string, err error, deadline bool) Outcome {
 		if rt.Type == "turn_timeout" {
 			status = StatusTimedOut
 		}
-		return Outcome{Status: status, Reason: rt.Type, Error: msg}
+		return Outcome{Status: status, Reason: rt.Type, Error: msg,
+			AccountFailure: ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status)}
 	}
 	return Outcome{Status: StatusFailed, Reason: ReasonTurnFailed, Error: err.Error()}
 }

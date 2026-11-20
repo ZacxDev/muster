@@ -287,8 +287,8 @@ type listedTokens struct {
 
 func (l listedTokens) List(context.Context) ([]apitokens.Token, error) { return l.list, nil }
 
-// TestTheMintPageOffersCreateAgents: the token page's third choice is "Create
-// agents", and the list labels such a token as itself — never as a bar token.
+// TestTheMintPageOffersCreateAgents: the token page's third choice is "Start
+// agents only", and the list labels such a token as itself — never as a bar token.
 func TestTheMintPageOffersCreateAgents(t *testing.T) {
 	var got []string
 	s := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "mint-scope-operator-pw"}, log.New(io.Discard, "", 0))
@@ -298,8 +298,10 @@ func TestTheMintPageOffersCreateAgents(t *testing.T) {
 	s.registerAll(mux)
 	page := tokenPageDo(t, mux, s, http.MethodGet, "").Body.String()
 	for _, want := range []string{
-		`<input type="radio" name="scope" value="agent-create" class="h-5 w-5">` + "\nCreate agents (reaches only POST /api/agents, and nothing else)</label>",
-		`data-token-scope="agent-create">Create agents · created`,
+		`<input type="radio" name="scope" value="agent-create" class="h-5 w-5">` + "\nStart agents only</label>",
+		`data-token-scope="agent-create">Start agents only · <time`,
+		// What the scope reaches is in the page's ⓘ, never its label.
+		"Start agents only: POST /api/agents",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the token page does not carry %q", want)

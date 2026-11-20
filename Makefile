@@ -90,6 +90,20 @@ TAILWIND ?= npx --yes tailwindcss@3
 # page's entry, internal/api/attention_ask_page.go, the only file writing it.
 CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance gap-x-4
 
+# The pages content document's twin of app.css (web/css/page-content.css,
+# tailwind.pages.config.js): the same palette and theme, only the utilities
+# the markdown renderer writes, scoped under .mp-markdown. Built and checked
+# beside app.css by the two targets below, the same two ways.
+#
+# Its controls: `.mp-markdown .list-decimal` proves the one content entry
+# (internal/ui/markdown.go) still matches AND the scoping is on (an unscoped
+# build writes `.list-decimal` with no prefix); `--mu-accent:` proves the
+# palette import (web/css/tokens.css) still lands in it.
+PAGE_CSS_OUT := internal/pages/content_theme.css
+PAGE_CSS_IN := web/css/page-content.css
+PAGE_CSS_CONFIG := tailwind.pages.config.js
+PAGE_CSS_REQUIRED := .mp-markdown__.list-decimal --mu-accent:
+
 help:
 	@echo "muster:"
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
@@ -237,13 +251,21 @@ test-db-down:
 leakscan:
 	python3 tests/leakscan_test.py && python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
 
-# Render the PWA icons from their SVG sources in web/icon-src/ (the Brass Roll
-# concept). The PNGs are committed — they are go:embed inputs — so this runs
-# only when a source changes. Needs rsvg-convert (librsvg); on NixOS:
+# Render the icons from their SVG sources in web/icon-src/. The PNGs are
+# committed — they are go:embed inputs — so this runs only when a source
+# changes. Needs rsvg-convert (librsvg); on NixOS:
 #   nix-shell -p librsvg --run 'make icons'
-# The sizes are asserted against the manifest by TestManifestImagesShipAtTheirDeclaredSize.
+# 🔴 THE MARK'S SOURCES ARE THE BRAND PACK'S OWN FILES, BYTE FOR BYTE
+# (docs/brand.md): icon.svg, icon-maskable.svg, favicon.svg, mark-mono-white.svg
+# and lockup-horizontal.svg. Never edit them here; copy the pack's file over.
+# The pack's PNGs come out of the same rsvg-convert call, so the renders below
+# are byte-identical to its png/ exports. Two files are served as SVG and are
+# copied, not rendered. The badge is the mono mark placed in a 72 px square
+# (64 px wide, centred): Android draws a badge from its alpha only.
+# The sizes are asserted against the manifest by TestManifestImagesShipAtTheirDeclaredSize,
+# and every brand file against the pack by internal/api/brand_assets_test.go.
 # ⚠ A GENERATOR, NOT A GATE, so CI does not run it (the header's "every target
-# runs in CI" is about checks). The gate is that test, which reads the PNGs.
+# runs in CI" is about checks). The gate is those tests, which read the files.
 # The manifest screenshots are generated the same way by `npm run capture` in
 # e2e/ (seeded fixture data only).
 ICON_SRC := web/icon-src
@@ -252,9 +274,13 @@ RSVG ?= rsvg-convert
 icons:
 	$(RSVG) -w 192 -h 192 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-192.png
 	$(RSVG) -w 512 -h 512 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-512.png
-	$(RSVG) -w 192 -h 192 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-192.png
-	$(RSVG) -w 512 -h 512 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-512.png
-	$(RSVG) -w 72 -h 72 $(ICON_SRC)/badge.svg -o $(ICON_OUT)/badge-72.png
+	$(RSVG) -w 180 -h 180 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/apple-touch-icon.png
+	$(RSVG) -w 192 -h 192 $(ICON_SRC)/icon-maskable.svg -o $(ICON_OUT)/maskable-192.png
+	$(RSVG) -w 512 -h 512 $(ICON_SRC)/icon-maskable.svg -o $(ICON_OUT)/maskable-512.png
+	$(RSVG) -w 32 -h 32 $(ICON_SRC)/favicon.svg -o $(ICON_OUT)/favicon-32.png
+	$(RSVG) -w 64 -a --page-width 72 --page-height 72 --left 4 --top 12.32 $(ICON_SRC)/mark-mono-white.svg -o $(ICON_OUT)/badge-72.png
+	cp $(ICON_SRC)/favicon.svg $(ICON_OUT)/favicon.svg
+	cp $(ICON_SRC)/lockup-horizontal.svg $(ICON_OUT)/lockup-horizontal.svg
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-new.svg -o $(ICON_OUT)/shortcut-new-96.png
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-tasks.svg -o $(ICON_OUT)/shortcut-tasks-96.png
 
@@ -262,6 +288,7 @@ icons:
 css:
 	mkdir -p $(dir $(CSS_OUT))
 	$(TAILWIND) -i $(CSS_IN) -o $(CSS_OUT) --minify
+	$(TAILWIND) -c $(PAGE_CSS_CONFIG) -i $(PAGE_CSS_IN) -o $(PAGE_CSS_OUT) --minify
 
 # 🔴 TAILWIND CANNOT FAIL THE WAY YOU NEED IT TO, SO THIS TARGET FAILS FOR IT.
 #
@@ -305,7 +332,22 @@ css-check:
 	  echo "css-check: $(CSS_OUT) is STALE — the views have changed since it was built."; \
 	  echo "  Run 'make css' and commit the result."; \
 	  exit 1; }; \
-	echo "css-check: $$(wc -c < $(CSS_OUT)) bytes, all $(words $(CSS_REQUIRED_CLASSES)) control classes present, committed copy matches"
+	echo "css-check: $$(wc -c < $(CSS_OUT)) bytes, all $(words $(CSS_REQUIRED_CLASSES)) control classes present, committed copy matches"; \
+	$(TAILWIND) -c $(PAGE_CSS_CONFIG) -i $(PAGE_CSS_IN) -o "$$tmp/page.css" --minify >/dev/null 2>&1; \
+	test -s "$$tmp/page.css" || { echo "css-check: the pages build produced an EMPTY stylesheet"; exit 1; }; \
+	for c in $(PAGE_CSS_REQUIRED); do \
+	  c="$${c//__/ }"; \
+	  grep -qF -- "$$c" "$$tmp/page.css" || { \
+	    echo "css-check: '$$c' is MISSING from the pages stylesheet."; \
+	    echo "  Check $(PAGE_CSS_CONFIG) and $(PAGE_CSS_IN)."; \
+	    exit 1; }; \
+	done; \
+	test -f $(PAGE_CSS_OUT) || { echo "css-check: $(PAGE_CSS_OUT) is not committed — run 'make css'"; exit 1; }; \
+	cmp -s "$$tmp/page.css" $(PAGE_CSS_OUT) || { \
+	  echo "css-check: $(PAGE_CSS_OUT) is STALE — the markdown renderer or the palette changed since it was built."; \
+	  echo "  Run 'make css' and commit the result."; \
+	  exit 1; }; \
+	echo "css-check: $$(wc -c < $(PAGE_CSS_OUT)) bytes, all $(words $(PAGE_CSS_REQUIRED)) pages controls present, committed copy matches"
 
 # 🔴 THE VERB SET, ASSERTED AGAINST A BINARY RATHER THAN AGAINST THE SOURCE.
 # cmd/muster/tree_test.go pins the same twelve verbs by walking the cobra tree in

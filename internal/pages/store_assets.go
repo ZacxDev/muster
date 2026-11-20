@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The author's assets on Postgres (asset.go, migration 0161). Every statement
+// The author's assets on Postgres (asset.go, migration 0164). Every statement
 // runs under the caller's principal (row-level security: the page owner's
 // rows only); the "…For" ones are also scoped to the page's creator.
 
@@ -194,7 +194,7 @@ func (s *PGStore) DeleteAsset(ctx context.Context, c Creator, id int64, publicID
 			return fmt.Errorf("%w: version(s) %v of page %d use %s%s; an asset is kept while any version refers to it", ErrAssetInUse, versions, id, AssetScheme, publicID)
 		}
 		out, err = scanAsset(tx.QueryRow(ctx, `DELETE FROM page_assets a WHERE a.page_id = $1 AND a.public_id = $2 RETURNING `+assetCols, id, publicID))
-		// 🔴 THE KEY HOLDS IT TOO (0161's NO ACTION foreign key): were the
+		// 🔴 THE KEY HOLDS IT TOO (0164's NO ACTION foreign key): were the
 		// check above ever to miss a version, the delete is still refused.
 		if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23503" {
 			return fmt.Errorf("%w: a version of page %d uses %s%s", ErrAssetInUse, id, AssetScheme, publicID)

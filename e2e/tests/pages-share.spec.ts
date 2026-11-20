@@ -7,11 +7,12 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, pagesShareConnectPort, pagesShareMirrorMCPPort, pagesSharePort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { withMCPSession } from '../lib/localmcp';
 
 // SHAREABLE PAGES, INSTANT SHARE (docs/pages.md#sharing, #in-the-chat), every
 // hop real, on a server with a link key (MUSTER_CONNECTOR_ENCRYPTION_KEY),
-// whose owner turns ON "Let my agents share pages without asking" on the
-// Account page (a per-owner opt-in; pages.spec.ts is an owner who did not):
+// whose owner keeps "Let my agents share pages without asking" ON, every
+// user's default (pages.spec.ts is an owner who turned it off):
 //
 //   a Claude Code session in a mirrored window publishes a page through its
 //   host's loopback MCP endpoint (page_create) → the call and its result land
@@ -22,9 +23,10 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //     - on a phone, navigator.share is called with the page's title and that
 //       same link, SYNCHRONOUSLY inside the tap (the address is fetched on
 //       pointerdown, before the click — what iOS Safari's share sheet needs);
-//   → a signed-out browser opens the link and sees the page → the owner turns
-//   the opt-in on, on Account → the agent's own page_share_request is live at
-//   once and returns that same link.
+//   → a signed-out browser opens the link and sees the page → an owner who
+//   never chose (no preferences row) has the agent's own page_share_request
+//   live at once, returning that same link → the owner turns it off on
+//   Account, and the next request is asked instead.
 //
 // Every value below is an obvious fake.
 
@@ -43,6 +45,10 @@ let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 
 const rec = (o: object) => JSON.stringify(o) + '\n';
+// clearPrefs deletes the owner's (user 1's) notify_preferences row: no choice
+// made, so "Let my agents share pages without asking" reads its default, on.
+const clearPrefs = () =>
+  execFileSync('go', ['run', './e2e/pluginfix', 'notifypref', '1', 'clear'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -85,20 +91,10 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async ({ browser }) => {
-  // 🔴 THE OPT-IN IS THE OWNER'S ROW IN THE LEG'S SHARED DATABASE (user 1's,
-  // every spec's owner): turned off again here, or a spec after this one —
-  // pages.spec.ts, the ask flow — would find its agent sharing at once.
-  if (server) {
-    const ctx = await browser.newContext({ baseURL: origin });
-    try {
-      const page = await ctx.newPage();
-      await signIn(page, origin);
-      const r = await page.request.post(origin + '/account/pages/agent-share', { form: { on: '0' }, headers: { Origin: origin }, maxRedirects: 0 });
-      expect(r.status(), 'the opt-in was turned off again').toBe(303);
-    } finally {
-      await ctx.close();
-    }
-  }
+  // 🔴 THE SWITCH IS THE OWNER'S ROW IN THE LEG'S SHARED DATABASE (user 1's,
+  // every spec's owner): the test below turns it off, so the row is cleared
+  // here and every later spec sees the default (on) again.
+  if (server) clearPrefs();
   if (mirrorProc && mirrorProc.exitCode === null) {
     const done = new Promise((r) => mirrorProc!.once('exit', r));
     mirrorProc.kill('SIGTERM');
@@ -119,7 +115,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
       const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
       const r = await fetch(localMCP, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        headers: await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
       last = await r.text();
@@ -198,9 +194,18 @@ test('desktop: Share on the page card copies the page link, the same one twice, 
     });
     const page = await ctx.newPage();
     const card = await openCard(page);
+    // The card was drawn before its page had a link: its ⋯ has no Revoke
+    // link yet, and has one as soon as Share makes the link — no redraw.
+    const more = card.getByRole('button', { name: `More for “${TITLE}”` });
+    await more.click();
+    await expect(page.getByRole('menuitem', { name: 'Revoke link' }).or(page.getByRole('button', { name: 'Revoke link' }))).toHaveCount(0);
+    await page.keyboard.press('Escape');
     const share = card.getByRole('button', { name: `Share “${TITLE}”` });
     await share.click();
     await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
+    await more.click();
+    await expect(page.getByRole('button', { name: 'Revoke link' })).toBeVisible();
+    await page.keyboard.press('Escape');
     const first = await page.evaluate(() => navigator.clipboard.readText());
     expect(first).toMatch(linkRE);
     // A second Share: the SAME link (the page's one reusable link).
@@ -303,10 +308,11 @@ test('phone: Share opens the native share sheet with the title and the same link
   }
 });
 
-// THE PAGE'S OWN SCREEN, ON A PHONE: no address in its top layer — Copy link
-// puts the page's exact link on the clipboard, and the ⓘ beside it shows that
-// same link (with its own Copy). A stranger opens what was copied.
-test('phone: the page screen’s Copy link copies the exact link, and its ⓘ shows it', async ({ browser }) => {
+// THE PAGE'S OWN SCREEN, ON A PHONE: no address in its top layer — the page
+// starts with no link (no Links section, no ⋯ beside Share); Share makes it
+// (the phone's share sheet); then its row under Links copies that exact link.
+// A stranger opens what was copied.
+test('phone: the page screen’s Links row copies the exact link Share made', async ({ browser }) => {
   test.setTimeout(120_000);
   await publish();
   let ctx: BrowserContext | undefined;
@@ -318,43 +324,35 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
       permissions: ['clipboard-read', 'clipboard-write'],
       baseURL: origin,
     });
-    // A phone's share sheet (stubbed: Copy link is drawn only where one exists).
+    // A phone's share sheet (stubbed: it resolves, so nothing is copied).
     await ctx.addInitScript(() => {
       Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value: () => Promise.resolve() });
     });
     const page = await ctx.newPage();
     await signIn(page, origin);
-    // The page starts with NO link: its ⓘ is hidden until a tap makes one.
+    // The page starts with NO live link: no Copy, no ⋯ to revoke one.
     const revoked = await page.request.post(origin + `/pages/${pageID}/share/revoke`, { headers: { Origin: origin, Accept: 'application/json' } });
     expect(revoked.status()).toBe(200);
     await page.goto(origin + `/pages/${pageID}`);
     const box = page.locator('[data-page-share-box]');
     await expect(box).toBeVisible();
-    const info = page.getByRole('button', { name: "This page's link" });
-    await expect(info).toBeHidden();
-    // The top layer spells no address: the only place it is is the ⓘ.
+    await expect(page.locator('[data-link-state="live"]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Link options for/ })).toHaveCount(0);
+    // The top layer spells no address.
     await expect(box.locator('input')).toHaveCount(0);
-    await page.evaluate(() => navigator.clipboard.writeText('cleared'));
-    await page.getByRole('button', { name: `Copy the link to “${TITLE}”` }).tap();
-    await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
-    const copied = await page.evaluate(() => navigator.clipboard.readText());
-    expect(copied).toMatch(linkRE);
+    await page.getByRole('button', { name: `Share “${TITLE}”` }).tap();
     // The page's one link, as Share's own request answers it now.
     const share = await page.request.post(origin + `/pages/${pageID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
-    expect((await share.json()).url, 'the same link Share hands out').toBe(copied);
+    const made = (await share.json()).url as string;
+    expect(made).toMatch(linkRE);
+    await page.reload();
     await expect(page.locator('[data-testid="page-detail"]')).not.toContainText('/s/', { useInnerText: true });
-    // The ⓘ appeared with that link, with no reload, and shows exactly it.
-    const sheet = page.locator(`#page-link-${pageID}`);
-    await expect(sheet).toBeHidden();
-    await info.tap();
-    await expect(sheet).toBeVisible();
-    await expect(sheet.locator('[data-info-code]')).toHaveText(copied);
-    // Its Copy copies the code as it reads (no second copy in an attribute).
     await page.evaluate(() => navigator.clipboard.writeText('cleared'));
-    const copy = sheet.locator('[data-info-copy]');
+    const copy = page.locator('[data-link-state="live"] [data-link-copy]');
     await copy.tap();
     await expect(copy).toHaveText('Copied');
-    expect(await page.evaluate(() => navigator.clipboard.readText()), 'the ⓘ copies the link').toBe(copied);
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied, 'the row copies the link Share hands out').toBe(made);
     await strangerSees(browser, copied);
     sharedURL = copied;
   } finally {
@@ -362,30 +360,32 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
   }
 });
 
-test('an owner who opts in on Account: the agent’s share request is live at once and returns the page’s same link', async ({ browser }) => {
+test('an owner who never chose: the agent’s share request is live at once with the page’s same link; turned off on Account, it is asked', async ({ browser }) => {
   await publish();
-  // Before the opt-in the agent is asked to wait for the owner.
-  const asked = await call('page_share_request', { page_id: pageID });
-  expect(asked.body.status, asked.text).toBe('pending');
-  // The owner turns it on, on the Account page.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: origin });
-  try {
-    const page = await ctx.newPage();
-    await signIn(page, origin);
-    await page.goto(origin + '/account#pages-agent-share');
-    const sw = page.locator('#pages-agent-share');
-    await expect(sw).toHaveAttribute('data-state', 'off');
-    await page.locator('#pages-agent-share-toggle').click();
-    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'on');
-  } finally {
-    await ctx.close();
-  }
+  // No preferences row at all: the default, on.
+  clearPrefs();
   const req = await call('page_share_request', { page_id: pageID, reason: 'for the client' });
   expect(req.isError, req.text).toBe(false);
-  expect(req.body.status).toBe('live');
+  expect(req.body.status, req.text).toBe('live');
   expect(req.body.ask_id).toBeUndefined();
   expect(req.body.url).toMatch(linkRE);
   if (sharedURL) expect(req.body.url, "the owner's Share link").toBe(sharedURL);
   const again = await call('page_share_request', { page_id: pageID });
   expect(again.body.url).toBe(req.body.url);
+  // The owner's Account page draws it on, and the owner turns it off there.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: origin });
+  try {
+    const page = await ctx.newPage();
+    await signIn(page, origin);
+    await page.goto(origin + '/account#pages-agent-share');
+    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'on');
+    await expect(page.locator('#pages-agent-share-toggle')).toContainText('Turn off');
+    await page.locator('#pages-agent-share-toggle').click();
+    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
+  } finally {
+    await ctx.close();
+  }
+  // Off: the agent is asked to wait for the owner.
+  const asked = await call('page_share_request', { page_id: pageID });
+  expect(asked.body.status, asked.text).toBe('pending');
 });

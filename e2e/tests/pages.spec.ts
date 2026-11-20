@@ -12,6 +12,7 @@ import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRoute
 import { serverBinary, startServer, Running } from '../lib/server';
 import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { withMCPSession } from '../lib/localmcp';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
 // page_share.go; docs/pages.md):
@@ -142,6 +143,10 @@ test.afterAll(async () => {
   try {
     // The branding is the SERVER's row in the leg's shared database.
     fix('branding', 'clear');
+    // So is the owner's (user 1's) preferences row, where the test below
+    // turned "Let my agents share pages without asking" off: cleared, every
+    // later spec sees the default (on) again.
+    fix('notifypref', '1', 'clear');
   } finally {
     if (mirrorProc && mirrorProc.exitCode === null) {
       const done = new Promise((r) => mirrorProc!.once('exit', r));
@@ -166,7 +171,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
       const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
       const r = await fetch(localMCP, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        headers: await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
       last = await r.text();
@@ -256,9 +261,12 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await page.fill('#branding-name', BRAND);
   await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: PNG });
   await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
-  // The ask flow is an owner who did NOT let their agents share without
-  // asking (Account → Pages): the leg's database is shared, so it is checked
-  // here, not assumed.
+  // The ask flow is an owner who turned OFF "Let my agents share pages
+  // without asking" (Account → Pages; on is every user's default): the owner
+  // turns it off here, through the switch, and that is checked, not assumed.
+  if ((await page.locator('#pages-agent-share').getAttribute('data-state')) === 'on') {
+    await page.locator('#pages-agent-share-toggle').click();
+  }
   await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
 
   // 1. The agent publishes; the page is private.
@@ -386,6 +394,8 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
 
   // 9. Rollback on the Pages screen: version 1 again.
   await page.goto(origin + `/pages/${pageID}`);
+  // (An older version's ⋯ holds "Make current".)
+  await page.getByRole('button', { name: 'More for version 1' }).click();
   await Promise.all([page.waitForURL(origin + `/pages/${pageID}`), page.locator('[data-version="1"] [data-version-current]').click()]);
   await sp.goto(url);
   await expect(frame.locator('h1')).toHaveText('Pick your launch date');
@@ -601,7 +611,7 @@ test('the Pages screens do not shift on load', async ({ page }) => {
   const pageID = created.body.page_id as number;
   for (const [url, ready] of [
     ['/pages', '[data-testid="pages"] li'],
-    [`/pages/${pageID}`, '[data-testid="page-versions"] li'],
+    [`/pages/${pageID}`, '[data-page-title]'],
     [`/pages/${pageID}/view`, 'iframe#page'],
   ] as const) {
     await page.addInitScript(clsInit);
@@ -611,6 +621,54 @@ test('the Pages screens do not shift on load', async ({ page }) => {
     const r = await readCls(page);
     expect(r.total, `${url}: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
   }
+});
+
+// A PAGE OF ~400 KB THROUGH THE HOST'S MCP ENDPOINT (#833): a page_update of
+// 400,000 bytes goes Claude Code → this host's REAL muster-mirror → muster over
+// HTTP and comes back with a page version; one byte past the request bound
+// (mirror.MaxMCPRequestBytes, 1088 KiB = 1,114,112 bytes) is refused by the
+// mirror with a 413 that names it and the limit — never JSON-RPC -32700.
+//
+// ⚠ AN INVARIANT GUARD, NOT #833'S REGRESSION TEST: both binaries here are
+// built from this tree, and since #733 they agree on the bound, so this went
+// green at origin/main too. #833's -32700 came from an OLD muster behind a
+// current mirror (internal/mirrorhost's mcpproxy_oldmuster_test.go has the
+// red-then-green for that); this pins the seam a real mirror and a real muster
+// cross, which #733's tests reach only in process.
+test('a 400,000-byte page_update through the host MCP endpoint returns a version; one past the bound is a named 413', async () => {
+  const created = await call('page_create', { title: 'Big page ' + stamp, blocks: [{ type: 'markdown', text: 'v1' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  // sized is a page_update padded to exactly n bytes: two html blocks (a block
+  // holds at most 256 KiB) of base64-shaped text, as inline images are sent.
+  const sized = (n: number) => {
+    const mk = (pad: number) => {
+      const a = Math.floor(pad / 2);
+      const blocks = [a, pad - a].map((k) => ({ type: 'html', html: `<img alt="" src="data:image/webp;base64,${'Q'.repeat(k)}">` }));
+      return JSON.stringify({ jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'page_update', arguments: { page_id: pageID, blocks } } });
+    };
+    const body = mk(n - mk(0).length);
+    expect(body.length, 'fixture size').toBe(n);
+    return body;
+  };
+  const headers = await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX });
+  const post = (body: string) => fetch(localMCP, { method: 'POST', headers, body });
+
+  const ok = await post(sized(400_000));
+  const okText = await ok.text();
+  expect(ok.status, okText.slice(0, 300)).toBe(200);
+  const rep = JSON.parse(okText) as { error?: unknown; result?: { isError?: boolean; content: { text: string }[] } };
+  expect(rep.error, okText.slice(0, 300)).toBeUndefined();
+  expect(rep.result?.isError, okText.slice(0, 300)).toBeFalsy();
+  const out = JSON.parse(rep.result!.content[0].text) as { page_id: number; version: number };
+  expect(out).toMatchObject({ page_id: pageID, version: 2 });
+
+  const over = await post(sized(1_114_113));
+  const overText = await over.text();
+  expect(over.status, overText.slice(0, 300)).toBe(413);
+  expect(overText).not.toContain('-32700');
+  expect(overText).toContain('muster-mirror on this host refused this MCP request: it is larger than 1088 KiB');
 });
 
 // 🔴 A SERVER WITH NO LINK KEY (this spec's) MINTS ON THE TAP ONLY. There each
@@ -624,6 +682,8 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   const pageID = created.body.page_id as number;
   const links = async () => ((await call('page_get', { page_id: pageID })).body.links as unknown[]).length;
   await page.goto(origin + '/pages');
+  // The row's Share is in its ⋯.
+  await page.locator(`li[data-page-id="${pageID}"] [data-more-menu-open]`).click();
   const share = page.locator(`[data-page-share][data-page-id="${pageID}"]`);
   await share.dispatchEvent('pointerdown');
   await share.focus();
@@ -633,6 +693,14 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   await share.click();
   await expect(page.locator('[data-page-toast]').first()).toBeVisible();
   await expect.poll(links).toBe(1);
+  // That one-off link is not the page's reusable link, and Revoke link / New
+  // link act on that one only: the row's ⋯ still offers neither after the
+  // Share (red at 776f0ca57, whose script showed both).
+  await page.locator(`li[data-page-id="${pageID}"] [data-more-menu-open]`).click();
+  const menu = page.locator(`#page-menu-${pageID}`);
+  await expect(menu.getByRole('link', { name: 'Details' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Revoke link' })).toHaveCount(0);
+  await expect(menu.getByRole('button', { name: 'New link' })).toHaveCount(0);
 });
 
 // --- THE OWNER'S OWN VIEW, THE SLIM HEADER AND THE VERSION CHIP --------------
@@ -762,7 +830,7 @@ for (const vp of [
       await chip.click();
       await expect(chip).toHaveAttribute('aria-expanded', 'true');
       await expect(pop).toBeVisible();
-      await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · \d{4}-\d\d-\d\d \d\d:\d\d UTC$/, /^Version 1\d{4}-\d\d-\d\d \d\d:\d\d UTC$/]);
+      await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · today at \d{1,2}:\d{2}\s[AP]M$/, /^Version 1today at \d{1,2}:\d{2}\s[AP]M$/]);
       await expect(pop.locator('[data-page-share]')).toBeVisible();
       await expect(pop.locator('[data-page-details]')).toHaveAttribute('href', `/pages/${pageID}`);
       await expect(pop.locator('[data-version-link="2"]')).toBeFocused();
@@ -1381,6 +1449,82 @@ for (const vp of ROUND_VIEWPORTS) {
         await sp.goto((await shared.json()).url as string);
         await expect(sp.frameLocator('iframe#page').locator('main')).toContainText('made here');
         await expect(sp.locator('[data-page-session]')).toHaveCount(0);
+      } finally {
+        await stranger.close();
+      }
+    });
+  });
+}
+
+// THE PAGE IS IN THE APP'S THEME (internal/pages render.go Content and Shell,
+// content_theme.css): the page's own top bar is the app header's ground, and
+// in the frame a markdown page's ground is the app's background, its
+// table cells are ruled in the palette's line colour, and its links are the
+// app's accent, for the owner and for a link's viewer.
+//
+// The expected colours are the palette's, written out from web/css/tokens.css,
+// and cross-checked against the app's own document in the same browser. The
+// app has ONE theme (dark: every document carries class="dark" and the theme
+// head forces it), so the page is checked in that one; a link's viewer whose
+// device prefers light still gets it.
+//
+// MUSTER_E2E_PAGES_SHOTS=<dir> saves the owner's view there.
+const THEME = {
+  dark: { bg: 'rgb(17, 15, 28)', accent: 'rgb(228, 181, 86)', line: 'rgb(47, 42, 72)', text: 'rgb(238, 235, 247)' },
+} as const;
+const THEMED_MD =
+  '## Prices\n\nEach plan, per seat:\n\n| Plan | Price | Notes |\n| --- | --- | --- |\n| Basic | 4 | [what is in it](https://example.com/basic) |\n| Team | 9 | everything in Basic |\n';
+
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, a markdown page is drawn in the app's theme: its ground, its table's rules and its links`, async ({ browser }) => {
+    const made = await call('page_create', { title: 'Themed ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: THEMED_MD }] });
+    expect(made.isError, JSON.stringify(made.body)).toBe(false);
+    const id = made.body.page_id as number;
+    const look = (f: ReturnType<Page['frameLocator']>) =>
+      f.locator('table').evaluate((tbl) => {
+        const td = tbl.querySelector('td')!;
+        const a = tbl.querySelector('a')!;
+        const c = getComputedStyle(td);
+        return {
+          bg: getComputedStyle(document.body).backgroundColor,
+          border: [c.borderTopWidth, c.borderTopStyle, c.borderTopColor, c.borderLeftWidth, c.borderLeftStyle],
+          link: getComputedStyle(a).color,
+        };
+      });
+    await asOwner(browser, vp, async (page) => {
+      // Control: the app's own ground and header, from the app's own document.
+      await page.goto(origin + '/pages');
+      const appDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+      const appHeader = await page.locator('header').first().evaluate((h) => getComputedStyle(h).backgroundColor);
+      expect(appHeader, "control: the app's header is drawn on its dark ground").toBe(THEME.dark.bg);
+      expect(appDark, "control: the app's dark ground is the palette's").toBe(THEME.dark.bg);
+
+      await page.goto(origin + `/pages/${id}/view`);
+      const frame = page.frameLocator('iframe#page');
+      await expect(frame.locator('td').first()).toHaveText('Basic');
+      await shot(page, `theme-${vp.name}-dark`);
+      // The page's own top bar is the app's header: its ground and its rule.
+      const bar = await page.locator('header[data-page-brand]').evaluate((h) => {
+        const c = getComputedStyle(h);
+        return { bg: c.backgroundColor, rule: c.borderBottomColor, text: getComputedStyle(h.querySelector('[data-page-title]')!).color };
+      });
+      expect(bar.bg, "the page's top bar is the app header's ground, not white").toBe(appHeader);
+      expect(bar.rule, "the top bar's rule is the palette's line").toBe(THEME.dark.line);
+      expect(bar.text, "the top bar's title is the palette's text").toBe(THEME.dark.text);
+      const dark = await look(frame);
+      expect(dark.bg, "the frame's ground is the app's dark background").toBe(THEME.dark.bg);
+      expect(dark.border, 'a table cell is ruled: 1px solid, in the line colour').toEqual(['1px', 'solid', THEME.dark.line, '1px', 'solid']);
+      expect(dark.link, "a link is the app's accent").toBe(THEME.dark.accent);
+
+      // A link's viewer, on a device that prefers light, sees the same document.
+      const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch, colorScheme: 'light' });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        const sf = sp.frameLocator('iframe#page');
+        await expect(sf.locator('td').first()).toHaveText('Basic');
+        expect(await look(sf), "a link's viewer on a light-scheme device: the same theme").toEqual(dark);
       } finally {
         await stranger.close();
       }

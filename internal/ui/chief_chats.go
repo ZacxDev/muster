@@ -41,7 +41,8 @@ import (
 // (the side chat route's answer carries the flag: ComposerFocusParam), on the
 // new chat or on the empty one the server reused.
 //
-// The context chip stays in the header (chiefContextSlot).
+// How much context the chat uses is in the header's ⋯ menu, and only when it
+// is high (chiefMemorySlot); the header carries no chip.
 //
 // 🔴 THE SAME ROUTES ON BOTH SURFACES, ANSWERED THE WAY EACH SURFACE NEEDS:
 // on the page an action's answer is HX-Redirect to the chat it leaves you on;
@@ -67,6 +68,12 @@ type ChiefChatBar struct {
 	// no ⋯; the chips switch, and that is all. (The chief PANEL never opens a
 	// team's chief: it is the viewer's own, chiefAgent.)
 	SharedRoom bool
+	// NewChatModels are the models the "+" menu offers a new side chat on,
+	// after its Default (the chief's own model): agents.ClaudeCodeModels, the
+	// list the New session picker offers too, where the deployment offers the
+	// claude-code session runtime to this chief (MUSTER_CHIEF_SESSION_RUNTIMES,
+	// internal/api chiefChatBarFor). None: no menu, "+" opens a chat at once.
+	NewChatModels []string
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -91,9 +98,13 @@ const (
 	chiefArchiveAttr      = "data-chief-archive"
 	chiefUnarchiveAttr    = "data-chief-unarchive"
 	chiefUnreadAttr       = "data-chief-unread"
-	chiefContextID        = "chief-context"
-	chiefContextChipID    = "chief-context-chip"
-	chiefContextPopID     = "chief-context-detail"
+	// chiefNewChatMenuAttr marks the "+" menu; chiefNewChatModelAttr each of its
+	// entries, valued with the model it opens a chat on ("" for Default).
+	chiefNewChatMenuAttr  = "data-chief-new-chat-menu"
+	chiefNewChatModelAttr = "data-chief-new-chat-model"
+	// chiefChipModelAttr marks a chip's model tag, valued with the model.
+	chiefChipModelAttr = "data-chief-chip-model"
+	chiefContextID     = "chief-context"
 )
 
 // The kinds data-chief-chat-kind names, and what each is called.
@@ -136,7 +147,8 @@ func withCurrent(path string, cur int64) string {
 	return path + sep + ChiefCurrentParam + "=" + strconv.FormatInt(cur, 10)
 }
 
-// ChiefContextPath is the context chip's partial for chat sid of agent name.
+// ChiefContextPath is the ⋯ menu's memory line's partial for chat sid of agent
+// name (chiefMemorySlot).
 func ChiefContextPath(name string, sid int64) string {
 	return "/ui/agents/" + url.PathEscape(name) + "/chat-context?session=" + strconv.FormatInt(sid, 10)
 }
@@ -248,7 +260,7 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 			Class("flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
 			g.Group(chips),
 		),
-		g.If(!b.SharedRoom, chiefNewChatChip(b.AgentID, surface)),
+		g.If(!b.SharedRoom, chiefNewChatChip(b, surface)),
 		chiefChipsScript(),
 		// The ⋯ menus are placed by floatingMenuScript: the chief page carries
 		// it already; the shell the panel lives in does not (it is bound once
@@ -294,6 +306,7 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 	inner := g.Group{
 		g.If(kind == ChiefChatKindPrimary, Span(g.Attr(sessionDefaultAttr, ""), g.Attr("aria-hidden", "true"), Class("shrink-0 text-accent"), g.Text("★"))),
 		Span(Class("min-w-0 truncate"), g.Text(label)),
+		chiefChipModelTag(sess),
 		g.If(sess.Unread, Span(
 			g.Attr(chiefUnreadAttr, ""),
 			g.Attr("role", "img"),
@@ -393,36 +406,112 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind, label string, surfac
 			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>`),
 		),
-		Div(
-			ID(id),
-			g.Attr(chiefChatMenuAttr, ""),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "menu"),
-			g.Attr("aria-label", name),
-			g.Attr("data-floating-menu", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
-			g.Group(items),
-		),
+		chiefPopoverMenu(id, chiefChatMenuAttr, name, items),
 	}
 }
 
+// chiefPopoverMenu is the strip's popover menu (a chip's ⋯, the "+" menu): in
+// the top layer, placed beside its popovertarget by floatingMenuScript, closed
+// by Escape and a tap outside (the browser's). attr marks it.
+func chiefPopoverMenu(id, attr, name string, items []g.Node) g.Node {
+	return Div(
+		ID(id),
+		g.Attr(attr, ""),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "menu"),
+		g.Attr("aria-label", name),
+		g.Attr("data-floating-menu", ""),
+		Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+		g.Group(items),
+	)
+}
+
+// chiefChipModelTag is a chip's model tag ("sonnet"): the model a side chat was
+// opened on from the "+" menu, fixed for its life. Nothing for a chat on the
+// chief's own model (Model "", the "+" menu's Default and every chat made
+// before the menu). Compact, so it barely widens the chip.
+func chiefChipModelTag(sess SessionView) g.Node {
+	if sess.Model == "" {
+		return nil
+	}
+	return Span(
+		g.Attr(chiefChipModelAttr, sess.Model),
+		g.Attr("title", "Model: "+sess.Model),
+		Class("max-w-[5.5rem] shrink-0 truncate rounded px-1 text-[10px] font-medium leading-4 text-muted ring-1 ring-inset ring-line"),
+		g.Text(sess.Model),
+	)
+}
+
 // chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
-// reused while it is still empty: internal/api openSideChat). Its answer moves
-// the view to that chat, with the cursor in its message box (the route's
-// answer asks for it: ComposerFocusParam).
-func chiefNewChatChip(agentID int64, surface ChatSurface) g.Node {
-	return Form(
-		chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(agentID))),
-		Class("contents"),
+// reused while it is still empty and on the same model: internal/api
+// openSideChat). Its answer moves the view to that chat, with the cursor in its
+// message box (the route's answer asks for it: ComposerFocusParam).
+//
+// 🔴 WHERE A MODEL MAY BE PICKED (b.NewChatModels), "+" OPENS A SMALL MENU, NOT
+// A MODAL (the operator's ask: chief side chats on different models, picked
+// when the chat is made): Default (the chief's own model, what "+" opened
+// before) and each model, each entry posting it as the route's model. A chat's
+// model is fixed once it is made. Elsewhere "+" opens a chat at once, as
+// before.
+func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
+	post := chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(b.AgentID)))
+	cls := "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	plus := Span(g.Attr("aria-hidden", "true"), g.Text("+"))
+	if len(b.NewChatModels) == 0 {
+		return Form(
+			post,
+			Class("contents"),
+			Button(
+				Type("submit"),
+				g.Attr(chiefSideChatAttr, ""),
+				g.Attr("aria-label", "New side chat"),
+				g.Attr("title", "New side chat"),
+				Class(cls),
+				plus,
+			),
+		)
+	}
+	id := "chief-new-chat-menu"
+	if surface == ChatSurfaceChiefPanel {
+		id = "chief-panel-new-chat-menu"
+	}
+	entry := func(model, label string) g.Node {
+		return Form(
+			post,
+			Class("contents"),
+			g.If(model != "", Input(Type("hidden"), Name("model"), Value(model))),
+			Button(Type("submit"), g.Attr(chiefNewChatModelAttr, model), g.Attr("role", "menuitem"),
+				Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-medium text-fg transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+				g.Text(label)),
+		)
+	}
+	items := []g.Node{entry("", "Default")}
+	for _, m := range b.NewChatModels {
+		items = append(items, entry(m, chiefModelLabel(m)))
+	}
+	return g.Group{
 		Button(
-			Type("submit"),
+			Type("button"),
 			g.Attr(chiefSideChatAttr, ""),
+			g.Attr("popovertarget", id),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
 			g.Attr("aria-label", "New side chat"),
 			g.Attr("title", "New side chat"),
-			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
-			Span(g.Attr("aria-hidden", "true"), g.Text("+")),
+			Class(cls),
+			plus,
 		),
-	)
+		chiefPopoverMenu(id, chiefNewChatMenuAttr, "New side chat on", items),
+	}
+}
+
+// chiefModelLabel is a "+" menu entry's label for model: an alias capitalised
+// ("sonnet" → "Sonnet"), any other model as it is.
+func chiefModelLabel(model string) string {
+	if model == "" || strings.ContainsAny(model, "-.[") {
+		return model
+	}
+	return strings.ToUpper(model[:1]) + model[1:]
 }
 
 // ComposerFocusParam is the query parameter (value "1") with which the side
@@ -564,84 +653,65 @@ func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, clau
 	)
 }
 
-// chiefContextSlot is where the context chip lives — the chief page's header,
-// under the title (where a mirrored session's chip is), and the chief panel's
-// title bar: an empty slot that loads
-// the chip (ChiefContextChip) on load and again whenever a turn of the chief
-// starts or ends or a reply is stored — so the chip follows the turn that just
-// ended without a reload. innerHTML into the slot: the slot keeps its triggers
-// (an outerHTML swap of an element with a `load` trigger would load for ever).
-func chiefContextSlot(name string, sid int64) g.Node {
+// THE CHIEF'S MEMORY IN THE ⋯ MENU, ONLY WHEN IT IS HIGH (operator decision,
+// #871). The header used to carry a raw token-count chip ("45k") under
+// the chief's title, always. It is gone from the header and from the panel's
+// title bar; the chief page's ⋯ menu says "Memory used: 362k" in plain words
+// — and only while the chat's latest turn sent more than ChiefMemoryShowAbove
+// tokens, the point where a fresh chat is worth thinking about.
+//
+// The menu holds an empty slot (chiefMemorySlot) that loads its line
+// (RenderChiefMemoryLine, internal/api handleChiefChatContext) on load and
+// again whenever a turn of the chief starts or ends or a reply is stored, so
+// the line follows the turn that just ended without a reload. innerHTML into
+// the slot: the slot keeps its triggers.
+
+// ChiefMemoryShowAbove is the context, in tokens, past which the ⋯ menu says
+// how much of it the chief's chat uses. At or below it, nothing.
+const ChiefMemoryShowAbove int64 = 350_000
+
+// ChiefMemoryAttr marks the menu's memory line.
+const ChiefMemoryAttr = "data-chief-memory"
+
+// chiefMemorySlot is the ⋯ menu's slot for chat sid's memory line. peer: the
+// slot is the menu's only extra item, so the divider under the extras hides
+// while it is empty (agentActionsMenuWith's peer-empty:hidden).
+func chiefMemorySlot(name string, sid int64, peer bool) g.Node {
 	quoted := strconv.Quote(name)
-	return Span(
+	cls := "block empty:hidden"
+	if peer {
+		cls += " peer"
+	}
+	return Div(
 		ID(chiefContextID),
-		Class("inline-flex min-w-0"),
+		Class(cls),
 		hx("hx-get", ChiefContextPath(name, sid)),
 		hx("hx-trigger", "load, sse:chat.turn[JSON.parse(detail.data).id==="+quoted+"] from:body, "+
 			"sse:chat.reply[JSON.parse(detail.data).id==="+quoted+"] from:body"),
-		// 🔴 ITS OWN TARGET, SPELLED: inside the chief panel, #chief-panel-body
-		// declares hx-target="this", which htmx INHERITS — without this the chip's
-		// answer replaced the whole panel body (the chat with it).
+		// 🔴 ITS OWN TARGET, SPELLED: an inherited hx-target would put the line's
+		// answer over whatever declared it.
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 	)
 }
 
-// RenderChiefContextChip writes the context chip for c — nothing when c is nil
-// (no turn of the chat has reported usage yet).
-func RenderChiefContextChip(w io.Writer, c *ContextView) error {
-	if c == nil {
+// RenderChiefMemoryLine writes the ⋯ menu's memory line for a chat whose
+// latest turn sent tokens of context — nothing at or below
+// ChiefMemoryShowAbove.
+func RenderChiefMemoryLine(w io.Writer, tokens int64) error {
+	if tokens <= ChiefMemoryShowAbove {
 		return nil
 	}
-	return chiefContextChip(c).Render(w)
+	return P(
+		g.Attr(ChiefMemoryAttr, strconv.FormatInt(tokens, 10)),
+		Class("px-3 py-2 text-xs text-fg2"),
+		g.Text("Memory used: "+chiefMemoryWords(tokens)),
+	).Render(w)
 }
 
-// ChiefContextView is the chief chat's context readout: contextView, THE
-// readout #601's chip draws for a mirrored session, so the chief's chip says
-// the same thing the same way — the model then used/window, amber from
-// ContextWarnPct, red from ContextDangerPct, the exact counts on tap.
-func ChiefContextView(tokens, window int64, model string) *ContextView {
-	return contextView(tokens, window, model, ChiefContextTitle)
-}
-
-// ChiefContextTitle is how the chief chip's number is derived.
-const ChiefContextTitle = "Context used by this chat's latest turn: its last request's input + cache read + cache write tokens " +
-	"(output is not counted: it is in the next request's input), of the model's context window."
-
-// chiefContextChip is the chip itself: mirrorContextChip's markup and classes,
-// filled on the server rather than by a page script.
-func chiefContextChip(c *ContextView) g.Node {
-	if c == nil {
-		return nil
-	}
-	return g.Group{
-		Button(
-			ID(chiefContextChipID),
-			Type("button"),
-			g.Attr("title", c.Detail),
-			g.Attr("popovertarget", chiefContextPopID),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", chiefContextPopID),
-			g.Attr("aria-expanded", "false"),
-			g.If(c.Level != "", g.Attr("data-level", c.Level)),
-			Class("press relative inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+
-				"data-[level=warn]:bg-st-warning-bg data-[level=warn]:text-st-warning-fg data-[level=warn]:ring-st-warning-fg/40 "+
-				"data-[level=danger]:bg-st-error-bg data-[level=danger]:text-st-error-fg data-[level=danger]:ring-st-error-fg/40"),
-			g.If(c.Name != "", Span(g.Attr("data-ctx-name", ""), Class("min-w-0 truncate"), g.Text(c.Name))),
-			g.If(c.Name != "", Span(g.Attr("data-ctx-sep", ""), Class("shrink-0"), g.Text(contextSep))),
-			Span(g.Attr("data-ctx-count", ""), Class("shrink-0 whitespace-nowrap"), g.Text(c.Count)),
-		),
-		Div(
-			ID(chiefContextPopID),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Context used"),
-			g.Attr("data-floating-menu", ""),
-			Class(fullTitlePopoverClass),
-			Span(g.Attr("data-ctx-detail", ""), Class("[overflow-wrap:anywhere] text-sm font-semibold tabular-nums"), g.Text(c.Detail)),
-			g.If(c.Title != "", Span(g.Attr("data-ctx-how", ""), Class("text-xs text-muted"), g.Text(c.Title))),
-		),
-	}
+// chiefMemoryWords is tokens in thousands, rounded: "362k".
+func chiefMemoryWords(tokens int64) string {
+	return strconv.FormatInt((tokens+500)/1000, 10) + "k"
 }
 
 // chiefChatRowExtras is what a chief chat's switcher row adds after its title:

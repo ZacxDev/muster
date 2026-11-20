@@ -354,6 +354,8 @@ func TestEveryQueueTargetNamesItsOwner(t *testing.T) {
 		"Server.sendQueueNotePaste":    "the window ctx's mirror calls touch (windowOwner)",
 		"Server.forwardToHostDispatch": "a chief's forward, as the chief's owner (the caller's own)",
 		"Server.queueNudgeText":        "a chief nudge, as the nudge's owner (the caller's own)",
+		"Server.fleetDeliver":          "a fleet proposal's text, as the owner who approved it (the caller's own; fleet_actions is personal)",
+		"Server.fleetCloseRefusal":     "a read of a wrap's session's queued messages, as its owner (the caller's own)",
 		"Server.injectRoute":           "a routed message, as the route's owner (the caller's own)",
 		"Server.askLogProvenance":      "the ask log's read of the caller's OWN sent bodies",
 		"Server.attachFleetInFlight":   "the fleet reader's read of the caller's OWN windows (Mirror.Hosts; owner 0 = own)",

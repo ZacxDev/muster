@@ -603,6 +603,77 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
 Passkey autofill (conditional mediation) is not available in a WebView; the
 buttons are.
 
+## Cross-origin writes
+
+`SameSite=Lax` does not stop a page on a **sibling host** (any other
+subdomain of muster's registrable domain): that page is the same site, so the
+browser attaches muster's cookies to a write it makes to muster. So every
+request that a **browser session** admits (in both modes) and whose method is
+not `GET`, `HEAD` or `OPTIONS` must come from muster's own pages. Before any
+handler runs, muster reads:
+
+1. **`Sec-Fetch-Site`, first.** `same-origin` admits. `same-site`,
+   `cross-site` and `none` are refused. One exception: with
+   `MUSTER_PUBLIC_URL` set, an `Origin` exactly equal to its origin is
+   admitted whatever `Sec-Fetch-Site` says. A browser sets `Origin` itself,
+   so only a page on that origin can send it.
+2. **Only if it is absent, `Origin`.** muster's own origin admits: its host
+   equal to the request's `Host`, or its scheme and host equal to
+   `MUSTER_PUBLIC_URL`'s (behind a proxy that rewrites `Host`). `null` and
+   any other origin are refused.
+3. **Only if both are absent, `Referer`.** A `Referer` on muster's own origin,
+   by the same rule as `Origin`, admits.
+4. **None of the three:** refused.
+
+A refusal is `403` with the error `cross-origin request refused: this action
+must come from muster's own pages`, logged (never the body) and counted in
+`muster_csrf_refusals_total{route_class, reason}`.
+
+- **Why `Sec-Fetch-Site` comes first.** Under `Referrer-Policy: no-referrer`
+  (which some of muster's pages still serve) a browser's native form `POST`
+  carries `Origin: null` while still carrying `Sec-Fetch-Site: same-origin`.
+  An `Origin`-first rule would refuse muster's own no-JavaScript forms.
+- **muster's default `Referrer-Policy` is `same-origin`.** It sends no
+  `Referer` to any other origin, so a token in a URL stays out of other
+  sites' logs, and a native form `POST` carries muster's real `Origin`. The
+  share links (`/s/…`), the notification redirect and page content documents
+  serve `no-referrer` themselves.
+- **Bearer credentials are not checked.** Personal tokens, plugin, runner,
+  mirror, device and agent tokens, and the hook and service secrets are
+  headers a cross-site page cannot make a browser send. A request carrying a
+  cookie and a bearer is judged by the credential its route's door read. The
+  muster CLI and `muster-mirror` use bearer tokens.
+- **The unauthenticated writes** (sign-in, sign-out, invite, reset and claim
+  links, passkey sign-in, plugin and device pairing) do not pass through the
+  session door. Sign-out reads the session, so it applies the same rule
+  itself (GoTrue mode: `isSameOrigin`). ⚠ The password-mode sign-in reads
+  the session only to exempt a signed-in browser from the sign-in throttle,
+  and checks no origin. Every function that reads a browser session is listed
+  in a test with its reason, and a new one fails it.
+- **The routes that also carry `requireSameOrigin`** keep it. It reads
+  `Origin`, then `Referer`, and refuses `Origin: null`, so a native form on
+  one of those routes still needs its page served `Referrer-Policy:
+  same-origin` ([sending-and-step-up.md](sending-and-step-up.md)).
+- The route ledger, `internal/api/testdata/csrf_ledger.golden`, lists every
+  write route as `cookie`, `bearer-only` or `unauthenticated`, and a test
+  fails when a route is added, removed or moves class.
+
+**What browsers send.** Current Chromium, Firefox and Safari send
+`Sec-Fetch-Site` on every request to a **trustworthy** origin (`https`, or a
+loopback address), and `Origin` on `fetch` and htmx writes.
+
+- **A plain-`http` deployment on a non-loopback address gets no
+  `Sec-Fetch-Site`** (measured in Chromium), so the check reads `Origin`.
+  htmx and `fetch` writes carry the real `Origin`, and so does a native form
+  `POST` from a page served `same-origin`, muster's default. ⚠ A form on a
+  page served `no-referrer` carries `Origin: null` there and is refused.
+- ⚠ **Not yet measured on a device:** the Android app's WebView (Chromium, so
+  by documentation it sends `Sec-Fetch-Site`), the installed PWA (the browser
+  itself) and Safari with its strict privacy settings. Each must show
+  `Sec-Fetch-Site: same-origin`, or else muster's own `Origin`, or else a
+  same-origin `Referer`, on a `fetch`, an htmx action and a form `POST`. Until
+  that is captured, treat those clients as unverified.
+
 ## Machine credentials
 
 | credential | acts as | notes |
@@ -610,7 +681,7 @@ buttons are.
 | Personal API token (`mst_…`) | you: your user id and role | Minted only in the browser at `/account/tokens`, and shown once. Only its sha256 is stored. A token cannot mint another token. Revoking one refuses it on the next request. Disabling a user revokes all of their tokens (their mirror and flow runner tokens too, in the same transaction), and re-enabling them brings none back. |
 | `MUSTER_HOOK_TOKEN` | user 1, admin | A shared secret, required: muster refuses to boot without it, in both modes. |
 | `MUSTER_SERVICE_TOKEN` | user 1 | It also requires an `X-Muster-Actor` header. It fails closed (503 while unset) and must be at least 32 characters. |
-| Mirror token (`mmt_…`) | the host it was minted for | A **team host token** (owned by a team) is served a reduced tool set and never remotely; see [Teams](#teams) ("Team hosts"). A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes, `POST /mirror/mcp`, `POST /mirror/ask-attachments` (a file for one of that host's listed sessions' asks, stored as an upload of its owner: [attention.md](attention.md#attachments-and-context)) and `POST /mirror/pages/{id}/assets` (an image or video for a page made from that host: [pages.md](pages.md#images-and-video)). Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. 🔴 **With a token whose host has started agents for the chief** (the token is marked the first time its host advertises `-agent-spawn` or has a host dispatch, and stays marked until it is rotated), or from a host running a host officer, every one of those decisions — `attention_answer`, `connector_request_decide`, `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`, `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`, `agent_destroy`, `chief_restart` — is instead a confirmation card that runs only when the owner confirms it on their paired phone ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)), so such a token alone decides nothing (but for a `route_reply` from the session the route was sent to). Rotate a host's token when you turn its `-agent-spawn` off, once the agents it started have ended. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
+| Mirror token (`mmt_…`) | the host it was minted for | A **team host token** (owned by a team) is served a reduced tool set and never remotely; see [Teams](#teams) ("Team hosts"). A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes, `POST /mirror/mcp`, `POST /mirror/ask-attachments` (a file for one of that host's listed sessions' asks, stored as an upload of its owner: [attention.md](attention.md#attachments-and-context)) and `POST /mirror/pages/{id}/assets` (an image or video for a page made from that host: [pages.md](pages.md#images-and-video)). Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. 🔴 **With a token whose host has started agents for the chief** (the token is marked the first time its host advertises `-agent-spawn` or has a host dispatch, and stays marked until it is rotated), or from a host running a host officer, every one of those decisions — `attention_answer`, `connector_request_decide`, `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`, `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`, `agent_destroy` — is instead a confirmation card that runs only when the owner confirms it on their paired phone ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)), so such a token alone decides none of them (but for a `route_reply` from the session the route was sent to). It **can still restart its owner's chief**: `chief_restart` is not gated on any machine, so such a token, or any process on that host, can restart the chief and with `force` cut off a turn in flight, by operator decision ([mirroring.md](mirroring.md#chief_restart-is-not-gated)). Rotate a host's token when you turn its `-agent-spawn` off, once the agents it started have ended. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | A disabled owner's token is refused. Disabling a user revokes all of their runner tokens, and re-enabling them brings none back. See [browser-flows.md](browser-flows.md). |
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
@@ -884,12 +955,12 @@ Two endpoints help with personal tokens:
   reaches answers **403** before it runs: the task, agent and flow APIs, the
   token API, and `GET /api/whoami` too (the summary's own 200, 401 or 403
   says whether the token works). Give a status bar this kind.
-- **Create agents** (`agent-create`): [`POST /api/agents`](provisioner.md#creating-an-agent-without-the-chief)
+- **Start agents only** (`agent-create`): [`POST /api/agents`](provisioner.md#creating-an-agent-without-the-chief)
   and **nothing else** (every other route answers **403**). It is also the
   only token that reaches that route: a **full-access token is refused there**,
   so the CLI's ordinary token cannot create agents. `muster agent create`
   reads it from `MUSTER_AGENT_CREATE_TOKEN`.
-- **Account usage only** (`account-usage`): [`GET /api/cc-accounts/usage`](jobs.md#get-apicc-accountsusage),
+- **Read Claude usage only** (`account-usage`): [`GET /api/cc-accounts/usage`](jobs.md#get-apicc-accountsusage),
   your Claude accounts' utilization and who used them, and **nothing else**
   (every other route answers **403**). Give it to a service that should read
   that and hold nothing else. A full-access token reaches the route too.

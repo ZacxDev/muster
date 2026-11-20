@@ -13,9 +13,26 @@ import (
 )
 
 // chatStreamHTMLEvery is how often, at most, the chat socket re-renders a
-// streamed reply's text as HTML (wsChatStream). A test sets it to 0 to render
-// on every delta.
-var chatStreamHTMLEvery = 100 * time.Millisecond
+// streamed reply's text as HTML (wsChatStream): production's interval.
+//
+// 🔴 A CONSTANT, AND EACH STREAM CARRIES ITS OWN INTERVAL. It used to be a
+// package variable a test reassigned, and the chat socket reads it at every
+// turn's start (wsStreamEmit) — on the socket's handler goroutine, which
+// nothing joins when its test ends (a hijacked connection outlives
+// httptest.Server.Close). A socket left over from one test then read it with
+// no happens-before edge to the next test's write: `go test -race` reported
+// it. A test now sets its Server's chatHTMLEvery before the socket opens, or
+// passes the interval to newWSChatStream.
+const chatStreamHTMLEvery = 100 * time.Millisecond
+
+// chatStreamEvery is the interval this server's chat streams render at:
+// chatHTMLEvery when set (a test), else chatStreamHTMLEvery.
+func (s *Server) chatStreamEvery() time.Duration {
+	if s.chatHTMLEvery > 0 {
+		return s.chatHTMLEvery
+	}
+	return chatStreamHTMLEvery
+}
 
 // wsChatStream is the server→browser half of one chat turn on the
 // /agents/{name} socket: each agents.StreamEvent as the WS JSON message
@@ -28,7 +45,7 @@ var chatStreamHTMLEvery = 100 * time.Millisecond
 // keeps no markdown renderer of its own (agents_detail.go chatMessageBody says
 // why there used to be two and why there is one).
 //
-// ⚡ RENDERED AT MOST EVERY chatStreamHTMLEvery, NOT ON EVERY DELTA. "html" is
+// ⚡ RENDERED AT MOST ONCE PER INTERVAL (chatStreamHTMLEvery), NOT ON EVERY DELTA. "html" is
 // the whole bubble, and a runtime streams roughly a token per delta, so html
 // on every delta is quadratic in the reply's length on the wire (a 10 KB reply
 // in ~2,500 deltas would send tens of megabytes). A delta inside the window
@@ -58,8 +75,10 @@ type wsChatStream struct {
 	timer *time.Timer
 }
 
-func newWSChatStream(write func(v any)) *wsChatStream {
-	return &wsChatStream{write: write, every: chatStreamHTMLEvery}
+// newWSChatStream is a stream writing through write that renders html at most
+// once per every (0: on every delta).
+func newWSChatStream(write func(v any), every time.Duration) *wsChatStream {
+	return &wsChatStream{write: write, every: every}
 }
 
 // delta adds s to the current bubble.

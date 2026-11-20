@@ -522,7 +522,15 @@ var brandingErrorText = map[string]string{
 // --- the Account page's section -------------------------------------------------
 
 // BrandingSectionHeading is the Account page section's heading.
-const BrandingSectionHeading = "Instance branding"
+const BrandingSectionHeading = "Server name and logo"
+
+// The logo and app icon fields' labels, in words (the jargon audit's F089):
+// no file formats, MiB or pixel counts — the upload's own refusal says
+// those, when a file breaks one.
+const (
+	BrandingLogoLabel    = "Logo (an image up to 1 MB)"
+	BrandingAppIconLabel = "App icon (optional: a square image for the app's icon and notifications; without one it is made from the logo)"
+)
 
 // LogoShowsNameLabel is the label of the section's logo_shows_name checkbox.
 const LogoShowsNameLabel = "The logo already shows the name (hide the name text next to it)"
@@ -570,9 +578,9 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 	sb.WriteString(`<form id="branding-form" hx-put="` + BrandingPath + `" hx-encoding="multipart/form-data" class="flex flex-col gap-3">
 <label for="branding-name" class="text-sm font-medium text-fg">Display name (optional, up to 64 characters)</label>
 <input id="branding-name" name="name" type="text" maxlength="64" autocomplete="off" value="` + html.EscapeString(b.Name) + `" class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
-<label for="branding-logo" class="text-sm font-medium text-fg">Logo (PNG, JPEG or WebP, up to 1 MiB and 4096 px)</label>
+<label for="branding-logo" class="text-sm font-medium text-fg">` + BrandingLogoLabel + `</label>
 <input id="branding-logo" name="logo" type="file" accept="image/png,image/jpeg,image/webp" class="text-sm text-fg2">
-<label for="branding-app-icon" class="text-sm font-medium text-fg">App icon (optional: a square image, at least 512 × 512 px, for the favicon, the installed app and notifications; without one they are made from the logo)</label>
+<label for="branding-app-icon" class="text-sm font-medium text-fg">` + BrandingAppIconLabel + `</label>
 <input id="branding-app-icon" name="` + appIconField + `" type="file" accept="image/png,image/jpeg,image/webp" class="text-sm text-fg2">
 <input type="hidden" name="` + logoShowsNameField + `" value="false">
 <label for="branding-logo-shows-name" class="flex min-h-[44px] items-center gap-3 text-sm text-fg">
@@ -593,13 +601,14 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 
 // loginBrandHTML is the sign-in page's brand: the logo and name when set —
 // the logo alone, its alt the name, when it already shows the name
-// (ui.Brand.DrawsName, the header's rule) — and nothing when neither is set
-// (the page's own heading names muster). It is public — the sign-in page is —
-// and it is the server's, not a user's.
+// (ui.Brand.DrawsName, the header's rule) — and muster's own lockup (the
+// header's image, ui.LockupHTML) when neither is set. It is public — the
+// sign-in page is — and it is the server's, not a user's. The sign-in pages
+// and the admin claim (the first run) draw it.
 func (s *Server) loginBrandHTML(ctx context.Context) string {
 	b := s.uiBrand(ctx)
 	if !b.HasLogo() && b.Name == "" {
-		return ""
+		return `<div data-testid="login-mark" class="mb-4 flex justify-center">` + ui.LockupHTML() + `</div>`
 	}
 	var sb strings.Builder
 	sb.WriteString(`<div data-testid="login-brand" class="mb-4 flex flex-col items-center gap-2">`)

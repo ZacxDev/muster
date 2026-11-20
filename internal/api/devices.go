@@ -362,7 +362,7 @@ func (s *Server) handleDeviceConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"server_version": BuildVersion,
+		"server_version": s.version(),
 		"push":           push,
 		"pairing":        map[string]any{"pin_keys_allowed": s.ext.AllowPINKeys},
 		// Push, and Phase 2's signed actions for asks (the ids are the app's

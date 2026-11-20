@@ -20,7 +20,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A PAGE'S AUTHOR ASSETS (internal/pages asset.go, migration 0161;
+// A PAGE'S AUTHOR ASSETS (internal/pages asset.go, migration 0164;
 // docs/pages.md "Images and video"): images and video the page's author
 // attaches, which its markdown and html blocks show.
 //

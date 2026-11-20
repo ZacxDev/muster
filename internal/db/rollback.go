@@ -382,14 +382,41 @@ const officerConnectorBlocksMigrationVersion = 148
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerSeenMigrationVersion = 156
 
-// pageAssetsMigrationVersion is 0161: page_assets and page_version_assets (a
+// officerCapRaisesMigrationVersion is 0157: officer_cap_raises (an owner's
+// raise of a builtin officer's daily budget for one UTC day,
+// internal/officers/builtin cap_raise.go), owned and under the same row-level
+// security, personal; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerCapRaisesMigrationVersion = 157
+
+// fleetActionsMigrationVersion is 0158: fleet_actions (the fleet's action log,
+// internal/fleet), owned and under the same row-level security; same
+// treatment again. Its body is idempotent (the append-only trigger and the
+// send queue's one-origin rule are re-created).
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const fleetActionsMigrationVersion = 158
+
+// officerChatCardsMigrationVersion is 0160: officer_chat_cards (the confirm
+// cards an officer asks for in a person's chat with it, internal/officers/
+// builtin chat_cards.go), owned and under the same row-level security,
+// personal; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerChatCardsMigrationVersion = 160
+
+// morningReportsMigrationVersion is 0161: morning_reports (one morning report
+// per owner per day, internal/morning), owned and under the same row-level
+// security; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const morningReportsMigrationVersion = 161
+
+// pageAssetsMigrationVersion is 0164: page_assets and page_version_assets (a
 // page's author images and video, and which versions refer to them,
 // internal/pages asset.go), owned and under the same row-level security in
 // the page tables' share class; same treatment again, re-applied when
 // page_assets exists (the one migration creates both). Its body is
 // idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const pageAssetsMigrationVersion = 161
+const pageAssetsMigrationVersion = 164
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
@@ -401,7 +428,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts, hasOfficerPublicBranches, hasPluginChiefInstructions, hasChiefSessionLLMUsage, hasFleetOwnerMarks, hasOfficerConnectorBlocks, hasOfficerSeen, hasPageAssets bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts, hasOfficerPublicBranches, hasPluginChiefInstructions, hasChiefSessionLLMUsage, hasFleetOwnerMarks, hasOfficerConnectorBlocks, hasOfficerSeen, hasOfficerCapRaises, hasFleetActions, hasOfficerChatCards, hasMorningReports, hasPageAssets bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -463,8 +490,12 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.fleet_owner_marks') IS NOT NULL,
 		to_regclass('public.officer_connector_blocks') IS NOT NULL,
 		to_regclass('public.officer_seen') IS NOT NULL,
+		to_regclass('public.officer_cap_raises') IS NOT NULL,
+		to_regclass('public.fleet_actions') IS NOT NULL,
+		to_regclass('public.officer_chat_cards') IS NOT NULL,
+		to_regclass('public.morning_reports') IS NOT NULL,
 		to_regclass('public.page_assets') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks, &hasOfficerSeen, &hasPageAssets); err != nil {
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks, &hasOfficerSeen, &hasOfficerCapRaises, &hasFleetActions, &hasOfficerChatCards, &hasMorningReports, &hasPageAssets); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -527,6 +558,10 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == fleetOwnerMarksMigrationVersion && hasFleetOwnerMarks) &&
 			!(m.version == officerConnectorBlocksMigrationVersion && hasOfficerConnectorBlocks) &&
 			!(m.version == officerSeenMigrationVersion && hasOfficerSeen) &&
+			!(m.version == officerCapRaisesMigrationVersion && hasOfficerCapRaises) &&
+			!(m.version == fleetActionsMigrationVersion && hasFleetActions) &&
+			!(m.version == officerChatCardsMigrationVersion && hasOfficerChatCards) &&
+			!(m.version == morningReportsMigrationVersion && hasMorningReports) &&
 			!(m.version == pageAssetsMigrationVersion && hasPageAssets) {
 			continue
 		}

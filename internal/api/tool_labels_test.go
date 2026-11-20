@@ -37,6 +37,7 @@ var agentToolDefFuncs = map[string]func() []agents.ToolDef{
 	"connectorToolDefs":        connectorToolDefs,
 	"endSessionToolDef":        func() []agents.ToolDef { return []agents.ToolDef{endSessionToolDef()} },
 	"fleetReportToolDef":       func() []agents.ToolDef { return []agents.ToolDef{fleetReportToolDef()} },
+	"fleetWriteToolDefs":       fleetWriteToolDefs,
 	"flowToolDefs":             flowToolDefs,
 	"focusToolDefs":            func() []agents.ToolDef { return append(focusToolDefs(true), focusToolDefs(false)...) },
 	"gatedTaskToolDef":         func() []agents.ToolDef { return []agents.ToolDef{gatedTaskToolDef()} },

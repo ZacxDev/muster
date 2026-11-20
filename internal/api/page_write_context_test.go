@@ -7,12 +7,10 @@ import (
 	"time"
 )
 
-// withPageWriteTimes shrinks the page-write bounds for one test.
-func withPageWriteTimes(t *testing.T, timeout, grace time.Duration) {
-	t.Helper()
-	oldTimeout, oldGrace := terminalWriteTimeout, pageWriteGrace
-	terminalWriteTimeout, pageWriteGrace = timeout, grace
-	t.Cleanup(func() { terminalWriteTimeout, pageWriteGrace = oldTimeout, oldGrace })
+// pageWriteTimes is a context whose page writes have these bounds: the
+// test's own, on its own context (socketSettings), not the process's.
+func pageWriteTimes(timeout, grace time.Duration) context.Context {
+	return withSocketSettings(context.Background(), &socketSettings{bound: timeout, grace: grace})
 }
 
 // endsWithin waits for ctx to end and reports how long that took, failing the
@@ -35,9 +33,7 @@ func endsWithin(t *testing.T, ctx context.Context, limit time.Duration, what str
 // coder/websocket cutting the socket — and ends within the grace.
 func TestAPageWriteOutlivesItsStreamByTheGraceOnly(t *testing.T) {
 	const grace = 300 * time.Millisecond
-	withPageWriteTimes(t, time.Hour, grace)
-
-	stream, end := context.WithCancel(context.Background())
+	stream, end := context.WithCancel(pageWriteTimes(time.Hour, grace))
 	wctx, cancel := pageWriteContext(stream)
 	defer cancel()
 	end()
@@ -64,8 +60,7 @@ func TestAPageWriteOutlivesItsStreamByTheGraceOnly(t *testing.T) {
 // write's context ends at terminalWriteTimeout (a stalled page), as a deadline.
 func TestAPageWriteIsBoundedByTheWriteTimeout(t *testing.T) {
 	const timeout = 200 * time.Millisecond
-	withPageWriteTimes(t, timeout, time.Hour)
-	wctx, cancel := pageWriteContext(context.Background())
+	wctx, cancel := pageWriteContext(pageWriteTimes(timeout, time.Hour))
 	defer cancel()
 	endsWithin(t, wctx, timeout+500*time.Millisecond, "a live stream")
 	if !errors.Is(wctx.Err(), context.DeadlineExceeded) {
@@ -78,8 +73,7 @@ func TestAPageWriteIsBoundedByTheWriteTimeout(t *testing.T) {
 // and still reads as DeadlineExceeded, not as a cancellation.
 func TestAPageWriteHonoursTheCallersDeadline(t *testing.T) {
 	const deadline = 150 * time.Millisecond
-	withPageWriteTimes(t, time.Hour, time.Hour)
-	caller, ccancel := context.WithTimeout(context.Background(), deadline)
+	caller, ccancel := context.WithTimeout(pageWriteTimes(time.Hour, time.Hour), deadline)
 	defer ccancel()
 	wctx, cancel := pageWriteContext(caller)
 	defer cancel()

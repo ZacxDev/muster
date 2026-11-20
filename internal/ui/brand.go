@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/url"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -41,7 +42,8 @@ func (b Brand) HasLogo() bool { return b.ETag != "" }
 
 // DrawsName reports whether the name is drawn as text beside the logo: a name
 // is set, and no logo that already spells it (LogoShowsName) is. The one rule
-// for the header, the sidebar and the sign-in page.
+// for the header and the sign-in page (the sidebar draws the logo alone, as
+// the server switcher's button: server_switcher.go serverPicture).
 func (b Brand) DrawsName() bool {
 	return b.Name != "" && !(b.HasLogo() && b.LogoShowsName)
 }
@@ -61,6 +63,20 @@ func (b Brand) LogoAlt() string {
 // document all use it.
 func (b Brand) Versioned(path string) string { return path + "?v=" + url.QueryEscape(b.ETag) }
 
+// muster's own mark, as the pages draw it when no logo is set, is the brand
+// pack's files (docs/brand.md), rendered or copied into web/static/icons/ by
+// `make icons` and held to the pack by internal/api's brand asset tests:
+// lockup-horizontal.svg (the header, the sign-in page),
+// favicon.svg (the tab, and the sidebar server switcher's square mark) and favicon-32.png (the tab), icon-192.png (a large favicon
+// slot, and Web Push) and apple-touch-icon.png (180 px). Each is spelled at
+// its one use as web.Asset("/static/…"), the form
+// TestEveryStaticPathInTheViewsGoesThroughWebAsset reads.
+
+// lockupWidth and lockupHeight are the lockup's viewBox, rounded: the <img>'s
+// width and height, so the browser reserves its box before the file loads and
+// the header does not shift.
+const lockupWidth, lockupHeight = "350", "74"
+
 // Icon192 is the 192 px icon a page links: the logo's, or muster's own.
 func (b Brand) Icon192() string {
 	if b.HasLogo() {
@@ -69,11 +85,31 @@ func (b Brand) Icon192() string {
 	return web.Asset("/static/icons/icon-192.png")
 }
 
-// brandMark is the header's and the sidebar's brand: the logo, then the name,
+// lockup is muster's own mark and wordmark as one image. The image is an
+// outline drawing (no live text), so its accessible name is the alt text.
+func lockup(class string) g.Node {
+	return Img(g.Attr("data-brand-mark", ""), Src(web.Asset("/static/icons/lockup-horizontal.svg")), Alt("muster"),
+		Width(lockupWidth), Height(lockupHeight), Class(class))
+}
+
+// LockupHTML is the lockup as a raw string, for internal/api's hand-written
+// sign-in pages: the same <img> the header draws, at the sign-in size.
+func LockupHTML() string {
+	var sb strings.Builder
+	_ = lockup("h-12 w-auto").Render(&sb)
+	return sb.String()
+}
+
+// drawsLockup: no logo and no name is set, so brandMark draws muster's own
+// lockup (wordmark). One predicate for brandMark, headerMarkClass and the
+// server switcher's picture (serverPicture).
+func (b Brand) drawsLockup() bool { return !b.HasLogo() && b.Name == "" }
+
+// brandMark is the header's brand: the logo, then the name,
 // each when set — the logo alone when it already shows the name
 // (Brand.DrawsName) — and the wordmark when neither is set.
 func brandMark(b Brand) g.Node {
-	if !b.HasLogo() && b.Name == "" {
+	if b.drawsLockup() {
 		return wordmark()
 	}
 	return g.Group{
@@ -85,9 +121,23 @@ func brandMark(b Brand) g.Node {
 
 // brandIconLinks is a document's favicon and touch icon: the logo's icon when
 // one is set, muster's otherwise.
+//
+// 🔴 muster's SVG AND 32 px FAVICONS ARE LINKED ONLY WHILE NO LOGO IS SET. A
+// browser picks the icon that suits the slot (an SVG first, where it draws
+// one), so a branded page that still linked them would show muster's mark in
+// the tab beside the logo's 192 px icon. The 192 px link stays first: it is
+// the one every caller reads as "the page's icon".
 func brandIconLinks(b Brand) g.Node {
+	if b.HasLogo() {
+		return g.Group{
+			Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href(b.Icon192())),
+			Link(Rel("apple-touch-icon"), Href(b.Icon192())),
+		}
+	}
 	return g.Group{
 		Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href(b.Icon192())),
-		Link(Rel("apple-touch-icon"), Href(b.Icon192())),
+		Link(Rel("icon"), g.Attr("type", "image/svg+xml"), g.Attr("sizes", "any"), Href(web.Asset("/static/icons/favicon.svg"))),
+		Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "32x32"), Href(web.Asset("/static/icons/favicon-32.png"))),
+		Link(Rel("apple-touch-icon"), g.Attr("sizes", "180x180"), Href(web.Asset("/static/icons/apple-touch-icon.png"))),
 	}
 }

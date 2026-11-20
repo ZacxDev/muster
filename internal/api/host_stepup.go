@@ -63,7 +63,9 @@ import (
 // What is NOT gated: the owner deciding in muster's own web UI (the Reply
 // drafts tab, Connectors, Attention), which is the owner's signed-in browser;
 // any machine mirrored HERE with no host officer declared on it that does not
-// start agents for the chief; the read tools.
+// start agents for the chief; the read tools; and chief_restart, on every
+// machine, force included (operator decision "fully ungated"; its accepted
+// risk is stated at its entry in hostStepUpExempt).
 // ---------------------------------------------------------------------------
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
@@ -75,7 +77,6 @@ var hostStepUpTools = map[string]string{
 	connectorRequestDecideTool:    "decide an agent's connector request as you",
 	pluginDraftDecideTool:         "approve or reject a reply or outbound draft as you",
 	agentDestroyTool:              "destroy one of your agents",
-	chiefRestartTool:              "restart your chief",
 	dispatchApproveTool:           "approve a held agent start as you",
 	routeReplyToolName:            "answer a routed message (which may be relayed to its sender) as you",
 	pluginMessageRouteTool:        "route a plugin message as you",
@@ -105,13 +106,25 @@ var hostStepUpExempt = map[string]string{
 	pageGetTool:                "a read",
 	pageListTool:               "a read",
 	agentReportDoneTool:        "the session's own dispatch",
+	// chief_restart is exempt BY DECISION (operator decision "fully
+	// ungated"): the owner wants a mirrored session to restart their chief
+	// without a phone confirmation. 🔴 THE ACCEPTED RISK: on a machine this
+	// gate covers, any process of the machine's user — an agent muster started
+	// there for the chief included, by naming the owner's pane — can now
+	// restart the owner's chief, and force cuts off a turn the chief is in. The
+	// worst outcome is an interrupted chief turn: no data is lost, no other
+	// agent is touched (the tool resolves only the owner's own chief), and it
+	// is what the web Stop/Start already allows with a session alone. A
+	// session the server recorded as a host dispatch is still refused by the
+	// tool itself (ownersOwnSession).
+	chiefRestartTool: "restarts only the owner's own chief (Stop then Start); the worst outcome is an interrupted chief turn, as the web Stop/Start, which is not step-up gated either",
 	// track_task is exempt BY DECISION, not by default: it is no owner
 	// authority. It writes only the declaration of the session the call is
 	// bound to (no subject argument), which every reader treats as untrusted
 	// data; on a host-officer machine a header-named caller can therefore only
 	// mislabel that one session's tasks, never act as the owner.
 	trackTaskTool:             "the session's own declared tasks (untrusted data; no owner authority)",
-	pageShareRequestTool:      "asks the owner for a link (their tap decides)",
+	pageShareRequestTool:      "on a machine this gate covers it always asks the owner for a link, whatever their pages setting says (pageShareGoesLive), so their tap decides",
 	pageResponsesTool:         "a read of the session's own page",
 	pageLinkRevokeTool:        "revokes a link of the session's own page",
 	pageAssetUploadTool:       "an image or video for the session's own page (shown once a version of it uses it)",
@@ -293,6 +306,20 @@ const (
 	hostDecisionRefuse  = "Refuse"
 )
 
+// stepUpCoverage is THE ONE PREDICATE for whether the step-up gate covers a
+// call from c on host: the machine runs a host officer (ids), c is a remote
+// caller, or the machine starts agents for the chief (spawn, why). The gate
+// and page_share_request (pageShareGoesLive) both read it.
+func (s *Server) stepUpCoverage(ctx context.Context, host string, c toolCaller) (ids []string, spawn string, covered bool) {
+	p, _ := authz.From(ctx)
+	ids = s.hostOfficersOnMachine(ctx, p.UserID, host)
+	if len(ids) > 0 || c.remote {
+		return ids, "", true
+	}
+	spawn = s.hostSpawnStepUp(ctx, host)
+	return ids, spawn, spawn != ""
+}
+
 // hostStepUpGate is the mirror door's gate, run on every call after the host
 // instance rule: an owner-authority tool from a machine that runs a host
 // officer, from a machine that starts agents for the chief (hostSpawnStepUp),
@@ -311,12 +338,11 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	if why := s.ownersOwnSession(ctx, c); why == ownerAuthoritySpawned {
 		return toolErr("%s", why), true
 	}
-	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
-	spawn := ""
+	ids, spawn, covered := s.stepUpCoverage(ctx, host, c)
+	if !covered {
+		return "", false
+	}
 	if len(ids) == 0 && !c.remote {
-		if spawn = s.hostSpawnStepUp(ctx, host); spawn == "" {
-			return "", false
-		}
 		// The one carve-out on a machine that only starts agents: a reply to a
 		// route the chief sent to THIS session (operator decision).
 		if name == routeReplyToolName && s.routeReplyToItsOwnSession(ctx, c, args) {
@@ -454,10 +480,7 @@ const stepUpTeamRefusal = "step-up: a team has no phone, and a team host files n
 // door would have, for caller c of host. ONLY hostDecisionForAnswer calls it
 // (TestTheStepUpGateIsALedger).
 func (s *Server) runStepUpTool(ctx context.Context, host string, c toolCaller, name, args string) string {
-	switch name {
-	case chiefRestartTool:
-		return s.toolChiefRestart(ctx, c, args)
-	case routeReplyToolName:
+	if name == routeReplyToolName {
 		return s.toolRouteReply(ctx, c, args)
 	}
 	if text, ok := s.dispatchPluginMessageRouteTool(ctx, c, name, args); ok {

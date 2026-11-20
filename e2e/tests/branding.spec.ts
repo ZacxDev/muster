@@ -21,7 +21,7 @@ import {
 //    icons are the logo's; the sign-in page, opened with no session, draws the
 //    logo and name; GET /api/instance names both. An SVG upload is refused
 //    and the page says why. Reset logo, then an empty name, restore every
-//    default: the wordmark, muster's favicon and its manifest icons.
+//    default: muster's lockup, its favicon and its manifest icons.
 // 2. A MEMBER (gotrue mode, the real GoTrue) has no branding section on their
 //    Account page, and the write route refuses them.
 //
@@ -130,7 +130,9 @@ const pixel = (page: Page, url: string, x: number, y: number) =>
 const loaded = (page: Page, sel: string) =>
   page.locator(sel).first().evaluate((el) => (el as HTMLImageElement).complete && (el as HTMLImageElement).naturalWidth > 0);
 
-const iconHref = (page: Page) => page.locator('link[rel="icon"]').getAttribute('href');
+// The page's first favicon: the 192 px one, the logo's or muster's. With no
+// logo, muster's SVG and 32 px favicons follow it; with one, they are absent.
+const iconHref = (page: Page) => page.locator('link[rel="icon"]').first().getAttribute('href');
 
 test.describe('the admin', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
@@ -149,10 +151,11 @@ test.describe('the admin', () => {
     test.setTimeout(90_000);
     await signIn(page, origin);
 
-    // Nothing set: the wordmark, muster's icons.
+    // Nothing set: muster's lockup, muster's icons.
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]')).toHaveCount(0);
     expect(await iconHref(page)).toContain('/static/icons/icon-192.png');
+    await expect(page.locator('link[rel="icon"][type="image/svg+xml"]')).toHaveCount(1);
 
     await page.goto(origin + '/account');
     const section = page.locator('[data-testid="branding"]');
@@ -190,10 +193,28 @@ test.describe('the admin', () => {
     expect(await logo.getAttribute('src')).toBe('/brand/logo.png?v=' + etag);
     expect(await loaded(page, 'header [data-brand-logo]')).toBe(true);
     await expect(page.locator('header [data-brand-name]').first()).toHaveText('Team Example');
+    // The sidebar draws the logo alone, as the server switcher's button: no
+    // name on screen (the button is named for it), the monogram hidden.
     await expect(page.locator('#sidebar [data-brand-logo]')).toHaveCount(1);
+    const toggle = page.locator('#server-switcher-toggle');
+    await expect(toggle.locator('[data-brand-logo]')).toBeVisible();
+    expect(await loaded(page, '#server-switcher-toggle [data-brand-logo]')).toBe(true);
+    await expect(toggle.locator('[data-server-monogram]')).toBeHidden();
+    await expect(toggle.locator('[data-server-dot]')).toHaveCount(0);
+    await expect(toggle).toHaveAccessibleName('Switch server, current: Team Example');
+    expect((await toggle.innerText()).trim()).toBe('');
+    // A logo that fails to load gives way to the monogram ("TE").
+    await page.route('**/brand/logo.png*', (r) => r.abort());
+    await page.reload();
+    await expect(toggle.locator('[data-brand-logo]')).toBeHidden();
+    await expect(toggle.locator('[data-server-monogram]')).toBeVisible();
+    await expect(toggle.locator('[data-server-monogram]')).toHaveText('TE');
+    await page.unroute('**/brand/logo.png*');
+    await page.reload();
     // The favicon and touch icon are the logo's.
     expect(await iconHref(page)).toBe('/brand/icon-192.png?v=' + etag);
     expect(await page.locator('link[rel="apple-touch-icon"]').getAttribute('href')).toBe('/brand/icon-192.png?v=' + etag);
+    await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
     // The manifest's icons are the logo's.
     const manifest = await (await page.request.get(origin + '/manifest.webmanifest')).json();
     expect(manifest.icons.map((i: { src: string }) => i.src)).toEqual(['/brand/icon-192.png?v=' + etag, '/brand/icon-512.png?v=' + etag]);
@@ -224,7 +245,10 @@ test.describe('the admin', () => {
     await expect(page.locator('#branding-logo-shows-name')).toBeChecked();
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]').first()).toHaveAttribute('alt', 'Team Example');
-    await expect(page.locator('#sidebar [data-brand-logo]')).toHaveAttribute('alt', 'Team Example');
+    // The sidebar's logo is the server switcher's button, named by its
+    // aria-label: its own alt is empty.
+    await expect(page.locator('#sidebar [data-brand-logo]')).toHaveAttribute('alt', '');
+    await expect(page.locator('#server-switcher-toggle')).toHaveAccessibleName('Switch server, current: Team Example');
     await expect(page.locator('[data-brand-name]')).toHaveCount(0);
     expect((await (await page.request.get(origin + '/api/instance')).json()).name).toBe('Team Example');
     const anon2 = await browser.newContext({ storageState: { cookies: [], origins: [] } });
@@ -271,19 +295,65 @@ test.describe('the admin', () => {
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]')).toHaveCount(0);
     await expect(page.locator('header [data-brand-name]').first()).toHaveText('Team Example');
+    // A name and no logo: the switcher's button is the name's monogram.
+    await expect(page.locator('#server-switcher-toggle [data-server-monogram]')).toBeVisible();
+    await expect(page.locator('#server-switcher-toggle [data-server-monogram]')).toHaveText('TE');
+    await expect(page.locator('#server-switcher-toggle img')).toHaveCount(0);
     expect(await iconHref(page)).toContain('/static/icons/icon-192.png');
     expect((await page.request.get(origin + '/brand/logo.png')).status()).toBe(404);
 
-    // Clear the name: the wordmark is back, and the manifest is muster's own.
+    // Clear the name: muster's lockup is back, and the manifest is muster's own.
     await page.goto(origin + '/account');
     await page.fill('#branding-name', '');
     await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-name]')).toHaveCount(0);
-    await expect(page.locator('header a[aria-label="muster home"]').first()).toHaveText('muster');
+    await expect(page.locator('header a[aria-label="muster home"] img[data-brand-mark]').first()).toBeVisible();
     const after = await (await page.request.get(origin + '/manifest.webmanifest')).json();
     expect(after.icons.map((i: { src: string }) => i.src)).toContain('/static/icons/maskable-512.png');
     expect(await (await page.request.get(origin + '/api/instance')).json()).toEqual({ name: null, logo: null });
+  });
+
+  // A WIDE logo (6:1) on a 375 px phone: the logo shrinks inside the server
+  // switcher's button, so the chevron is drawn inside the button's box (its
+  // hover and focus ring) and the button inside the row. 🔴 REGRESSION TEST:
+  // before, the logo kept its 8rem and pushed the chevron out of the button.
+  test('a wide logo at 375 px: the switcher button holds its chevron', async ({ page }) => {
+    await signIn(page, origin);
+    await page.goto(origin + '/account');
+    await page.fill('#branding-name', 'Team Example');
+    await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: makePNG(600, 100) });
+    await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    try {
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.goto(origin + '/tasks');
+      await page.locator('#sidebar-open').click();
+      await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+      const toggle = page.locator('#server-switcher-toggle');
+      await expect(toggle.locator('[data-brand-logo]')).toBeVisible();
+      expect(await loaded(page, '#server-switcher-toggle [data-brand-logo]')).toBe(true);
+      await page.waitForTimeout(400); // the slide-out's transition
+      const btn = (await toggle.boundingBox())!;
+      const chev = (await toggle.locator('svg').boundingBox())!;
+      const logo = (await toggle.locator('[data-brand-logo]').boundingBox())!;
+      const row = (await page.locator('#server-switcher > div').first().boundingBox())!;
+      const inside = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+        a.x >= b.x - 0.5 && a.y >= b.y - 0.5 && a.x + a.width <= b.x + b.width + 0.5 && a.y + a.height <= b.y + b.height + 0.5;
+      expect(inside(chev, btn), `chevron ${JSON.stringify(chev)} inside button ${JSON.stringify(btn)}`).toBe(true);
+      expect(inside(logo, btn), `logo ${JSON.stringify(logo)} inside button ${JSON.stringify(btn)}`).toBe(true);
+      expect(inside(btn, row), `button ${JSON.stringify(btn)} inside row ${JSON.stringify(row)}`).toBe(true);
+      // Search and close stay on screen, beside it.
+      for (const sel of ['#sidebar-search', '#sidebar-close']) {
+        const b = (await page.locator(sel).boundingBox())!;
+        expect(b.x, sel).toBeGreaterThanOrEqual(btn.x + btn.width);
+        expect(inside(b, row), sel).toBe(true);
+      }
+    } finally {
+      await page.goto(origin + '/account');
+      await Promise.all([page.waitForURL(origin + '/account?branding=reset#branding'), page.click('#branding-reset')]);
+      await page.fill('#branding-name', '');
+      await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    }
   });
 });
 
@@ -357,7 +427,7 @@ test.describe('a member', () => {
     // The control: this IS the member's Account page.
     await expect(page.getByRole('heading', { name: 'Account', exact: true })).toBeVisible();
     await expect(page.locator('[data-testid="branding"]')).toHaveCount(0);
-    await expect(page.getByText('Instance branding')).toHaveCount(0);
+    await expect(page.getByText('Server name and logo')).toHaveCount(0);
 
     // The route refuses the member's own session from muster's own origin.
     const put = await page.request.fetch(browserURL + '/api/instance/branding', {

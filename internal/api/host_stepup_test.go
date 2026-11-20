@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -114,12 +115,31 @@ func TestEveryMirrorToolIsClassifiedForTheStepUp(t *testing.T) {
 	if names < 25 {
 		t.Fatalf("instrument check FAILED: %d tool names classified", names)
 	}
-	// The gated set, pinned exactly: a change is a decision.
-	want := []string{agentDestroyTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool, dispatchApproveTool,
+	// The gated set, pinned exactly: a change is a decision. chief_restart
+	// left it (operator decision "fully ungated").
+	want := []string{agentDestroyTool, attentionAnswerTool, connectorRequestDecideTool, dispatchApproveTool,
 		pluginDraftDecideTool, pluginMessageRouteTool, routeReplyToolName, pluginRequestDecideTool, pluginOutboundBatchDecideTool}
 	slices.Sort(want)
 	if got := hostStepUpToolNames(); !slices.Equal(got, want) {
-		t.Fatalf("the gated set = %v, want %v", got, want)
+		t.Errorf("the gated set = %v, want %v", got, want)
+	}
+	// The exempt set, pinned exactly too, so a tool moved between the two
+	// fails here from either side.
+	exemptWant := []string{agentReportDoneTool, agentsListTool, attentionAskTool, attentionCancelTool, attentionWaitTool,
+		chiefAskTool, chiefRestartTool, "connector_request", "connector_status", "connectors_list", connectorRequestsListTool,
+		dispatchRequestTool, internalHTTPToolName, notifyOwnerTool, officers.ToolAskPerson, officers.ToolBrief, officers.ToolClaim,
+		officers.ToolComplete, officers.ToolContactGet, officers.ToolContactNote, officers.ToolContactsList, officers.ToolHeartbeat,
+		officers.ToolItems, officers.ToolPostDraft, officers.ToolRelease, pageAssetDeleteTool, pageAssetUploadTool, pageCreateTool, pageGetTool, pageLinkRevokeTool,
+		pageListTool, pageResponsesTool, pageShareRequestTool, pageUpdateTool, pluginDraftsListTool, pluginMessagesListTool,
+		pluginOutboundBatchGetTool, pluginRequestsListTool, postgresQueryToolName, taskCommentTool, taskGetTool,
+		taskSetStatusTool, tasksListTool, trackTaskTool}
+	slices.Sort(exemptWant)
+	if got := slices.Sorted(maps.Keys(hostStepUpExempt)); !slices.Equal(got, exemptWant) {
+		t.Errorf("the exempt set = %v\nwant %v", got, exemptWant)
+	}
+	// chief_restart's exemption states its decision and its accepted risk.
+	if why := hostStepUpExempt[chiefRestartTool]; !strings.Contains(why, "interrupted chief turn") {
+		t.Errorf("chief_restart's exemption reason %q does not state its accepted risk", why)
 	}
 }
 

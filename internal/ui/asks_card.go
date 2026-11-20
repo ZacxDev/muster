@@ -23,7 +23,7 @@ import (
 //   - the QUESTION (or what the session waits on), clamped to four lines while
 //     the card is collapsed;
 //   - the CONTEXT slot ("why it's here") and the MEDIA slot (internal/api
-//     asksCardContextSlot / asksCardMediaSlot: the seam the ask-attachments
+//     asksCardContextRow / asksCardMediaSlot: the seam the ask-attachments
 //     work fills);
 //   - its CONTROLS: the option buttons, the suggested-reply chips, the answer
 //     box with its microphone and Answer;
@@ -199,24 +199,7 @@ var asksFeedScriptSrc = staticJS("asks-feed", asksFeedJS)
 // not include it.
 func AsksFeedScriptHTML() string { return nodeString(staticScript(asksFeedScriptSrc)) }
 
-// AsksSwipeMinPx is the least horizontal travel that switches a tab (the
-// larger of it and AsksSwipeMinFrac of the feed's width).
-const (
-	AsksSwipeMinPx   = 60
-	AsksSwipeMinFrac = 0.18
-	// AsksSwipeLockPx is how far a finger moves before the gesture is locked
-	// to one axis; AsksSwipeRatio how much more sideways than vertical it
-	// must be to lock horizontal. A vertical lock never switches a tab.
-	AsksSwipeLockPx = 10
-	AsksSwipeRatio  = 1.2
-	// AsksSwipeEdgePx is the sidebar's open-swipe edge (components.go
-	// SB_EDGE): a gesture starting inside it is the sidebar's, never a tab's.
-	AsksSwipeEdgePx = 28
-	// AsksSwipeMaxScale: with the page pinch-zoomed past this
-	// (visualViewport.scale), a sideways drag is the browser's pan, never a
-	// tab swipe.
-	AsksSwipeMaxScale = 1.01
-)
+// The swipe's thresholds are the shared tab swipe's (tab_swipe.go).
 
 // AsksLeaveFallbackMs is how long a leaving card waits for its collapse's
 // transitionend before it counts the collapse as played (a transition the
@@ -275,10 +258,8 @@ const AsksFeedNoticeHTML = `<p id="asks-feed-notice" role="alert" class="` + Ask
 //   - KEYBOARD (desktop): j/k or ↓/↑ (↓/↑ only from a card) move focus between
 //     cards, Enter expands, a focuses the answer box, d dictates, Esc
 //     collapses (or leaves the answer box for its card).
-//   - SWIPE: a horizontal swipe on the feed area switches tabs — locked to an
-//     axis after AsksSwipeLockPx, so a vertical scroll never does; ignored when
-//     it starts in a field, the answer box, media, anything that scrolls
-//     sideways, the sidebar's edge, or with text selected.
+//   - SWIPE: a horizontal swipe on the feed area switches tabs: the shared
+//     tab swipe (tab_swipe.go), the feed area its [data-tab-swipe].
 //   - TAB SLIDE: every tab change slides the new panel in from the side it
 //     came from (data-asks-slide; CSS).
 var asksFeedJS = `(function () {
@@ -643,51 +624,7 @@ var asksFeedJS = `(function () {
   else { watchTabs(); remember(); }
   document.addEventListener('htmx:load', function () { watchTabs(); remember(); });
 
-  // THE SWIPE: sideways on the feed area moves one tab, in its direction.
-  var sw = null;
-  function zoomed() { var v = window.visualViewport; return !!(v && v.scale > ` + strconv.FormatFloat(AsksSwipeMaxScale, 'f', -1, 64) + `); }
-  function ownsSideways(t) {
-    for (var el = t; el && el.nodeType === 1 && el !== document.body; el = el.parentElement) {
-      if (el.hasAttribute('data-own-swipe')) return true;
-      if (el.scrollWidth > el.clientWidth + 1) { var ox = getComputedStyle(el).overflowX; if (ox === 'auto' || ox === 'scroll') return true; }
-    }
-    return false;
-  }
-  document.addEventListener('touchstart', function (e) {
-    sw = null;
-    if (!e.touches || e.touches.length !== 1) return;
-    var t = e.target, area = t && t.closest && t.closest('[data-asks-swipe]');
-    if (!area) return;
-    var x = e.touches[0].clientX, y = e.touches[0].clientY;
-    if (x <= ` + strconv.Itoa(AsksSwipeEdgePx) + `) return;
-    // Pinch-zoomed in: a sideways drag pans the zoomed page (touch-action is
-    // left to the browser), never a tab swipe. Checked when the finger lands:
-    // a pinch DURING a drag is two touches, which already ends the swipe.
-    if (zoomed()) return;
-    if (t.closest('input,textarea,select,[contenteditable],[data-asks-media],[data-asks-answer-row],[data-own-swipe]')) return;
-    if (ownsSideways(t)) return;
-    var s = window.getSelection && String(window.getSelection());
-    if (s) return;
-    sw = { x: x, y: y, lock: '', area: area };
-  }, { passive: true });
-  document.addEventListener('touchmove', function (e) {
-    if (!sw || !e.touches || !e.touches.length) return;
-    var dx = e.touches[0].clientX - sw.x, dy = e.touches[0].clientY - sw.y;
-    if (!sw.lock && (Math.abs(dx) > ` + strconv.Itoa(AsksSwipeLockPx) + ` || Math.abs(dy) > ` + strconv.Itoa(AsksSwipeLockPx) + `)) {
-      sw.lock = Math.abs(dx) > Math.abs(dy) * ` + strconv.FormatFloat(AsksSwipeRatio, 'f', -1, 64) + ` ? 'x' : 'y';
-    }
-    sw.dx = dx;
-  }, { passive: true });
-  function endSwipe() {
-    var s = sw; sw = null;
-    if (!s || s.lock !== 'x') return;
-    var w = s.area.clientWidth || window.innerWidth;
-    if (Math.abs(s.dx || 0) < Math.max(` + strconv.Itoa(AsksSwipeMinPx) + `, w * ` + strconv.FormatFloat(AsksSwipeMinFrac, 'f', -1, 64) + `)) return;
-    var ts = tabs(), i = selIndex(), n = i + (s.dx < 0 ? 1 : -1);
-    if (i < 0 || n < 0 || n >= ts.length) return;
-    ts[n].click();
-  }
-  document.addEventListener('touchend', endSwipe, { passive: true });
-  document.addEventListener('touchcancel', function () { sw = null; }, { passive: true });
+  // THE SWIPE is the shared tab swipe's (tab_swipe.go): the feed area is
+  // its [data-tab-swipe] over #asks-tabs.
 })();
 `

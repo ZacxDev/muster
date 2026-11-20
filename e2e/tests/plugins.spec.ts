@@ -165,9 +165,9 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await expect(page.locator('input#minted-plugin-token')).toHaveCount(0);
   const token = (await page.locator('#minted-plugin-token').innerText()).trim();
   expect(token).toMatch(/^mpl_[A-Za-z0-9_-]{43}$/);
-  await expect(page.locator('[data-plugin-id]').filter({ hasText: 'example-inbox' })).toContainText('scope example-inbox');
+  await expect(page.locator('[data-plugin-id]').filter({ hasText: 'example-inbox' })).toContainText('Notes topic: example-inbox');
   // Each card says where its messages go, in text.
-  await expect(page.locator('[data-plugin-delivers-to]').first()).toContainText(/Delivers to (your chief|officer:)/);
+  await expect(page.locator('[data-plugin-delivers-to]').first()).toContainText(/Delivers to (your chief|[A-Z])/);
   plugin = await pwRequest.newContext({ baseURL: machineURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
 
   // 2. NEGATIVE CONTROL: the shared hook token is not a plugin credential.
