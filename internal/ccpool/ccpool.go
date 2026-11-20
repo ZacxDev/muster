@@ -154,7 +154,9 @@ const (
 //     cctranscript.IsLimitText, or the pane shows the usage-limit menu); or
 //   - its status is 409: ccd answers rate_limited with a 409 only for a pane
 //     parked on the usage-limit menu (cmd/ccd limitMenuFailure), and has done
-//     so since before the mark existed.
+//     so since before the mark existed. (The gateway still marks nothing for
+//     such a 409 when the pane has been parked since before a newer live
+//     reading showed the account usable: internal/limitpark.)
 //
 // Any other rate_limited — a transient request rate limit (a 429 the CLI codes
 // rate_limit exactly like a usage limit) — is "": it marks nothing and moves
@@ -313,6 +315,15 @@ func (p *Pool) markScope(ctx context.Context, owner int64) (context.Context, int
 		return ctx, owner
 	}
 	return authz.System(ctx), to
+}
+
+// MarksOwner is the owner the marks of owner's accounts are kept under
+// ([Pool.markScope]): owner itself, or the shared pool's marks owner. The
+// usage poller reads and saves the pool's accounts as that owner too, so it is
+// how a reading and an agent's account are matched (internal/limitpark).
+func (p *Pool) MarksOwner(ctx context.Context, owner int64) int64 {
+	_, o := p.markScope(ctx, owner)
+	return o
 }
 
 // marks is the marks of owner's accounts, read where [Pool.markScope] says.

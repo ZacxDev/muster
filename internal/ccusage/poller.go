@@ -267,6 +267,12 @@ type Poller struct {
 	Interval time.Duration
 	Logger   *log.Logger
 	Now      func() time.Time
+	// Reading, when set, is told each GOOD live reading a pass takes (no
+	// ErrorKind, taken by this attempt), with the detail of the account's
+	// rate-limit mark as read before it ("" when not cooling): internal/
+	// limitpark, which tells a pane still on an old usage-limit menu from a
+	// live limit by it. It must not block.
+	Reading func(ctx context.Context, owner int64, account string, row Row, markDetail string)
 	// AfterPass, when set, runs once after each pass (Run), whether or not the
 	// pass read anything: the usage pusher (Pusher.PushAfterPass,
 	// MUSTER_CC_USAGE_PUSH_URL). It runs in the poll loop, so one cycle makes
@@ -390,6 +396,9 @@ func (p *Poller) Pass(ctx context.Context) error {
 			continue
 		}
 		p.clearIfUsable(ctx, owner, n, cd, row, now)
+		if p.Reading != nil && row.ErrorKind == "" && row.ReadAt.Equal(now) {
+			p.Reading(ctx, owner, n, row, cd.Detail)
+		}
 		if row.ErrorKind != before.ErrorKind || row.Error != before.Error {
 			if row.ErrorKind == "" {
 				p.logf("ccusage: account %s: reading again (%s)", n, row.Source)

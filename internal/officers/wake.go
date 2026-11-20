@@ -78,6 +78,18 @@ type InstanceState struct {
 	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
 	// instance and not yet delivered. Such an instance is not re-prompted.
 	PromptPending bool
+	// LimitParked is why the instance's pane is on a STALE usage-limit menu
+	// ("" when it is not): ccd refuses its turns from the CLI's limit menu,
+	// it has been parked there since before a newer live reading showed its
+	// account usable, and it was still seen there after that reading
+	// (internal/limitpark Board.Stuck). The loop restarts such an instance
+	// (restartLimitParked): nothing else ends the menu.
+	LimitParked string
+	// LimitHeld is why the instance is stuck on a stale menu but NOT to be
+	// restarted again today (limitpark.MaxRestartsPerDay, the backstop): the
+	// loop logs it once that UTC day and leaves it; its refusals mark the
+	// account again. "" when not held. Never set with LimitParked.
+	LimitHeld string
 	// Spent, for an instance of a fresh_session_per_item pool: its current
 	// conversation has claimed its one item (Officer.FreshSessionPerItem).
 	// Held by no live claim, it is done with that item however the hold
@@ -826,6 +838,9 @@ type officerState struct {
 	// (startReason). Cleared when it starts; a restart of muster forgets it,
 	// and the fleet's own reason then speaks.
 	scaledDown map[string]string
+	// limitHeldLogged is the UTC day each instance's hold at the limit
+	// restarts' backstop was last logged (restartLimitParked), by agent name.
+	limitHeldLogged map[string]string
 	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
 	// logged (once per officer per process).
 	unclockedLogged bool
@@ -1233,6 +1248,11 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	}
 	r.noteErrors(o, pools, obs)
 	r.syncRestarts(ctx, o, obs, now)
+	// 🔴 DISJOINT FROM THE AUTO-RESTART: this stops only an up instance NOT in
+	// error (a pane on a stale usage-limit menu); planRestarts acts only on an
+	// instance in error. The stop below marks the instance down (not in
+	// error), so planRestarts never also restarts it this pass.
+	r.restartLimitParked(ctx, pools, obs, now)
 	if r.observed != nil {
 		// Chat claims are the chat runner's (ChatHolder), never an
 		// instance's primary session's: the transcript forwarder and the LLM
