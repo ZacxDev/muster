@@ -57,7 +57,7 @@ func TestADispatchApproveCardShowsTheHeldStart(t *testing.T) {
 	}
 	var q string
 	for _, a := range asks {
-		if a.Asker.Label == hostDecisionLabel && strings.Contains(a.Question, dispatchApproveTool) {
+		if a.Asker.Label == hostDecisionLabel && a.StepUp != nil && a.StepUp.Tool == dispatchApproveTool {
 			q = a.Question
 		}
 	}

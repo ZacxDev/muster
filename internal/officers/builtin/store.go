@@ -315,6 +315,27 @@ func (s *Store) SubjectItems(ctx context.Context, owner int64, kind, subject str
 	return out, rows.Err()
 }
 
+// ItemLine is what an item is about, as a card names it: its officer and the
+// name of the officer's type ("" for a type with none, or no type), its kind,
+// subject and summary ("" when it has none yet).
+type ItemLine struct {
+	Officer, TypeName, Kind, Subject, Summary string
+}
+
+// ItemLineOf is owner's item id's ItemLine (ErrNotFound for none that ctx's
+// principal can read). The type is the officer's (officerTypeKey's rule).
+func (s *Store) ItemLineOf(ctx context.Context, owner, id int64) (ItemLine, error) {
+	var l ItemLine
+	err := s.pool.QueryRow(ctx, `SELECT i.officer, coalesce((SELECT t.name FROM officer_types t WHERE t.owner_id = i.owner_id
+			AND t.key = coalesce((SELECT d.type_key FROM officer_defs d WHERE d.owner_id = i.owner_id AND d.officer = i.officer), split_part(i.officer, ':', 1))), ''),
+		i.kind, i.subject_key, coalesce(i.summary, '') FROM officer_items i WHERE i.owner_id = $1 AND i.id = $2`,
+		owner, id).Scan(&l.Officer, &l.TypeName, &l.Kind, &l.Subject, &l.Summary)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ItemLine{}, ErrNotFound
+	}
+	return l, err
+}
+
 // officerTypeKey is THE SQL for the type key of officer $2 of owner $1: its
 // def's type_key — a DB-declared officer's own type (migration 0136, round
 // 0's F5) — or, with no def, the id's part before the colon (0118's rule, the

@@ -133,8 +133,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
 <div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p></div>
-` + officerNoteLabelHTML(a.Context) + `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
-` + asksCardContextRow(inner, info) + asksCardMediaSlot(slot[0]))
+` + officerNoteLabelHTML(a.Context) + askQuestionHTML(a) + asksCardContextRow(inner, info) + asksCardMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
 	// What a builtin officer's ask is about, apart from its note.
@@ -169,6 +168,16 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff())
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
+}
+
+// askQuestionHTML is the ask page's question: a step-up card's parts
+// (stepUpCardHTML) when it has them, else its question as filed — which is how
+// a card filed before 0171 still renders.
+func askQuestionHTML(a attention.Ask) string {
+	if a.StepUp != nil {
+		return stepUpCardHTML(a.StepUp)
+	}
+	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + html.EscapeString(a.Question) + "</p>\n"
 }
 
 // askContextLinkList is the ask's way to its context, the ask page's footer

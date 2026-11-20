@@ -591,6 +591,10 @@ from the question and its options, grounded in them by the same filter:
   prompt shows the card's own text, which muster hands the phone with the
   challenge (`confirms`). This page cannot answer a card
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
+  It shows the card's title, why and preview (for a draft: the venue, the
+  exact text and the media). The machine, the session, the call and its
+  hash sit under a collapsed **Details**
+  ([what a card shows](mirroring.md#what-a-card-shows)).
 
 ## The agent tools
 

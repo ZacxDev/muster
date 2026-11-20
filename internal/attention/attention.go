@@ -305,6 +305,9 @@ type Ask struct {
 	Attachments []Attachment `json:"-"`
 	// Why is why the ask is here (New.Why, migration 0145), nil for none.
 	Why *AskWhy `json:"-"`
+	// StepUp is a step-up confirmation card's parts (New.StepUp, migration
+	// 0171), nil for every other ask and for a card filed before 0171.
+	StepUp *StepUpCard `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -391,6 +394,11 @@ type New struct {
 	// Why is why the ask is here (migration 0145): the agent's own context, or
 	// muster's fallback (ask_media.go). Clean sanitises and bounds it.
 	Why *AskWhy
+	// StepUp is a step-up confirmation card's parts (migration 0171;
+	// step_up.go): set ONLY by internal/api's hostStepUpGate, on a System
+	// ask. When set, Clean REPLACES Question with StepUp.Text() — the one
+	// text the card's push, page and phone prompt read.
+	StepUp *StepUpCard
 	// With is an audit row written in Create's OWN transaction, as the
 	// caller's principal, naming the new ask (Detail is called with its id):
 	// nil for none. Set ONLY by internal/api's agent_dispatch, for a held
@@ -413,6 +421,16 @@ func Clean(n New) (New, error) {
 		return n, err
 	}
 	n.Asker.Label = truncateRunes(strings.TrimSpace(n.Asker.Label), MaxLabelRunes)
+	if n.StepUp != nil {
+		if !n.Asker.System || n.Notice {
+			return n, fmt.Errorf("%w: a step-up card is muster's own question", ErrInvalid)
+		}
+		card, err := CleanStepUp(n.StepUp)
+		if err != nil {
+			return n, err
+		}
+		n.StepUp, n.Question = card, card.Text()
+	}
 	n.Question = strings.TrimSpace(n.Question)
 	if n.Question == "" {
 		return n, fmt.Errorf("%w: the question is empty", ErrInvalid)
@@ -655,18 +673,18 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why`
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why, step_up`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
-	var opts, sugg, ictx, files, why []byte
+	var opts, sugg, ictx, files, why, stepUp []byte
 	var resolved, queued *time.Time
 	var status, delivery, kind string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why); err != nil {
+		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why, &stepUp); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -702,6 +720,11 @@ func scan(row pgx.Row) (Ask, error) {
 	if len(why) > 0 {
 		if err := json.Unmarshal(why, &a.Why); err != nil {
 			return Ask{}, fmt.Errorf("attention: why of ask %d: %w", a.ID, err)
+		}
+	}
+	if len(stepUp) > 0 {
+		if err := json.Unmarshal(stepUp, &a.StepUp); err != nil {
+			return Ask{}, fmt.Errorf("attention: step-up card of ask %d: %w", a.ID, err)
 		}
 	}
 	return a, nil
@@ -808,11 +831,19 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		}
 		why = raw
 	}
+	var stepUp any
+	if n.StepUp != nil {
+		raw, err := json.Marshal(n.StepUp)
+		if err != nil {
+			return Ask{}, err
+		}
+		stepUp = raw
+	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why, step_up)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why, stepUp))
 	if err != nil {
 		return Ask{}, err
 	}

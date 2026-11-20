@@ -344,7 +344,11 @@ as **payload v2**:
 - A **step-up confirmation card** is such an ask: its options are **Confirm**
   and **Refuse**, so its notification's buttons decide it with one tap, signed
   with the phone's step-up key, whose prompt shows the card's text
-  ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)). A
+  ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
+  Its title is the card's action (*Post to X?*). Its body is the card's why and
+  the start of the post or summary. It has no options line, and it never
+  carries the machine, the session, the hash or the call's arguments
+  ([what a card shows](mirroring.md#what-a-card-shows)). A
   browser's notification of it has no buttons that decide anything: a tap
   opens muster.
 - A [notice](attention.md#notices) (a live chief nudge) is an `attention` push
