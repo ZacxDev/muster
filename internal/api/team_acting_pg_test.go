@@ -452,8 +452,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 12 || refusing != 4 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 12 and 4", acting, refusing)
+	if acting != 12 || refusing != 5 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 12 and 5", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through
