@@ -343,15 +343,14 @@ func (s *Server) handleConnectorGrantRerun(w http.ResponseWriter, r *http.Reques
 		http.Error(w, ConnectorsUnconfigured, http.StatusServiceUnavailable)
 		return
 	}
-	if s.officerRT == nil || s.ext.Agents == nil {
-		http.Error(w, "no officers run here, so no grant has blocked items to re-run", http.StatusConflict)
-		return
-	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	// The grant is read FIRST, so a grant the caller cannot read is a 404
+	// whatever else holds (the isolation walk tells its own grant from a
+	// ghost by that).
 	g, err := s.ext.Connectors.GetGrant(r.Context(), id)
 	if err != nil {
 		http.Error(w, "no such grant", http.StatusNotFound)
@@ -359,6 +358,10 @@ func (s *Server) handleConnectorGrantRerun(w http.ResponseWriter, r *http.Reques
 	}
 	if g.Status != connectors.StatusApproved {
 		http.Error(w, "grant "+strconv.FormatInt(id, 10)+" is "+g.Status+": only an approved grant's blocked items are re-run", http.StatusConflict)
+		return
+	}
+	if s.officerRT == nil || s.ext.Agents == nil {
+		http.Error(w, "no officers run here, so no grant has blocked items to re-run", http.StatusConflict)
 		return
 	}
 	a, err := s.ext.Agents.Get(r.Context(), g.AgentID)
