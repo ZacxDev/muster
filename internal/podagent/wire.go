@@ -34,6 +34,16 @@ import (
 // once the turn has ended and its outcome is known.
 
 // Failure is a typed failed turn: `{"error":{type,code,upstream_status,message}}`.
+// The failure Types muster reads by name: ccd writes them (cmd/ccd
+// failure.go names its own constants after these), and the officer
+// auto-restart holds an instance whose last send failed with one of them
+// (internal/api classifyInstanceError).
+const (
+	FailureAuthFailed  = "auth_failed"
+	FailureRateLimited = "rate_limited"
+	FailureBilling     = "billing_error"
+)
+
 type Failure struct {
 	Status   int    `json:"-"`
 	Type     string `json:"type"`

@@ -1083,3 +1083,58 @@ func TestStreamLogsOfAnInstanceWithNoPodYet(t *testing.T) {
 		}
 	})
 }
+
+// TestTheAgentContainersOwnStateIsReportedApartFromASidecars: Reason is ANY
+// container's waiting reason, so a crash-looping sidecar reads the same there
+// as a crash-looping agent. AppReported/AppReason/AppExitCode are the "agent"
+// container's alone: a sidecar crash-looping beside a healthy agent leaves
+// AppReason empty, and the agent's own crash loop with exit 78 (a missing
+// config) is reported with its exit code.
+func TestTheAgentContainersOwnStateIsReportedApartFromASidecars(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) {
+		for _, c := range []struct {
+			name       string
+			statuses   []corev1.ContainerStatus
+			wantReason string
+			wantApp    string
+			wantExit   int32
+		}{
+			{"a sidecar crash-loops", []corev1.ContainerStatus{
+				{Name: "agent", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "key-holder", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+					LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2}}},
+			}, "CrashLoopBackOff", "", 0},
+			{"the agent crash-loops on a missing config", []corev1.ContainerStatus{
+				{Name: "agent", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+					LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 78}}},
+				{Name: "key-holder", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			}, "CrashLoopBackOff", "CrashLoopBackOff", 78},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				d, cs := newDriver(t, m, nil)
+				ctx := context.Background()
+				spec := provisiontest.MinimalSpec("looper")
+				if err := d.Create(ctx, spec); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+				ns := m.ns("looper")
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: "looper-5f2b9", Namespace: ns, Labels: map[string]string{
+						"app.kubernetes.io/name": "muster-agent", "app.kubernetes.io/instance": "looper", "app.kubernetes.io/managed-by": "muster"}},
+					Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: c.statuses},
+				}
+				if _, err := cs.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+					t.Fatalf("seed pod: %v", err)
+				}
+				inst, err := d.Get(ctx, spec.Ref)
+				if err != nil {
+					t.Fatalf("Get: %v", err)
+				}
+				if inst.Reason != c.wantReason || !inst.AppReported || inst.AppReason != c.wantApp || inst.AppExitCode != c.wantExit {
+					t.Fatalf("Reason %q AppReported %v AppReason %q AppExitCode %d; want %q, true, %q, %d",
+						inst.Reason, inst.AppReported, inst.AppReason, inst.AppExitCode, c.wantReason, c.wantApp, c.wantExit)
+				}
+			})
+		}
+	})
+}

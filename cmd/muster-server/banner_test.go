@@ -282,6 +282,9 @@ var bannerLedger = []string{
 	envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval,
 	// The officer runtime: `officers: ON — n declared …` or `officers: OFF`.
 	envOfficers,
+	// The officer auto-restart: `officers: auto-restart ON — …` or OFF, both
+	// variables on the one line.
+	envOfficerAutoRestartAfter, envOfficerAutoRestartMaxPerDay,
 	// The Agents list's Idle section: one line in both directions (ON with the
 	// threshold / OFF).
 	envAgentsIdleAfter,
@@ -880,6 +883,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The officer runtime: one declared officer, so the ON render takes the
 		// `officers: ON` arm.
 		Officers: []officers.Officer{{ID: "release:example-web", HQURL: "https://hq.example.invalid/api/v1", MaxInstances: 1}},
+		// The officer auto-restart: on here, the zero value (off) in the OFF render.
+		OfficerAutoRestart: officers.AutoRestart{After: 7 * time.Minute, MaxPerDay: 3},
 
 		AgentProvisioner: provisionerNoop,
 		AgentImageRepo:   "registry.example.test/muster/agent-runtime",

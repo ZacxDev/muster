@@ -42,17 +42,18 @@ var pushEntryPoints = map[string]bool{
 // officerRouted: call sites on an officer path, by the officerPush row(s)
 // they are.
 var officerRouted = map[string]string{
-	"officer_push.go Server.officerAskFiled -> askFiled":               "ask, escalation, unclaimed (its caller names the path)",
-	"outreach_batch.go Server.notifyBatchAwaiting -> goNotify":         string(officerPushOutreachBatch),
-	"reply_draft_tool.go Server.notifyDraftAwaitingNoting -> goNotify": string(officerPushDraft),
-	"plugin_drafts.go Server.notifyDraftRefused -> goNotify":           string(officerPushDraftRefused),
-	"officer_cap_hold.go Server.officerBudgetNotice -> goNotify":       string(officerPushBudget),
-	"officer_cap_hold.go Server.officerCapHoldNotice -> goNotify":      string(officerPushCapHold),
-	"connectors.go Server.onConnectorRequested -> goNotify":            string(officerPushConnectorRequest),
-	"page_tools.go Server.pagePublished -> pushTask":                   string(officerPushPagePublished),
-	"page_tools.go Server.pageShareAuto -> pushTask":                   string(officerPushPageShared),
-	"notify_owner.go Server.pageUpdated -> pushTask":                   string(officerPushPageUpdated),
-	"notify_owner.go Server.toolNotifyOwner -> goNotify":               string(officerPushNotifyOwner),
+	"officer_push.go Server.officerAskFiled -> askFiled":                 "ask, escalation, unclaimed (its caller names the path)",
+	"outreach_batch.go Server.notifyBatchAwaiting -> goNotify":           string(officerPushOutreachBatch),
+	"reply_draft_tool.go Server.notifyDraftAwaitingNoting -> goNotify":   string(officerPushDraft),
+	"plugin_drafts.go Server.notifyDraftRefused -> goNotify":             string(officerPushDraftRefused),
+	"officer_cap_hold.go Server.officerBudgetNotice -> goNotify":         string(officerPushBudget),
+	"officer_cap_hold.go Server.officerCapHoldNotice -> goNotify":        string(officerPushCapHold),
+	"officer_autorestart.go Server.officerAutoRestartNotice -> goNotify": string(officerPushRestartHeld),
+	"connectors.go Server.onConnectorRequested -> goNotify":              string(officerPushConnectorRequest),
+	"page_tools.go Server.pagePublished -> pushTask":                     string(officerPushPagePublished),
+	"page_tools.go Server.pageShareAuto -> pushTask":                     string(officerPushPageShared),
+	"notify_owner.go Server.pageUpdated -> pushTask":                     string(officerPushPageUpdated),
+	"notify_owner.go Server.toolNotifyOwner -> goNotify":                 string(officerPushNotifyOwner),
 }
 
 // notOfficerRouted: every other call site, with why the table does not apply.

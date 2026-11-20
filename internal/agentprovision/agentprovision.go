@@ -840,14 +840,14 @@ func (a *Adapter) startLocked(ctx context.Context, agentID int64) error {
 		}
 		spec, err := a.buildSpec(ctx, ag)
 		if err != nil {
-			return a.fail(ctx, ag, "build spec", err)
+			return a.fail(ctx, ag, StepBuildSpec, err)
 		}
 		if err := a.driver.Update(ctx, spec); err != nil {
-			return a.fail(ctx, ag, "apply instance", err)
+			return a.fail(ctx, ag, StepApplyInstance, err)
 		}
 	} else if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {
-			return a.fail(ctx, ag, "scale up", err)
+			return a.fail(ctx, ag, StepScaleUp, err)
 		}
 		if ag, err = a.create(ctx, ag); err != nil {
 			return err
@@ -978,7 +978,7 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 		// So the operator gets a dot that turns red instead of a card that silently
 		// reappears, and the REASON is machine-readable only. That is worth having and
 		// it is all that is claimed.
-		return a.fail(ctx, ag, "destroy instance (the stored row was KEPT because the "+
+		return a.fail(ctx, ag, StepDestroyInstance+" (the stored row was KEPT because the "+
 			"instance was not removed)", err)
 	}
 	// 🔴 THE DELETE IS BOOKKEEPING, NOT THE OPERATION, AND IT WAS ON THE WRONG
@@ -1253,10 +1253,10 @@ func (a *Adapter) RotateCredentials(ctx context.Context, agentID int64) (rotated
 	}
 	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
-		return true, a.fail(ctx, ag, "build spec after rotating credentials", err)
+		return true, a.fail(ctx, ag, StepBuildSpec+" after rotating credentials", err)
 	}
 	if err := a.driver.Update(ctx, spec); err != nil {
-		return true, a.fail(ctx, ag, "apply instance after rotating credentials", err)
+		return true, a.fail(ctx, ag, StepApplyInstance+" after rotating credentials", err)
 	}
 	return true, nil
 }
@@ -1284,7 +1284,7 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 	}
 	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
-		return ag, a.fail(ctx, ag, "build spec", err)
+		return ag, a.fail(ctx, ag, StepBuildSpec, err)
 	}
 	if err := a.driver.Create(ctx, spec); err != nil {
 		// provision.ErrDivergentSpec is named in the message because it is the
@@ -1292,10 +1292,10 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 		// the instance exists and does not match, and the way to change it is
 		// Update (ReapplyProfiles), not another Create.
 		if errors.Is(err, provision.ErrDivergentSpec) {
-			return ag, a.fail(ctx, ag, "create instance (it already exists with a different "+
+			return ag, a.fail(ctx, ag, StepCreateInstance+" (it already exists with a different "+
 				"spec; reconciling an existing instance is ReapplyProfiles, not Dispatch)", err)
 		}
-		return ag, a.fail(ctx, ag, "create instance", err)
+		return ag, a.fail(ctx, ag, StepCreateInstance, err)
 	}
 	return ag, nil
 }
@@ -1341,16 +1341,16 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents.Agent, error) {
 	ag, err := agents.WithSecrets(ctx, a.store, ag)
 	if err != nil {
-		return ag, a.fail(ctx, ag, "read credentials", err)
+		return ag, a.fail(ctx, ag, StepReadCredentials, err)
 	}
 	if ag.HooksToken == "" {
 		buf := make([]byte, hooksTokenBytes)
 		if _, err := rand.Read(buf); err != nil {
-			return ag, a.fail(ctx, ag, "mint hooks token", err)
+			return ag, a.fail(ctx, ag, StepMintHooksToken, err)
 		}
 		token := hex.EncodeToString(buf)
 		if err := a.store.SetHooksToken(ctx, ag.ID, token); err != nil {
-			return ag, a.fail(ctx, ag, "store hooks token", err)
+			return ag, a.fail(ctx, ag, StepStoreHooksToken, err)
 		}
 		ag.HooksToken = token
 	}
@@ -1372,11 +1372,11 @@ func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (age
 	}
 	buf := make([]byte, hooksTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
-		return ag, a.fail(ctx, ag, "mint turn credential", err)
+		return ag, a.fail(ctx, ag, StepMintTurnCredential, err)
 	}
 	secret := hex.EncodeToString(buf)
 	if err := a.store.SetGatewaySecret(ctx, ag.ID, secret); err != nil {
-		return ag, a.fail(ctx, ag, "store turn credential", err)
+		return ag, a.fail(ctx, ag, StepStoreTurnCredential, err)
 	}
 	ag.GatewaySecret = secret
 	return ag, nil
@@ -1700,6 +1700,24 @@ func (a *Adapter) refuseKickoff(ctx context.Context, ag agents.Agent) error {
 	return fmt.Errorf("agentprovision: agent %d (%s): %w: %s",
 		ag.ID, ag.Name, ErrKickoffUndeliverable, KickoffRefusalReason)
 }
+
+// The step a failed lifecycle call names in the agent's error_message (fail:
+// "<step>: <cause>", or "<step> <detail>: <cause>"). Exported because the
+// officer wake loop classifies an instance in error by them (internal/api
+// classifyInstanceError) to decide whether restarting it can help: a reader
+// keyed on the same constant the writer uses cannot drift from it.
+const (
+	StepBuildSpec           = "build spec"
+	StepApplyInstance       = "apply instance"
+	StepScaleUp             = "scale up"
+	StepCreateInstance      = "create instance"
+	StepDestroyInstance     = "destroy instance"
+	StepReadCredentials     = "read credentials"
+	StepMintHooksToken      = "mint hooks token"
+	StepStoreHooksToken     = "store hooks token"
+	StepMintTurnCredential  = "mint turn credential"
+	StepStoreTurnCredential = "store turn credential"
+)
 
 // setStatus persists a status with no output and no error message.
 //

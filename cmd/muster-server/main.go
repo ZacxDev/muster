@@ -999,6 +999,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// 0082), shared by every replica; a cap with no database is
 			// refused.
 			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
+			// The auto-restart's record (migration 0170): its daily cap,
+			// backoff and held notices survive a rollout.
+			ocfg.Restarts = officers.NewPGRestartStore(a.pool)
 			// A draft officer's review-loop announcements (migration 0119):
 			// shared by replicas, kept across a restart.
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
@@ -1200,7 +1203,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 // caller.
 func officersConfig(cfg config, prov *agentprovision.Adapter) api.OfficersConfig {
 	return api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov),
-		ImagePullSecret: cfg.OfficerImagePullSecret}
+		ImagePullSecret: cfg.OfficerImagePullSecret, AutoRestart: cfg.OfficerAutoRestart}
 }
 
 func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
@@ -1800,6 +1803,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("officers: ON — empty roster (%s declares none)", envOfficers)
 	} else {
 		l.Printf("officers: OFF (%s declares none, and there is no database to declare one in)", envOfficers)
+	}
+	// The bounded auto-restart of an officer instance in error
+	// (internal/officers autorestart.go), in both directions.
+	if p := a.cfg.OfficerAutoRestart; p.On() {
+		l.Printf("officers: auto-restart ON — an instance in error with work waiting is stopped and started after %s in error (%s), "+
+			"doubling per restart that UTC day, at most %d per officer per UTC day (%s); a bad configuration or credential is never restarted",
+			p.After, envOfficerAutoRestartAfter, p.MaxPerDay, envOfficerAutoRestartMaxPerDay)
+	} else {
+		l.Printf("officers: auto-restart OFF (%s or %s is off) — an instance in error holds its slot until an operator stops and starts it",
+			envOfficerAutoRestartAfter, envOfficerAutoRestartMaxPerDay)
 	}
 
 	switch {

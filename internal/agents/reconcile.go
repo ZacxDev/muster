@@ -224,8 +224,13 @@ func KickoffErrorSuffix(a Agent) string {
 	if a.KickoffError == "" {
 		return ""
 	}
-	return "; last send error: " + a.KickoffError
+	return LastSendErrorSep + a.KickoffError
 }
+
+// LastSendErrorSep opens KickoffErrorSuffix: what follows it in an
+// error_message is the recorded send failure (the officer auto-restart reads
+// the runtime's typed failure there, internal/api classifyInstanceError).
+const LastSendErrorSep = "; last send error: "
 
 // ---------------------------------------------------------------------------
 // 🔴 THE RECONCILE LOOP ITSELF WAS NOT CARVED WITH THIS DECISION TABLE, AND

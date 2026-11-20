@@ -506,6 +506,17 @@ func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst prov
 	}()
 }
 
+// StuckPrefix opens the error_message of both stuck verdicts, and
+// StuckDwellPrefix the dwell one's (failStuck) alone; the other is the
+// checkout wait's (failCheckoutWait). Exported because the officer wake loop
+// classifies an instance in error by them (internal/api
+// classifyInstanceError): a first turn that never landed is restartable, one
+// that waited on a grant nobody approved is not.
+const (
+	StuckPrefix      = "kickoff never delivered: "
+	StuckDwellPrefix = StuckPrefix + "the agent dwelt"
+)
+
 // failStuck marks an owed row `error` once the table says its first turn will not
 // arrive: it dwelt past ProvisioningStuckTimeout without a ready instance accepting
 // the turn. The last recorded send failure is appended, so error_message carries the
@@ -519,7 +530,7 @@ func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst prov
 // ⚠ THE LOG LINES ARE SCRUBBED OF THE PENDING NOTE, as recordError's is: msg carries
 // the last kickoff_error, which can quote a runtime's response body.
 func (d *Deliverer) failStuck(parent context.Context, a agents.Agent) {
-	d.markStuck(parent, a, fmt.Sprintf("kickoff never delivered: the agent dwelt more than %s without a ready "+
+	d.markStuck(parent, a, fmt.Sprintf(StuckDwellPrefix+" more than %s without a ready "+
 		"instance accepting its first turn", agents.ProvisioningStuckTimeout)+
 		agents.KickoffErrorSuffix(a))
 }
@@ -534,7 +545,7 @@ func (d *Deliverer) failCheckoutWait(parent context.Context, a agents.Agent, st 
 		strings.HasPrefix(a.KickoffError, agents.KickoffAwaitingCloneReason)) {
 		why = "the repository was still being cloned"
 	}
-	d.markStuck(parent, a, fmt.Sprintf("kickoff never delivered: %s within %s, so the repository %s was "+
+	d.markStuck(parent, a, fmt.Sprintf(StuckPrefix+"%s within %s, so the repository %s was "+
 		"never checked out and the Claude Code session never started", why, agents.CheckoutWaitTimeout, a.Repo)+
 		agents.KickoffErrorSuffix(a))
 }

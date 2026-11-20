@@ -776,7 +776,8 @@ One loop runs every officer. Each pass, for one officer:
 2. read muster: which of its instance agents exist and are up;
 3. decide;
 4. release live claims held by an instance that is down;
-5. start or stop instances.
+5. restart an instance in error, bounded ([An instance in error](#an-instance-in-error));
+   start or stop instances.
 
 The decision (`officers.Decide`, a pure function):
 
@@ -812,7 +813,8 @@ The decision (`officers.Decide`, a pure function):
   It never writes the instance's kickoff state (`kicked_off`, `pending_note`,
   `updated_at`). An earlier version re-armed the first turn instead, and when
   the running turn outlasted the kickoff deliverer's 15-minute dwell bound the
-  deliverer marked the instance `error` — permanently holding its slot. A turn
+  deliverer marked the instance `error` — holding its slot until an operator
+  acted. A turn
   started some other way without the claim (an operator's chat) is refused by
   ccd with `409 busy` before anything is typed, so the re-prompt fails cleanly
   rather than interrupting it. muster re-prompts rather than stopping an
@@ -824,10 +826,11 @@ or `error`: a crash-looping instance keeps its slot rather than being started
 again every poll (which would re-send its first message each time). A create or
 start still in flight (the row says provisioning, the backend shows nothing yet)
 also counts as up, so it is not started twice. An instance **entering or
-leaving error is logged once per change** ("instance N is in error — it holds
-its slot and is NOT restarted …"), and `muster_officer_error_slots` counts the
-slots so held across all officers: the officer runs below target until the
-instance recovers or an operator acts.
+leaving error is logged once per change** ("instance N is in error (*class*) —
+it holds its slot …", saying whether muster will restart it), and
+`muster_officer_error_slots` counts the slots so held across all officers: the
+officer runs below target until the instance recovers, muster restarts it
+([below](#an-instance-in-error)), or an operator acts.
 
 **Starting** an instance that does not exist creates it, with its first message
 (below) as the kickoff. Starting one that exists **re-arms** its first message
@@ -893,9 +896,11 @@ offline, the agents table unreadable) backs off as an HQ failure does. A pass re
 that has an agent), never every instance in the cluster.
 
 **Restarts.** Every start decision is a function of HQ's queue and muster's
-instances, so a restarted muster makes the same decisions. The one thing kept
-in memory is when the officer was first seen idle; a restart forgets it and
-waits a full idle window again. That can delay a scale-down, never cause one.
+instances, so a restarted muster makes the same decisions. What is kept in
+memory is when the officer was first seen idle — a restart forgets it and
+waits a full idle window again, which can delay a scale-down, never cause one
+— and the [auto-restart](#an-instance-in-error)'s clock for an error in
+progress, which a restart starts again (its counts are kept in the database).
 
 **Shutdown.** A re-prompt being sent when muster shuts down is cancelled
 with the other in-flight deliveries, releases the instance's session claim,
@@ -907,6 +912,102 @@ starting the same instance is one agent create winning on the unique name and
 one logged failure; two stopping one is idempotent.
 
 Tiered officers run one wake decision per pool: [The two pools](#the-two-pools).
+
+### An instance in error
+
+Holding the slot is what stops a restart storm, but on its own it held the
+slot until someone noticed: an instance once sat in error for about 14 hours
+with an urgent item unclaimed, and at `max_instances` 1 that is the whole
+officer. So muster **restarts an instance in error, bounded**: it stops it and
+starts it, the same as an operator's Stop and Start on its page (its agent,
+volume and name are kept, and it starts with its first message, as any wake
+does). A pod officer's only: a `host` officer's instance never reads `error`.
+
+A pass restarts instance *n* only when all of these hold:
+
+- **Its error is one a restart fixes.** muster classifies why the instance is
+  in error from what it recorded and what the pod shows:
+
+  | class | what it is | restarted |
+  |---|---|---|
+  | `kickoff_stuck` | its first turn never landed: no ready session took it within the kickoff deliverer's bound (nothing was sent, so nothing is paid twice) | yes |
+  | `crash_loop` | the instance's **agent** container is crash-looping, or the pod failed | yes |
+  | `apply_failed` | a write to the backend failed: apply, scale, create, or a token store beside them | yes |
+  | `config` | the spec could not be built, the image cannot be pulled, the agent container crash-loops exiting 78 (its runtime's "Missing config"), an instance of that name exists with another spec, or the deployment cannot deliver a first turn | no |
+  | `auth` | the Claude account's credential could not be read or a token minted, or the model account refused it (`auth_failed`, `billing_error`) | no |
+  | `checkout_wait` | its first turn waited for a repository checkout that never came (a grant nobody approved) | no |
+  | `rate_limited` | its first turn's last send was refused `rate_limited` (a restart sends the next one into the same limit) | no |
+  | `sidecar` | the instance reads error only because another container in its pod (a sidecar, a key holder) is failing, not its agent | no |
+  | `unknown` | anything else, or nothing recorded | no |
+
+  A cause muster does not recognise is held: a new kind of error never
+  becomes a restart loop by default. The live instance is judged by its agent
+  container alone: a crash-looping sidecar does not end a live session.
+- **There is work for it.** An item its pool could claim now (for a queue
+  instance), a chat waiting for a lane it could give, or a live claim it holds
+  itself that a fresh instance could claim again. An idle officer's instance
+  is not restarted (the idle scale-down stops it instead), and neither is one
+  of an officer over its
+  [daily budget](officers-builtin.md#daily-budget-and-routine-batching) (or
+  whose spend cannot be read) or its judgement pool's session cap: those count
+  no item claimable, and a claim the instance holds counts only if it would
+  be claimable again (the owner's own item over the budget; an item already
+  counted today under the cap). A waiting chat is subject to neither: chats
+  run only on an HQ officer, which has no daily budget, and a chat turn is
+  not a judgement session.
+- **It has waited out its backoff.** The first restart of the instance in a
+  UTC day comes once this muster has seen it in error for
+  `MUSTER_OFFICER_AUTO_RESTART_AFTER` (default `5m`), the next once its next
+  error has lasted twice that, then four times, and so on (at most 24h).
+- **The officer's daily cap is not spent.** At most
+  `MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY` (default 4) restarts per officer,
+  all its pools together, per UTC day. A restart counts when it is tried, so
+  one whose stop or start fails has still used its place.
+- It does not hold a claim over the pool's wall-time cap (that number is never
+  started) and is not being stopped this pass.
+
+**The slot is the same slot.** A restart stops instance *n* and starts
+instance *n*: the number of instances does not change, so `max_instances`
+cannot be exceeded by it, and the pass that restarts it started no other
+instance in its place (it still counted *n* up). A live claim *n* held is
+released after the stop and before the start, so the item goes back to the
+queue and is claimed once, by whichever instance takes it next. A stop that
+fails starts nothing and releases nothing. A draft officer's create that
+[the open-pull-request queue](#the-open-pull-request-queue) holds for that
+item is not dropped by the release: the drain skips only an item finished in
+HQ, so it still opens it, and a second create for the item (from the
+restarted instance) meets the per-item limit.
+
+**What you see.** Each restart is logged —
+`officers: <id>: AUTO-RESTARTED instance <n> from error (<class>, in error
+<d>): auto-restart <k> of <max> today (UTC); its error was: <error>` — the
+instance's `error_message` as its card shows it (its pending note scrubbed,
+at most 300 characters in the log), since the restart's Stop clears the agent
+row's — and counted on
+`muster_officer_auto_restarts_total`; it is not pushed (the instance is working
+again). A restart muster would make now but will not — the class is not
+restartable, or the day's cap is spent — is logged once per error episode
+(`… is NOT auto-restarted: <why> — it holds its slot until an operator stops
+and starts it; its error: <error>`), counted on `muster_officer_auto_restarts_held_total`, and
+**pushed to the officer's owner** once per episode, opening the officer's page;
+the instance leaving error withdraws it. That instance then holds its slot
+until an operator stops and starts it, as before.
+
+**Turning it off.** `MUSTER_OFFICER_AUTO_RESTART_AFTER=off` (or `0`), or
+`MUSTER_OFFICER_AUTO_RESTART_MAX_PER_DAY=0`: an instance in error then holds
+its slot until an operator acts. The boot banner says which
+(`officers: auto-restart ON — …` or `OFF`).
+
+**It survives a rollout.** The record is kept in the database
+(`officer_auto_restarts`, migration 0170), one row per officer, UTC day and
+instance: its restarts that day (the cap's sum, the backoff's exponent), the
+last one's time, whether its held notice was told, and its last error (at
+most 1,000 characters). A restarted muster, or another replica, reads the
+day's rows, so neither the cap nor the backoff resets and a held notice is not
+pushed again. Only the clock of an error already in progress starts again
+when a new process first sees it, which can only delay a restart. If the
+record cannot be read, no instance is restarted until it can (logged once).
+Without a database the record is in memory, per process.
 
 ### A claim held by a stopped instance
 
@@ -1234,7 +1335,8 @@ stops every instance, as before.
 **Re-homing.** A chat moves off its home **only** when that home cannot serve
 it again soon:
 
-- the home is in error (it holds its slot and is not started);
+- the home is in error (it holds its slot; muster may
+  [restart it](#an-instance-in-error) minutes later, or not at all);
 - its number is past `chat_max_instances` (the ceiling was lowered);
 - its number holds a capped claim (the wake loop never starts that number);
 - it is stopped and has not come up within 10 minutes of the first pass that
