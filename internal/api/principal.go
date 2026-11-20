@@ -245,6 +245,11 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if refused {
 		return
 	}
+	// A route naming a page the principal's TEAM owns: its team rule
+	// (team_pages.go teamPageRoutes), one place for every page route.
+	if s.teamPageGate(w, r) {
+		return
+	}
 	// A member's terminal or chat socket on a team's agent stays open only
 	// while they are an operator of the team: registered for the membership
 	// sweep, then read again (teamAgentSocketOpen).

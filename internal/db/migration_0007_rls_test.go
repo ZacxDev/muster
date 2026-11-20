@@ -237,7 +237,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"tables with a team lend policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
 			WHERE schemaname='public' AND policyname='team_lent_read'`), lentTables()},
 		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
+			WHERE schemaname='public' AND policyname='team_read'`), teamReadTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -254,6 +254,14 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if _, page := teamPageTables[tbl]; page {
+			// The team page policies (0165), pinned whole by the share ledger
+			// (teamPagePolicies); here only that each is one of them.
+			if w, ok := teamPagePolicies(tbl)[name]; !ok || w[0] != cmd || permissive != "PERMISSIVE" || w[1] != qual || w[2] != check {
+				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0165's team page policies", tbl, name, cmd, permissive, qual, check)
+			}
+			continue
 		}
 		if c, shared := shareClasses[tbl]; shared {
 			// The team policies (0127): one per command, each with the user
@@ -520,8 +528,35 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_owner_is_team", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	// 0165 adds four, each pinned below to the same shape — scope all for its
+	// own duration, search_path pinned, EXECUTE to muster_app and not PUBLIC:
+	// muster_is_team_member (whether a page's creator is still on its team),
+	// muster_answer_team_page_card and muster_cancel_team_page_card (a member's
+	// answer to, and withdrawal of, a team agent's page share card) and
+	// muster_revoke_team_page_uploads (a team page's file rows, on its delete).
+	// Their behaviour is TestTheTeamCardAnswerDoorHoldsInTheDatabase's and
+	// TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive's.
+	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_is_team_member",
+		"muster_owner_is_team", "muster_retire_agent_name", "muster_revoke_team_page_uploads"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
+	}
+	for _, fn := range []string{"muster_is_team_member", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_revoke_team_page_uploads"} {
+		var public, app bool
+		if err := f.pool.QueryRow(f.mig, `SELECT has_function_privilege('public', p.oid, 'EXECUTE'), has_function_privilege('muster_app', p.oid, 'EXECUTE')
+			FROM pg_proc p WHERE p.proname = $1`, fn).Scan(&public, &app); err != nil {
+			t.Fatal(err)
+		}
+		if public || !app {
+			t.Errorf("%s: EXECUTE to PUBLIC %v, to muster_app %v; want muster_app only", fn, public, app)
+		}
+		var cfg []string
+		if err := f.pool.QueryRow(f.mig, `SELECT proconfig FROM pg_proc WHERE proname = $1`, fn).Scan(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(cfg)
+		if !slices.Equal(cfg, []string{"muster.scope=all", "search_path=pg_catalog"}) {
+			t.Errorf("%s: proconfig=%v; want search_path pinned and scope all for its own duration", fn, cfg)
+		}
 	}
 }
 
@@ -719,3 +754,7 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 		t.Errorf("RLSStatus tables = %v; want %v", tables, want)
 	}
 }
+
+// teamReadTables is every table with a team_read policy: the share-class ones
+// (0127) and the team page ones (0165).
+func teamReadTables() []string { return ownerFixedTables() }

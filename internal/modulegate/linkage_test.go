@@ -100,6 +100,10 @@ var notLinkedLedger = map[string]string{
 		"users row and its manager's membership as the login role, bypassing row-level security, and " +
 		"removes them, so it must never be reachable from a shipped binary; it refuses any database not " +
 		"ending in _e2e.",
+	"e2e/mkteampage": "the team-pages browser spec's fixture (`go run ./e2e/mkteampage`): it writes a team, " +
+		"its memberships, a person and the team's page as the login role, bypassing row-level security, and " +
+		"removes them, so it must never be reachable from a shipped binary; it refuses any database not " +
+		"ending in _e2e.",
 	"e2e/askfix": "the ask-log browser spec's fixture (`go run ./e2e/askfix`): it writes and clears " +
 		"an owner's asks for any user id it is given, so it must never be reachable from a shipped " +
 		"binary; it refuses any database not ending in _e2e.",

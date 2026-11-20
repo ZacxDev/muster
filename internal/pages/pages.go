@@ -24,6 +24,8 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // The limits (docs/design/pages.md#limits-and-quotas). Vars where a test
@@ -123,6 +125,12 @@ type Creator struct {
 	MirrorTmuxSession string
 	MirrorWindow      string
 	Label             string
+	// ByUser is the PERSON who started the team agent that makes a TEAM's
+	// page (migration 0165: pages.created_by_user), recorded at create so
+	// only they manage it (MayManage). 0 for a person's own page — its owner
+	// is its creator, and the database blanks it — and for a team agent
+	// whose starter is not recorded. It identifies; it never scopes a tool.
+	ByUser int64
 }
 
 // Valid reports whether c names exactly one creator.
@@ -179,8 +187,53 @@ type Page struct {
 	Title          string
 	CurrentVersion int
 	Creator        Creator
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// CreatorInTeam: the page's recorded creator (Creator.ByUser) is a
+	// member of its owner team NOW (0165's muster_is_team_member, read with
+	// the page). False when there is no creator, and on a person's own page.
+	CreatorInTeam bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// MayManage reports whether p may MANAGE page pg: delete it, change its
+// current version, revoke a link or make a new one. The page's owner (a
+// person on their own page; a team's agent, the team acting principal, on
+// the team's), the system scope, and — on a TEAM's page — the person who
+// started the agent that made it (Creator.ByUser) while they are a member of
+// the team, or, when the page records no such person OR that person has left
+// the team (CreatorInTeam false), any manager of the team (else nobody could
+// ever delete it). Every other member views and responds, and shares
+// (Share), but manages nothing — except that a manager may always revoke a
+// link (MayRevoke).
+//
+// 🔴 THE SAME RULE AS THE DATABASE'S muster_page_manager (migration 0165),
+// which holds every statement to it; this copy decides what the screen draws
+// and which routes refuse with words (internal/api teamPageRoutes).
+// TestMayManageMatchesTheDatabase pins the two together.
+func MayManage(pg Page, p authz.Principal) bool {
+	if p.All() || (p.UserID > 0 && pg.OwnerID == p.UserID) {
+		return true
+	}
+	role, member := p.TeamScope().RoleIn(pg.OwnerID)
+	if !member {
+		return false
+	}
+	if pg.Creator.ByUser > 0 && pg.CreatorInTeam {
+		return pg.Creator.ByUser == p.UserID
+	}
+	return role.AtLeast(authz.TeamManager)
+}
+
+// MayRevoke reports whether p may REVOKE a link of page pg: whoever may
+// manage it (MayManage), and ANY manager of its team, even while its creator
+// is present (operator decision: a mistaken Share is undone at once). 0165's
+// page_links_team_guard is the same rule in the database.
+func MayRevoke(pg Page, p authz.Principal) bool {
+	if MayManage(pg, p) {
+		return true
+	}
+	role, member := p.TeamScope().RoleIn(pg.OwnerID)
+	return member && role.AtLeast(authz.TeamManager)
 }
 
 // Summary is a page as a list shows it: the page and its counts.
@@ -276,7 +329,12 @@ type Response struct {
 	LinkID int64
 	// ByOwner: the page's owner sent it from their own view of the page,
 	// signed in (migration 0152), not a viewer through a link.
-	ByOwner        bool
+	ByOwner bool
+	// ResponderUser is WHO sent an owner-view response (ByOwner): the
+	// signed-in person — the owner on their own page, the member on a team's
+	// (migration 0165: page_responses.responder_user, forced to the caller by
+	// the database, never what the statement wrote). 0 for a link's response.
+	ResponderUser  int64
 	Version        int
 	Component      string
 	Kind           ResponseKind

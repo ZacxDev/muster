@@ -723,11 +723,23 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	if s.pageAgentShareOn(r.Context(), requestOwner(r.Context())) {
 		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (" + acct + ")."
 	}
+	ctx := r.Context()
+	// A team's pages (0165) are in the list beside the person's own, each
+	// marked with its team's name.
+	var teamIDs []int64
+	seen := map[int64]bool{}
+	for _, p := range list {
+		if memberOnTeamPage(ctx, p.Page) && !seen[p.OwnerID] {
+			seen[p.OwnerID] = true
+			teamIDs = append(teamIDs, p.OwnerID)
+		}
+	}
+	teams := s.teamNames(ctx, teamIDs)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="pages-page">
 <div class="flex items-center gap-1"><h1 class="text-lg font-semibold text-fg">Pages</h1>` +
 		ui.InfoSheetHTML(ui.InfoSheet{ID: "pages-about", Label: "About pages", Heading: "Pages",
-			Lead:  "Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. Share gives you the page's link to send.",
+			Lead:  "Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. Share gives you the page's link to send." + teamPagesLead(len(teamIDs) > 0),
 			Extra: g.Raw(`<p class="text-sm text-fg2">` + how + `</p>`)}) + `</div>
 `)
 	b.WriteString(problemNode(problem))
@@ -740,7 +752,11 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 `)
 		for _, p := range list {
 			v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: pageMakerName(p.Creator.Label, p.Creator.MirrorHost), Updated: p.UpdatedAt, Now: s.now(),
-				Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable()}
+				Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable(),
+				NoRevoke: !pageRevocable(ctx, p.Page)}
+			if memberOnTeamPage(ctx, p.Page) {
+				v.TeamID, v.Team = p.OwnerID, teamPageLabel(teams[p.OwnerID])
+			}
 			if l := shared[p.ID]; l.Token != "" {
 				v.ShareURL = s.pageLinkURL(l)
 			}
@@ -754,6 +770,20 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	// secret: each row's Share carries its page's live link, a bearer
 	// capability, so the screen loads no telemetry (ui.NavDocumentView.Secret).
 	s.writeNavDocument(w, r, code, "Pages", ui.NavPages, true, b.String(), navWide)
+}
+
+// teamPageLabel is a team page's mark in the list and on its screen, in
+// plain words: "Team: <name>".
+func teamPageLabel(team string) string { return "Team: " + team }
+
+// teamPagesLead is the list's sentence about a team's pages, when it shows
+// any.
+func teamPagesLead(any bool) string {
+	if !any {
+		return ""
+	}
+	return " Pages your teams' agents made are seen by everyone on that team: anyone on it can open one, answer it and share it; " +
+		"only the person who started the agent that made it can delete it or change it."
 }
 
 func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
@@ -822,16 +852,32 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	// Setup details (the setting that turns reusable links on, a response's
 	// stored form) are an admin's (ui.Features.Setup's predicate).
 	admin := authz.IsAdmin(ctx)
+	// A team's page, read by a member (0165): marked with its team, and its
+	// managing controls drawn only for the one who may manage it (manage:
+	// pages.MayManage — Delete, Make current) or revoke its links (revoke:
+	// pages.MayRevoke — each link's Revoke, and the ⋯'s Revoke link and New
+	// link, a revoke and a Share). Share is every reader's.
+	manage, revoke := pageManageable(ctx, p), pageRevocable(ctx, p)
+	teamNote := ""
+	if memberOnTeamPage(ctx, p) {
+		team := s.teamNames(ctx, []int64{p.OwnerID})[p.OwnerID]
+		teamNote = `<p class="text-sm text-fg2" data-page-team="` + strconv.FormatInt(p.OwnerID, 10) + `"><span class="font-semibold text-fg">` + esc(teamPageLabel(team)) +
+			`.</span> Everyone on the team sees this page, can answer it and can share it.`
+		if !manage {
+			teamNote += ` Only the person who started the agent that made it can delete it or change its version; a manager of the team can revoke its links.`
+		}
+		teamNote += "</p>\n"
+	}
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-6" data-testid="page-detail" data-page-id="` + pid + `">
 <div class="flex flex-col gap-2">
 <h1 class="min-w-0 break-words text-lg font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
 <p class="text-sm text-fg2" data-page-meta>` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` · v` + strconv.Itoa(p.CurrentVersion) + `</p>
-<div id="share" class="flex flex-wrap items-center gap-2 pt-1" data-page-share-box data-page-id="` + pid + `">`)
+` + teamNote + `<div id="share" class="flex flex-wrap items-center gap-2 pt-1" data-page-share-box data-page-id="` + pid + `">`)
 	_ = ui.PageOpenButton(id).Render(&b)
 	_ = ui.PageShareQuietButton(id, p.Title, curURL, reusable).Render(&b)
-	if m := ui.PageLinkMenu(id, p.Title, cur.Token != ""); m != nil {
+	if m := ui.PageLinkMenu(id, p.Title, revoke && cur.Token != ""); m != nil {
 		_ = m.Render(&b)
 	}
 	if !reusable {
@@ -888,8 +934,11 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 				b.WriteString(`<button type="button" class="` + pageQuietButton + `" data-copy-text="` + esc(curURL) + `" data-link-copy onclick="window.cgCopy &amp;&amp; window.cgCopy(this)">Copy</button>
 `)
 			}
-			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + pageQuietButton + `" data-link-revoke>Revoke</button></form>
-</li>
+			if revoke {
+				b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + pageQuietButton + `" data-link-revoke>Revoke</button></form>
+`)
+			}
+			b.WriteString(`</li>
 `)
 		}
 		b.WriteString(`</ul>
@@ -930,7 +979,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 <a href="` + pageViewPath(id) + `?v=` + vn + `" class="press flex min-h-[44px] min-w-0 flex-1 items-center gap-1 rounded-lg px-3 text-sm text-fg transition hover:bg-s2" data-version-view>v` + vn +
 				`<span class="text-fg2">` + cur + ` · ` + ui.PlainWhenTitledHTML("", v.CreatedAt, now, uploads.HumanSize(int64(v.SizeBytes))) + `</span></a>
 `)
-			if v.Version != p.CurrentVersion {
+			if manage && v.Version != p.CurrentVersion {
 				b.WriteString(ui.MoreMenuHTML("version-menu-"+vn, "More for version "+vn,
 					`<form method="POST" action="`+base+`/rollback"><input type="hidden" name="version" value="`+vn+`"><button type="submit" class="`+ui.PageMenuItemClass+`" data-version-current>Make current</button></form>`))
 			}
@@ -951,9 +1000,10 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		// Each response is drawn from ITS version's blocks (the form it was
 		// sent through), read once per version.
 		blocksOf := s.pageResponseBlocks(ctx, id, resps)
+		byName := s.pageResponderNames(ctx, resps)
 		for _, x := range resps {
 			blocks, read := blocksOf[x.Version]
-			b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
+			b.WriteString(pageResponseHTML(x, blocks, read, now, admin, byName[x.ResponderUser]))
 		}
 		b.WriteString(`</ul>
 `)
@@ -974,19 +1024,28 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	// Delete asks in place (pageShareJS): "Delete this page" becomes the
 	// question with Delete and Cancel; Cancel or Escape puts it back. Only
 	// Delete posts. (The wrappers carry hidden: a display utility on the
-	// buttons would win over the attribute.)
-	b.WriteString(`<div class="flex flex-wrap items-center gap-1 border-t border-line pt-4" data-page-delete-box>
+	// buttons would win over the attribute.) Drawn only for a reader who may
+	// manage the page (manage); every reader keeps "All pages".
+	allPages := `<a href="` + pagesPath + `" class="ml-auto inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
+`
+	if !manage {
+		b.WriteString(`<div class="flex flex-wrap items-center gap-1 border-t border-line pt-4">
+` + allPages + `</div>
+`)
+	} else {
+		b.WriteString(`<div class="flex flex-wrap items-center gap-1 border-t border-line pt-4" data-page-delete-box>
 <span data-page-delete-ask><button type="button" class="` + pageQuietButton + `">Delete this page</button></span>
 <div hidden data-page-delete-confirm><div class="flex flex-wrap items-center gap-2" role="group" aria-label="Delete this page?">
 <span class="text-sm font-semibold text-fg">Delete this page and its responses?</span>
 <form method="POST" action="` + base + `/delete"><button type="submit" class="press inline-flex min-h-[44px] items-center rounded-lg bg-st-error-bg px-4 text-sm font-semibold text-st-error-fg ring-1 ring-inset ring-st-error-fg/40" data-page-delete>Delete</button></form>
 <button type="button" class="` + pageQuietButton + `" data-page-delete-cancel>Cancel</button>
 </div></div>` +
-		ui.InfoSheetHTML(ui.InfoSheet{ID: "page-delete-about", Label: "About deleting", Heading: "Delete this page",
-			Lead: "Deletes the page, every version, link and response, and every file sent through it. It cannot be undone."}) + `
-<a href="` + pagesPath + `" class="ml-auto inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
-</div>
-</section>` + ui.FloatingMenuScriptHTML())
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "page-delete-about", Label: "About deleting", Heading: "Delete this page",
+				Lead: "Deletes the page, every version, link and response, and every file sent through it. It cannot be undone."}) + `
+` + allPages + `</div>
+`)
+	}
+	b.WriteString(`</section>` + ui.FloatingMenuScriptHTML())
 	// secret: its Share and its Links carry the page's live link, a bearer
 	// capability, so it loads no telemetry (ui.NavDocumentView.Secret).
 	s.writeNavDocument(w, r, code, textplain.Title(p.Title), ui.NavPages, true, b.String(), navWide)
@@ -1175,7 +1234,11 @@ func orJSONNull(raw []byte) []byte {
 //
 // read is false when its version could not be read now (pageResponseBlocks):
 // it is then drawn from its data alone, under a plain "A response" / "A file".
-func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool) string {
+//
+// by is the sender's name for an owner-view response someone OTHER than the
+// reader sent (a team member's, on a team's page: pageResponderNames); ""
+// draws it as the reader's own ("Sent by you").
+func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool, by string) string {
 	esc := html.EscapeString
 	rid := strconv.FormatInt(x.ID, 10)
 	var a pages.Answer
@@ -1196,6 +1259,10 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	when := ui.PlainWhenHTML("Sent ", x.CreatedAt, now)
 	if x.ByOwner {
 		when = `<span data-response-by="you">` + ui.PlainWhenHTML("Sent by you ", x.CreatedAt, now) + `</span>`
+		if by != "" {
+			when = `<span data-response-by="member" data-response-by-user="` + strconv.FormatInt(x.ResponderUser, 10) + `">` +
+				ui.PlainWhenHTML("Sent by "+textplain.Title(by)+" ", x.CreatedAt, now) + `</span>`
+		}
 	}
 	b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `"` + pageResponseByAttr(x) + `>
 <div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
@@ -1222,6 +1289,23 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// pageResponderNames names each owner-view response's sender in resps who is
+// NOT the reader (a team member's response on a team's page), by user id; the
+// reader's own and a link's are absent (drawn "you" and "Sent").
+func (s *Server) pageResponderNames(ctx context.Context, resps []pages.Response) map[int64]string {
+	me := requestOwner(ctx)
+	out := map[int64]string{}
+	for _, x := range resps {
+		if !x.ByOwner || x.ResponderUser <= 0 || x.ResponderUser == me {
+			continue
+		}
+		if _, ok := out[x.ResponderUser]; !ok {
+			out[x.ResponderUser] = s.personName(ctx, x.ResponderUser)
+		}
+	}
+	return out
 }
 
 // pageSessionLink is where the session that made page p is NOW, for the
@@ -1413,7 +1497,14 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions(r.Context(), v)))
+	opts := s.pageRenderOptions(r.Context(), v)
+	// A team member's own view of a TEAM's page takes no file yet (0165;
+	// team_pages.go teamPageNoFile refuses the upload too): its file fields
+	// are drawn off, saying so.
+	if p, err := s.ext.Pages.Page(r.Context(), id); err == nil && memberOnTeamPage(r.Context(), p) {
+		opts.Uploads, opts.UploadsOff = false, pages.TeamUploadsOff
+	}
+	_ = servePageContent(w, r, pages.Content(v, opts))
 }
 
 // handlePageRevokeLink is the owner's Revoke.
@@ -1526,6 +1617,19 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A TEAM's page deleted by a member (its creator or a manager, whatever
+	// their role): its uploads rows are the team's, which 0127 lets only an
+	// operator revoke, so the loop above may have revoked none of them. 0165's
+	// narrow door revokes every row under the page's prefix.
+	if pg, perr := s.ext.Pages.Page(ctx, id); perr == nil && memberOnTeamPage(ctx, pg) {
+		if rv, ok := s.ext.Pages.(teamPageUploadRevoker); ok {
+			if _, err := rv.RevokeTeamPageUploads(ctx, id); err != nil {
+				s.logger.Printf("pages: page %d: revoke the team's file rows: %v", id, err)
+				s.renderPageDetail(w, r, id, http.StatusBadGateway, "The page's files could not all be deleted, so the page is kept. Try again.", "", "")
+				return
+			}
+		}
+	}
 	swept := 0
 	if s.ext.Uploads != nil {
 		if swept, err = s.ext.Uploads.DeletePageFiles(ctx, id); err != nil {
@@ -1545,6 +1649,12 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Printf("pages: page %d deleted by its owner (%d file row(s); %d object(s) under its prefix)", id, len(files), swept)
 	http.Redirect(w, r, pagesPath, http.StatusSeeOther)
+}
+
+// teamPageUploadRevoker is the pages store's revoke of a team page's uploads
+// rows by its prefix (pages.PGStore.RevokeTeamPageUploads).
+type teamPageUploadRevoker interface {
+	RevokeTeamPageUploads(ctx context.Context, id int64) (int, error)
 }
 
 // pageUploadReadTimeout is how long a stranger's upload has to deliver its

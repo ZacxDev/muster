@@ -42,7 +42,7 @@ func teamRefused(why string) teamHostRule { return teamHostRule{why: why} }
 const (
 	whyOwnerAuthority = "an owner-authority decision (hostStepUpTools): a team decides through a member in muster's web UI, never through a host"
 	whyEstateRead     = "a read of the owner's whole estate: as the team it would show every team row to every session on the host"
-	whyPage           = "pages are a personal table: a team-owned page would be unreadable by every member"
+	whyPage           = "a team host's page would record no person as its creator (0165: only a team AGENT's page records who started it), so no member could manage it but a manager; team hosts make none yet"
 	whyConnectorG3    = "a host instance's connector tool: a team host officer that declares connectors is refused at boot (operator decision G3)"
 	whyOfficer        = "a team host officer instance's own (hostOfficerMirrorTool binds it to a recorded spawn)"
 )

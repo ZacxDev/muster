@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -202,6 +203,7 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	}
 	switch name {
 	case pageCreateTool:
+		creator.ByUser = s.teamPageCreator(ctx, c)
 		return s.toolPageCreate(ctx, c, creator, arguments), true
 	case pageUpdateTool:
 		return s.toolPageUpdate(ctx, c, creator, arguments), true
@@ -247,6 +249,36 @@ func pageCreatorOf(c toolCaller) (pages.Creator, bool) {
 		return cr, true
 	}
 	return pages.Creator{}, false
+}
+
+// agentStarter is the chief dispatch store's read of who started an agent
+// (plugins.PGStore.AgentStartedBy).
+type agentStarter interface {
+	AgentStartedBy(ctx context.Context, agentID int64) (int64, error)
+}
+
+// teamPageCreator is the PERSON a team agent's new page records as its
+// creator (pages.Creator.ByUser, migration 0165): the person whose say-so
+// started the agent (its chief reservation's requested_by_user), read as the
+// team. 0 — the page records none, and a manager of the team manages it —
+// for any caller that is not a team-owned agent (a person's own page needs
+// none: its owner is its creator), and when no starter is recorded or it
+// cannot be read (logged).
+func (s *Server) teamPageCreator(ctx context.Context, c toolCaller) int64 {
+	p, ok := authz.From(ctx)
+	if c.agent == nil || c.agent.ID <= 0 || !ok || !p.Team || p.UserID != c.agent.OwnerID {
+		return 0
+	}
+	st, ok := s.ext.ChiefDispatch.(agentStarter)
+	if !ok {
+		return 0
+	}
+	person, err := st.AgentStartedBy(ctx, c.agent.ID)
+	if err != nil {
+		s.logger.Printf("pages: team agent %d: read who started it: %v (the page records no creator)", c.agent.ID, err)
+		return 0
+	}
+	return person
 }
 
 // pageToolRefusal is a store error as a tool's error.
@@ -514,7 +546,7 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 
 // pageShareGoesLive reports whether caller c's page_share_request for a page
 // of owner's makes the link live at once instead of asking: the owner's own
-// setting is on (pageAgentShareOn) AND c is not a caller the step-up gate
+// setting is on and owner is not a team (pageAgentShareAllowed) AND c is not a caller the step-up gate
 // covers (host_stepup.go stepUpCoverage: a mirrored session on a machine that
 // runs a host officer or starts agents for the chief, or a remote caller).
 //
@@ -525,7 +557,7 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 // Only a dispatched agent (no mirror host) and the owner's own sessions on an
 // uncovered machine go live. TestAStepUpCoveredCallerIsAlwaysAsked.
 func (s *Server) pageShareGoesLive(ctx context.Context, c toolCaller, owner int64) bool {
-	if !s.pageAgentShareOn(ctx, owner) {
+	if !s.pageAgentShareAllowed(ctx, owner) {
 		return false
 	}
 	if c.asker.MirrorHost == "" && !c.remote {
@@ -533,6 +565,25 @@ func (s *Server) pageShareGoesLive(ctx context.Context, c toolCaller, owner int6
 	}
 	_, _, covered := s.stepUpCoverage(ctx, c.asker.MirrorHost, c)
 	return !covered
+}
+
+// pageAgentShareAllowed reports whether an agent's page_share_request for a
+// page of owner's makes the link live at once (pageShareAuto) instead of
+// asking a person: the owner's own opt-in (pageAgentShareOn), and NEVER for a
+// team.
+//
+// 🔴 A TEAM AGENT NEVER MAKES A LINK LIVE BY ITSELF (operator decision: a
+// team's page goes public only when a person taps — Share on the page, or
+// the share card). No setting reaches it: the opt-in is never read for a
+// team, so a pages_agent_share true on a team's notify_preferences row — by
+// a default or by hand — cannot turn this on. An owner whose account cannot
+// be read is taken for a team (ownerIsTeam): it asks.
+// TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn.
+func (s *Server) pageAgentShareAllowed(ctx context.Context, owner int64) bool {
+	if s.ownerIsTeam(ctx, owner) {
+		return false
+	}
+	return s.pageAgentShareOn(ctx, owner)
 }
 
 // pageAgentShareOn reports whether "Let my agents share pages without asking"
