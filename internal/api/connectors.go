@@ -38,6 +38,10 @@ import (
 // 🔴 NO ROUTE HERE RETURNS A SECRET. The connector type has no secret field; the
 // only read of one is connectors.Store.Credential, called by the proxy alone.
 
+// TeamConnectorsOff is what a team's Connectors page says on a server with no
+// connector store, in words.
+const TeamConnectorsOff = "Connected accounts aren't turned on for this server."
+
 // ConnectorsUnconfigured is why the connector routes refuse on a server with no
 // connector store.
 const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNECTOR_ENCRYPTION_KEY is not set"
@@ -578,9 +582,20 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	if g.Reason != "" {
 		body += " — " + g.Reason
 	}
-	link, team := "/connectors", false
+	var teamID int64
+	team := false
 	if p, ok := authz.From(ctx); ok && p.Team && !p.All() && p.UserID > 0 {
-		link, team = "/teams/"+strconv.FormatInt(p.UserID, 10)+"/connectors", true
+		teamID, team = p.UserID, true
+	}
+	// Every request's push opens its card (connectorRequestLink); an
+	// officer's goes through officer_push.go's classification and card.
+	link := connectorRequestLink(teamID, g.ID)
+	if s.connectorRequestByOfficer(ctx, g) {
+		ref := officerCardRef{ID: strconv.FormatInt(g.ID, 10), Team: teamID}
+		if !s.officerPushSends(officerPushConnectorRequest, requestOwner(ctx), "connector-"+ref.ID) {
+			return
+		}
+		link = officerDecisionCard(officerPushConnectorRequest, ref)
 	}
 	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
 		Type:         "connector",

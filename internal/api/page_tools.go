@@ -301,7 +301,12 @@ func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
 // own toggle (page_updated) and the sender's own cap, so an agent iterating
 // on a page cannot flood. This push is the owner's page_published toggle, so
 // a muted owner gets none (and the drop is logged: goNotify).
-func (s *Server) pagePublished(p pages.Page) {
+//
+// An officer's page pushes nothing (byOfficer; officer_push.go): information.
+func (s *Server) pagePublished(p pages.Page, byOfficer bool) {
+	if byOfficer && !s.officerPushSends(officerPushPagePublished, p.OwnerID, "page-"+strconv.FormatInt(p.ID, 10)+"-ready") {
+		return
+	}
 	s.pushTask(p.OwnerID, push.EventPagePublished, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page ready: " + truncate(p.Title, 80),
@@ -323,7 +328,7 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 		}
 		return pageToolRefusal("created", 0, err)
 	}
-	s.pagePublished(p)
+	s.pagePublished(p, s.agentIsOfficer(ctx, c.AgentID, p.OwnerID))
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"next": s.pageNext(ctx, p)})
 }
@@ -350,7 +355,8 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 		}
 		return pageToolRefusal("updated", id, err)
 	}
-	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator})
+	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator,
+		byOfficer: s.agentIsOfficer(ctx, c.AgentID, p.OwnerID)})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }
@@ -566,23 +572,35 @@ func (s *Server) pageShareAuto(ctx context.Context, creator pages.Creator, p pag
 		}
 	}
 	body := "Anyone with its link can open it. Tap to see the link or revoke it."
+	// An officer's unasked share pushes nothing (officer_push.go): the owner
+	// opted in to those, and the page lists its live links.
+	quiet := s.agentIsOfficer(ctx, creator.AgentID, p.OwnerID) &&
+		!s.officerPushSends(officerPushPageShared, p.OwnerID, "page-"+strconv.FormatInt(p.ID, 10)+"-shared")
 	if reason = strings.TrimSpace(reason); reason != "" {
 		body = "Why: " + truncate(reason, 120) + " — anyone with its link can open it. Tap to revoke it."
 	}
-	s.pushTask(p.OwnerID, push.EventPageShared, RouterNotification{
-		Type:  taskNotificationType,
-		Title: "Page shared: " + truncate(p.Title, 80),
-		Body:  by + " " + body,
-		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-shared",
-		Data:  map[string]string{"url": pagePath(p.ID)},
-	})
-	note := "The link is live now: anyone who has url can open the page. Your owner was told and can revoke it."
+	if !quiet {
+		s.pushTask(p.OwnerID, push.EventPageShared, RouterNotification{
+			Type:  taskNotificationType,
+			Title: "Page shared: " + truncate(p.Title, 80),
+			Body:  by + " " + body,
+			Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-shared",
+			Data:  map[string]string{"url": pagePath(p.ID)},
+		})
+	}
+	// What the agent is told its owner knows: an officer's share pushed
+	// nothing, so its owner was not told — it sees the link on the page.
+	told, usingIt := "Your owner was told", " you are using it"
+	if quiet {
+		told, usingIt = "Your owner sees it on the page", ""
+	}
+	note := "The link is live now: anyone who has url can open the page. " + told + " and can revoke it."
 	sharedBy := l.RequestedBy
 	if ownersLink {
 		sharedBy = "your owner"
-		note = "This is the link your owner already shared: anyone who has url can open the page. Your owner was told you are using it, and can revoke it."
+		note = "This is the link your owner already shared: anyone who has url can open the page. " + told + usingIt + ", and can revoke it."
 	} else if !created {
-		note = "This is the page's existing link: anyone who has url can open the page. Your owner was told, and can revoke it."
+		note = "This is the page's existing link: anyone who has url can open the page. " + told + ", and can revoke it."
 	}
 	if l.Reusable {
 		note += " It is this page's one link: asking again returns the same url."

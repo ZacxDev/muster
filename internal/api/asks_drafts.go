@@ -218,6 +218,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 	}
 	now := time.Now()
 	s.withDraftAgentNames(ctx, cards)
+	s.withDraftOfficerNames(cards)
 	pending, archived = splitDraftCards(cards, now)
 	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
@@ -235,6 +236,9 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		}
 		return pending, archived, true
 	}
+	one := []plugins.DraftCard{c}
+	s.withDraftOfficerNames(one)
+	c = one[0]
 	if p, _ := splitDraftCards([]plugins.DraftCard{c}, now); len(p) == 1 {
 		return append([]plugins.DraftCard{c}, pending...), archived, true
 	}

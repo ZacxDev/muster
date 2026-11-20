@@ -273,19 +273,34 @@ func refusalCardHTML(sc officerScope, officer string, rf builtin.Refusal, writab
 	case rf.Summary != "":
 		b.WriteString(`<p class="break-words text-xs text-fg2" data-refusal-state>The officer: ` + esc(truncateRunes(rf.Summary, 240)) + `</p>`)
 	}
+	code := fmt.Sprintf("item %d · draft %d · %s · refused by %s", rf.Item, rf.Draft, rf.Venue, rf.By)
+	if rf.RetryAt != nil {
+		code += " · retry_at " + rf.RetryAt.UTC().Format(time.RFC3339)
+	}
 	b.WriteString(ui.InfoSheetHTML(ui.InfoSheet{ID: "refusal-" + item + "-info", Label: "Details of this refusal", Heading: "Details",
-		Lead: "What muster records for this refusal:", Code: fmt.Sprintf("item %d · draft %d · %s · refused by %s", rf.Item, rf.Draft, rf.Venue, rf.By)}))
+		Lead: "What muster records for this refusal:", Code: code}))
 	if writable {
 		action := esc(officersPagePath + "/" + url.PathEscape(officer) + "/refusals/" + item)
 		b.WriteString(`<form method="POST" action="` + action + `/refile" class="flex flex-col gap-2" data-refusal-refile>` + sc.ownerField() + `
 <label for="refile-when-` + item + `" class="text-xs font-medium text-fg">Re-file it</label>
 <select id="refile-when-` + item + `" name="when" class="` + adminInput + `">`)
+		// The plugin's retry_at, when it named one Re-file can take, is the
+		// default: "at" chosen and its time filled in (refileDefault).
+		atValue := ""
+		retry, hasRetry := refileDefault(rf, now)
+		if hasRetry {
+			atValue = retry.Format(refileAtLayout)
+			b.WriteString(`<option value="at" selected data-refile-retry>` + esc("When the plugin says it can go: "+fmtTime(retry)) + `</option>`)
+		}
 		for _, o := range refileChoices {
+			if hasRetry && o.key == "at" {
+				continue
+			}
 			b.WriteString(`<option value="` + o.key + `">` + esc(o.label) + `</option>`)
 		}
 		b.WriteString(`</select>
 <label for="refile-at-` + item + `" class="text-xs text-fg2">At a time you choose (UTC)</label>
-<input id="refile-at-` + item + `" name="at" type="datetime-local" class="` + adminInput + `">
+<input id="refile-at-` + item + `" name="at" type="datetime-local" value="` + esc(atValue) + `" class="` + adminInput + `">
 <span class="text-xs text-fg2">The officer files it again then, and you approve the new draft before anything is sent.</span>
 <div class="flex flex-wrap gap-2"><button type="submit" class="` + adminButton + `" data-refusal-refile-submit>Re-file</button>
 <button type="submit" formaction="` + action + `/drop" class="` + adminQuiet + `" data-refusal-drop>Drop it</button></div></form>`)
@@ -327,6 +342,28 @@ var refileChoices = []refileChoice{
 	{"at", "At the time below"},
 }
 
+// refileAtLayout is Re-file's `at` field's layout (a datetime-local, UTC).
+const refileAtLayout = "2006-01-02T15:04"
+
+// refileDefault is the Re-file time refusal rf offers first: the plugin's
+// retry_at, rounded UP to the minute (the field has no seconds, and earlier
+// than the plugin said would be refused again) — when it named one that is
+// still ahead of now and within builtin.MaxRefileAhead. ok false: the plain
+// choices, the first of them the default, as before retry_at.
+func refileDefault(rf builtin.Refusal, now time.Time) (time.Time, bool) {
+	if rf.RetryAt == nil {
+		return time.Time{}, false
+	}
+	t := rf.RetryAt.UTC()
+	if r := t.Truncate(time.Minute); !r.Equal(t) {
+		t = r.Add(time.Minute)
+	}
+	if !t.After(now) || t.After(now.Add(builtin.MaxRefileAhead)) {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 // refileAt is when a Re-file's `when` (and `at`, for "at") asks for, at now;
 // ok false for a choice or time muster does not read.
 func refileAt(when, at string, now time.Time) (time.Time, bool) {
@@ -338,7 +375,7 @@ func refileAt(when, at string, now time.Time) (time.Time, bool) {
 	case "tomorrow":
 		return now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour), true
 	case "at":
-		t, err := time.ParseInLocation("2006-01-02T15:04", strings.TrimSpace(at), time.UTC)
+		t, err := time.ParseInLocation(refileAtLayout, strings.TrimSpace(at), time.UTC)
 		return t, err == nil
 	}
 	return time.Time{}, false
@@ -479,16 +516,37 @@ func (s *Server) handleOfficerRefusalDrop(w http.ResponseWriter, r *http.Request
 
 // --- budget and run controls ------------------------------------------------------
 
-// officerBudgetOf is the daily budget of owner's officer id as it runs (0:
-// none, or not known: it does not run).
-func (s *Server) officerBudgetOf(owner int64, id string) float64 {
+// runningOfficer is owner's officer id as it runs (its declared budget
+// included); ok false when it does not run, so no budget is known.
+func (s *Server) runningOfficer(owner int64, id string) (officers.Officer, bool) {
 	if o, ok := s.officerRT.envOfficer(owner, id); ok {
-		return o.Budget.DailyUSD
+		return o, true
 	}
 	if st, ok := s.officerRT.declaredView(owner, id); ok && st.officer != nil {
-		return st.officer.Budget.DailyUSD
+		return *st.officer, true
 	}
-	return 0
+	return officers.Officer{}, false
+}
+
+// officerBudgetOf is the daily budget owner's officer id is held to on now's
+// UTC day: as it runs, with its owner's raise for today applied
+// (officers.Officer.WithRaisedCap, the cap's own rule), and whether today's is
+// a raise. 0: none, or not known (it does not run). An unreadable raise is the
+// declared budget, as the wake loop reads it.
+func (s *Server) officerBudgetOf(ctx context.Context, owner int64, id string, now time.Time) (budget float64, raised bool) {
+	o, ok := s.runningOfficer(owner, id)
+	if !ok {
+		return 0, false
+	}
+	declared := o.Budget.DailyUSD
+	if declared > 0 {
+		if m, err := s.officerStore.RaisedCapsOn(ctx, []int64{owner}, now); err != nil {
+			s.logger.Printf("officers: read %s's raised cap for its page: %v", id, err)
+		} else {
+			o = o.WithRaisedCap(m[builtin.OfficerRef{Owner: owner, Officer: id}])
+		}
+	}
+	return o.Budget.DailyUSD, o.Budget.DailyUSD > declared
 }
 
 // officerSpentToday is owner's officer id's spend on now's UTC day (the
@@ -512,7 +570,7 @@ func (s *Server) officerRunHTML(ctx context.Context, sc officerScope, v declared
 		return ""
 	}
 	now := s.officerNow()
-	budget := s.officerBudgetOf(sc.Owner, v.ID)
+	budget, raised := s.officerBudgetOf(ctx, sc.Owner, v.ID, now)
 	spent, read := s.officerSpentToday(ctx, sc.Owner, v.ID, now)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col gap-2 rounded-xl bg-bg px-3 py-3 ring-1 ring-inset ring-edge" id="officer-run">`)
@@ -520,10 +578,16 @@ func (s *Server) officerRunHTML(ctx context.Context, sc officerScope, v declared
 	case !read:
 		b.WriteString(`<p class="text-sm text-fg2" data-run-spend>Today's spend could not be read just now.</p>`)
 	case budget > 0:
-		b.WriteString(`<p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f/%.2f", spent, budget)) + `">Spent today: ` + esc(fmt.Sprintf("$%.2f", spent)) + ` of its ` + esc(navUSDWords(budget)) + ` daily budget.</p>`)
+		reset := officers.CapResetAt(now).UTC().Format("15:04 UTC")
+		which := " daily budget."
+		if raised {
+			which = " budget for today (you raised it; it goes back at " + reset + ")."
+		}
+		b.WriteString(`<p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f/%.2f", spent, budget)) + `">Spent today: ` + esc(fmt.Sprintf("$%.2f", spent)) + ` of its ` + esc(navUSDWords(budget)) + esc(which) + `</p>`)
 		if spent >= budget {
 			b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" data-run-held>Held: today's budget is spent, so muster does not wake it for new work until ` +
-				esc(officers.CapResetAt(now).UTC().Format("15:04 UTC")) + `. Run now still wakes it: work you give it yourself gets past the cap.</p>`)
+				esc(reset) + `. Run now still wakes it: work you give it yourself gets past the cap.</p>`)
+			b.WriteString(s.capRaiseFormHTML(ctx, sc, v.ID))
 		}
 	default:
 		b.WriteString(`<p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f", spent)) + `">Spent today: ` + esc(fmt.Sprintf("$%.2f", spent)) + ` (it has no daily budget).</p>`)

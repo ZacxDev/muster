@@ -93,7 +93,9 @@ func TestABuiltinOfficerWorksAnItemEndToEnd(t *testing.T) {
 			listed = append(listed, d.Name)
 		}
 	}
-	core := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolAskPerson}
+	core := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolAskPerson,
+		// muster serves them itself (officer_own_state.go), not the backend
+		officers.ToolMyState, officers.ToolConfirmCard, officers.ToolRefusalRefile, officers.ToolRefusalDrop}
 	if got, want := strings.Join(listed, ","), strings.Join(core, ","); got != want {
 		t.Fatalf("a builtin officer is offered %s, want exactly what its backend serves: %s", got, want)
 	}

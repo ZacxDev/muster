@@ -15,6 +15,9 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmprsessions <owner-id> <claude-session-prefix>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix episode <owner-id> <session-key> <stalled|needs_you> <host> <window>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmepisodes <owner-id> <session-key-prefix>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix endepisode <owner-id> <session-key>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix episodestreak <owner-id> <session-key>   → prints its open stop's streak ("" before a pass observed it)
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmfleetactions <owner-id> <session-key-prefix>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> [body] → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
@@ -92,6 +95,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -404,6 +408,88 @@ func run(args []string) error {
 			SELECT $1, 'mirror', $2, coalesce(max(seq), 0) + 1, $3, $4, 'work', $5, now() - interval '1 hour', now() - interval '1 hour'
 			FROM session_episodes WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2`,
 			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "plainask":
+		// An OPEN plain-text question in the ask log (internal/asklog, 0089),
+		// as the capture writes one for a Claude Code window's last turn, in
+		// the session's open stop: what session_answer continue / composed
+		// answers (fleet_answers.go fleetHeldQuestion).
+		owner, err := num(1)
+		if err != nil || len(args) != 6 {
+			return fmt.Errorf("usage: plainask <owner-id> <session-key> <host> <window> <question>")
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO asks (owner_id, kind, runtime, mirror_host, mirror_session, mirror_window, claude_session,
+				episode_id, question, question_norm, asked_at)
+			SELECT $1, 'plain_text', 'claude-code', $3, 'work', $4, $2, e.id, $5, lower($5), now() - interval '30 minutes'
+			FROM session_episodes e WHERE e.owner_id = $1 AND e.session_kind = 'mirror' AND e.session_key = $2 AND e.ended_at IS NULL`,
+			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "rmasks":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmasks <owner-id> <session-key-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM asks WHERE owner_id = $1 AND starts_with(claude_session, $2)`, owner, args[2]); err != nil {
+			return err
+		}
+	case "endepisode":
+		// Ends a mirrored session's OPEN stop now, as the owner's own word
+		// would (end_reason 'owner'): the stop a fleet proposal was filed in
+		// is over, so the proposal expires (chief-fleet-proposals.spec.ts).
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: endepisode <owner-id> <session-key>")
+		}
+		tag, err := conn.Exec(ctx, `UPDATE session_episodes SET ended_at = now(), end_reason = 'owner', updated_at = now()
+			WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2 AND ended_at IS NULL`, owner, args[2])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("endepisode: %d open stops of %s, want 1", tag.RowsAffected(), args[2])
+		}
+	case "episodestreak":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: episodestreak <owner-id> <session-key>")
+		}
+		var streak string
+		if err := conn.QueryRow(ctx, `SELECT coalesce(max(streak_key), '') FROM session_episodes
+			WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2 AND ended_at IS NULL`, owner, args[2]).Scan(&streak); err != nil {
+			return err
+		}
+		fmt.Println(streak)
+	case "rmfleetactions":
+		// Removes the fleet actions on sessions whose key starts with the
+		// prefix. The log is append-only BY TRIGGER (0158), so the trigger is
+		// switched off for this one statement, in one transaction (the
+		// fixture's connection owns the table).
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmfleetactions <owner-id> <session-key-prefix>")
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		for _, q := range []string{`ALTER TABLE fleet_actions DISABLE TRIGGER fleet_actions_append_only`,
+			`UPDATE send_queue SET fleet_action_id = NULL WHERE fleet_action_id IN (SELECT id FROM fleet_actions WHERE owner_id = $1 AND starts_with(subject_key, $2))`,
+			`DELETE FROM fleet_actions WHERE owner_id = $1 AND starts_with(subject_key, $2)`,
+			`ALTER TABLE fleet_actions ENABLE TRIGGER fleet_actions_append_only`} {
+			var err error
+			if strings.Contains(q, "$1") {
+				_, err = tx.Exec(ctx, q, owner, args[2])
+			} else {
+				_, err = tx.Exec(ctx, q)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 	case "rmepisodes":

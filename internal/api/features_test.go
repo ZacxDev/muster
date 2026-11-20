@@ -217,7 +217,8 @@ func TestTheSuggestedRepliesSectionFollowsTheRegistry(t *testing.T) {
 			if !strings.Contains(body, `data-testid="suggest-settings"`) {
 				t.Fatalf("no suggested-replies section:\n%s", body)
 			}
-			got := strings.Contains(body, `data-state="off-needs-key"`) && strings.Contains(body, "Off: needs EXAMPLE_OPENROUTER_KEY") &&
+			got := strings.Contains(body, `data-state="off-needs-key"`) && strings.Contains(body, "Off — needs an OpenRouter key on the server.") &&
+				strings.Contains(body, `data-info-code="">needs EXAMPLE_OPENROUTER_KEY</code>`) &&
 				strings.Contains(body, `#suggested-replies`)
 			if got != c.off {
 				t.Fatalf("off note drawn = %v, want %v", got, c.off)
@@ -273,9 +274,10 @@ func TestAFeatureOffRouteAnswersATypedNotFound(t *testing.T) {
 			}
 		})
 	}
-	// A document navigation gets the notice page.
+	// A document navigation gets the notice page (renderFeatureOff); the
+	// operator's session is an admin's, so its ⓘ holds the line.
 	page := sessionGet(h, s, "/plugins", true)
-	if page.Code != http.StatusNotFound || !strings.Contains(page.Body.String(), "Plugins is off on this server") ||
+	if page.Code != http.StatusNotFound || !strings.Contains(page.Body.String(), FeatureOffNoticeText) ||
 		!strings.Contains(page.Body.String(), "EXAMPLE_PLUGINS=1") {
 		t.Fatalf("GET /plugins as a page: %d %s", page.Code, page.Body)
 	}

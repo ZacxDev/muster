@@ -293,9 +293,10 @@ func askLogPrefilter(text string) bool {
 // Mirrored windows: plain text (Claude Code) and opencode asks.
 // ---------------------------------------------------------------------------
 
-// AskLogMirrorChanged is the hub's status hook (mirror.Service.SetStatusNotify;
-// cmd/muster-server): owner's windows' status moved. It diffs each window
-// against what it last saw and queues the captures a change calls for:
+// AskLogMirrorChanged is the ask log's half of the hub's status hook
+// (MirrorStatusChanged; mirror.Service.SetStatusNotify, cmd/muster-server):
+// owner's windows' status moved. It diffs each window against what it last saw
+// and queues the captures a change calls for:
 //
 //   - a Claude window naming its session, busy → idle: a turn ended (read its
 //     last assistant message for a question);
@@ -622,6 +623,11 @@ func askLogProvenanceOf(reply string, sent []sendqueue.SentBody) string {
 		case b.ChiefForwardDispatch > 0:
 			// The chief's task_forward: the chief routing a message, never the
 			// person's own send (0089's provenance has no other word for it).
+			return asklog.ProvRoute
+		case b.FleetActionID > 0:
+			// A fleet action's card the owner approved: the chief's text,
+			// relayed on the owner's tap — a route in 0089's words, never the
+			// person's own send.
 			return asklog.ProvRoute
 		default:
 			return asklog.ProvMusterSend

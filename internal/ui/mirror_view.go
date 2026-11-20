@@ -131,8 +131,9 @@ type MirrorViewView struct {
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
-	// Asks and AsksSrc are the window's Claude sessions' OPEN attention asks
-	// and their fragment URL (AgentDetailView.Asks).
+	// Asks and AsksSrc are the header's asks badge for the window's Claude
+	// sessions' OPEN attention asks, and its fragment URL
+	// (AgentDetailView.Asks).
 	Asks    string
 	AsksSrc string
 	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
@@ -279,12 +280,14 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Header(
 					// 🔴 ONE ROW THAT NEVER WRAPS (mirrorHeaderMenu): ☰, the title
 					// (flex-1, truncating: it takes what the controls leave), the
-					// Open button while there is something to open, the Rendered |
-					// Terminal switch and the ⋯ menu, which holds the secondary
-					// actions (Home, the message index). Measured at 390×844 and
-					// 1280×800 by e2e/tests/session-open.spec.ts.
+					// asks badge while the window has open asks, the Open button
+					// while there is something to open, the Rendered | Terminal
+					// switch and the ⋯ menu, which holds the secondary actions
+					// (Home, the message index). Measured at 390×844 and 1280×800
+					// by e2e/tests/session-open.spec.ts.
 					Class("flex flex-nowrap items-center gap-2 border-b border-line px-2 py-1.5"),
-					// Polled only without the asks block, whose asks:changed refreshes it.
+					// Polled only without the asks badge, whose live refresh's
+					// asks:changed refreshes it (AttentionLiveScript).
 					overlayNavButton(v.Switcher, v.AsksSrc == ""),
 					Div(
 						// relative: the title button's 44px hit area
@@ -303,6 +306,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							mirrorUpdatingChip(),
 						),
 					),
+					// The window's sessions' open attention asks: a count that
+					// opens the Asks page filtered to them (AskerAsksBadge).
+					g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 					// The session's Open button (previews and pages), while it has
 					// something to open (plugin_chip.go).
 					previewButtonSlot(v.Plugins),
@@ -346,8 +352,6 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
 				// conversation, so it never moves what is being read there.
 				CCQueued(nil),
-				// The window's sessions' attention asks (attention_ask), answered here.
-				g.If(v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, false)),
 				Div(
 					ID("mv-working"),
 					g.Attr("hidden", ""),
@@ -374,7 +378,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				agentTitleFitScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
-				// The attention asks block's live refresh.
+				// The header's asks badge's live refresh.
 				AskerAsksLive(v.AsksSrc),
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
@@ -457,12 +461,13 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //
 // The button is the line itself, not a "…" beside it (the agent header's
 // titleMoreButton): a separate 44px "…" would take back more room than the
-// switch's padding gave (viewToggleSegClass). It is block and truncating, so
-// it draws exactly the box the <h1> drew before (no new height, no shift).
+// switch's padding gave (viewToggleSegClass). It is block; inside it the title
+// is one truncating line and "On <computer>" a second (mirrorHostLine).
 //
 // Whether it is clipped is decided by agentTitleFitScript — the agent
-// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
-// the button both its [data-agent-title-text] and its [data-title-more].
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box,
+// the button its [data-title-more] and the button's title line its
+// [data-agent-title-text].
 // data-title-fit="disable" makes that script DISABLE the button while the
 // title fits (a tap on a whole title opens nothing) rather than hide it, as
 // it hides the agent header's "…". Without script the button stays enabled
@@ -496,15 +501,17 @@ func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
 		g.Group(extra),
 		Type("button"),
 		g.Attr("data-mv-title", ""),
-		g.Attr("data-agent-title-text", ""),
 		g.Attr("data-title-more", ""),
 		g.Attr("popovertarget", mirrorTitlePopoverID),
 		g.Attr("aria-haspopup", "dialog"),
 		g.Attr("aria-controls", mirrorTitlePopoverID),
 		g.Attr("aria-expanded", "false"),
-		Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
-		mirrorViewEntryTitle(v),
-		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
+		Class("block w-full min-w-0 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
+		// Two lines, each truncating on its own (mirrorHostLine): the title —
+		// the fit script's [data-agent-title-text], so the popover opens
+		// when the TITLE is clipped — then "On <computer>".
+		Span(g.Attr("data-agent-title-text", ""), Class("block truncate"), mirrorViewEntryTitle(v)),
+		g.If(!titleNamesHost(!v.SessionName.Human(), v.Qualifier, v.Host), mirrorHostLine(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
 	)
 }
 
@@ -570,8 +577,9 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 }
 
 // mirrorViewHeading is the header line as text: the name, then its badge's
-// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this, so when only
-// the badge is clipped the popover still says what the header did not.
+// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this. It
+// opens when the TITLE line is clipped; the "On <host>" line under it
+// (mirrorHostLine) truncates on its own and has the column's whole width.
 //
 // 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
 // used to end with the window's technical id ("· tmux cedar:1 @ atlas", or

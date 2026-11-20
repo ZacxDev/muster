@@ -197,6 +197,10 @@ type attentionItem struct {
 	// Source names who is waiting: the asking agent or session, the window,
 	// the plugin.
 	Source string `json:"source"`
+	// OfficerID is the built-in officer that raised the ask or notice (its
+	// "<type>:<area>" id), "" otherwise: Source says it in words ("Product
+	// officer (Acme)"), and a machine reader needs the id.
+	OfficerID string `json:"officer_id,omitempty"`
 	// target is the part of Source that names a mirrored window's tmux target
 	// (mirror.WhereTarget), "" for none: every display plains Source with
 	// textplain.TitleKeeping(Source, target), so the target reaches the
@@ -322,6 +326,9 @@ type attentionItem struct {
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
 	systemAsk bool
+	// officerAsk: an ask muster raised for a builtin officer
+	// (officerSystemAsk): its push opens officerDecisionCard's card.
+	officerAsk bool
 	// owner is an ask's owner (attention.Ask.Owner): the reader's own, or —
 	// for a member — a TEAM's (team sharing 2b.3). Set by askItem; zero for
 	// every other item.
@@ -378,12 +385,34 @@ func sessionKey(host, session, window string) string {
 	return "session-" + hex.EncodeToString(sum[:8])
 }
 
+// shownAskLabel is a's stored label as a surface shows it: a built-in
+// officer's ask is stored under "officer <id>" (officerAskLabel, the key its
+// page matches asks by) and SHOWN by what the officer is for, "Product officer
+// (Acme)" (the jargon audit's U-24); any other label as stored.
+func shownAskLabel(a attention.Ask) string {
+	if id := officerAskID(a); id != "" {
+		return ui.OfficerSourceName(id)
+	}
+	return a.Asker.Label
+}
+
+// officerAskID is the built-in officer that raised a, from its stored label
+// ("officer <id>"), or "" when an officer did not. An item carries it as
+// OfficerID, so a machine reader (the chief's attention_list) keeps the id
+// its plain Source no longer spells.
+func officerAskID(a attention.Ask) string {
+	if id, ok := strings.CutPrefix(a.Asker.Label, officerAskLabel("")); ok && a.Asker.System {
+		return id
+	}
+	return ""
+}
+
 // askerLabel is an ask's source by what it stored: its label (for a mirrored
 // session, its name and host when it asked — no tmux target), else its ids.
 // Every surface shows askSource, which falls back to this.
 func askerLabel(a attention.Ask) string {
 	if a.Asker.Label != "" {
-		return a.Asker.Label
+		return shownAskLabel(a)
 	}
 	if a.Asker.AgentID > 0 {
 		return "agent " + strconv.FormatInt(a.Asker.AgentID, 10)
@@ -474,11 +503,12 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, OfficerID: officerAskID(a), target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
 		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
+		it.officerAsk = officerSystemAsk(a)
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
 		if t, ok := unroutedPushText(a.Question); ok {
 			it.pushText = t
@@ -710,6 +740,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 	if err != nil {
 		return nil, err
 	}
+	s.withDraftOfficerNames(cards)
 	var out []attentionItem
 	now := time.Now()
 	// A follow or a like is on its outreach batch's ONE item (outreach_batch.go),
@@ -1040,8 +1071,15 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 		// the push's own title rule does not plain it a second time.
 		keep = it.Name
 	}
+	url := attentionOpenURL(it.Key)
+	if it.officerAsk {
+		// An officer's question or escalation: its decision card
+		// (officer_push.go). Read here, not at the filing, so a re-push
+		// (repushAsk, the suggestions) opens the same card.
+		url = officerDecisionCard(officerPushAsk, officerCardRef{ID: it.Key})
+	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": url}, Update: update, TitleKeep: keep}
 	n.CodenameTitle, n.CodenameKeep = attentionCodenameTitle(it)
 	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
@@ -1655,12 +1693,29 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	var b strings.Builder
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
-	feed, open := s.askFeedNow(r.Context(), items, rd, now)
+	// A session page's asks badge lands here filtered to that session's asks
+	// (attention_asker.go, ?from=): the Open list is those asks alone.
+	flt, filtered := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts)
+	var feed string
+	var open int
+	if filtered {
+		// The count is THE ONE OPEN COUNT's rule over the filtered asks
+		// (asksPendingOf: what waits on the reader — a team's ask a viewer
+		// watches is listed, not counted); no drafts or stalled rows here.
+		mine := flt.only(items, rd.hosts)
+		feed, _ = askFeedHTML(mine, "", 0, now)
+		open = asksPendingOf(r.Context(), mine, 0)
+	} else {
+		feed, open = s.askFeedNow(r.Context(), items, rd, now)
+	}
 	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
 	// tabs, each a feed of cards.
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
 <div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) + `</div>
 `)
+	if filtered {
+		b.WriteString(ui.AsksFilterHTML(flt.label, attentionPath))
+	}
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
 	// The feed's notice: a card post refused after the card left the page.
@@ -1698,7 +1753,12 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 <template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
 <template id="asks-drafts-wait-tpl">` + ui.AsksDraftsWaitHTML(2) + `</template>
 `)
-	b.WriteString(attentionPageScript)
+	if filtered {
+		// The live list keeps the filter.
+		b.WriteString(ui.AttentionLiveScript("attention-items", "/attention/items?"+flt.ref.query(), EventAttentionChanged))
+	} else {
+		b.WriteString(attentionPageScript)
+	}
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
@@ -1736,6 +1796,12 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := s.now() // as renderAsksPage
+	// The filtered page's live list (?from=, renderAsksPage): the same filter.
+	if flt, ok := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts); ok {
+		feed, _ := askFeedHTML(flt.only(items, rd.hosts), "", 0, now)
+		_, _ = w.Write([]byte(feed))
+		return
+	}
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, rd, now)))
 }
 

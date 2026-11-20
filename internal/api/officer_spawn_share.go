@@ -75,7 +75,7 @@ var spawnLendDoors = map[authz.Via]bool{
 // The lend gate's refusals.
 var (
 	// ErrLendDoor: a door outside spawnLendDoors — a personal API token above all.
-	ErrLendDoor = errors.New("a host spawn is shared with a team only from the Officer spawns page or by your chief; " +
+	ErrLendDoor = errors.New("a host spawn is shared with a team only from the Officer sessions page or by your chief; " +
 		"a personal API token directly, a machine credential or a background loop never shares one")
 	// ErrLendTeamPrincipal: the principal is a team.
 	ErrLendTeamPrincipal = errors.New("a team's own host spawns are already the team's; only a person lends one")
@@ -155,7 +155,7 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 	ctx := r.Context()
 	p := authz.MustFrom(ctx)
 	if s.spawnLender == nil {
-		s.renderNotice(w, r, http.StatusNotFound, "No officer spawns", ErrLendOff.Error())
+		s.renderNotice(w, r, http.StatusNotFound, "No officer sessions", ErrLendOff.Error())
 		return
 	}
 	var teamIDs []int64
@@ -177,7 +177,7 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 	}
 	if err != nil {
 		s.logger.Printf("officers: read host spawns: %v", err)
-		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load officer spawns", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load officer sessions", "Try again in a moment.")
 		return
 	}
 	// team_tasks.go's one team-name read (#664): "Team <id>" when unnamed.
@@ -197,10 +197,10 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 	// merely lent to that team, whose owner is a person.
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
-	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Officer spawns</h1>
-<p class="text-sm text-fg2">The Claude Code sessions muster asked a host to start for your host officers. Each is yours alone until you share it with a team you operate; its members can then see it, and only you can change it.</p>`)
+	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Officer sessions</h1>
+<p class="text-sm text-fg2">The sessions muster started on your computers for your officers. Each is yours alone until you share it with a team you operate; its members can then see it, and only you can change it.</p>`)
 	if len(own) == 0 {
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-spawns-empty">No officer spawns yet.</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-spawns-empty">No officer sessions yet.</p>`)
 	}
 	b.WriteString(`<ul class="flex flex-col gap-3" id="officer-spawns">`)
 	for _, h := range own {
@@ -241,7 +241,7 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 		}
 		b.WriteString(`</ul></section>`)
 	}
-	s.writeNavDocument(w, r, code, "Officer spawns", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, code, "Officer sessions", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
 }
 
 // spawnLine is spawn h's officer, instance, host, state and time, drawn.

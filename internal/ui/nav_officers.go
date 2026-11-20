@@ -11,10 +11,17 @@ import (
 
 // THE SIDEBAR'S OFFICERS GROUP (operator decisions, officers in the sidebar):
 //
+//   - 🔴 WHERE IT IS DRAWN (operator decision, 2026-11-18 — it REPLACES the
+//     earlier "below the list and the team groups"): directly BELOW the top
+//     rows — the chief and every own session waiting on the operator
+//     (NavTopRowsID, navTopRow) — and ABOVE the rest of the list, the team
+//     groups, Superseded and Idle. The officers are standing staff the
+//     operator checks on, not one more conversation scrolled past: below a
+//     long list they were off screen on a phone, under the drawer's fold.
+//     Superseded and Idle stay last.
 //   - ONE ROW PER DECLARED OFFICER the viewer can see — their own and their
 //     teams' — awake or asleep, all in ONE always-open "Officers" heading
-//     group (the team groups' style, not a disclosure), drawn below the list
-//     and the team groups and above Superseded and Idle. A team's officer is
+//     group (the team groups' style, not a disclosure). A team's officer is
 //     labelled with its team's name. The roster is internal/api's
 //     (navOfficers): cheap in-memory and batched reads, never a pod read.
 //   - Each row says whether the officer is running or asleep, how many items
@@ -25,8 +32,10 @@ import (
 //   - It opens the live instance's chat while one runs, else the officer's
 //     own page (/officers/...).
 //   - 🔴 AN INSTANCE THAT WAITS ON THE OPERATOR IS DRAWN WHERE ANY WAITING
-//     SESSION IS (the waiting rows at the top, or its team's group — both
-//     above this group), and its officer's row stays, marked "↑ waiting". The
+//     SESSION IS — the top rows, just above this group, for the viewer's own;
+//     its team's group, now BELOW this group, for a team's — and its
+//     officer's row stays, marked "↑ waiting" (or "↓ waiting" when the only
+//     waiting instance is a team's, drawn below: the arrow points at it). The
 //     group thus always holds exactly one row per officer, and the waiting
 //     session is never in it twice. An instance that does not wait has no row
 //     of its own: its officer's row is it. Officers are never in Idle or
@@ -187,8 +196,9 @@ func navOfficersGroup(officers []NavOfficer, instances []navOfficerInstance) g.N
 //     officer's page.
 //   - Its second line: the team's name (a team's officer), running or asleep
 //     (not for a host officer), and the queued count when known.
-//   - At its end: the spend against the budget, "held", and "↑ waiting" when
-//     an instance waits (that instance is drawn above, navOfficerInstanceDrawnHere).
+//   - At its end: the spend against the budget, "held", and the waiting
+//     marker when an instance waits (navOfficerWaiting; that instance is drawn
+//     as a session row of its own, navOfficerInstanceDrawnHere).
 //   - It is the page's own (aria-current="true", as a session row) when the
 //     page is an instance that is not drawn as a row of its own.
 func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
@@ -201,13 +211,18 @@ func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
 		return a.Name < b.Name
 	})
 	var live *AgentCardView
-	waiting, current := false, false
+	waiting, waitsAbove, current := false, false, false
 	for _, in := range instances {
 		if live == nil && navOfficerAwake(in.e.agent.Status) {
 			live = in.e.agent
 		}
 		if navOfficerInstanceDrawnHere(in.e) {
 			waiting = true
+			// An own instance is in the top rows, above this group; a team's
+			// is in its team's group, below it (see the header).
+			if owner, _ := in.e.team(); owner == 0 {
+				waitsAbove = true
+			}
 		} else if in.it.Current {
 			current = true
 		}
@@ -262,11 +277,26 @@ func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
 			g.If(o.Held && o.Spent != nil, Span(g.Attr("data-nav-officer-held", ""),
 				g.Attr("title", "Its daily budget is spent: it is not woken again until the next UTC midnight"),
 				Class("shrink-0 text-[11px] font-semibold text-st-error-fg"), g.Text("held"))),
-			g.If(waiting, Span(g.Attr("data-nav-officer-waiting", ""),
-				g.Attr("title", "One of its sessions waits on you: it is listed above"),
-				Class("shrink-0 text-[11px] font-normal text-muted"), g.Text("↑ waiting"))),
+			navOfficerWaiting(waiting, waitsAbove),
 		),
 	)
+}
+
+// navOfficerWaiting is a row's waiting marker: "↑ waiting" when one of its
+// own instances waits (drawn in the top rows, above the group), "↓ waiting"
+// when only a team's does (drawn in its team's group, below), nothing when
+// none waits.
+func navOfficerWaiting(waiting, above bool) g.Node {
+	if !waiting {
+		return nil
+	}
+	text, where := "↓ waiting", "below, in its team"
+	if above {
+		text, where = "↑ waiting", "above"
+	}
+	return Span(g.Attr("data-nav-officer-waiting", ""),
+		g.Attr("title", "One of its sessions waits on you: it is listed "+where),
+		Class("shrink-0 text-[11px] font-normal text-muted"), g.Text(text))
 }
 
 // navOfficerSpend is an officer's spend against its daily budget ("$6.40 /

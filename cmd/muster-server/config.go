@@ -274,9 +274,13 @@ const (
 	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
 	// session must be idle, the global hourly cap, and the owners whose nudges
 	// are sent (live).
-	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
-	envSessionState         = "MUSTER_SESSION_STATE"
-	envFleetDigest          = "MUSTER_FLEET_DIGEST"
+	envChiefNudges  = "MUSTER_CHIEF_NUDGES"
+	envSessionState = "MUSTER_SESSION_STATE"
+	envFleetDigest  = "MUSTER_FLEET_DIGEST"
+	// envFleetOrchestration is off (the default) or propose: the chief's fleet
+	// write tools and the digest's proposal cards (internal/api
+	// fleet_actions.go). Later phases add shadow and live.
+	envFleetOrchestration   = "MUSTER_FLEET_ORCHESTRATION"
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
@@ -501,6 +505,9 @@ const (
 	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
 	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
 	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	// The kubernetes driver's API client rate limit (requests per second; the
+	// burst is twice it). See config.AgentKubeQPS.
+	envAgentKubeQPS = "MUSTER_AGENT_KUBE_QPS"
 
 	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
 	// agent only. Both unset is the state this ships in, and in that state nothing
@@ -933,7 +940,11 @@ type config struct {
 	SessionState bool
 	// FleetDigest turns on the chief panel's fleet digest card and
 	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
-	FleetDigest            bool
+	FleetDigest bool
+	// FleetPropose is MUSTER_FLEET_ORCHESTRATION=propose (off by default):
+	// the chief proposes actions on the owner's sessions, each sent only on
+	// the owner's tap. It needs FleetDigest (the cards are the digest's).
+	FleetPropose           bool
 	ChiefNudgeAskThreshold float64
 
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
@@ -1234,6 +1245,19 @@ type config struct {
 	AgentStorageClass     string
 
 	AgentEndpointTemplate string
+
+	// AgentKubeQPS is the kubernetes driver's API client rate limit, in
+	// requests per second (MUSTER_AGENT_KUBE_QPS). 0 is unset, which
+	// kubeClientRateLimit reads as defaultAgentKubeQPS; set, it is refused
+	// with any driver but kubernetes (validateKubeQPS). Its burst is twice it.
+	//
+	// 🔴 UNSET USED TO MEAN client-go's OWN DEFAULT, 5 PER SECOND WITH A BURST
+	// OF 10, which nothing here chose. Reading every agent namespace costs
+	// three requests each on the least-privilege layout, so a deployment with
+	// a few dozen agents spent most of a minute of that budget on one read,
+	// and the reads queued behind it failed with "rate: Wait(n=1) would exceed
+	// context deadline".
+	AgentKubeQPS int
 
 	// AgentKinds is MUSTER_AGENT_KINDS as written (lower-cased, trimmed, in
 	// order). Empty means agents.KindGateway alone — see config.agentKinds.
@@ -1780,6 +1804,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s %q: want %s, or unset (officer instances get no cluster DNS)",
 			envOfficerEgressDNS, v, officerEgressDNSUnfiltered)
 	}
+	if v := strings.TrimSpace(getenv(envAgentKubeQPS)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxAgentKubeQPS {
+			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-%d, requests per second to the "+
+				"Kubernetes API (unset means %d; the burst is twice it)", envAgentKubeQPS, v, maxAgentKubeQPS, defaultAgentKubeQPS)
+		}
+		c.AgentKubeQPS = n
+	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 64 {
@@ -2024,6 +2056,19 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.FleetDigest = envFlag(getenv, envFleetDigest)
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envFleetOrchestration))); v {
+	case "", "off":
+	case "propose":
+		if !c.FleetDigest {
+			return config{}, fmt.Errorf("%s=propose needs %s=1: its proposals are the fleet digest's cards", envFleetOrchestration, envFleetDigest)
+		}
+		if !c.SessionState {
+			return config{}, fmt.Errorf("%s=propose needs %s=1: a proposal is filed on a session's stop, and stops are session state's", envFleetOrchestration, envSessionState)
+		}
+		c.FleetPropose = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want off or propose", envFleetOrchestration, v)
+	}
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)
@@ -3024,6 +3069,9 @@ func (c config) validateProvisioner() error {
 	if err := c.validateNamespaceClusterRole(); err != nil {
 		return err
 	}
+	if err := c.validateKubeQPS(); err != nil {
+		return err
+	}
 
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
@@ -3062,6 +3110,17 @@ func (c config) validateProvisioner() error {
 // where muster creates no namespace to bind itself in. Each refusal is an armed
 // switch that would otherwise boot and do nothing. (A name that is not a
 // ClusterRole's surfaces at the first dispatch, from waitForAccess, naming it.)
+// validateKubeQPS refuses MUSTER_AGENT_KUBE_QPS with any driver but
+// kubernetes: no other driver has a Kubernetes client for it to limit, so a
+// set value would read as in force and do nothing.
+func (c config) validateKubeQPS() error {
+	if c.AgentKubeQPS != 0 && c.agentProvisioner() != provisionerK8s {
+		return fmt.Errorf("%s is set but %s=%s: only the kubernetes driver has a Kubernetes API client to limit",
+			envAgentKubeQPS, envAgentProvisioner, c.agentProvisioner())
+	}
+	return nil
+}
+
 func (c config) validateNamespaceClusterRole() error {
 	role := c.AgentNamespaceClusterRole
 	if role == "" {

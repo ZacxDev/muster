@@ -1,4 +1,4 @@
--- muster 0159 — THE TMUX WINDOW A MIRRORED SESSION'S PAGE WAS MADE IN
+-- muster 0161 — THE TMUX WINDOW A MIRRORED SESSION'S PAGE WAS MADE IN
 -- (internal/pages; docs/pages.md "A session's pages").
 --
 --   pages.mirror_tmux_session, pages.mirror_window   the tmux session NAME and
@@ -25,16 +25,15 @@
 --
 -- Inert without its code: an older image never reads or writes them.
 --
--- Must apply after its predecessor, 0158 (the contiguity test refuses a gap):
--- 🔴 RENUMBER IT at merge if main moved. 0157 and 0158 are claimed by other
--- open pull requests (#796, #804).
+-- Must apply after its predecessor, 0160 (the contiguity test refuses a gap):
+-- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK (an older image reads neither column, so roll the image back
 -- first, then):
 --   ALTER TABLE public.pages DROP CONSTRAINT IF EXISTS pages_mirror_window_check;
 --   ALTER TABLE public.pages DROP COLUMN IF EXISTS mirror_window;
 --   ALTER TABLE public.pages DROP COLUMN IF EXISTS mirror_tmux_session;
---   DELETE FROM schema_migrations WHERE version = 159;
+--   DELETE FROM schema_migrations WHERE version = 161;
 
 SET LOCAL lock_timeout = '3s';
 

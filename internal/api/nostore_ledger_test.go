@@ -301,6 +301,8 @@ var htmlWithoutNoStore = map[string]string{
 	"writeChiefPanelBody":       htmlFragment,
 	"writeChiefPanelBodyWith":   htmlFragment,
 	"handleFleetDigest":         htmlFragment,
+	"handleFleetStepUp":         htmlFragment + " (the confirm dialog, the same one every step-up page draws)",
+	"writeFleetCard":            htmlFragment + " (the digest card after a card action, as handleFleetDigest draws it)",
 	"handleFleetDrill":          htmlFragment + " (a drill-in's last message is redacted as session_context shows it)",
 	"handleConnectorRequests":   htmlFragment,
 	"handleConnectorNewForm":    htmlFragment + " (the form a secret is typed INTO; it holds none)",

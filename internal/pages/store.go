@@ -229,7 +229,7 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorSession != "" {
 			sess = truncate(c.MirrorSession, 200)
 		}
-		// And the tmux window it was made in (0159: both, or neither).
+		// And the tmux window it was made in (0161: both, or neither).
 		var tmuxSess, win any
 		if c.AgentID <= 0 && c.MirrorTmuxSession != "" && c.MirrorWindow != "" {
 			tmuxSess, win = truncate(c.MirrorTmuxSession, 200), truncate(c.MirrorWindow, 200)

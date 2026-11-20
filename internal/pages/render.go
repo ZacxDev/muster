@@ -2,6 +2,7 @@ package pages
 
 import (
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"html"
@@ -142,12 +143,18 @@ type RenderOptions struct {
 // SDK, then every block. It is served with ContentHeaders. A link's viewer
 // and the page's owner get the SAME document: whose a response is, is the
 // shell's route's to say (ShellScript), never the content's.
+//
+// 🔴 ITS THEME IS THE APP'S, AND IT IS THE SAME FOR EVERY VIEWER. The <html>
+// carries contentThemeClass, as every document of the app does, and the
+// stylesheet is the app's palette (contentThemeCSS); nothing about the viewer
+// (a cookie, a header, the device's colour scheme) is read, so the document
+// stays one document and no cache can hand one viewer's theme to another.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	b.WriteString("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
+	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + contentThemeClass + "\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-		"<title>" + esc(v.Title) + "</title>\n<style>" + contentCSS + "</style>\n<script>")
+		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS + "</style>\n<script>")
 	var blocks strings.Builder
 	for _, blk := range v.Blocks {
 		blocks.WriteString(renderBlock(blk, o))
@@ -337,7 +344,7 @@ function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop
 function answer(ev){
  var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string")return;
  var cb=waiting[d.id];if(!cb)return;delete waiting[d.id];
- if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"refused");
+ if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"Not sent.");
 }
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
@@ -359,7 +366,7 @@ function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
  R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
- R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},` + sdkWaitMs + `]);
+ R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"No answer came back. Try again.");}},` + sdkWaitMs + `]);
 }
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
@@ -406,11 +413,46 @@ R(AEL,D,["submit",function(ev){
 })();`
 }
 
+// contentThemeClass is the class on the content document's and the shell's
+// <html>: the app's one theme. Every document the app draws carries class="dark" (internal/ui's
+// layouts; the light theme has no toggle since the theme head forces dark), and
+// the palette (web/css/tokens.css) selects its dark block by it, its light one
+// by its absence.
+const contentThemeClass = "dark"
+
+// contentThemeCSS is the app's palette and the utilities ui.MarkdownHTML
+// writes, scoped under .mp-markdown: built by `make css` from
+// web/css/page-content.css (tailwind.pages.config.js), from the same palette
+// and theme as web/static/app.css, and checked fresh by `make css-check`.
+// TestEveryMarkdownClassHasARule fails on a class the renderer writes that it
+// does not define.
+//
+//go:embed content_theme.css
+var contentThemeCSS string
+
 // contentCSS is the content document's base styles: readable, phone-first,
-// and overridable by the page's own.
-const contentCSS = `:root{color-scheme:light dark;--fg:#1d1d1f;--fg2:#5b5b63;--bg:#fff;--line:#d9d9de;--accent:#2f6fde;--bad:#b3261e;--good:#1b7f3b}
-@media (prefers-color-scheme:dark){:root{--fg:#f2f2f5;--fg2:#a8a8b3;--bg:#141416;--line:#34343a;--accent:#7aa7ff;--bad:#ff8a80;--good:#7bd88f}}
+// and overridable by the page's own. Its colours are the palette's roles
+// (contentThemeCSS defines --mu-*); the short names (--fg, --accent, ...) stay
+// defined for a page's own HTML that used them.
+//
+// The .mp-markdown rules are the part of the app's reset (Tailwind's
+// preflight, which this document does not load) the renderer's utilities rely
+// on, plus a document's headings: scoped to a markdown block, so a page's own
+// HTML is never reset. A page's own styles still win over every global rule
+// here: those are element selectors, or :where() (no specificity at all).
+const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--bg:rgb(var(--mu-bg));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));` +
+	`--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent));--bad:rgb(var(--mu-st-error-fg));--good:rgb(var(--mu-st-complete-fg))}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+:where(a){color:var(--accent)}
+.mp-markdown *{border:0 solid var(--line)}
+.mp-markdown :is(p,blockquote,pre,hr,ul,ol,figure){margin:0}.mp-markdown :is(ul,ol){padding:0}
+.mp-markdown hr{height:0;color:inherit;border-top-width:1px}
+.mp-markdown :is(h1,h2,h3,h4,h5,h6){margin:1.1em 0 .4em;line-height:1.25;font-weight:600;color:var(--fg)}
+.mp-markdown h1{font-size:1.6em}.mp-markdown h2{font-size:1.35em}.mp-markdown h3{font-size:1.15em}.mp-markdown :is(h4,h5,h6){font-size:1em}
+.mp-markdown :is(h4,h5,h6){color:var(--fg2)}.mp-markdown :is(h1,h2,h3,h4,h5,h6):first-child{margin-top:0}
+.mp-markdown :is(code,pre){font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.mp-markdown table{text-indent:0;border-color:inherit}.mp-markdown :is(th,td){vertical-align:top}.mp-markdown th{font-weight:600}
+.mp-markdown summary{list-style:none}.mp-markdown details{color:var(--fg)}
 html{scroll-padding-top:` + shellHeaderPx + `px}
 .mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -418,8 +460,8 @@ form{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid v
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}legend,.mp-label{font-weight:600;padding:0;margin:0 0 4px}
 label{font-weight:500}.mp-option,.mp-check{display:flex;align-items:center;gap:8px;font-weight:400}
 input[type=text],input[type=email],input[type=number],input[type=date],select,textarea{width:100%;font:inherit;color:inherit;background:transparent;
-border:1px solid var(--line);border-radius:8px;padding:10px;min-height:44px}
-button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;align-self:flex-start}
+border:1px solid var(--edge);border-radius:8px;padding:10px;min-height:44px}
+button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font-weight:600;cursor:pointer;align-self:flex-start}
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
@@ -443,7 +485,7 @@ const (
 	confirmGuardMs = "500"
 	// confirmWaitMs is how long the owner's confirm waits before it answers
 	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
-	// answer — longer, so the page is never told "muster did not answer"
+	// answer — longer, so the page is never told "No answer came back"
 	// while the bar could still be confirmed (and a send it approves has
 	// sdkWaitMs - confirmWaitMs to finish).
 	confirmWaitMs = "600000"
@@ -516,8 +558,12 @@ type OwnerChrome struct {
 // ShellVersion is one version as the popover lists it.
 type ShellVersion struct {
 	Version int
-	// Made is when it was made, in words.
+	// Made is when it was made, in words: the day ("today"), which
+	// ShareScript redraws in the reader's own zone with its time ("today at
+	// 9:14") from AtMS, when AtMS is set.
 	Made string
+	// AtMS is when it was made, in Unix milliseconds; 0 draws Made as it is.
+	AtMS int64
 	// Current: the page's current version (what its links show).
 	Current bool
 	// Href views it (/pages/{id}/view?v=N).
@@ -536,46 +582,52 @@ const sessionIcon = `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" str
 // from y -4 (past the screen's top edge) to 40, the header's bottom (an
 // ::after is placed against the padding box, inside the 1px border, so
 // bottom -6px is the box's bottom edge plus 5): never over the page below.
-const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+//
+// Its colours are the app's palette, the same contentThemeCSS the frame
+// carries (Shell writes it first), named by role as the app names them: the
+// header is the app header's ground (bg) and hairline (line), a menu or the
+// confirm bar a surface (s1), a control's edge `edge`, the confirm's Send the
+// accent. TestTheShellIsTheAppsTheme resolves them.
+const shellCSS = `:root{--bg:rgb(var(--mu-bg));--s1:rgb(var(--mu-s1));--s2:rgb(var(--mu-s2));--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--muted:rgb(var(--mu-muted));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent))}html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 header{position:fixed;top:0;left:0;right:0;z-index:2;box-sizing:border-box;height:` + shellHeaderPx + `px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
-background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent);transition:transform .18s ease-out}
+background:var(--bg);border-bottom:1px solid var(--line);transition:transform .18s ease-out}
 header[data-hidden]:not(:focus-within){transform:translateY(-100%)}
 header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
-header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
+header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
 .sess{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
-border:1px solid color-mix(in srgb,CanvasText 25%,transparent);color:inherit;text-decoration:none;font-size:13px}
+border:1px solid var(--edge);color:inherit;text-decoration:none;font-size:13px}
 .sess::after{content:"";position:absolute;left:-2px;right:-2px;bottom:-6px;height:44px}.sess svg{flex:none;width:14px;height:14px}
 .sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
-.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
+.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid var(--edge);
 background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
-.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
+.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:var(--s1);
 padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}
 @media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:24rem;max-width:calc(100vw - 16px);border-radius:12px;padding:8px;
-box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid color-mix(in srgb,CanvasText 15%,transparent)}}
+box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid var(--line)}}
 .scrim[hidden],.pop[hidden]{display:none}
-.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:var(--muted)}
 .pop ul{list-style:none;margin:0;padding:0}.pop form{display:contents}
 .pop a,.pop button{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;
 background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;white-space:nowrap;cursor:pointer}
-.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:color-mix(in srgb,CanvasText 9%,transparent)}
-.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
-.pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
+.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:var(--s2)}
+.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:var(--muted)}
+.pop hr{border:0;border-top:1px solid var(--line);margin:6px 4px}
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
-.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:Canvas;
-padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid color-mix(in srgb,CanvasText 20%,transparent);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
-@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}}
+.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:var(--s1);
+padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid var(--line)}}
 .confirm[hidden]{display:none}.confirm:focus{outline:none}
-.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:color-mix(in srgb,CanvasText 70%,transparent);font-size:14px}
+.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:var(--fg2);font-size:14px}
 .confirm .cs{margin:0 0 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
-padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,transparent)}
+padding:8px;border-radius:8px;background:var(--s2)}
 .confirm .cb{display:flex;justify-content:flex-end;gap:8px}
 .confirm button{min-height:44px;min-width:5.5rem;padding:0 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;color:inherit;
-background:transparent;border:1px solid color-mix(in srgb,CanvasText 25%,transparent)}.confirm button.go{background:#2f6fde;border-color:#2f6fde;color:#fff}
-#action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
+background:transparent;border:1px solid var(--edge)}.confirm button.go{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+#action-toasts>*{padding:8px 12px;border-radius:8px;background:var(--fg);color:var(--bg);font-size:14px;overflow-wrap:anywhere}`
 
 // Shell is the shell document: the instance branding and the title in one
 // slim header (and, for the owner, the version chip), the sandboxed frame of
@@ -584,7 +636,7 @@ func Shell(v ShellView) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<html lang="en" class="` + contentThemeClass + `"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow">
 <title>` + esc(v.Title) + `</title>
 `)
@@ -592,7 +644,7 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>` + shellCSS + `</style></head>
+	b.WriteString(`<style>` + contentThemeCSS + "\n" + shellCSS + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
@@ -622,6 +674,10 @@ func Shell(v ShellView) string {
 		for _, x := range o.Versions {
 			xn := strconv.Itoa(x.Version)
 			cur, what := "", esc(x.Made)
+			if x.AtMS > 0 {
+				// ui.PlainWhenHTML's <time>, which the script redraws.
+				what = `<time data-plain-when="` + strconv.FormatInt(x.AtMS, 10) + `" data-plain-when-prefix="">` + what + `</time>`
+			}
 			if x.Version == o.Version {
 				cur = ` aria-current="page"`
 			}

@@ -355,6 +355,7 @@ var agentsListCallers = map[string]string{
 	"Server.agentsListEntries":      "visible: the sidebar lists team agents; primaryChief over ownedBy(list, viewer)",
 	"Server.paletteTargets":         "visible: the palette searches team agents",
 	"Server.mentionIndex":           "visible: a team agent's name is linked",
+	"Server.sessionCards":           "own: ownedBy(list, requestOwner(ctx)) — a card only for the viewer's own agent",
 	"Server.actorIsAgent":           "visible: a team agent's name is an agent's",
 	"Server.agentIsChief":           "visible: chiefPredicate is per owner",
 	"Server.agentIsDeleteProtected": "visible: deleteProtection is per owner",
@@ -470,14 +471,17 @@ var agentReadCallers = map[string]string{
 	"AgentsByNoteIDs Server.outcomeTaskDone": "machine: acts only when actor (refOriginFrom: an agent's own door) IS the task's agent",
 	"AgentsByNoteIDs Server.apiAgentsByNote": "machine: GET /api/tasks, hook and API tokens",
 
-	"Get Server.acceptEndSession": "own: ag.OwnerID == requestOwner(ctx)",
-	"Get Server.askingAgentHref":  "own: a.OwnerID == owner",
+	"Get Server.acceptEndSession":     "own: ag.OwnerID == requestOwner(ctx)",
+	"Get Server.fleetTarget":          "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
+	"GetByName Server.fleetCloseCard": "own: ag.OwnerID == the chief's owner (a team's chief files no card: fleetCardsFor)",
+	"Get Server.askingAgentHref":      "own: a.OwnerID == owner",
 	// A page's maker, for its owner's view (pages.go): only an agent of the
 	// page's own owner — the viewer, whose page it is under row-level
 	// security — is linked.
 	"Get Server.pageSessionLink":             "own: a.OwnerID == p.OwnerID, the page's owner (the viewer)",
 	"Get Server.approvalItems":               "own: a.OwnerID == requestOwner(ctx)",
 	"Get Server.approveFromStanding":         "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.agentIsOfficer":              "own: a.OwnerID == owner, the owner of the push it decides (else false); it only routes that push through officerPushes, never acts on the row",
 	"Get Server.decideConnectorGrant":        "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.goRerunBlocked":              "own: the approved grant's agent; the grant is owner-isolated (connector_grants)",
 	"Get Server.onPendingRefusal":            "own: the refused caller's own agent row (the connector door authenticated it), read to know its officer",
@@ -532,6 +536,7 @@ var agentReadCallers = map[string]string{
 	"Get focusSessions.Visible":               "visible: whether a focus subject is readable (read)",
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
 	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
+	"Get Server.chatMessageEntries":           "machine: the officer's own instance holding a person's chat, read as the officer's owner and kept only when it is that officer's (officerOf); only its messages are drawn",
 
 	"GetByName Server.agentPagesOf":              "visible: the Open button and Pages tab of an agent the member sees; its pages are read as the member (owner-only rows), so a team agent's are never listed",
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
@@ -546,7 +551,7 @@ var agentReadCallers = map[string]string{
 	"GetByName Server.handleAgentSend":           "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.handleAgentWS":             "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.activeNotificationRows":    "visible: the panel's link to an active agent (read)",
-	"GetByName Server.askerAsks":                 "visible: an agent's open asks (read)",
+	"GetByName Server.resolveAsker":              "visible: an agent's open asks, counted and filtered (read)",
 	"GetByName Server.leaving":                   "visible: the page home leaves out (read)",
 	"GetByName Server.teamAgentGate":             "visible: the team-agent route gate itself",
 	"GetByName Server.teamChief":                 "visible: /teams/{id}/chief's status (read); its writes run as the team (teamAdminContext)",

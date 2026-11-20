@@ -452,7 +452,11 @@ function expectOneRow(m: Awaited<ReturnType<typeof headerBoxes>>, label: string)
   // ONE ROW: every control's middle on one line, and the header one row tall.
   const mids = m.controls.filter((c) => !c.inTitle).map((c) => c.y + c.h / 2);
   expect(Math.max(...mids) - Math.min(...mids), `${label}: the controls are on one line (nothing wrapped)`).toBeLessThanOrEqual(1);
-  expect(m.header.h, `${label}: the header is one row tall`).toBeLessThanOrEqual(58);
+  // 66, not 58: a mirrored window's header is 65px since the computer's name
+  // has its own line under the title (mirrorHostLine; e2e/tests/sidenav.spec.ts
+  // measures the same 57 -> 65). A wrapped control adds a 44px row, so this
+  // still fails on one.
+  expect(m.header.h, `${label}: the header is one row tall`).toBeLessThanOrEqual(66);
   expect(m.title.w, `${label}: the title keeps some room`).toBeGreaterThan(40);
 }
 

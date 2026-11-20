@@ -323,11 +323,29 @@ BEGIN
         ALTER TABLE public.officer_seen DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_seen ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0157 (officer_cap_raises), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_cap_raises') IS NOT NULL THEN
+        ALTER TABLE public.officer_cap_raises NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_cap_raises DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_cap_raises ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0160 (officer_chat_cards), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_chat_cards') IS NOT NULL THEN
+        ALTER TABLE public.officer_chat_cards NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_chat_cards DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_chat_cards ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0158 (fleet_actions), when this schema has it; same reason as 0011.
+    IF to_regclass('public.fleet_actions') IS NOT NULL THEN
+        ALTER TABLE public.fleet_actions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_actions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_actions ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
     -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN

@@ -11,7 +11,7 @@ import { startServer, Running } from '../lib/server';
 //
 //   - the owner opens /attention and TAPS the Log tab — the panel is fetched
 //     then (the page's own render reads nothing from the log) — and sees the
-//     summary (7 asks, 5 answered by you, median 30s, 90th percentile 2m),
+//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m 40s),
 //     the breakdowns as plain "label N" rows under the page's one heading
 //     style (no pill: nothing there is a control), the log's unended ask as
 //     "No answer" (never "Open", the header's word for what waits on you
@@ -83,7 +83,14 @@ for (const vp of [
       await expect(stat('total')).toHaveText('7');
       await expect(stat('owner')).toHaveText('5');
       await expect(stat('median')).toHaveText('30s');
-      await expect(stat('p90')).toHaveText('2m');
+      // "9 in 10 answered within" is the DISCRETE 90th percentile
+      // (percentile_disc: the smallest answer time at least 90% of answers
+      // took no longer than), so the claim is true of the rows. askfix's 6
+      // rows with an answer time (5 answered + 1 declined) took 5, 10, 20,
+      // 40, 80 and 160 s; 80 s covers only 5 of 6 (83%), 160 s covers 6 of 6
+      // — so 2m 40s. (The interpolated p90 the API still reports is 2m: 80 +
+      // 0.5 × 80, a time only 5 of 6 were answered within.)
+      await expect(stat('p90')).toHaveText('2m 40s');
 
       // THE BREAKDOWNS: plain statistics under the Asks page's one heading
       // style, never pills. askfix's 7: 5 answered, 1 declined and 1 never
@@ -92,7 +99,7 @@ for (const vp of [
       const counts = (k: string) =>
         panel.locator(`[data-asklog-counts="${k}"] [data-count]`).evaluateAll((els) =>
           els.map((e) => `${e.querySelector('dt')!.textContent!.trim()} ${e.querySelector('dd')!.textContent!.trim()}`));
-      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'opencode permission request 1']);
+      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'Permission (opencode) 1']);
       expect(await counts('outcome')).toEqual(['Answered 5', 'No answer 1', 'Declined 1']);
       expect(await counts('answered_by')).toEqual(['You 5', 'The chief 1', 'Nobody 1']);
       await expect(page.locator('[data-asks-open-count]')).toHaveText(/^\d+ open$/);
@@ -118,7 +125,7 @@ for (const vp of [
       await expect(top).toHaveCount(1);
       await expect(top).toHaveAttribute('data-norm', 'shall i continue with the next step');
       await expect(top.locator('[data-asklog-top-question]')).toHaveText('Shall I continue with the next step?');
-      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” · median 20s');
+      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” · answered in about 20s');
 
       const rows = panel.locator('[data-asklog-row]');
       await expect(rows).toHaveCount(7);
@@ -211,7 +218,7 @@ test.describe('long lines', () => {
         await page.goto(`${origin}/attention?tab=log`);
         const panel = page.getByTestId('asklog-panel');
         const facts = panel.locator('[data-asklog-top-row] [data-asklog-top-facts]');
-        await expect(facts).toHaveText('3 times · you answered 2 · always “continue with the plan” · median 11s');
+        await expect(facts).toHaveText('3 times · you answered 2 · always “continue with the plan” · answered in about 11s');
         // Every visible character's box, grouped into the lines they sit on:
         // a line's text is its characters in order, and what ENDS it is its
         // last non-space one.
@@ -271,10 +278,12 @@ test.describe('long lines', () => {
             if (box.left < pb.left - 0.5 || box.right > pb.right + 0.5) clipped.push(`${p.tagName}.${p.className} [${pb.left},${pb.right}] cuts [${box.left},${box.right}]`);
           }
           const cb = card.getBoundingClientRect();
-          // Positive control: the place really is too wide (its ellipsis
-          // showing), so the age had something to lose.
-          const where = card.querySelector('[data-asklog-where]') as HTMLElement | null;
-          return { clipped, right: box.right, width: box.width, cardRight: cb.right, vw: window.innerWidth, placeCut: where ? where.scrollWidth > where.clientWidth : null };
+          // Positive control: the place really is too wide (a part of it cut
+          // short or wrapped onto its clipped line), so the age had something
+          // to lose.
+          const where = card.querySelector('[data-asklog-sub]') as HTMLElement | null;
+          const over = (e: Element) => e.scrollWidth > e.clientWidth || e.scrollHeight > e.clientHeight;
+          return { clipped, right: box.right, width: box.width, cardRight: cb.right, vw: window.innerWidth, placeCut: where ? [where, ...Array.from(where.querySelectorAll('*'))].some(over) : null };
         });
         expect(age.clipped, 'the age is cut by a clipping ancestor').toEqual([]);
         expect(age.width, 'the age has a width').toBeGreaterThan(0);
@@ -286,6 +295,158 @@ test.describe('long lines', () => {
         const shot = testInfo.outputPath(`asks-log-wraps-row-${vp.key}.png`);
         await page.screenshot({ path: shot });
         await testInfo.attach(`asks-log-wraps-row-${vp.key}.png`, { path: shot, contentType: 'image/png' });
+      });
+
+      // NO PLACE IS CUT TO A STUB (a phone review of #837): a row's sub line
+      // is "session on host · repo · age", and when the place did not fit, the
+      // repo was what gave way — to "a…" or "ac…", which reads as debris. Now
+      // a part of the place either shows at least STUB_MIN characters before
+      // its ellipsis or is not shown at all ("ratelimit on work-laptop · 2h
+      // ago"); the full place is the sub line's title.
+      //
+      // Measured on the LAYOUT: each character's box against every clipping
+      // ancestor up to the card, and, inside a box drawn with an ellipsis that
+      // overflows, against its right edge less the ellipsis's own width — so
+      // "visible" is what a reader sees, not what the markup holds.
+      //
+      // 🔴 REGRESSION, at origin/main 8ac45385: on a phone "ratelimit @
+      // work-laptop · acme-corporation/…" shows its repo as a stub.
+      test('no place is cut to a stub', async ({ page }, testInfo) => {
+        const STUB_MIN = 6;
+        await signIn(page, origin);
+        await page.goto(`${origin}/attention?tab=log`);
+        const panel = page.getByTestId('asklog-panel');
+        await expect(panel.locator('[data-asklog-row]')).toHaveCount(9);
+        const rows = await panel.locator('[data-asklog-row]').evaluateAll((cards) => {
+          const ell = document.createElement('span');
+          return cards.map((card) => {
+            const sub = card.querySelector('[data-asklog-sub]') as HTMLElement;
+            // The rect every clipping ancestor of el (up to the card) leaves
+            // visible; null when nothing of it is left.
+            const clipOf = (el: Element) => {
+              let l = -Infinity, r = Infinity, t = -Infinity, b = Infinity;
+              for (let p: Element | null = el; p && p !== card; p = p.parentElement) {
+                const cs = getComputedStyle(p);
+                if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+                const pb = p.getBoundingClientRect();
+                let pr = pb.right - parseFloat(cs.paddingRight);
+                // A box that overflows with an ellipsis draws the ellipsis at
+                // its end: a character is seen only left of it.
+                if (cs.textOverflow === 'ellipsis' && (p as HTMLElement).scrollWidth > (p as HTMLElement).clientWidth) {
+                  ell.textContent = '…';
+                  ell.style.font = cs.font;
+                  ell.style.whiteSpace = 'pre';
+                  document.body.appendChild(ell);
+                  pr -= ell.getBoundingClientRect().width;
+                  ell.remove();
+                }
+                l = Math.max(l, pb.left); r = Math.min(r, pr); t = Math.max(t, pb.top); b = Math.min(b, pb.bottom);
+              }
+              return { l, r, t, b };
+            };
+            // Each text node's visible characters, and what the reader sees on
+            // the line, left to right (an ellipsis after a cut box's last one).
+            const cut: { text: string; el: string }[] = [];
+            const words: { x: number; right: number; text: string }[] = [];
+            const walker = document.createTreeWalker(sub, NodeFilter.SHOW_TEXT);
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+              const el = n.parentElement!;
+              const c = clipOf(el);
+              const s = n.textContent ?? '';
+              let vis = '';
+              let x = Infinity, right = -Infinity;
+              for (let i = 0; i < s.length; i++) {
+                const rg = document.createRange();
+                rg.setStart(n, i);
+                rg.setEnd(n, i + 1);
+                const box = Array.from(rg.getClientRects()).find((x) => x.width > 0);
+                if (!box) continue;
+                const cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
+                if ((box.right <= c.r + 0.5 && box.left >= c.l - 0.5) || (cx > c.l && cx < c.r)) { // partly drawn counts as seen
+                  if (cy > c.t && cy < c.b) {
+                    vis += s[i];
+                    x = Math.min(x, box.left);
+                    right = Math.max(right, box.right);
+                  }
+                }
+              }
+              // The box this text is cut by: its nearest ancestor drawing an ellipsis that overflows.
+              let cutter: HTMLElement | null = null;
+              for (let p: HTMLElement | null = el; p && p !== card; p = p.parentElement) {
+                const cs = getComputedStyle(p);
+                if (cs.textOverflow === 'ellipsis' && p.scrollWidth > p.clientWidth) { cutter = p; break; }
+              }
+              const isCut = cutter !== null && vis.length > 0 && vis.length < s.length;
+              if (vis.length > 0) words.push({ x, right: isCut ? c.r + 12 : right, text: vis + (isCut ? '…' : '') });
+              if (isCut) cut.push({ text: vis, el: `${el.tagName}[${Array.from(el.attributes).map((a) => a.name).filter((a) => a.startsWith('data-')).join(',')}]` });
+            }
+            // Separate elements are separate words on the line (a flex gap, not a character).
+            words.sort((a, b) => a.x - b.x);
+            const seen = words.map((w) => w.text).join(' ');
+            // The widest blank between two words on the line: a dropped part
+            // must not leave a hole where it was.
+            let hole = 0;
+            for (let i = 1; i < words.length; i++) hole = Math.max(hole, words[i].x - words[i - 1].right);
+            // The row's title and outcome pill (the audit of #867: a long
+            // pill never shrinks, so it cut the title beside it): each
+            // drawn whole, its text not overflowing its box.
+            const head = card.querySelector('[data-asklog-title]') as HTMLElement;
+            const pill = card.querySelector('[data-asklog-outcome]') as HTMLElement;
+            const whole = (el: HTMLElement) => el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().right <= card.getBoundingClientRect().right + 0.5;
+            return {
+              id: card.id, seen: seen.replace(/\s+/g, ' ').trim(), cut, hole, title: sub.getAttribute('title'),
+              head: head.textContent, headWhole: whole(head), pill: pill.textContent, pillWhole: whole(pill),
+            };
+          });
+        });
+        const report = JSON.stringify(rows.map((r) => r.seen));
+        for (const r of rows) {
+          // What a cut part shows before its ellipsis, its separator aside:
+          // "· a" is a stub of one character.
+          for (const c of r.cut) {
+            const shown = c.text.split('·').pop()!.trim();
+            expect(shown.length, `a place part is cut to a stub "${shown}…" (${c.el}) in "${r.seen}": ${report}`).toBeGreaterThanOrEqual(STUB_MIN);
+          }
+          // Nowhere on the line does a run of 1–5 characters end in "…".
+          expect(r.seen, `the sub line shows a stub: ${report}`).not.toMatch(/(^|[\s·])[^\s·]{1,5}…/);
+          // The age is whole, at the line's end.
+          expect(r.seen, `the age is cut: ${report}`).toMatch(/ago$/);
+          // …and straight after the place: no hole where a dropped part was
+          // (a space and the flex gap are about 8px at this size).
+          expect(r.hole, `a hole of ${r.hole}px on "${r.seen}": ${report}`).toBeLessThanOrEqual(12);
+          expect(r.headWhole, `the title "${r.head}" is cut beside its "${r.pill}" pill: ${report}`).toBe(true);
+          expect(r.pillWhole, `the "${r.pill}" pill is cut: ${report}`).toBe(true);
+        }
+        const by = (s: string) => rows.find((r) => r.seen.startsWith(s))!;
+        // The full place is always available to the reader.
+        expect(by('ratelimit on work-laptop')?.title, `the full place is the place's title: ${report}`).toBe('ratelimit on work-laptop · acme-corporation/api-gateway-monorepo');
+        expect(by('ci on mac')?.title).toBe('ci on mac · acme-corporation/api-gateway-monorepo');
+        if (vp.phone) {
+          // Positive control: on a phone a repo really is cut, and the rule
+          // above measured it — "ci on mac" leaves room for a readable part.
+          const ci = by('ci on mac');
+          expect(ci.cut.length, `the ci row's repo is cut on a phone: ${report}`).toBeGreaterThan(0);
+          expect(ci.seen, `the ci row shows a readable part of its repo: ${report}`).toMatch(/^ci on mac · acme-c[^…]*… · .*ago$/);
+          // …and the row with no room for one drops its repo whole.
+          expect(by('ratelimit on work-laptop').seen, `the ratelimit row drops its repo: ${report}`).toBe('ratelimit on work-laptop · 2h ago');
+          // Positive control for the pill check: the two rows that did not
+          // end in an answer are there, with their short pills.
+          expect(rows.map((r) => r.pill).filter((p) => p !== 'Answered').sort(), report).toEqual(['Replaced', 'Skipped']);
+        } else {
+          // At a desktop a normal-length place fits whole: nothing changes.
+          expect(by('docs on studio-mac').seen, report).toMatch(/^docs on studio-mac · acme\/api · \S+ ago$/);
+          expect(by('ratelimit on work-laptop').seen, report).toBe('ratelimit on work-laptop · acme-corporation/api-gateway-monorepo · 2h ago');
+          for (const r of rows.filter((x) => !x.seen.startsWith('ratelimit-backoff'))) expect(r.cut, `a place that fits is cut at a desktop: ${report}`).toEqual([]);
+        }
+        await noSidewaysScroll(page);
+        await panel.locator('[data-asklog-row]').first().evaluate((e) => {
+          document.documentElement.style.scrollBehavior = 'auto';
+          const below = document.querySelector('header')!.getBoundingClientRect().bottom;
+          window.scrollTo({ top: window.scrollY + e.getBoundingClientRect().top - below - 40, behavior: 'instant' });
+        });
+        const shot = testInfo.outputPath(`asks-log-stubs-${vp.key}.png`);
+        await page.screenshot({ path: shot });
+        await testInfo.attach(`asks-log-stubs-${vp.key}.png`, { path: shot, contentType: 'image/png' });
       });
     });
   }

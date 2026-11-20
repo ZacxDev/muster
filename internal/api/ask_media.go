@@ -86,16 +86,44 @@ func (s *Server) askUploadsOff() string {
 
 // handleMirrorAskAttachment is POST /mirror/ask-attachments?filename=<name>: a
 // mirror host's muster-mirror sends one file of the calling session's
-// (X-Muster-Claude-Session, which this host must list running now —
-// mirrorSessionOf, the MCP door's rule) as the raw body.
+// (mirrorUploadSession: one this host must list running now — mirrorSessionOf,
+// the MCP door's rule) as the raw body.
 func (s *Server) handleMirrorAskAttachment(w http.ResponseWriter, r *http.Request) {
-	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
-	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
-	if _, ok := s.mirrorSessionOf(r.Context(), t.Host, sid); !ok {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "name the calling session (" + mirrorSessionHeader + "): one this host lists running now"})
+	if !s.mirrorUploadSession(r) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": mirrorUploadSessionRefusal})
 		return
 	}
 	s.storeAskAttachment(w, r)
+}
+
+// mirrorUploadSessionRefusal is the upload routes' answer to a request whose
+// session this host does not list running now.
+const mirrorUploadSessionRefusal = "name the calling session (" + mirrorSessionHeader + ", or an opencode session's " +
+	mirrorAgentSessionHeader + " with " + mirrorClientHeader + ": " + mirrorClientOpenCode + "): one this host lists running now"
+
+// mirrorUploadSession reports whether a mirror host's ask-attachment request
+// (an upload, or a take-back) names a session that host lists running now,
+// by the MCP door's header rule: a Claude Code session by its id
+// (mirrorSessionHeader); an opencode caller — the request is marked
+// (mirrorClientHeader) or names an agent session — by its key
+// (mirrorAgentSessionHeader, "opencode:<id>") ALONE, never beside a Claude
+// session. 🔴 THE CLAUDE HEADER NAMES A CLAUDE SESSION ONLY, as at the door:
+// mirrorSessionOf binds an opencode key too.
+func (s *Server) mirrorUploadSession(r *http.Request) bool {
+	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
+	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
+	agentKey := strings.TrimSpace(r.Header.Get(mirrorAgentSessionHeader))
+	key := sid
+	if agentKey != "" || strings.EqualFold(strings.TrimSpace(r.Header.Get(mirrorClientHeader)), mirrorClientOpenCode) {
+		if sid != "" || !mirror.OpenCodeMCPCaller(agentKey) {
+			return false
+		}
+		key = agentKey
+	} else if !mirror.ValidClaudeSession(sid) {
+		return false
+	}
+	_, ok := s.mirrorSessionOf(r.Context(), t.Host, key)
+	return ok
 }
 
 // handleAgentAskAttachment is POST /agent/ask-attachments?filename=<name>: a
@@ -113,8 +141,8 @@ func (s *Server) handleMirrorAskAttachmentRevoke(w http.ResponseWriter, r *http.
 		return
 	}
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
-	if _, ok := s.mirrorSessionOf(r.Context(), t.Host, strings.TrimSpace(r.Header.Get(mirrorSessionHeader))); !ok {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "name the calling session (" + mirrorSessionHeader + "): one this host lists running now"})
+	if !s.mirrorUploadSession(r) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": mirrorUploadSessionRefusal})
 		return
 	}
 	id := r.PathValue("id")
@@ -274,13 +302,14 @@ const askFallbackTimeout = 3 * time.Second
 // asking session's focus title (internal/focus) and its last assistant message
 // (lastAssistantWords), each with anything shaped like a secret redacted. nil
 // when there is neither, and for a caller that is not an agent or a mirrored
-// Claude Code session.
+// session (Claude Code's or opencode's: its focus subject is its session key,
+// "opencode:<id>" for opencode's, the key every focus write names it by).
 func (s *Server) askFallbackWhy(ctx context.Context, c toolCaller) *attention.AskWhy {
 	var sub focus.Subject
 	switch {
 	case c.agent != nil:
 		sub = focus.AgentSubject(c.agent.ID)
-	case c.asker.MirrorSession != "" && !c.openCodeSession():
+	case c.asker.MirrorSession != "":
 		sub = focus.MirrorSubject(c.asker.MirrorSession)
 	default:
 		return nil
@@ -321,6 +350,9 @@ func (s *Server) lastAssistantWords(ctx context.Context, c toolCaller) string {
 		if !ok {
 			return ""
 		}
+		// An opencode session's read needs nothing more: nudgeTranscript watches
+		// the window and keeps the batches whose Gen is the key's BARE id
+		// (mirror.SessionIDOf), which an opencode view's Gen is.
 		cand.Session = chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: c.asker.MirrorSession, Host: e.Host, TmuxSession: e.Session, Window: e.Window}
 	}
 	read, err := s.nudgeTranscript(rctx, cand)

@@ -65,8 +65,7 @@ type CatalogModel struct {
 	ID   string
 	Name string
 	// ContextLength is the model's context window in tokens, as the catalogue
-	// states it (OpenRouter's context_length); 0 unknown. The chief chat's
-	// context chip reads it (modelContextWindow).
+	// states it (OpenRouter's context_length); 0 unknown.
 	ContextLength int64
 	// Pricing is the catalogue's list price, as OpenRouter writes it (USD per
 	// token, a decimal string; "" unknown). For the chief sessions' model

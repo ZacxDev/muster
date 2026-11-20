@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 	g "maragu.dev/gomponents"
 )
@@ -318,7 +319,10 @@ var (
 		// Plain words (the design review: "Picker" and "Attention ask" were
 		// muster's own names for its kinds, not the reader's).
 		asklog.KindPlainText: "Question in chat", asklog.KindAskUserQuestion: "Question with choices", asklog.KindAttention: "Agent's question",
-		asklog.KindOpenCodeQuestion: "opencode question", asklog.KindOpenCodePermission: "opencode permission request",
+		// The app in brackets, after what it is: the row reads as a
+		// question first (the jargon audit, U-19). Short enough to fit a
+		// row's title beside its outcome pill at 390px.
+		asklog.KindOpenCodeQuestion: "Question (opencode)", asklog.KindOpenCodePermission: "Permission (opencode)",
 	}
 	// 🔴 THE LOG NEVER SAYS "Open". The page heading's "N open" is what waits
 	// on you NOW (THE ONE OPEN COUNT, asks_count.go); a log row with no outcome
@@ -328,8 +332,13 @@ var (
 	// value and the filter's URL value stay "open" (asklog.OutcomeOpen).
 	askOutcomeLabels = map[string]string{
 		asklog.OutcomeOpen: "No answer", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
-		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Moved on", asklog.OutcomeExpired: "Expired",
-		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Superseded", asklog.OutcomeGone: "Gone",
+		// "Moved on" and "Superseded" said what muster calls them, not what
+		// happened (the jargon audit, F038/U-20). 🔴 ONE SHORT WORD: a label
+		// is also a row's outcome PILL, which never shrinks, so a long one
+		// cut the row's title and place to stubs at 390px. What it means in
+		// full is askOutcomeMeanings' (the "How it ended" ⓘ).
+		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Skipped", asklog.OutcomeExpired: "Expired",
+		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Replaced", asklog.OutcomeGone: "Gone",
 		asklog.OutcomeUnknown: "Unknown",
 	}
 	// askOutcomeMeanings is each outcome in a sentence a newcomer gets: the
@@ -342,7 +351,7 @@ var (
 		asklog.OutcomeMovedOn:           "The session carried on without an answer.",
 		asklog.OutcomeExpired:           "It timed out before anyone answered.",
 		asklog.OutcomeCancelled:         "The agent withdrew it.",
-		asklog.OutcomeSuperseded:        "A newer question replaced it before an answer.",
+		asklog.OutcomeSuperseded:        "Replaced by a newer question before anyone answered.",
 		asklog.OutcomeGone:              "Its session closed before any answer.",
 		asklog.OutcomeUnknown:           "muster restarted before it saw how it ended.",
 	}
@@ -353,7 +362,7 @@ var (
 	// askByInline is who answered, inside a sentence ("by you").
 	askByInline      = map[string]string{asklog.ByOwner: "you", asklog.ByChief: "the chief", asklog.ByOther: "someone else"}
 	askRuntimeLabels = map[string]string{asklog.RuntimeClaudeCode: "Claude Code", asklog.RuntimeOpenCode: "opencode", asklog.RuntimeAgent: "Agent"}
-	askSinceChoices  = []struct{ v, label string }{{"24h", "Last 24 hours"}, {"7d", "Last 7 days"}, {"30d", "Last 30 days"}, {"", "All kept"}}
+	askSinceChoices  = []struct{ v, label string }{{"24h", "Last 24 hours"}, {"7d", "Last 7 days"}, {"30d", "Last 30 days"}, {"", "All time"}}
 )
 
 func labelOr(m map[string]string, k string) string {
@@ -462,7 +471,7 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 }
 
 // askLogFormHTML is the filter form: kind, outcome, who answered and the time
-// window on top; runtime, host, repository and session behind "More filters"
+// window on top; app (runtime), host, project (repository) and session behind "More filters"
 // (open when one of them is set). A GET to the Asks page on its Log tab.
 func askLogFormHTML(q url.Values) string {
 	esc := html.EscapeString
@@ -522,8 +531,8 @@ func askLogFormHTML(q url.Values) string {
 <form method="get" action="` + attentionPath + `" class="flex flex-col gap-2 pt-2" data-asklog-form aria-label="Filter the ask log">
 <input type="hidden" name="` + asksTabParam + `" value="` + asksTabLog + `">
 <div class="` + ui.AsksLogFormClass + `">` + sel("kind", "Kind", kinds) + sel("outcome", "Outcome", outcomes) + sel("answered_by", "Answered by", bys) +
-		sel("since", "When", since) + sel("runtime", "Runtime", runtimes) + text("host", "Host", "any") + text("repo", "Repository", "owner/name") +
-		text("session", "Session", "tmux or session id") + `</div>
+		sel("since", "When", since) + sel("runtime", "App", runtimes) + text("host", "Host", "any") + text("repo", "Project", "any") +
+		text("session", "Session", "Session name") + `</div>
 <div class="` + ui.AsksActionsClass + `"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `">Apply</button>` +
 		`<a class="` + ui.AsksSecondaryButtonClass + `" href="` + esc(askLogHref(url.Values{})) + `">Clear</a></div>
 </form></details>`
@@ -558,8 +567,14 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	b.WriteString(`<section class="flex flex-col gap-2" aria-label="Summary" data-asklog-summary><div class="` + ui.AsksLogStatsClass + `">`)
 	tile("total", strconv.Itoa(sum.Total), "asks")
 	tile("owner", strconv.Itoa(sum.ByAnsweredBy[asklog.ByOwner]), "answered by you")
-	tile("median", lat(sum.MedianAnswer), "median to answer")
-	tile("p90", lat(sum.P90Answer), "90th percentile")
+	// In words, not statistics (the jargon audit, F037/U-21): the median is
+	// the typical wait. 🔴 "9 in 10 answered within" is a CLAIM about the
+	// rows, so its value is P90Within — a time at least 9 in 10 answers took
+	// no longer than (percentile_disc) — never P90Answer, which interpolates
+	// between rows and so names a time fewer than 9 in 10 were answered by
+	// (10, 20, 40 s: 36 s, which only 2 of 3 beat).
+	tile("median", lat(sum.MedianAnswer), "typical time to answer")
+	tile("p90", lat(sum.P90Within), "9 in 10 answered within")
 	b.WriteString(`</div>`)
 	// THE BREAKDOWNS, AS PLAIN STATISTICS: a heading (the page's one heading
 	// style) over "label … N" rows. No pill: nothing here is a control.
@@ -606,7 +621,7 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	return b.String()
 }
 
-// askFactsHTML is a facts line ("3 times · you answered 2 · median 11s"), its
+// askFactsHTML is a facts line ("3 times · you answered 2 · answered in about 11s"), its
 // facts plain text. 🔴 A SEPARATOR TRAVELS WITH THE FACT AFTER IT: every fact
 // after the first is one no-wrap unit "· fact", and the units are joined by a
 // plain space, the line's only break opportunity — so a wrap starts a line
@@ -631,7 +646,7 @@ func askFactsHTML(facts []string, firstWhole bool) string {
 
 // askTopFacts is a repeated question's facts line, short enough for a phone:
 // how many times; who answered, only when it was not you every time; its
-// usual answer; the median time to one.
+// usual answer; the median time to one ("answered in about 11s").
 func askTopFacts(t asklog.TopQuestion) []string {
 	facts := []string{strconv.Itoa(t.Count) + " times"}
 	if t.ByOwner < t.Count {
@@ -648,7 +663,8 @@ func askTopFacts(t asklog.TopQuestion) []string {
 		}
 	}
 	if t.MedianAnswer > 0 {
-		facts = append(facts, "median "+askDuration(t.MedianAnswer))
+		// The median, in words (the jargon audit): "median" is a statistic.
+		facts = append(facts, "answered in about "+askDuration(t.MedianAnswer))
 	}
 	return facts
 }
@@ -729,7 +745,7 @@ func askOutcomeSheetHTML(m map[string]int, folded []string) string {
 		}
 		label := askOutcomeLabels[k]
 		if in[k] {
-			label += " (in Other)"
+			label += ", in Other"
 		}
 		b.WriteString(`<div data-meaning="` + esc(k) + `"`)
 		if in[k] {
@@ -743,21 +759,80 @@ func askOutcomeSheetHTML(m map[string]int, folded []string) string {
 		Lead: "Every ask in the log ends one of these ways.", Extra: g.Raw(b.String()), Inline: true})
 }
 
-// askLogWhere is where an ask was asked, as the card's sub line names it.
+// askLogWhere is where an ask was asked, whole: the session and computer
+// (askLogWho) and the repo, "ratelimit on work-laptop · acme/api". It is the
+// card's place as its title spells it, so all of it is there to read when the
+// line shows less.
 func askLogWhere(a asklog.Ask) string {
 	var parts []string
-	switch {
-	case a.Host != "" && a.TmuxSession != "":
-		parts = append(parts, a.TmuxSession+" @ "+a.Host)
-	case a.Host != "":
-		parts = append(parts, "@ "+a.Host)
-	case a.AgentID > 0:
-		parts = append(parts, "agent "+strconv.FormatInt(a.AgentID, 10))
+	if who := askLogWho(a); who != "" {
+		parts = append(parts, who)
 	}
 	if a.Repo != "" {
 		parts = append(parts, a.Repo)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// askLogWho is the session and computer part of where an ask was asked (""
+// when it names none): its tmux session "on" its host (mirror.PlaceWords, the
+// one way the top layer says where a window runs — never "session @ host"),
+// else its host, else its agent.
+func askLogWho(a asklog.Ask) string {
+	switch {
+	case a.Host != "" && a.TmuxSession != "":
+		return a.TmuxSession + " " + mirror.PlaceWords(a.Host)
+	case a.Host != "":
+		return mirror.PlaceWords(a.Host)
+	case a.AgentID > 0:
+		return "agent " + strconv.FormatInt(a.AgentID, 10)
+	}
+	return ""
+}
+
+// askLogSubHTML is a row's sub line under its title: the session-and-computer
+// part, the repo ("· acme/api"), then the age ("· 15m ago"), the whole place
+// as the line's title (so all of it is there to read when the line shows
+// less). age is the age's <time>.
+//
+// 🔴 NO PART IS EVER CUT TO A STUB, AND THE AGE IS NEVER CUT. The repo and the
+// age are the line's TAIL (ui.AsksLogTailClass): one clipped line on which
+// the age is laid out first (ui.AsksLogAgeClass) and the repo after it, its
+// flex basis the room a readable part needs (ui.AsksLogRepoClass) — so a repo
+// with less room than that wraps onto the tail's clipped second line and is
+// not drawn at all, rather than drawn as "· a…". The tail is drawn
+// right-to-left and packed to its left edge, so on screen it reads "· repo ·
+// age" straight after the session-and-computer part, with no gap where a dropped
+// repo was. The session-and-computer part (ui.AsksLogWhoClass) gives way to the
+// age (the tail never narrows past it) and truncates against all the rest of
+// the line.
+func askLogSubHTML(a asklog.Ask, age string) string {
+	esc := html.EscapeString
+	who := askLogWho(a)
+	var b strings.Builder
+	b.WriteString(`<span class="` + ui.AsksLogSubClass + `" data-asklog-sub`)
+	if where := askLogWhere(a); where != "" {
+		b.WriteString(` title="` + esc(where) + `"`)
+	}
+	b.WriteString(`>`)
+	if who != "" {
+		// A space between parts (a flex row draws none): the line's text, as
+		// a screen reader or a copy reads it, is "who · repo · age".
+		b.WriteString(`<span class="` + ui.AsksLogWhoClass + `" data-asklog-who>` + esc(who) + `</span> `)
+	}
+	b.WriteString(`<span class="` + ui.AsksLogTailClass + `" data-asklog-tail>`)
+	if a.Repo != "" {
+		repo := esc(a.Repo)
+		if who != "" {
+			repo = `· ` + repo
+		}
+		b.WriteString(`<span class="` + ui.AsksLogRepoClass + `" data-asklog-repo>` + repo + `</span> `)
+	}
+	if who != "" || a.Repo != "" {
+		age = `· ` + age
+	}
+	b.WriteString(`<span class="` + ui.AsksLogAgeClass + `" data-asklog-age>` + age + `</span></span></span>`)
+	return b.String()
 }
 
 // askLogCardHTML is one ask's card: what kind and where, its outcome as a
@@ -773,18 +848,10 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	if row.TextExpired {
 		b.WriteString(` data-text-expired`)
 	}
-	// The sub line: the place (truncated, its ellipsis inside it), then the
-	// age — never shrunk, its "·" with it — so the age is always seen.
-	age := `<time datetime="` + row.AskedAt.Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.AskedAt))) + `</time>`
-	sub := ""
-	if where := askLogWhere(a); where != "" {
-		sub = `<span class="` + ui.AsksLogWhereClass + `" data-asklog-where>` + esc(where) + `</span>`
-		age = `· ` + age
-	}
-	sub += `<span class="` + ui.AsksLogAgeClass + `" data-asklog-age>` + age + `</span>`
+	sub := askLogSubHTML(a, `<time datetime="`+row.AskedAt.Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.AskedAt)))+`</time>`)
 	b.WriteString(`>
-<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `">` + esc(labelOr(askKindLabels, row.Kind)) +
-		`</span><span class="` + ui.AsksLogSubClass + `" data-asklog-sub>` + sub + `</span></div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
+<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) +
+		`</span>` + sub + `</div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
 `)
 	switch {
 	case row.TextExpired:

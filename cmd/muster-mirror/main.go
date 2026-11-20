@@ -230,7 +230,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	attemptCodeFile := fs.String("attempt-code-file", or(getenv(envAttemptCodeFile), mirrorpath.DefaultAttemptCodeFile()), "where this process writes (0600) its attempt code — a random code drawn at start and sent on every connect; when a team host's connection is held, a team manager confirms this machine by typing it, and `muster doctor` reads it here to show it; empty = not written ("+envAttemptCodeFile+")")
 	mcpTargetsFile := fs.String("mcp-targets-file", getenv(envMCPTargets), "with -mcp-listen: a JSON list of OTHER muster instances, [{\"name\": \"la\", \"url\": \"https://…\", \"token_file\": \"/abs/path\"}], whose admin tools (dispatch_request, agents_list, …) this host's sessions may call by passing instance: \"<name>\"; each token file holds THIS host's mirror token minted on THAT instance, mode 0600 or tighter. They are MCP targets only: this host's sessions are mirrored to -url alone. Invalid = logged and ignored, never fatal: MCP then reaches the primary only ("+envMCPTargets+")")
 	mcpPrimaryName := fs.String("mcp-primary-name", or(getenv(envMCPPrimaryName), mirrorhost.DefaultPrimaryName), "the name the -url instance goes by in an instance argument ([a-z0-9-]{1,32}) ("+envMCPPrimaryName+")")
-	mcpToolsRefresh := fs.String("mcp-tools-refresh", or(getenv(envMCPToolsRefresh), mirrorhost.DefaultToolsRefresh.String()), "with -mcp-listen: how often every instance's tool list is re-read; a change is announced to connected sessions with notifications/tools/list_changed, so they pick up a muster upgrade without reconnecting. 0 = off: no watch, no GET stream, no listChanged capability ("+envMCPToolsRefresh+")")
+	mcpToolsRefresh := fs.String("mcp-tools-refresh", or(getenv(envMCPToolsRefresh), mirrorhost.DefaultToolsRefresh.String()), "with -mcp-listen: how often every instance's tool list is re-read; a change is announced to connected sessions with notifications/tools/list_changed, so they pick up a muster upgrade without reconnecting. 0 = off: no watch, no GET stream, no listChanged capability, no MCP sessions ("+envMCPToolsRefresh+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
@@ -512,6 +512,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// long setting it up takes, mirroring starts now.
 		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision,
 			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh}
+		// A reconnect to muster (a muster restart or upgrade among them) has
+		// the tool watch re-read the lists at once, so connected sessions are
+		// told of a changed set within seconds, not at the next tick.
+		c.OnConnected(proxy.KickTools)
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
@@ -785,6 +789,7 @@ func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost
 	proxy.Socket, _ = mirrorhost.ServerSocketOf(backend)
 	if src := mirrorhost.OpenCodeSourceOf(backend); src != nil {
 		proxy.OpenCodeAncestors = src.Ancestors
+		proxy.OpenCodeDirectory = src.Directory
 	}
 	logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), secretFile)
 	if len(proxy.Extras) > 0 {

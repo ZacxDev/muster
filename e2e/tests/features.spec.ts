@@ -67,7 +67,7 @@ for (const size of [
       await expect(page.locator('#mv-attach-off')).toBeVisible();
       await expect(page.locator('#mv-dictate')).toHaveCount(0);
       await expect(page.locator('#mv-attach')).toHaveCount(0);
-      await expect(page.locator('#mv-dictate-off')).toHaveAttribute('aria-label', /Voice typing is off on this server/);
+      await expect(page.locator('#mv-dictate-off')).toHaveAttribute('aria-label', /Voice typing isn't turned on/);
 
       await page.locator('#mv-dictate-off').click();
       await page.waitForURL((u) => u.pathname === '/account/features' && u.hash === '#dictation-setup');
@@ -94,7 +94,7 @@ for (const size of [
       await expect(row(page, 'mirror')).toHaveAttribute('data-state', 'on');
       await expect(row(page, 'suggested-replies')).toHaveAttribute('data-state', 'off');
       // The setup is in each row's ⓘ sheet (closed: read as text, not seen).
-      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('needs MUSTER_AGENT_OPENROUTER_KEY');
+      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('Needs MUSTER_AGENT_OPENROUTER_KEY');
       await expect(page.locator('section[data-feature][data-state="misconfigured"]')).toHaveCount(0);
       await expect(page.locator('[data-features-counts]')).toContainText('0 need setup');
       const chief = row(page, 'chief');

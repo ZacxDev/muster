@@ -22,10 +22,12 @@ import (
 // switcher's labels) and its attention count — and opens what the switcher's
 // pill for it opens. The page's own session is marked.
 //
-// Below the list (and each team's group, navTeamGroups): the Officers group
+// Directly below the chief and the rows waiting on the operator, ABOVE the
+// rest of the list and each team's group (navTeamGroups): the Officers group
 // — one row per declared officer the viewer can see, awake or asleep, an
 // officer's instance drawn through its officer's row unless it waits on the
-// operator (nav_officers.go) — and then the Superseded and Idle groups.
+// operator (nav_officers.go). Below everything: the Superseded and Idle
+// groups.
 //
 // The pages (Tasks, Connectors, Asks, Install, Account, Admin) moved into ONE
 // collapsed "More" disclosure at the bottom of the sidebar (navMore); the Asks
@@ -202,8 +204,9 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 
 // NavAgentsWithOfficers is the partial: the entries in navOrder, the page's
 // own session (currentURL, see navCurrent) marked, and — when officers is not
-// empty — the Officers group (navOfficersGroup) below the team groups and
-// above Superseded and Idle.
+// empty — the Officers group (navOfficersGroup) between the top rows (the
+// chief and every own session waiting on the operator, NavTopRowsID) and the
+// rest of the list, so above the team groups, Superseded and Idle.
 func NavAgentsWithOfficers(list []AgentCardView, mirrors []MirrorCardView, officers []NavOfficer, currentURL string, now time.Time) g.Node {
 	es := navOrder(list, mirrors)
 	if len(es) == 0 {
@@ -216,7 +219,7 @@ func NavAgentsWithOfficers(list []AgentCardView, mirrors []MirrorCardView, offic
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
 	items := switcherItems(es, cur, now)
-	var rows, idle, superseded []g.Node
+	var top, rows, idle, superseded []g.Node
 	var teams []navTeam
 	drawn := navOfficerKeys(officers)
 	var instances []navOfficerInstance
@@ -252,15 +255,50 @@ func NavAgentsWithOfficers(list []AgentCardView, mirrors []MirrorCardView, offic
 			idle = append(idle, navAgentRow(e, items[i], now))
 			continue
 		}
+		// The chief and whoever waits on the operator are drawn ABOVE the
+		// Officers group (navTopRow); navOrder has already put them first, so
+		// splitting here keeps its order.
+		if navTopRow(e) {
+			top = append(top, navAgentRow(e, items[i], now))
+			continue
+		}
 		rows = append(rows, navAgentRow(e, items[i], now))
 	}
 	return g.Group{
-		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
-		navTeamGroups(teams),
+		g.If(len(top) > 0, Ul(ID(NavTopRowsID), g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(top))),
 		navOfficersGroup(officers, instances),
+		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class(navRestRowsClass(len(top) > 0, len(officers) > 0)), g.Group(rows))),
+		navTeamGroups(teams),
 		navSupersededGroup(superseded),
 		navIdleGroup(idle),
 	}
+}
+
+// NavTopRowsID is the sidebar's top rows: the viewer's chief and every own
+// session waiting on the operator (navTopRow), drawn above the Officers group.
+// The rest of the list is the <ul> after that group, labelled by the same
+// "Agents" head (it carries no id of its own, so a row drawn there is
+// byte-for-byte the row main drew).
+const NavTopRowsID = "sidebar-top-rows"
+
+// navTopRow reports whether an own entry (not a team's, not in Superseded or
+// Idle) is drawn in the top rows, above the Officers group: the chief, or an
+// entry waiting on the operator (listEntry.waiting, the one waiting predicate).
+// It is exactly navBefore's first three keys, so the split never reorders.
+func navTopRow(e listEntry) bool { return e.chief() || e.waiting() }
+
+// navRestRowsClass is the rest of the list's classes. Under the Officers
+// group it carries the groups' rule (mt-1 border-t pt-1), so its rows never
+// read as more officers; with no group between it and the top rows the two
+// lists read as one, as before (their gap, gap-0.5); alone it is main's list.
+func navRestRowsClass(afterTop, afterOfficers bool) string {
+	switch {
+	case afterOfficers:
+		return "mt-1 flex flex-col gap-0.5 border-t border-line pt-1"
+	case afterTop:
+		return "mt-0.5 flex flex-col gap-0.5"
+	}
+	return "flex flex-col gap-0.5"
 }
 
 // navTeam is one team's group of rows in the sidebar.
@@ -479,10 +517,10 @@ const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
 // read for the bar — so the page costs no extra read on load. It then refreshes
 // on the events and on each open of the drawer (navWaitingEventsTrigger), and —
 // with poll — once a minute: poll is for a page where nothing else would
-// refresh it (no /events stream, no asks block: a Terminal view, a Rendered
-// view whose window has no asks source). A Rendered view WITH its asks block
-// is refreshed by that block's asks:changed, which fires on every queue change
-// and on the block's own minute's tick, so it reads /ui/nav/waiting about once
+// refresh it (no /events stream, no asks badge: a Terminal view, a Rendered
+// view whose window has no asks source). A Rendered view WITH its asks badge
+// is refreshed by that badge's asks:changed (AskerAsksLive), which fires on
+// every queue change and on the badge's own minute's tick, so it reads /ui/nav/waiting about once
 // a minute anyway. Without a switcher, the badge loads its count and polls
 // (navWaitingTrigger).
 func navWaitingSlot(s *Switcher, poll bool) g.Node {

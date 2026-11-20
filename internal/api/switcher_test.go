@@ -3,7 +3,6 @@ package api
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -71,18 +70,5 @@ func TestBothSessionPagesDrawTheSwitcherFromTheServersLists(t *testing.T) {
 	again := row(get("/agents/keen-wren?session=41"), ui.SwitcherRecent)
 	if w, k := strings.Index(again, `data-switcher-entry="mirror"`), strings.Index(again, "keen-wren"); w < 0 || k >= 0 {
 		t.Errorf("Recent on keen-wren's page after the view: %s", again)
-	}
-}
-
-// TestTheAsksBlockCarriesTheHideButton: the asker block's content, as the
-// server draws it, opens with the heading row that holds "Hide until next
-// ask" (ui.AskerAsksHeading) — so the button arrives with every refresh too.
-func TestTheAsksBlockCarriesTheHideButton(t *testing.T) {
-	out := askerAsksHTML([]attentionItem{{Key: "ask-3", Kind: attentionKindAsk, Text: "go?"}}, "/agents/a", time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
-	if !strings.HasPrefix(out, ui.AskerAsksHeading("1 question", 1)) || !strings.Contains(out, `<li id="ask-3"`) {
-		t.Errorf("the block's content:\n%s", out)
-	}
-	if askerAsksHTML(nil, "/agents/a", time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)) != "" {
-		t.Error("an empty block draws a heading")
 	}
 }

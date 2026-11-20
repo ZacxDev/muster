@@ -461,6 +461,15 @@ export const chiefFleetPort = port + 425;
 export const chiefFleetFakePort = port + 426;
 export const chiefFleetGitHubPort = port + 427;
 export const chiefFleetConnectPort = port + 428;
+// tests/chief-fleet-proposals.spec.ts: the fleet digest's proposal cards
+// (MUSTER_FLEET_ORCHESTRATION=propose) at a phone and a desktop width — its
+// own mirror rig, fake runtime, fake GitHub App and the App's connect listener
+// (+446 to +449: clear of the blocks above, and of features-member's +442 to
+// +444).
+export const chiefProposePort = port + 446;
+export const chiefProposeFakePort = port + 447;
+export const chiefProposeGitHubPort = port + 448;
+export const chiefProposeConnectPort = port + 449;
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;
@@ -494,10 +503,22 @@ export const sessionOpenPort = port + 455;
 export const pluginAutostartPort = port + 450;
 export const pluginAutostartConnectPort = port + 451;
 export const pluginAutostartFakePort = port + 452;
+// tests/opencode-ask-media.spec.ts: a mirrored opencode session's ask carrying
+// a file — its own e2eterm server (uploads on, against a fake S3 the spec
+// plays), the fake S3, and the fake host's loopback MCP endpoint (+460 to
+// +462: clear of the blocks above).
+export const ocAskMediaPort = port + 460;
+export const ocAskMediaS3Port = port + 461;
+export const ocAskMediaMCPPort = port + 462;
 // tests/officer-needs-you.spec.ts: an officer's page as the place its owner
 // deals with it — its own server with plugins on (+445: clear of the blocks
 // above, of sidebarOfficersPort's +440/+441 and of featuresMember's +442 to +444).
 export const officerNeedsYouPort = port + 445;
+// tests/pages-declutter.spec.ts: the Pages screens, plain — its own server
+// (pages on, a link key, so +456 its connect listener). +455: clear of the
+// blocks above.
+export const pagesDeclutterPort = port + 455;
+export const pagesDeclutterConnectPort = port + 456;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

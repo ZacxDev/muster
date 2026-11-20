@@ -449,6 +449,7 @@ waiting for it, and a message already being delivered is not handed over twice.
 | `ok` | yes | `true`: sent. `false`: it was not sent. |
 | `external_ref` | no | up to 200 characters: the upstream's id for what you sent |
 | `detail` | no | up to 4 KiB: anything your owner should read, such as the upstream's error |
+| `retry_at` | no | with `false`: when it **could** be sent, if you know (a [cadence refusal](#retry_at-when-a-refused-draft-could-go)) |
 
 | answer | meaning |
 |---|---|
@@ -525,6 +526,7 @@ that answered `204`.
 |---|---|---|
 | `sendable` | yes | `true`: you can send it. `false`: you cannot. |
 | `detail` | with `false` | up to 4 KiB: why not. It is what the reply's writer is told to fix. |
+| `retry_at` | no | with `false`: when it **could** be sent, if you know (a [cadence refusal](#retry_at-when-a-refused-draft-could-go)) |
 
 | answer | meaning |
 |---|---|
@@ -536,6 +538,30 @@ that answered `204`.
 
 A plugin that never calls these routes, and was not minted with
 `draft_checks`, behaves as before: its drafts are approvable at once.
+
+#### `retry_at`: when a refused draft could go
+
+A refusal that is about **timing**, not content — a cadence rule such as "one
+X post a day, and today's slot is used" — may say when the draft could go:
+`retry_at`, an RFC 3339 time (`"2000-01-03T00:00:00Z"`, any offset), on either
+refusal: a result `"ok": false` or a check `"sendable": false`.
+
+```json
+{"sendable": false, "detail": "cadence: the X slot is used today", "retry_at": "2000-01-03T00:00:00Z"}
+```
+
+- **Optional and backward compatible.** Leave it out when you do not know; a
+  muster that predates it ignores it.
+- **Advice, never a refusal of your call.** A `retry_at` muster cannot read —
+  not a string, not RFC 3339 — is ignored and the refusal is recorded as if it
+  were absent (`200`); it is never a `400`.
+- **Where it goes.** For an [officer's outbound draft](#outbound-drafts-officer_post_draft)
+  it is stored, in UTC to the second, on the officer's `draft.refused` item's
+  payload as `retry_at`. On the officer's page, that refusal's **Re-file**
+  then defaults to it ("When the plugin says it can go"), rounded **up** to the
+  next minute, while it is still ahead and within the 30 days a re-file may
+  reach; otherwise Re-file offers its usual times. A reply draft (not an
+  officer's) records nothing more.
 
 ### When the plugin refuses a reply
 
@@ -557,7 +583,9 @@ muster then, once, on the call that recorded it:
   or straight to your chief. It does this for every failed
   send. For a check refusal it does this only when the reply is not going back
   to its session, because there is nothing for your owner to do while the
-  session rewrites it.
+  session rewrites it. An **officer's** refused draft goes back to the officer
+  and pushes nothing; its earlier "awaits your approval" notification is
+  withdrawn instead ([Officer notifications](push.md#officer-notifications-decisions-only)).
 - **hands a routed reply back to the session that wrote it.** The route ends
   `send_failed`, not `relayed`, so `plugin_messages_list` says `send_failed`.
   The route sweep makes a **new route** of the same message to the same
@@ -805,13 +833,31 @@ out of the text, then screens what is left:
   A link the allowlist does not name is not exempt at all, including another
   repository of the same owner (`github.com/<owner>/muster-private`): it is
   refused if it spells a deployment name.
-- **Everything else is unchanged.** A deployment name in the prose around the
-  link ("muster is out: …"), an internal host name, an IP address, a
-  credential- or token-shaped string or an infrastructure word is refused as
-  before.
+- **The repository's own name may stand alone.** When `<repo>` of an
+  allowlist entry `github.com/<owner>/<repo>` is also one of your deny words,
+  an occurrence of it that **stands alone** in the draft (compared without
+  case) is not refused, so a post may say "widget has a new logo." when
+  `acme/widget` is a standing-read repository. Standing alone is an
+  allowlist: each neighbour of the name is the start or end of the text,
+  whitespace, one of `, ; ! ? ' ’ " “ ” ( ) [ ]`, or, after the name, a `.`
+  or `:` followed by whitespace or the end of the text. So `widget.`,
+  `widget's`, `(widget)` and "widget: the new logo" pass. Any other neighbour
+  joins the name to a longer one, which is refused as before: a letter,
+  digit or combining mark, any dash (`widget-prod`, `widget–prod`), `_`,
+  `/`, `@`, `+`, `~`, `\`, a `.` or `:` inside a run (`widget.staging`,
+  `widget:5432`, `x.widget`), and an undeclared
+  `github.com/<owner>/widget-private`. Only that name is exempt, and only
+  for its own check: `<owner>` and every other deny word are checked against
+  the whole text, so a deny word `widget prod` still refuses "widget prod is
+  up".
+- **Everything else is unchanged.** Any other deployment name in the prose
+  around the link (another project, a cluster, the owner), an internal host
+  name, an IP address, a credential- or token-shaped string or an
+  infrastructure word is refused as before.
 
 The allowlist only widens the outbound screen. A reply your chief drafts,
-and a browser flow's text, have none.
+and a browser flow's text, have none — they refuse the repository's name
+too.
 
 #### `GET /plugin/v1/drafts/checks` for an outbound draft
 
@@ -949,7 +995,8 @@ After the result, for an outbound draft filed with an `item_id`:
   `draft:<id>`, payload `{draft_id, item_id, venue, target, media, status,
   by, detail}` — `by` is `plugin` or `owner`; `detail` is the plugin's detail,
   or your reason (`"rejected by the owner, no reason given"` when you gave
-  none) — so it can write a better one. In the same transaction the item the
+  none); plus `retry_at` when the plugin's refusal [named one](#retry_at-when-a-refused-draft-could-go)
+  — so it can write a better one. In the same transaction the item the
   draft was for is finished `no_action`, its summary naming the new item: the
   work continues there.
 - **Ended by muster itself**, in the same transaction that ends the draft

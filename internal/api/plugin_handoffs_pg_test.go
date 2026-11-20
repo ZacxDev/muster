@@ -320,7 +320,8 @@ func TestPluginCreateRefusesEntryURLTricksAndViewerWhenUnset(t *testing.T) {
 		}
 	}
 	// CONTROL: a viewer-only token stores data scope none; messages+viewer keeps it.
-	if tok, _, rec := f.create(f.a, viewerForm("viewer-ok", hoEntry)); tok == "" || !strings.Contains(rec.Body.String(), "scope none") {
+	// The card says a data scope as its "Notes topic" (the jargon audit's F065).
+	if tok, _, rec := f.create(f.a, viewerForm("viewer-ok", hoEntry)); tok == "" || !strings.Contains(rec.Body.String(), "Notes topic: none") {
 		t.Fatalf("CONTROL: a valid viewer-only create: %d; want a token and scope none", rec.Code)
 	}
 

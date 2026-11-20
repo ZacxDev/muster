@@ -160,9 +160,9 @@ called by its technical id everywhere, as before.
 
 ### Show tmux sessions
 
-A per-user switch, **Account → Notifications → Show tmux sessions** ("Adds
-each session's tmux codename (like mango:1 @ atlas) to notifications and the
-session lists"), off for every user until they turn it on (stored in
+A per-user switch, **Account → Notifications → Show technical session names**
+("Adds each session's technical name to notifications and the session lists";
+its ⓘ shows an example, `mango:1 @ atlas`), off for every user until they turn it on (stored in
 `notify_preferences`, migration 0094; no row is off). On, a session called by
 its human name is also shown by the window as muster named it before sessions
 had names — the host's label for it and the host, or, when the host sent no
@@ -222,8 +222,8 @@ text and every pill is byte for byte what it was before the switch existed.
 
 ### Tmux name first in push titles
 
-A per-user switch, **Account → Notifications → Start notification titles
-with the tmux name**, off until the user turns it on
+A per-user switch, **Account → Notifications → Start notifications with the
+computer and session name**, off until the user turns it on
 (`notify_preferences.codename_first`, migration 0117; no row is off), makes
 every push title about a tmux window START with that window's codename and
 host, compact — the host's label for the window (its tmux `session:window`

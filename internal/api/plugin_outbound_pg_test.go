@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
@@ -122,6 +123,18 @@ type outboundFixture struct {
 	onHost       bool
 	officerExtra string
 	denyWords    []string
+	// usage, when set, is the usage collector's source (never run on its
+	// own: a test ticks or flushes it).
+	usage usage.Source
+	// moreOfficers, when set, is more MUSTER_OFFICERS entries (",{…}"),
+	// declared after the world's own; it may make what they need (a team).
+	moreOfficers func(t *testing.T, f *connFixture) string
+	// provisioner and gateway, when set, replace the stub provisioner and
+	// the (absent) gateway — set BEFORE anything starts: the world's own
+	// instance start dispatches on a goroutine that reads them
+	// (createAndDispatchAgent), so a test must never swap them after.
+	provisioner Provisioner
+	gateway     Gateway
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -154,7 +167,11 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		_, _ = f.pool.Exec(sys, `DELETE FROM audit_log WHERE user_id = $1`, other)
 		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, other)
 	})
-	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}]`
+	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}`
+	if fx.moreOfficers != nil {
+		decl += fx.moreOfficers(t, f)
+	}
+	decl += `]`
 	if onHost {
 		decl = `[{"id":"` + builtinOfficerID + `","backend":"builtin","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `","connectors":["pg-example"]` + fx.officerExtra + `}]`
 	}
@@ -169,6 +186,12 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	ext := Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
 		Attention: attention.NewPG(f.pool), Plugins: ps, Users: users.NewPG(f.pool),
 		Uploads: &uploads.Service{Objects: objs}, APITokens: apitokens.NewPG(f.pool)}
+	if fx.provisioner != nil {
+		ext.Provisioner = fx.provisioner
+	}
+	if fx.gateway != nil {
+		ext.Gateway = fx.gateway
+	}
 	var hm *hostOfficerMirror
 	if onHost {
 		// The Compose shape: no provisioner, no kinds; a mirror hub.
@@ -188,6 +211,9 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		t.Fatal(err)
 	}
 	ocfg := OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}
+	if fx.usage != nil {
+		ocfg.UsageSource, ocfg.NoUsageRun = fx.usage, true
+	}
 	if onHost {
 		ocfg.InstallSession, ocfg.HostSpawns = nil, officers.NewMemHostSpawnStore()
 	}
@@ -663,9 +689,11 @@ func liveRepoBody(link string) string {
 // the project's name), an officer whose standing-read repositories include
 // ZacxDev/muster files a post linking to it — https and bare — and the draft
 // passes the plugin's check, the owner's approval and the claim with its body
-// byte-for-byte. The same officer WITHOUT the standing declaration is refused
-// by the deny-word layer; a deployment name outside the link, an internal
-// host beside it, and an undeclared repository are still refused.
+// byte-for-byte, and a post naming the project bare is filed too. The same
+// officer WITHOUT the standing declaration is refused by the deny-word layer;
+// another deployment name outside the link, an internal host beside it, an
+// undeclared repository spelling another deployment name, and an undeclared
+// repository whose name only begins with the project's are still refused.
 func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	const standing = `,"read_repos":["ZacxDev/muster"],"read_grant":"standing"`
 	words := []string{"muster", "examplecluster"}
@@ -701,10 +729,15 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 			t.Fatalf("%s: result: %d %s", link, rec.Code, rec.Body.String())
 		}
 	}
+	// The declared repository's name is no secret: it may stand alone.
+	if id, out := post(w, "muster has a new logo"); id == 0 {
+		t.Errorf("the declared repository's bare name: %s", out)
+	}
 	internalHost := "store.example." + "lan"
 	for _, bad := range []struct{ body, want string }{
-		{"muster is out: github.com/ZacxDev/muster", "infrastructure name"},
+		{"examplecluster is out: github.com/ZacxDev/muster", "infrastructure name"},
 		{liveRepoBody("github.com/ZacxDev/muster") + " on " + internalHost, "internal host name"},
+		{liveRepoBody("github.com/ZacxDev/examplecluster"), "infrastructure name"},
 		{liveRepoBody("github.com/ZacxDev/muster-private"), "infrastructure name"},
 	} {
 		if id, out := post(w, bad.body); id != 0 || !strings.Contains(out, bad.want) {
@@ -715,8 +748,10 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	// (A host-runtime officer, #649, has no allowlist: MUSTER_OFFICERS refuses
 	// read_repos on "runtime": "host".)
 	noStanding := newOutboundWorldWith(t, true, outboundFixture{denyWords: words})
-	if id, out := post(noStanding, liveRepoBody("https://github.com/ZacxDev/muster")); id != 0 || !strings.Contains(out, "infrastructure name") {
-		t.Errorf("an officer that declares no standing read: filed %d, %s; want the infrastructure-name refusal", id, out)
+	for _, body := range []string{liveRepoBody("https://github.com/ZacxDev/muster"), "muster has a new logo"} {
+		if id, out := post(noStanding, body); id != 0 || !strings.Contains(out, "infrastructure name") {
+			t.Errorf("an officer that declares no standing read, %q: filed %d, %s; want the infrastructure-name refusal", body, id, out)
+		}
 	}
 	// read_repos under the per-instance approval (no read_grant) may be
 	// private: they are NOT a declaration that the repository is public.
