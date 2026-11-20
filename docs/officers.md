@@ -858,7 +858,12 @@ paces it: the stop ends the park, so the next restart of the same instance
 needs a new park and a newer reading, at most one per
 `MUSTER_CC_USAGE_POLL_INTERVAL`. As a backstop to that rule, at most 4 such
 restarts per instance per UTC day; past that the instance is held (logged once
-that day) until an operator acts. This backstop is kept in memory and is not
+that day) until an operator acts, and its refusals are no longer treated as
+stale: they mark the account and ask the failover again, as before this
+feature. Each of ccd's lanes has its own pane and its own park: a chat lane's
+completed turn never clears the primary's park, and only the PRIMARY lane's
+stale park restarts the instance (a chat lane parked on the menu is stopped by
+ccd itself). This backstop is kept in memory and is not
 the auto-restart's stored cap, which counts restarts of an instance in `error`
 per error episode. Only a pod officer's instance is restarted this way, so only
 its stale refusal marks nothing; any other agent's stale refusal marks the

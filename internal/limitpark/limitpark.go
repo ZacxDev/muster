@@ -19,7 +19,8 @@
 //
 // # What the board does
 //
-// It remembers, per agent, since when its pane has been parked on the limit
+// It remembers, per agent and LANE (ccd runs one CLI per lane: its primary
+// and each session's), since when that pane has been parked on the limit
 // (a [Park]: the first usage-limit failure since the agent's last completed
 // turn), and, per account, the poller's latest good reading. Then:
 //
@@ -72,6 +73,43 @@ type Park struct {
 	staleLogged bool
 }
 
+// parkKey is one CLI's pane: an agent and the lane (its HeaderCCSession; ""
+// for ccd's primary CLI).
+type parkKey struct {
+	agent int64
+	lane  string
+}
+
+// PrimaryLane is the lane of ccd's primary CLI (a turn with no session
+// header): the officer instance's queue work, and the only lane whose stale
+// park makes the instance Stuck. A chat lane parked on the menu is stopped by
+// ccd itself once no turn holds it (cmd/ccd lanes.release), so restarting the
+// whole instance for it would only kill the primary's turn.
+const PrimaryLane = ""
+
+// MaxRestartsPerDay is a BACKSTOP to the timing rule, not its pacing: a
+// restart needs the primary pane parked since before a live reading newer
+// than the park, and the stop ends the park, so one agent is restarted at
+// most once per usage-poll interval. This bounds what that rule would allow
+// if it were wrong (a CLI that re-raises the menu at once, every interval):
+// past it the agent is HELD for the rest of the UTC day — Stuck answers held,
+// and its refusals are no longer stale, so they mark the account and ask the
+// failover exactly as before this board existed (the agent is not left
+// silenced with nothing to free it). Kept in memory: a restarted muster
+// forgets it, and the timing rule still holds.
+//
+// ⚠ NOT the officers' auto-restart cap (internal/officers autorestart.go,
+// migration 0170), deliberately: that book counts restarts of an instance in
+// `error`, per error episode, with its class; a limit-parked instance is
+// running and has no episode, and sharing it would spend the error path's
+// daily places on a different failure.
+const MaxRestartsPerDay = 4
+
+type restartDay struct {
+	day string
+	n   int
+}
+
 type acct struct {
 	owner int64
 	name  string
@@ -92,9 +130,15 @@ type Board struct {
 	// it is found stale (and so marks nothing). Set it before first use.
 	Logger *log.Logger
 
-	mu    sync.Mutex
-	parks map[int64]Park
-	live  map[acct]reading
+	mu sync.Mutex
+	// parks is keyed by (agent, lane): ccd runs one CLI per lane — its
+	// primary ("") and one per X-Muster-CC-Session (an officer instance's chat
+	// lanes) — and each pane has its own menu.
+	parks map[parkKey]Park
+	// restarts is each agent's restarts off a stale menu today (Stopped),
+	// against MaxRestartsPerDay.
+	restarts map[int64]restartDay
+	live     map[acct]reading
 	// hits is each account's latest FRESH usage-limit failure (a 429, or a 409
 	// NoteLimit did not find stale): evidence newer than a reading overrules it.
 	hits map[acct]time.Time
@@ -107,7 +151,8 @@ func New(marksOwner func(ctx context.Context, owner int64) int64, now func() tim
 	if now == nil {
 		now = time.Now
 	}
-	return &Board{marksOwner: marksOwner, now: now, parks: map[int64]Park{}, live: map[acct]reading{}, hits: map[acct]time.Time{}}
+	return &Board{marksOwner: marksOwner, now: now, parks: map[parkKey]Park{}, restarts: map[int64]restartDay{},
+		live: map[acct]reading{}, hits: map[acct]time.Time{}}
 }
 
 func (b *Board) key(ctx context.Context, owner int64, account string) acct {
@@ -143,21 +188,24 @@ func (b *Board) NoteReading(ctx context.Context, owner int64, account string, ro
 	b.live[k] = r
 }
 
-// NoteLimit records a usage-limit failure of agentID's turn on owner's
-// account — menu: ccd's 409 refusal from a pane parked on the usage-limit
-// menu (nothing typed); otherwise a typed turn that hit the limit (a 429) —
-// and reports whether it is STALE, and why: a menu refusal from a pane
-// parked since before a newer live reading that shows the account usable
-// (see the package doc). A stale failure must not mark the account.
-func (b *Board) NoteLimit(ctx context.Context, agentID, owner int64, account, detail string, menu bool) (stale bool, why string) {
+// NoteLimit records a usage-limit failure of agentID's turn in lane (its
+// HeaderCCSession; PrimaryLane for ccd's primary CLI) on owner's account —
+// menu: ccd's 409 refusal from a pane parked on the usage-limit menu (nothing
+// typed); otherwise a typed turn that hit the limit (a 429) — and reports
+// whether it is STALE, and why: a menu refusal from a pane parked since
+// before a newer live reading that shows the account usable (see the package
+// doc). A stale failure must not mark the account. An agent HELD at
+// MaxRestartsPerDay is never stale: its refusals mark as before.
+func (b *Board) NoteLimit(ctx context.Context, agentID int64, lane string, owner int64, account, detail string, menu bool) (stale bool, why string) {
 	if agentID <= 0 || account == "" {
 		return false, ""
 	}
 	k := b.key(ctx, owner, account)
 	now := b.now()
+	pk := parkKey{agentID, lane}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p, had := b.parks[agentID]
+	p, had := b.parks[pk]
 	// 🔴 A TYPED TURN THAT HIT THE LIMIT STARTS A NEW PARK. A 429 is a paste
 	// the pane took, so it was not on a menu before it; only a menu refusal
 	// continues the park it finds.
@@ -168,14 +216,20 @@ func (b *Board) NoteLimit(ctx context.Context, agentID, owner int64, account, de
 	if name, _ := ccusage.MarkedLimitWindow(detail); name != "" {
 		p.Detail = detail
 	}
-	b.parks[agentID] = p
+	b.parks[pk] = p
 	if menu {
 		if why, ok := b.staleLocked(p, k); ok {
+			// 🔴 HELD AT THE BACKSTOP: not stale, so it marks and fails over
+			// as before. Not a fresh hit either (the reading still overrules
+			// it for every other agent), so hits is left alone.
+			if b.heldLocked(agentID, now) {
+				return false, ""
+			}
 			if !p.staleLogged && b.Logger != nil {
-				b.Logger.Printf("limitpark: agent %d: a usage-limit menu refusal on account %s is stale and marks nothing: %s", agentID, p.Account, why)
+				b.Logger.Printf("limitpark: agent %d (lane %q): a usage-limit menu refusal on account %s is stale and marks nothing: %s", agentID, lane, p.Account, why)
 			}
 			p.staleLogged = true
-			b.parks[agentID] = p
+			b.parks[pk] = p
 			return true, why
 		}
 	}
@@ -216,13 +270,39 @@ func (b *Board) staleLocked(p Park, k acct) (string, bool) {
 		p.Since.UTC().Format(time.RFC3339), p.Account, at.UTC().Format(time.RFC3339), reason), true
 }
 
-// Stuck reports whether agentID's pane is stale-parked (NoteLimit's verdict
-// against the account's latest reading) AND was seen on the menu at or after
-// that reading — so a restart now is what frees it — and says why.
-func (b *Board) Stuck(agentID int64) (string, bool) {
+// heldLocked reports whether agentID has been restarted off a stale menu
+// MaxRestartsPerDay times on now's UTC day. b.mu is held.
+func (b *Board) heldLocked(agentID int64, now time.Time) bool {
+	r := b.restarts[agentID]
+	return r.day == utcDay(now) && r.n >= MaxRestartsPerDay
+}
+
+func utcDay(t time.Time) string { return t.UTC().Format("2006-01-02") }
+
+// Stuck reports whether agentID's PRIMARY pane is stale-parked (NoteLimit's
+// verdict against the account's latest reading) AND was seen on the menu at
+// or after that reading — so a restart now is what frees it — and says why.
+// held: it would be, but the agent was restarted MaxRestartsPerDay times
+// today (the backstop), so it is not to be restarted again today. A chat
+// lane's park never makes the agent stuck (PrimaryLane).
+func (b *Board) Stuck(agentID int64) (why string, stuck, held bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p, ok := b.parks[agentID]
+	why, ok := b.stuckLocked(agentID)
+	if !ok {
+		return "", false, false
+	}
+	if r := b.restarts[agentID]; r.day == utcDay(b.now()) {
+		if r.n >= MaxRestartsPerDay {
+			return why + fmt.Sprintf("; restarted off a stale menu %d times today (the backstop): held until the UTC day ends", r.n), false, true
+		}
+		return why + fmt.Sprintf("; restart %d of %d today", r.n+1, MaxRestartsPerDay), true, false
+	}
+	return why + fmt.Sprintf("; restart 1 of %d today", MaxRestartsPerDay), true, false
+}
+
+func (b *Board) stuckLocked(agentID int64) (string, bool) {
+	p, ok := b.parks[parkKey{agentID, PrimaryLane}]
 	if !ok {
 		return "", false
 	}
@@ -234,18 +314,40 @@ func (b *Board) Stuck(agentID int64) (string, bool) {
 	return why + fmt.Sprintf("; it last refused a turn from that menu at %s", p.Seen.UTC().Format(time.RFC3339)), true
 }
 
-// Clear forgets agentID's park: a turn of it completed, ccd said a turn is
-// running in it, or it was stopped or started.
-func (b *Board) Clear(agentID int64) {
+// Clear forgets agentID's park in lane: a turn there completed, or ccd said
+// a turn is running in it. Another lane's park stands.
+func (b *Board) Clear(agentID int64, lane string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.parks, agentID)
+	delete(b.parks, parkKey{agentID, lane})
 }
 
-// Parked is agentID's park, if it has one (for tests and the log).
-func (b *Board) Parked(agentID int64) (Park, bool) {
+// Stopped forgets every park of agentID — its pod (and every CLI in it) was
+// stopped or started — and, when its primary pane was Stuck at that moment,
+// counts a restart off a stale menu against MaxRestartsPerDay.
+func (b *Board) Stopped(agentID int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p, ok := b.parks[agentID]
+	if _, stuck := b.stuckLocked(agentID); stuck {
+		day := utcDay(b.now())
+		r := b.restarts[agentID]
+		if r.day != day {
+			r = restartDay{day: day}
+		}
+		r.n++
+		b.restarts[agentID] = r
+	}
+	for k := range b.parks {
+		if k.agent == agentID {
+			delete(b.parks, k)
+		}
+	}
+}
+
+// Parked is agentID's park in lane, if it has one (for tests and the log).
+func (b *Board) Parked(agentID int64, lane string) (Park, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.parks[parkKey{agentID, lane}]
 	return p, ok
 }

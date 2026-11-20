@@ -198,8 +198,19 @@ type Gateway struct {
 // usable. The gateway records every usage-limit failure there, and a stale
 // one marks no account and moves no agent.
 type LimitParks interface {
-	NoteLimit(ctx context.Context, agentID, owner int64, account, detail string, menu bool) (stale bool, why string)
-	Clear(agentID int64)
+	NoteLimit(ctx context.Context, agentID int64, lane string, owner int64, account, detail string, menu bool) (stale bool, why string)
+	Clear(agentID int64, lane string)
+}
+
+// turnLane is the ccd lane a turn runs in: its route's HeaderCCSession (a
+// session of its own, e.g. an officer instance's chat lane), "" for ccd's
+// primary CLI. A park is per lane: one lane's success or busy says nothing
+// about another lane's menu.
+func turnLane(ctx context.Context) string {
+	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Header != nil {
+		return r.Header.Get(agents.HeaderCCSession)
+	}
+	return ""
 }
 
 // UseLimitParks installs the limit-park board (cmd/muster-server, beside the
@@ -459,7 +470,7 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if parks != nil && t.agentID > 0 && rt.Status == http.StatusConflict && rt.Type == "busy" {
 		// ccd says a turn is running in the session (or a dialog other than
 		// the limit menu is up): the pane is not refusing from a limit menu.
-		parks.Clear(t.agentID)
+		parks.Clear(t.agentID, turnLane(ctx))
 	}
 	// 🔴 NOT EVERY rate_limited: only the account's usage limit marks it and
 	// fails the agent over (ccpool.AccountFailure, the one place that decides).
@@ -485,7 +496,7 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	// end its menu. (It still does not count as a fresh hit on the account,
 	// so it cannot hold back the restart of the officer instances.)
 	if failure == ccpool.FailureRateLimited && parks != nil && t.agentID > 0 {
-		if stale, _ := parks.NoteLimit(ctx, t.agentID, t.owner, t.account, rt.Message, rt.Status == http.StatusConflict); stale && t.limitRestart {
+		if stale, _ := parks.NoteLimit(ctx, t.agentID, turnLane(ctx), t.owner, t.account, rt.Message, rt.Status == http.StatusConflict); stale && t.limitRestart {
 			return err
 		}
 	}
@@ -539,7 +550,7 @@ func (g *Gateway) noteSuccess(ctx context.Context, t Target, reply string, err e
 	}
 	// A completed turn: the pane is not on a limit menu.
 	if parks := g.limitParks(); parks != nil {
-		parks.Clear(t.agentID)
+		parks.Clear(t.agentID, turnLane(ctx))
 	}
 	if g.kickoff == nil {
 		return

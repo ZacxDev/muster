@@ -184,6 +184,8 @@ type officerProv struct {
 	stops     []int64
 	dispatch  []int64
 	destroyed []int64
+	// stopErr, when set, is Stop's answer (nothing is stopped).
+	stopErr error
 }
 
 func (p *officerProv) nameOf(id int64) string {
@@ -213,6 +215,9 @@ func (p *officerProv) Stop(_ context.Context, id int64) error {
 	n := p.nameOf(id)
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.stopErr != nil {
+		return p.stopErr
+	}
 	p.stops = append(p.stops, id)
 	p.phase[n] = provision.PhaseStopped
 	return nil

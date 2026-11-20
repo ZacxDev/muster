@@ -85,6 +85,11 @@ type InstanceState struct {
 	// (internal/limitpark Board.Stuck). The loop restarts such an instance
 	// (restartLimitParked): nothing else ends the menu.
 	LimitParked string
+	// LimitHeld is why the instance is stuck on a stale menu but NOT to be
+	// restarted again today (limitpark.MaxRestartsPerDay, the backstop): the
+	// loop logs it once that UTC day and leaves it; its refusals mark the
+	// account again. "" when not held. Never set with LimitParked.
+	LimitHeld string
 	// Spent, for an instance of a fresh_session_per_item pool: its current
 	// conversation has claimed its one item (Officer.FreshSessionPerItem).
 	// Held by no live claim, it is done with that item however the hold
@@ -833,9 +838,9 @@ type officerState struct {
 	// (startReason). Cleared when it starts; a restart of muster forgets it,
 	// and the fleet's own reason then speaks.
 	scaledDown map[string]string
-	// limitRestarts is each instance's restarts off a stale usage-limit menu
-	// (restartLimitParked) on the current UTC day, by instance agent name.
-	limitRestarts map[string]limitRestartDay
+	// limitHeldLogged is the UTC day each instance's hold at the limit
+	// restarts' backstop was last logged (restartLimitParked), by agent name.
+	limitHeldLogged map[string]string
 	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
 	// logged (once per officer per process).
 	unclockedLogged bool

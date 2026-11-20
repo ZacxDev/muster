@@ -523,8 +523,8 @@ type Extensions struct {
 
 // LimitParks is the part of internal/limitpark.Board this package uses.
 type LimitParks interface {
-	Stuck(agentID int64) (string, bool)
-	Clear(agentID int64)
+	Stuck(agentID int64) (why string, stuck, held bool)
+	Stopped(agentID int64)
 }
 
 // AccountFailover is the part of internal/ccfailover.Service this package uses:

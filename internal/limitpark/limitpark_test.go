@@ -60,34 +60,34 @@ func rejected(at time.Time) ccusage.Row {
 func TestAMenuParkedBeforeAUsableReadingIsStale(t *testing.T) {
 	ctx := context.Background()
 	b, c := newBoard()
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weekly429, false); stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weekly429, false); stale {
 		t.Fatal("a typed turn that hit the limit read stale")
 	}
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 		t.Fatal("control: a menu refusal with no live reading read stale")
 	}
-	if _, stuck := b.Stuck(agentA); stuck {
+	if _, stuck, _ := b.Stuck(agentA); stuck {
 		t.Fatal("control: stuck with no live reading")
 	}
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), weekly429)
 	readAt := c.t
-	if _, stuck := b.Stuck(agentA); stuck {
+	if _, stuck, _ := b.Stuck(agentA); stuck {
 		t.Fatal("stuck before the pane was seen on the menu after the reading")
 	}
 	c.advance(2 * time.Minute)
-	stale, why := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true)
+	stale, why := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true)
 	if !stale {
 		t.Fatal("a menu refusal from a pane parked since before a usable reading was not stale: it would re-mark the account")
 	}
 	if !strings.Contains(why, readAt.Format(time.RFC3339)) {
 		t.Fatalf("the stale verdict does not name the reading's time: %q", why)
 	}
-	if _, stuck := b.Stuck(agentA); !stuck {
+	if _, stuck, _ := b.Stuck(agentA); !stuck {
 		t.Fatal("a stale-parked pane seen on the menu after the reading is not stuck")
 	}
-	p, _ := b.Parked(agentA)
+	p, _ := b.Parked(agentA, "")
 	if want := time.Date(2001, 2, 3, 9, 19, 0, 0, time.UTC); !p.Since.Equal(want) {
 		t.Fatalf("the menu refusals moved the park's start to %s, want %s (the 429's)", p.Since, want)
 	}
@@ -111,21 +111,21 @@ func TestAParkNewerThanTheReadingIsFresh(t *testing.T) {
 			b, clk := newBoard()
 			b.NoteReading(ctx, owner, account, usable(clk.t), weekly429)
 			clk.advance(c.after)
-			if stale, why := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+			if stale, why := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 				t.Fatalf("the first refusal of a pane parked %s read stale: %s", c.name, why)
 			}
 			clk.advance(time.Minute)
-			if stale, why := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+			if stale, why := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 				t.Fatalf("a later refusal of a pane parked %s read stale: %s", c.name, why)
 			}
-			if why, stuck := b.Stuck(agentA); stuck {
+			if why, stuck, _ := b.Stuck(agentA); stuck {
 				t.Fatalf("a pane parked %s is stuck: %s", c.name, why)
 			}
 			// CONTROL: a reading newer than that park makes it stale.
 			clk.advance(15 * time.Minute)
 			b.NoteReading(ctx, owner, account, usable(clk.t), weekly429)
 			clk.advance(time.Minute)
-			if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); !stale {
+			if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); !stale {
 				t.Fatal("control: a reading newer than the park did not make it stale")
 			}
 		})
@@ -137,21 +137,21 @@ func TestAParkNewerThanTheReadingIsFresh(t *testing.T) {
 func TestARejectedReadingMakesNothingStale(t *testing.T) {
 	ctx := context.Background()
 	b, c := newBoard()
-	b.NoteLimit(ctx, agentA, owner, account, weekly429, false)
+	b.NoteLimit(ctx, agentA, "", owner, account, weekly429, false)
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, rejected(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 		t.Fatal("a menu refusal read stale against a rejected reading")
 	}
-	if _, stuck := b.Stuck(agentA); stuck {
+	if _, stuck, _ := b.Stuck(agentA); stuck {
 		t.Fatal("stuck while the live reading says rejected")
 	}
 	// Control: a later usable reading does make it stale.
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); !stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); !stale {
 		t.Fatal("control: a usable reading after the rejected one did not make the park stale")
 	}
 }
@@ -162,18 +162,18 @@ func TestARejectedReadingMakesNothingStale(t *testing.T) {
 func TestAFreshHitAfterTheReadingOverrulesIt(t *testing.T) {
 	ctx := context.Background()
 	b, c := newBoard()
-	b.NoteLimit(ctx, agentA, owner, account, weekly429, false)
+	b.NoteLimit(ctx, agentA, "", owner, account, weekly429, false)
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentB, owner, account, weekly429, false); stale {
+	if stale, _ := b.NoteLimit(ctx, agentB, "", owner, account, weekly429, false); stale {
 		t.Fatal("a typed turn read stale")
 	}
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 		t.Fatal("a refusal read stale although the account hit its limit again after the reading")
 	}
-	if _, stuck := b.Stuck(agentA); stuck {
+	if _, stuck, _ := b.Stuck(agentA); stuck {
 		t.Fatal("stuck although the account hit its limit again after the reading")
 	}
 }
@@ -186,17 +186,17 @@ func TestAFreshHitAfterTheReadingOverrulesIt(t *testing.T) {
 func TestAWindowlessMenuUsesTheClearedMarksWindow(t *testing.T) {
 	ctx := context.Background()
 	b, c := newBoard()
-	b.NoteLimit(ctx, agentA, owner, account, bareMenu, true)
+	b.NoteLimit(ctx, agentA, "", owner, account, bareMenu, true)
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), "")
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, bareMenu, true); stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, bareMenu, true); stale {
 		t.Fatal("a refusal naming no window read stale with no window known")
 	}
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, bareMenu, true); !stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, bareMenu, true); !stale {
 		t.Fatal("a windowless refusal did not use the weekly window of the mark the reading cleared")
 	}
 }
@@ -213,20 +213,20 @@ func TestAccountsAreMatchedUnderTheirMarksOwner(t *testing.T) {
 		}
 		return o
 	}, c.now)
-	b.NoteLimit(ctx, agentA, owner, account, weekly429, false)
+	b.NoteLimit(ctx, agentA, "", owner, account, weekly429, false)
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, pool, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); !stale {
+	if stale, _ := b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); !stale {
 		t.Fatal("the pool owner's reading did not reach the member's agent on the same pool account")
 	}
 	// Control: a reading of the same NAME under another owner is not it.
 	b2 := limitpark.New(nil, c.now)
-	b2.NoteLimit(ctx, agentA, owner, account, weekly429, false)
+	b2.NoteLimit(ctx, agentA, "", owner, account, weekly429, false)
 	c.advance(15 * time.Minute)
 	b2.NoteReading(ctx, pool, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	if stale, _ := b2.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true); stale {
+	if stale, _ := b2.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true); stale {
 		t.Fatal("another owner's account of the same name made the park stale")
 	}
 }
@@ -235,16 +235,16 @@ func TestAccountsAreMatchedUnderTheirMarksOwner(t *testing.T) {
 func TestClearEndsThePark(t *testing.T) {
 	ctx := context.Background()
 	b, c := newBoard()
-	b.NoteLimit(ctx, agentA, owner, account, weekly429, false)
+	b.NoteLimit(ctx, agentA, "", owner, account, weekly429, false)
 	c.advance(15 * time.Minute)
 	b.NoteReading(ctx, owner, account, usable(c.t), weekly429)
 	c.advance(time.Minute)
-	b.NoteLimit(ctx, agentA, owner, account, weeklyMenu, true)
-	if _, stuck := b.Stuck(agentA); !stuck {
+	b.NoteLimit(ctx, agentA, "", owner, account, weeklyMenu, true)
+	if _, stuck, _ := b.Stuck(agentA); !stuck {
 		t.Fatal("control: not stuck before the clear")
 	}
-	b.Clear(agentA)
-	if _, stuck := b.Stuck(agentA); stuck {
+	b.Clear(agentA, "")
+	if _, stuck, _ := b.Stuck(agentA); stuck {
 		t.Fatal("stuck after its park was cleared")
 	}
 }

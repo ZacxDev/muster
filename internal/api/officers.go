@@ -1035,8 +1035,11 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			PromptPending: ok && promptPending(a),
 			Spent:         f.s.officerRT.spent(o, name)}
 		if ok && f.s.ext.LimitParks != nil && f.s.LimitRestartable(octx, a) {
-			if why, stuck := f.s.ext.LimitParks.Stuck(a.ID); stuck {
+			switch why, stuck, held := f.s.ext.LimitParks.Stuck(a.ID); {
+			case stuck:
 				in.LimitParked = why
+			case held:
+				in.LimitHeld = why
 			}
 		}
 		if in.Error {
@@ -1160,7 +1163,7 @@ func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kick
 		return fmt.Errorf("officers: re-arm %s: %w", name, err)
 	}
 	if f.s.ext.LimitParks != nil {
-		f.s.ext.LimitParks.Clear(a.ID)
+		f.s.ext.LimitParks.Stopped(a.ID)
 	}
 	return f.s.ext.Provisioner.Start(octx, a.ID)
 }
@@ -1385,11 +1388,17 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
-	// Its CLI goes with the pod: whatever menu its pane was parked on.
-	if f.s.ext.LimitParks != nil {
-		f.s.ext.LimitParks.Clear(a.ID)
+	if err := f.s.ext.Provisioner.Stop(octx, a.ID); err != nil {
+		return err
 	}
-	return f.s.ext.Provisioner.Stop(octx, a.ID)
+	// Its CLIs went with the pod: whatever menu any pane was parked on. After
+	// the stop succeeded, so a failed one leaves the park (and the restart
+	// still owed) in place. A stop of an instance stuck on a stale menu
+	// counts against limitpark.MaxRestartsPerDay.
+	if f.s.ext.LimitParks != nil {
+		f.s.ext.LimitParks.Stopped(a.ID)
+	}
+	return nil
 }
 
 // OfficerPoolsReporter is the declared officers' pools push

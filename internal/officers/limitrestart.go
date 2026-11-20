@@ -5,32 +5,11 @@ import (
 	"time"
 )
 
-// LimitRestartsPerDay is a BACKSTOP, not the limit-restart's pacing. The
-// pacing is the timing rule: a restart needs the pane parked since BEFORE a
-// live reading newer than the park (internal/limitpark Board.Stuck), and the
-// stop clears the park, so the next restart of the same instance needs a new
-// park and a newer reading — at most one restart per usage-poll interval
-// (MUSTER_CC_USAGE_POLL_INTERVAL, 15m by default). This cap only bounds what
-// that rule would allow if it were wrong (a CLI that re-raises the menu at
-// once, every interval): 4 per instance per UTC day, then the instance is
-// held for an operator.
-//
-// ⚠ IT IS NOT THE AUTO-RESTART'S STORED CAP (autorestart.go, migration 0170),
-// deliberately. That book is per error EPISODE of an instance in `error`: its
-// backoff is measured from when the instance entered error, and its rows
-// record the error class and text. A limit-parked instance is running, not in
-// error, and has no episode to key on; folding it in would also spend the
-// error path's daily places on a different failure. In memory is enough for
-// a backstop: a restarted muster forgets it, and the timing rule still holds.
-const LimitRestartsPerDay = 4
-
-// limitRestartDay is one instance's limit restarts on day (a UTC date).
-type limitRestartDay struct {
-	day string
-	n   int
-	// heldLogged: the cap's hold was logged for day.
-	heldLogged bool
-}
+// The daily backstop on these restarts is limitpark.MaxRestartsPerDay, kept
+// on the board WITH the rule that silences a stale refusal, so the two are
+// decided in one place: past it the fleet reports the instance LimitHeld (not
+// LimitParked), and the gateway's next refusal from it marks the account and
+// asks the failover as before. The loop only logs the hold.
 
 // limitParkedStop is why restartLimitParked stopped an instance: its start
 // line names it ("woken for new work after muster scaled it to zero (…)").
@@ -61,8 +40,11 @@ const limitParkedStop = "its pane was parked on a stale usage-limit menu, and it
 //     internal/api TestTheFleetReportsAStaleLimitParkAndAStopEndsIt). A
 //     start that then FAILS is a new error episode of its own, which the
 //     auto-restart handles by its own rules.
-//   - Bounded: at most LimitRestartsPerDay per instance per UTC day; past it
-//     the instance is held (logged once that day) and an operator acts.
+//   - Paced by the timing rule (the stop ends the park; the next restart
+//     needs a new park and a newer reading: at most one per usage-poll
+//     interval), with limitpark.MaxRestartsPerDay a day as its backstop: past
+//     it the fleet reports LimitHeld, the loop logs it once that UTC day and
+//     restarts nothing, and the instance's refusals mark and fail over again.
 //   - Never while the account still reads limited: Board.Stuck answers only
 //     for a pane parked since before a live reading that shows the account
 //     usable, with no fresh limit hit since.
@@ -72,40 +54,33 @@ func (r *Reconciler) restartLimitParked(ctx context.Context, pools []Officer, ob
 	for i, p := range pools {
 		for j := range obs[i].Instances {
 			in := &obs[i].Instances[j]
-			if in.LimitParked == "" || !in.Up || in.Error {
+			if !in.Up || in.Error {
 				continue
 			}
-			r.mu.Lock()
-			s := r.st(p.Key())
-			if s.limitRestarts == nil {
-				s.limitRestarts = map[string]limitRestartDay{}
-			}
-			rec := s.limitRestarts[in.Name]
-			if rec.day != day {
-				rec = limitRestartDay{day: day}
-			}
-			if rec.n >= LimitRestartsPerDay {
-				logHeld := !rec.heldLogged
-				rec.heldLogged = true
-				s.limitRestarts[in.Name] = rec
+			if in.LimitHeld != "" {
+				r.mu.Lock()
+				s := r.st(p.Key())
+				if s.limitHeldLogged == nil {
+					s.limitHeldLogged = map[string]string{}
+				}
+				first := s.limitHeldLogged[in.Name] != day
+				s.limitHeldLogged[in.Name] = day
 				r.mu.Unlock()
-				if logHeld {
-					r.log.Printf("officers: %s: instance %s is parked on a stale usage-limit menu, but it was restarted off one %d times today (the cap): "+
-						"NOT restarted again until the UTC day ends; stop and start it to free it (%s)", p.label(), p.InstanceLabel(in.N), rec.n, in.LimitParked)
+				if first {
+					r.log.Printf("officers: %s: instance %s is parked on a stale usage-limit menu but NOT restarted again today: %s; "+
+						"its refusals mark the account and ask the failover again; stop and start it to free it", p.label(), p.InstanceLabel(in.N), in.LimitHeld)
 				}
 				continue
 			}
-			r.mu.Unlock()
+			if in.LimitParked == "" {
+				continue
+			}
 			if err := r.fleet.Stop(ctx, p, in.N); err != nil {
 				r.log.Printf("officers: %s: stop instance %s off a stale usage-limit menu: %v", p.label(), p.InstanceLabel(in.N), err)
 				continue
 			}
-			r.mu.Lock()
-			rec.n++
-			s.limitRestarts[in.Name] = rec
-			r.mu.Unlock()
-			r.log.Printf("officers: %s: stopped instance %s to restart it (%d of %d today): %s; its claims are released and it starts again when work waits",
-				p.label(), p.InstanceLabel(in.N), rec.n, LimitRestartsPerDay, in.LimitParked)
+			r.log.Printf("officers: %s: stopped instance %s to restart it: %s; its claims are released and it starts again when work waits",
+				p.label(), p.InstanceLabel(in.N), in.LimitParked)
 			// Its start (this pass or the next, once its released claim is
 			// claimable again) says why it was down.
 			r.scaledDownBy(p, in.N, limitParkedStop)

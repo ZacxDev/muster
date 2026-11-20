@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,13 +28,13 @@ func TestTheFleetReportsAStaleLimitParkAndAStopEndsIt(t *testing.T) {
 	r.s.ext.LimitParks = board
 
 	const weekly = "You've hit your weekly limit · resets Nov 21, 9am (UTC)"
-	board.NoteLimit(ctx, stuck.ID, stuck.OwnerID, "work", weekly, false)
+	board.NoteLimit(ctx, stuck.ID, "", stuck.OwnerID, "work", weekly, false)
 	now = now.Add(15 * time.Minute)
 	u := 21.0
 	board.NoteReading(ctx, stuck.OwnerID, "work", ccusage.Row{Account: "work", Source: ccusage.SourceRateLimitHeaders, Status: "allowed",
 		ReadAt: now, CheckedAt: now, Windows: map[string]ccusage.Window{ccusage.SevenDay: {Utilization: &u, Status: "allowed"}}}, "")
 	now = now.Add(time.Minute)
-	if stale, _ := board.NoteLimit(ctx, stuck.ID, stuck.OwnerID, "work", weekly+" — the CLI's pane shows its usage-limit menu", true); !stale {
+	if stale, _ := board.NoteLimit(ctx, stuck.ID, "", stuck.OwnerID, "work", weekly+" — the CLI's pane shows its usage-limit menu", true); !stale {
 		t.Fatal("fixture: the board did not find the park stale")
 	}
 
@@ -52,7 +53,7 @@ func TestTheFleetReportsAStaleLimitParkAndAStopEndsIt(t *testing.T) {
 	if err := f.Stop(ctx, o, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, parked := board.Parked(stuck.ID); parked {
+	if _, parked := board.Parked(stuck.ID, ""); parked {
 		t.Fatal("the fleet's Stop left the instance's park: its next start would be restarted for the old menu")
 	}
 	// The wake loop's next pass sees it stopped, NOT in error: the bounded
@@ -111,14 +112,14 @@ func TestTheFleetReportsNoParkForAnAgentTheRuleExcludes(t *testing.T) {
 	board := limitpark.New(nil, func() time.Time { return now })
 	r.s.ext.LimitParks = board
 	const weekly = "You've hit your weekly limit · resets Nov 21, 9am (UTC)"
-	board.NoteLimit(ctx, inst.ID, inst.OwnerID, "work", weekly, false)
+	board.NoteLimit(ctx, inst.ID, "", inst.OwnerID, "work", weekly, false)
 	now = now.Add(15 * time.Minute)
 	u := 21.0
 	board.NoteReading(ctx, inst.OwnerID, "work", ccusage.Row{Account: "work", Source: ccusage.SourceRateLimitHeaders, Status: "allowed",
 		ReadAt: now, CheckedAt: now, Windows: map[string]ccusage.Window{ccusage.SevenDay: {Utilization: &u, Status: "allowed"}}}, "")
 	now = now.Add(time.Minute)
-	board.NoteLimit(ctx, inst.ID, inst.OwnerID, "work", weekly, true)
-	if _, stuck := board.Stuck(inst.ID); !stuck {
+	board.NoteLimit(ctx, inst.ID, "", inst.OwnerID, "work", weekly, true)
+	if _, stuck, _ := board.Stuck(inst.ID); !stuck {
 		t.Fatal("fixture: not stuck")
 	}
 	o, err := r.s.officerRT.reg.Get(offA)
@@ -137,5 +138,77 @@ func TestTheFleetReportsNoParkForAnAgentTheRuleExcludes(t *testing.T) {
 	}
 	if insts[0].LimitParked != "" {
 		t.Fatalf("the fleet reported a park (%q) for an agent the rule excludes", insts[0].LimitParked)
+	}
+}
+
+// stickPrimary makes agent id's primary pane stuck on a stale menu on board:
+// a typed limit hit, a usable reading newer than it, then a menu refusal.
+func stickPrimary(t *testing.T, board *limitpark.Board, now *time.Time, id, owner int64) {
+	t.Helper()
+	ctx := context.Background()
+	const weekly = "You've hit your weekly limit · resets Nov 21, 9am (UTC)"
+	board.NoteLimit(ctx, id, limitpark.PrimaryLane, owner, "work", weekly, false)
+	*now = now.Add(15 * time.Minute)
+	u := 21.0
+	board.NoteReading(ctx, owner, "work", ccusage.Row{Account: "work", Source: ccusage.SourceRateLimitHeaders, Status: "allowed",
+		ReadAt: *now, CheckedAt: *now, Windows: map[string]ccusage.Window{ccusage.SevenDay: {Utilization: &u, Status: "allowed"}}}, "")
+	*now = now.Add(time.Minute)
+	board.NoteLimit(ctx, id, limitpark.PrimaryLane, owner, "work", weekly, true)
+	if _, stuck, held := board.Stuck(id); !stuck && !held {
+		t.Fatal("fixture: not stuck")
+	}
+}
+
+// TestAFailedStopKeepsThePark (round 1, 🟢): the fleet forgets the park only
+// after the stop SUCCEEDED, so a stop that failed leaves the instance Stuck
+// and its restart still owed (and counts nothing against the backstop).
+func TestAFailedStopKeepsThePark(t *testing.T) {
+	r := newOfficerRig(t)
+	ctx := context.Background()
+	inst := r.addNamed(officers.InstanceName(offA, 1), 3131)
+	now := time.Date(2001, 2, 3, 9, 19, 0, 0, time.UTC)
+	board := limitpark.New(nil, func() time.Time { return now })
+	r.s.ext.LimitParks = board
+	stickPrimary(t, board, &now, inst.ID, inst.OwnerID)
+	o, err := r.s.officerRT.reg.Get(offA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.prov.mu.Lock()
+	r.prov.stopErr = errors.New("the provisioner is unavailable")
+	r.prov.mu.Unlock()
+	if err := (officerFleet{s: r.s}).Stop(ctx, o, 1); err == nil {
+		t.Fatal("fixture: the stop did not fail")
+	}
+	if _, stuck, _ := board.Stuck(inst.ID); !stuck {
+		t.Fatal("a FAILED stop forgot the park: the restart it still owes is lost")
+	}
+}
+
+// TestTheFleetReportsAHeldInstanceAsHeldNotParked (round 1, 🟡2): past the
+// board's backstop the fleet reports LimitHeld, never LimitParked, so the
+// loop restarts nothing more today.
+func TestTheFleetReportsAHeldInstanceAsHeldNotParked(t *testing.T) {
+	r := newOfficerRig(t)
+	ctx := context.Background()
+	inst := r.addNamed(officers.InstanceName(offA, 1), 3141)
+	now := time.Date(2001, 2, 3, 9, 19, 0, 0, time.UTC)
+	board := limitpark.New(nil, func() time.Time { return now })
+	r.s.ext.LimitParks = board
+	for i := 0; i < limitpark.MaxRestartsPerDay; i++ {
+		stickPrimary(t, board, &now, inst.ID, inst.OwnerID)
+		board.Stopped(inst.ID)
+	}
+	stickPrimary(t, board, &now, inst.ID, inst.OwnerID)
+	o, err := r.s.officerRT.reg.Get(offA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insts, err := (officerFleet{s: r.s}).Instances(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if insts[0].LimitParked != "" || insts[0].LimitHeld == "" {
+		t.Fatalf("instance 1: LimitParked %q, LimitHeld %q; want held, not parked", insts[0].LimitParked, insts[0].LimitHeld)
 	}
 }

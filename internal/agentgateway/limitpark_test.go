@@ -75,7 +75,7 @@ func staleMenuTurns(t *testing.T, restartable bool) {
 		Status: "allowed", ReadAt: now, CheckedAt: now, Windows: map[string]ccusage.Window{ccusage.SevenDay: {Utilization: &u, Status: "allowed"}}}, "")
 	now = now.Add(2 * time.Minute)
 	turn()
-	if _, stuck := board.Stuck(a.ID); !stuck {
+	if _, stuck, _ := board.Stuck(a.ID); !stuck {
 		t.Fatal("the stale-parked agent is not reported stuck")
 	}
 	if !restartable {
@@ -129,12 +129,12 @@ func TestACompletedTurnOrABusyRefusalEndsThePark(t *testing.T) {
 			gw.UseLimitParks(board)
 			a := ccAgent()
 			_, _ = gw.Chat(context.Background(), a, "k", "hello", nil)
-			if _, parked := board.Parked(a.ID); !parked {
+			if _, parked := board.Parked(a.ID, ""); !parked {
 				t.Fatal("control: the menu refusal parked nothing")
 			}
 			ok.Store(true)
 			_, _ = gw.Chat(context.Background(), a, "k", "hello", nil)
-			if p, parked := board.Parked(a.ID); parked {
+			if p, parked := board.Parked(a.ID, ""); parked {
 				t.Fatalf("%s left the park %+v", c.name, p)
 			}
 		})

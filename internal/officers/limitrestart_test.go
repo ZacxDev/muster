@@ -48,7 +48,7 @@ func TestAnInstanceOnAStaleLimitMenuIsRestartedAndItsClaimReleased(t *testing.T)
 		t.Fatalf("starts = %v, want instance 1 started again for its released item", r.fleet.starts)
 	}
 	logs := r.logs.String()
-	if !strings.Contains(logs, "stopped instance 1 to restart it (1 of 4 today): "+staleWhy) {
+	if !strings.Contains(logs, "stopped instance 1 to restart it: "+staleWhy) {
 		t.Fatalf("no restart line naming why:\n%s", logs)
 	}
 	if !strings.Contains(logs, "started instance 1 — woken for new work after muster scaled it to zero (its pane was parked on a stale usage-limit menu") {
@@ -56,30 +56,28 @@ func TestAnInstanceOnAStaleLimitMenuIsRestartedAndItsClaimReleased(t *testing.T)
 	}
 }
 
-// TestAStaleLimitRestartIsBoundedPerDay: an instance that lands on a stale
-// menu again and again is restarted at most LimitRestartsPerDay times per UTC
-// day, then held (logged once); the next UTC day it may be restarted again.
-func TestAStaleLimitRestartIsBoundedPerDay(t *testing.T) {
+// TestAnInstanceHeldAtTheBackstopIsNotRestarted: an instance the fleet
+// reports LimitHeld (limitpark.MaxRestartsPerDay reached; the board's
+// decision) is not stopped; the hold is logged once per UTC day.
+func TestAnInstanceHeldAtTheBackstopIsNotRestarted(t *testing.T) {
 	r := newRig(t, 1, 30*time.Minute)
 	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
 	r.check(t)
-	for i := 0; i < officers.LimitRestartsPerDay+2; i++ {
+	for i := 0; i < 3; i++ {
 		r.clk.Advance(time.Minute)
-		r.fleet.limitParked = map[int]string{1: staleWhy}
+		r.fleet.limitHeld = map[int]string{1: staleWhy + "; held"}
 		r.check(t)
 	}
-	if got := len(r.fleet.stops); got != officers.LimitRestartsPerDay {
-		t.Fatalf("restarted %d times in one day, want the cap %d", got, officers.LimitRestartsPerDay)
+	if len(r.fleet.stops) != 0 {
+		t.Fatalf("a held instance was stopped %v", r.fleet.stops)
 	}
-	if got := strings.Count(r.logs.String(), "NOT restarted again until the UTC day ends"); got != 1 {
+	if got := strings.Count(r.logs.String(), "NOT restarted again today"); got != 1 {
 		t.Fatalf("the hold was logged %d times, want once:\n%s", got, r.logs.String())
 	}
-	// A new UTC day: allowed again.
 	r.clk.Advance(24 * time.Hour)
-	r.fleet.limitParked = map[int]string{1: staleWhy}
 	r.check(t)
-	if got := len(r.fleet.stops); got != officers.LimitRestartsPerDay+1 {
-		t.Fatalf("stops on the next UTC day = %d, want %d", got, officers.LimitRestartsPerDay+1)
+	if got := strings.Count(r.logs.String(), "NOT restarted again today"); got != 2 {
+		t.Fatalf("the next UTC day's hold logged %d lines in total, want 2", got)
 	}
 }
 
