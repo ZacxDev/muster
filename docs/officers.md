@@ -1059,6 +1059,29 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
   An item HQ does not list in any status stays unsettled too. A builtin
   officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+- **Reads only what it needs, a small page at a time.** How each recorded
+  item stands is read by paging each status list to its end, the short live
+  lists first and HQ's done history last (open, claimed, waiting, escalated,
+  done), 25 items a page (`officers.StatusPageLimit`), and stopping as soon
+  as every recorded item is found: an item still being worked is answered
+  without reading done at all. A page still over muster's 1 MiB answer cap
+  is asked again at half the size, down to one item, and the page after it
+  at double the size, back up to 25. A list still unread after 400 pages
+  (`officers.MaxStatusPages`) is logged as stopped at the page bound, and an
+  item not found before it is logged as such (not as absent from HQ); it
+  stays unsettled. (It used to read pages of 100, and one page of 100 large escalated
+  items was over the cap: the whole re-run gave up and nothing was re-run.)
+- **Not retried.** When the record or HQ's items cannot be read, the re-run
+  logs one line naming the grant and why; the blocked items stay unsettled
+  for the grant's next approval or the route below.
+- **Re-run by hand.** `POST /ui/connector-grants/{id}/rerun` re-runs an
+  APPROVED officer grant's still-unsettled blocked items exactly as its
+  approval does: for an approval whose re-run could not read HQ, or one made
+  before a fix. It needs a signed-in session from muster's own origin (for
+  example `fetch('/ui/connector-grants/32/rerun', {method: 'POST'})` from a
+  muster page's console). It answers `202` and logs each item; `409` for a
+  grant that is not approved or not an officer instance's, `404` for one you
+  cannot read. Settled items are never re-run twice.
 
 A different connector's grant, or another agent's, re-runs nothing: the
 record is keyed by the grant id.

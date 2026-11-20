@@ -457,6 +457,7 @@ POST /transcribe
 POST /ui/chief/fleet/actions/{id}/{verb}
 POST /ui/chief/fleet/bulk
 POST /ui/chief/fleet/chat
+POST /ui/connector-grants/{id}/rerun
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny
 POST /uploads
