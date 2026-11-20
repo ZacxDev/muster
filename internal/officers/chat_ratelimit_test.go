@@ -21,15 +21,16 @@ import (
 
 // The runtime's answers as internal/api's chatTurnError hands them on: a
 // turn that was typed and failed on the limit, then a pane parked on the
-// usage-limit menu refusing the paste.
-const limitBody = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your weekly limit · resets Nov 23, 1am (UTC)"}}`
+// usage-limit menu refusing the paste — both the account's usage limit
+// (ErrChatUsageLimit, ccd's usage_limit).
+const limitBody = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your weekly limit · resets Nov 23, 1am (UTC)","usage_limit":true}}`
 
 func typedRateLimit() error {
-	return fmt.Errorf("%w: responses HTTP 429: %s", officers.ErrChatRateLimited, limitBody)
+	return fmt.Errorf("%w: %w: responses HTTP 429: %s", officers.ErrChatRateLimited, officers.ErrChatUsageLimit, limitBody)
 }
 
 func parkedRateLimit() error {
-	return fmt.Errorf("%w: %w (nothing was typed): responses HTTP 409: %s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, limitBody)
+	return fmt.Errorf("%w: %w: %w (nothing was typed): responses HTTP 409: %s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, officers.ErrChatUsageLimit, limitBody)
 }
 
 // passes runs up to max wake-loop passes a minute apart — each one Dispatch
