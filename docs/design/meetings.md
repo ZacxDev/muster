@@ -1040,7 +1040,7 @@ GPU. The reference is the stored transcript from the existing batch STT,
 which is itself imperfect (about 13% WER), so these are **agreement**
 figures, not absolute accuracy:
 
-| model (serving) | WER vs reference, empties included | empty outputs | first word p50 / p95 | final after audio end p50 / p95 | GPU memory |
+| model (serving) | WER vs reference, empties included | empty outputs | first word p50 / p95 | end-of-stream flush (final after the recording ends) p50 / p95 | GPU memory |
 |---|---|---|---|---|---|
 | **Nemotron Speech Streaming 0.6B**, 560 ms chunks | **19.0%** | **2** | 1.61 / 2.74 s | **0.01 / 0.02 s** | ~6.8 GB (fp32, untuned) |
 | faster-whisper large-v3-turbo via WhisperLive | 20.4% | 3 | 1.79 / 2.86 s | 1.52 / 1.94 s | ~2.5 GB |
@@ -1048,10 +1048,13 @@ figures, not absolute accuracy:
 
 Kyutai's 8 empties were recordings with clipped or DC-offset microphone audio
 that it read as non-speech, which is the same failure S4 saw as "silent
-starts". Nemotron is the most accurate of the three and finalises almost at
-once when a speaker stops, which is what a live transcript and the 10 s
-action-item window need. faster-whisper turbo is close on accuracy and uses
-less memory, but finalises 1.5–1.9 s after the speaker stops; it is the
+starts". Nemotron is the most accurate of the three and flushes its last
+words almost at once when a stream ends. That column is an **end-of-stream
+flush** (each recording was one stream that then ended), not the latency of
+finalising at a pause inside continuous speech, which a meeting needs and
+which is measured separately ([STT evaluation](#stt-evaluation)).
+faster-whisper turbo is close on accuracy and uses less memory, but its
+end-of-stream flush took 1.5–1.9 s; it is the
 **named fallback model** if Nemotron cannot be made to fit
 ([memory](#serving-nemotron)).
 
@@ -1095,31 +1098,70 @@ would leave little for activations and dictation bursts) is a **phase 3b**
 item: the PR that ships the server records its memory at 1, 4 and 8 streams
 in bf16, and the stream cap below is set from that measurement.
 
-**Input:** 16 kHz mono (the model card's input). The ingest takes one channel
-of Egress's S16LE stereo 48 kHz, downmixes and resamples to 16 kHz, and sends
-it in 80 ms frames; the server runs the model at the **560 ms** chunk size the
-benchmark used.
+**Input: 16 kHz mono, UNVERIFIED.** It is the usual rate for NeMo ASR models
+and the rate the benchmark fed, but the model card does not state it. Phase
+3b confirms it two ways: the server reads `preprocessor.sample_rate` from
+the `.nemo` config at start and **refuses to start** unless it is 16000, and
+the 3b PR records the rate the benchmark harness actually fed. The ingest
+takes one channel of Egress's S16LE stereo 48 kHz, resamples it to 16 kHz,
+and sends it in 80 ms frames; the server runs the model at the **560 ms**
+chunk size the benchmark used.
+
+**Endpointing: the plugin's energy VAD, the same one the `utterance` engine
+uses.** The model emits text per chunk and has no end-of-utterance output
+(its card points to a separate end-of-utterance model). v1 does not add that
+second model: it would be another GPU resident with no measurement behind
+it. Instead the plugin, which already endpoints for the `utterance` engine,
+decides where an utterance ends (energy below threshold for **700 ms**,
+after removing DC offset with a high-pass filter, since clipped and
+DC-offset microphones were the empties' cause) and sends the server a
+`flush`; the server answers with the `final` for the text since the last
+flush and keeps its streaming state. One endpointer serves both engines, so
+a pause finalises the same way whichever engine a participant is on. The
+end-of-utterance model is the upgrade if the evaluation's pause bar fails.
 
 **Protocol** (`wss://<stt host>/v1/stream`, `Authorization: Bearer <token>`,
 the token in the plugin's own Secret):
 
-- client → server: binary frames, S16LE mono 16 kHz, 80 ms (1280 samples)
-  each; a text frame `{"type": "end"}` when the track ends.
+- client → server: binary frames, S16LE mono 16 kHz, exactly 80 ms (1280
+  samples, 2560 bytes) each; a text frame `{"type": "flush"}` at each end
+  of utterance the plugin's VAD finds; and `{"type": "end", "samples": N}`
+  when the track ends. **The last frame is zero-padded to 1280 samples**,
+  and `samples` is the true total, so the server trims the padding from its
+  timestamps.
 - server → client: `{"type": "partial", "text", "start_ms", "end_ms"}` as a
-  chunk is decoded, `{"type": "final", "text", "start_ms", "end_ms"}` at each
-  end of utterance and after `end`; times are in the stream's own audio
+  chunk is decoded, and `{"type": "final", "text", "start_ms", "end_ms"}` in
+  answer to each `flush` and to `end`; times are in the stream's own audio
   time (sample count), never wall time.
+- **A frame of any other size** is refused: the server sends
+  `{"type": "error", "code": "bad_frame"}` and closes with websocket code
+  1003. The plugin treats that as a mid-stream drop (below) and logs it; it
+  is a bug, never expected.
 - **Capacity:** the server takes at most `STT_MAX_STREAMS` streams (set per
-  GPU from the 3b measurement; 8 until then). A connection over the cap is
+  GPU from the 3b measurement; 8 until then). Size it to at least
+  `room.max_participants` (8) × the concurrent meetings wanted; streams over
+  it fall back (below), they are never queued. A connection over the cap is
   refused **before the upgrade** with `503` and `Retry-After`, never accepted
   and then closed, so the client can tell "full" from "broken".
 - The server sends no pings it requires answered (the plugin is its only
   client, and its own read loop detects a dead peer).
 
-**The at-capacity fallback:** when the server answers `503`, or is down,
-that participant falls back to the `utterance` engine on `stt-cohere`, and
-the panel shows "Captions delayed" until a stream slot frees (retried every
-30 s).
+**When the Nemotron server is full, unreachable or drops a stream**, in this
+order of precedence:
+
+1. **At stream open, `503` or a failed connect** → that participant goes to
+   the `utterance` engine at once, and the panel shows "Captions delayed".
+   The plugin retries Nemotron after `max(30 s, Retry-After)` and moves the
+   participant back when a stream opens.
+2. **Mid-stream drop** (the socket closes or errors after the upgrade,
+   `bad_frame` included) → up to 3 reconnects at 1, 2 and 4 s, with a gap
+   marker for the audio not transcribed meanwhile; if all fail, step 1.
+3. **A full outage** puts every participant on `utterance`, which is capped
+   at 4 transcriptions in flight per plugin (it shares `stt-cohere` with
+   dictation). Utterances beyond the cap queue per participant, up to 30 s
+   of audio each; past that the oldest are dropped with a gap marker and the
+   panel shows "Transcript paused" instead of "Captions delayed". If
+   `stt-cohere` is also down, "Transcript paused" and gap markers only.
 
 ### Three engines, one interface
 
@@ -1137,7 +1179,7 @@ type Stream interface {
 
 | engine | `MEETINGS_STT_ENGINE` | output | use |
 |---|---|---|---|
-| `nemotron` | `nemotron` + `MEETINGS_STREAM_STT_URL` (`wss://…/v1/stream`) and `MEETINGS_STREAM_STT_TOKEN` | partials per 560 ms chunk, a final at each end of utterance | live captions (decision 19); falls back per participant to `utterance` when the server answers `503` or is down |
+| `nemotron` | `nemotron` + `MEETINGS_STREAM_STT_URL` (`wss://…/v1/stream`) and `MEETINGS_STREAM_STT_TOKEN`, **and** `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN` for its fallback (all four or the plugin refuses to boot) | partials per 560 ms chunk, a final at each VAD flush | live captions (decision 19); falls back per participant to `utterance` [as above](#serving-nemotron) |
 | `utterance` | `utterance` + `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN` pointed at the existing `stt-cohere` | one final per utterance, after a pause (≤15 s segments, energy-based endpointing) | zero new service; dev; Compose without a second GPU service |
 | `fake` | `fake` | scripted text per participant | tests only; refuses to start unless `MEETINGS_TEST_MODE=1` |
 
@@ -1163,9 +1205,11 @@ proposal.
   stored and sent.
 - A silent or muted track sends nothing (the engine's VAD, and a
   constant-signal check for the utterance engine, as `app.py` already does).
-- If the STT engine is down, the transcript panel says "Transcript paused"
+- If no engine can take a participant's audio (the precedence in
+  [serving Nemotron](#serving-nemotron)), the panel says "Transcript paused"
   and the gap is stored as a marker, so the archive shows where text is
-  missing rather than appearing complete.
+  missing rather than appearing complete. On the fallback engine alone it
+  says "Captions delayed".
 
 ## Action items
 
@@ -1359,10 +1403,18 @@ code** (guards and dedupe included), so it measures what ships.
   19 (99 real dictation recordings, live 80 ms chunks, 8 streams, agreement
   with the existing batch STT's stored transcripts) is re-run by the same
   harness against the deployed server. Its corpus is private and is never
-  committed; only its scores are. Bar: agreement WER no worse than the
-  decision's 19.0%, empties no more than 2, final-after-audio-end p95
-  ≤ 0.1 s. Agreement is not accuracy (the reference itself is ~13% WER), so
-  it guards against regressions; AMI is the accuracy leg.
+  committed; only its scores are. **Bar, relative to an fp32 re-run on the
+  same harness** (so the harness, not the decision's one measured point, is
+  the baseline): the deployed bf16 server's agreement WER at most **1.0
+  percentage point** above fp32's, empties at most **one** more, and the
+  end-of-stream flush p95 ≤ 0.1 s. Agreement is not accuracy (the reference
+  itself is ~13% WER), so it guards against regressions; AMI is the
+  accuracy leg.
+- **Pause finalisation, on continuous audio** (the AMI leg): from the end
+  of a reference utterance to its `final`, p95 **≤ 1.5 s** (the 700 ms VAD
+  pause plus the flush). This is the latency a meeting's transcript and its
+  action-item window see; the benchmark's end-of-stream flush does not
+  measure it.
 - **Metrics:** WER per channel (Whisper's English normaliser), first-word
   and finalisation latency (audio time of a word's end to its final
   segment), p50/p95, GPU memory at 1, 4 and 8 concurrent streams in bf16, and
@@ -1504,7 +1556,7 @@ top of the past meeting. Not regenerated automatically.
 
 | what fails | what people see | what happens |
 |---|---|---|
-| STT engine down or overloaded | "Transcript paused" | call and recording go on; a gap marker is stored; streams reconnect with backoff |
+| STT engine down or overloaded | "Captions delayed" on the fallback, "Transcript paused" when no engine can take the audio | call and recording go on; gap markers for lost audio; the precedence is in [serving Nemotron](#serving-nemotron) |
 | OpenRouter 429/5xx | "Action items paused" after 3 windows | backoff; the next window covers the gap; nothing is lost |
 | Egress fails to start or dies | "Recording failed" badge for everyone | the meeting goes on; the recording row says failed; the owner sees it on the past meeting |
 | Object store full or unreachable | as above | egress fails; transcripts are unaffected (SQLite) |
@@ -1515,7 +1567,8 @@ top of the past meeting. Not regenerated automatically.
 | The owner's muster token is revoked | the tab goes; an open page loses its frame within 30 s | the plugin, within 60 s, ends that owner's meetings and deletes their sessions |
 | muster is down | the tab is unreachable | a live call goes on (it needs only the plugin and LiveKit); guests can still knock and the owner, already in, can admit |
 | GPU host also serving dictation | dictation slower | the utterance engine is capped at 4 in flight; the Nemotron server is its own service with its own stream cap |
-| Nemotron server full or down | "Captions delayed" for the participants over the cap | `503` before upgrade (or a failed connect) sends that participant to the `utterance` engine, retried every 30 s |
+| Nemotron server full or down | "Captions delayed" for the participants over the cap | `503` or a failed connect sends that participant to `utterance`, retried after `max(30 s, Retry-After)`; a mid-stream drop reconnects 3 times first ([precedence](#serving-nemotron)) |
+| Nemotron and the fallback both overloaded | "Transcript paused" | `utterance` runs 4 in flight, queues 30 s per participant, then drops the oldest with gap markers |
 
 ## Deployment
 
@@ -1633,7 +1686,7 @@ with the test plan's tests included.
 | | 2d: e2e click path without transcript or recording | muster-meetings | M |
 | **3: transcription** | 3a: track Egress ingest (URL token, no pings, S16LE-stereo-48k parsing, sample-count timestamps, egress restart and start retry), `Engine` interface, `utterance` and `fake` engines, transcript panel for owner and guests, archive view and export | muster-meetings | M |
 | | 3b: **`images/stt-nemotron/`** in muster (the NeMo cache-aware websocket server, bf16, batched decode, `STT_MAX_STREAMS`, `503`-before-upgrade, pinned image and CI build like `stt-cohere`) **and its measured fit beside `stt-cohere` on the 16 GB GPU** at 1/4/8 streams | muster | L |
-| | 3c: the `nemotron` engine in the plugin (the protocol, the `503` fallback to `utterance`, the silent-start check), captions | muster-meetings | M |
+| | 3c: the `nemotron` engine in the plugin (the protocol with padding and `flush`, the shared DC-filtered energy VAD, the fallback precedence and `Retry-After`, the boot check, the silent-start check), captions | muster-meetings | M |
 | | 3d: `stt-eval` (AMI continuous headset leg, the private dictation leg, all three controls incl. the known-read passage) and its run on the `stt-cohere` GPU host | muster-meetings | M |
 | **4: action items** | 4a: `items-eval`, the corpus, the controls | muster-meetings | L |
 | | 4b: worker, guards, `extract` and `chat_json` adapters, live panel for owner and guests, the per-meeting **AI action items** switch | muster-meetings | M |
@@ -1657,7 +1710,8 @@ part that changes muster for everyone. **Order and gates:**
 
 Core gains four PRs over the first revision: 1g (L) and 1f (M) for the
 subdomain, 1d (S) and 1e (L, with its push-sink harness) for the 2026-11-20
-decisions, about 11–16 engineer-days of core work beyond 1a–1c. No plugin PR changes size:
+decisions, about 11–16 engineer-days of core work beyond 1a–1c, plus 3b
+(L, 4–6 days) in muster's repository for the Nemotron server image. No plugin PR changes size:
 in-tenant hosting simplifies 2c's DNS and certificates, and the review
 fixes (removal backstop, consent check, signed media URLs, ingest secret)
 fit inside 2b, 3a and 5. Dropping 6c removes one S. Decision 19 (Nemotron) adds one PR: the Nemotron server image (3b, L, in muster, because no packaged websocket server ships with the model), so phase 3 is now M + L + M + M. The plugin's phases 2–5
@@ -1946,13 +2000,33 @@ redeem, self and tasks) and a fake LiveKit server API:
   removed (the ninth participant gets no transcript).
 - **The Nemotron protocol:** against a fake server speaking the protocol,
   partials and finals become segments with sample-count times; an `end` text
-  frame is sent when the track ends and the final after it is stored. *Red
-  if:* times come from arrival.
+  frame with the true `samples` is sent when the track ends, after a last
+  frame zero-padded to 1280 samples, and the final after it is stored with
+  its end time at the true sample count, not the padded one. *Red if:* times
+  come from arrival, or the padding is counted.
+- **Pause finalisation:** a fixture of speech, 1 s of silence, speech (and
+  the same with a DC offset added) makes the plugin send one `flush` about
+  700 ms into the silence, and the first utterance's `final` is stored
+  before the second begins. *Red if:* the VAD's flush is removed (the first
+  final arrives only at `end`), or DC is not removed (the offset variant
+  never flushes).
+- **Fallback precedence:** a `503` at open goes to `utterance` at once, and
+  the retry waits `max(30 s, Retry-After)` (a `Retry-After: 60` waits 60 s);
+  a drop after the upgrade reconnects up to 3 times before falling back,
+  storing a gap marker; with Nemotron down for every participant and a
+  `stt-cohere` fake that answers slowly, at most 4 transcriptions are in
+  flight, a participant's queue holds 30 s, and overflow drops the oldest
+  with a gap marker and "Transcript paused". *Red if:* each rule is removed
+  (one mutation each).
+- **Boot:** `nemotron` without `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN`
+  refuses to start.
 - **The Nemotron server itself** (in muster's `images/stt-nemotron/`, like
   `stt-cohere`'s `test_app.py`): a missing or wrong bearer is `401`; the
   `STT_MAX_STREAMS + 1`th upgrade is `503` with `Retry-After` and is never
-  upgraded; frames of the wrong size are refused; a constant-signal stream
-  yields no text.
+  upgraded; a frame of any size but 2560 bytes gets the `bad_frame` error
+  frame and a 1003 close; a `flush` yields a `final` for the text since the
+  previous one; a constant-signal stream yields no text; a `.nemo` whose
+  `preprocessor.sample_rate` is not 16000 refuses to start.
 - **Silent start:** a track with speech energy and no words for 20 s raises
   the flag; a silent track does not (the positive and negative cases).
 - **No ticket in URLs or logs:** every route that takes a ticket refuses it
@@ -2166,6 +2240,11 @@ positive control):
 | egress restart | ignore `egress_failed` for STT tracks; drop the start retry | "egress restart and start retry" (one each) |
 | STT capacity | drop the `utterance` fallback | "STT at capacity" |
 | STT server cap | accept the upgrade over `STT_MAX_STREAMS` and close it later | "the Nemotron server itself" |
+| STT server auth | drop the bearer check | "the Nemotron server itself" (401 case) |
+| STT server frames | accept a short frame | "the Nemotron server itself" (`bad_frame` case) |
+| STT return | never retry Nemotron after a fallback; ignore `Retry-After` | "STT at capacity" (30 s return), "fallback precedence" (one each) |
+| STT endpointing | drop the VAD `flush`; skip DC removal | "pause finalisation" (one each) |
+| STT padding | count the zero padding in the last timestamp | "the Nemotron protocol" |
 | STT protocol time | timestamp segments by arrival | "the Nemotron protocol" |
 | extract text | display `text` instead of `input[start:end]` | "ScaleDown adapter" |
 | egress costs | leave `room_composite_cpu_cost` at 4; drop `MEETINGS_MAX_RECORDINGS` | "two recordings on a 6-CPU Egress" (one each) |
@@ -2182,8 +2261,8 @@ positive control):
 
 ## Decisions
 
-Decisions 1–5 are from the operator's brief. Decisions 17–19 followed the
-phase-0 spikes. Decisions 6–16 are the operator's answers
+Decisions 1–5 are from the operator's brief. Decisions 17–18 followed the
+phase-0 spikes, and 19 the dictation benchmark that superseded S4. Decisions 6–16 are the operator's answers
 to the open questions, given **2026-11-20**. All are binding on this
 design.
 
