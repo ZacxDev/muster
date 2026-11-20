@@ -74,12 +74,20 @@ import (
 //
 // The open cap or the daily limit still full, a read that fails (the branch,
 // the pull requests from it, any page of HQ's item lists, the comparison), an
-// item HQ's lists do not name but one of them ran past its page bound
-// (ItemGone's error: not known), an open GitHub may yet accept (any other
-// error: 5xx, 400, 401, 403, 404, 409, 410, 429, the network), or a 422 saying
-// the pull request already exists, STOPS the drain: nothing behind jumps the
-// queue, and the next drain tries again. An opened one is re-checked and announced exactly as a
-// create the officer made itself (recheckCreated).
+// open GitHub may yet accept (any other error: 5xx, 400, 401, 403, 404, 409,
+// 410, 429, the network), or a 422 saying the pull request already exists,
+// STOPS the drain: nothing behind jumps the queue, and the next drain tries
+// again. The open cap and the daily limit are read BEFORE HQ is (ItemGone),
+// so a drain that cannot open anything reads nothing from HQ.
+//
+// ONE ROW DOES NOT STOP THE DRAIN: one whose item HQ's lists do not name
+// while one of them ran past its page bound (ErrItemStateBounded: not known).
+// It is never opened or dropped; it keeps its place and is read again at
+// every drain, HQ is told ONCE (PRQueue.Mark), and the drain goes on to the
+// rows behind it — a row that may wait for good must not hold back the rest.
+//
+// An opened one is re-checked and announced exactly as a create the officer
+// made itself (recheckCreated).
 //
 // NO AGE BOUND: a queued row leaves the queue only by being opened or by one
 // of the skips above, never by age. Every way a row can stay is a wait the
@@ -104,7 +112,17 @@ type PRQueue interface {
 	List(ctx context.Context, repo string) ([]officers.QueuedPR, error)
 	// Settle settles queued create id, still at head, to state.
 	Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error)
+	// Mark notes on queued create id, still at head, what HQ was told about
+	// why it waits: ok true only the first time (officers.PRQueueStore's
+	// PRQueueMark).
+	Mark(ctx context.Context, id int64, head, note string) (bool, error)
 }
+
+// ErrItemStateBounded is ItemGone's error when HQ's lists do not name the
+// item but one of them still had pages past the read's page bound: whether
+// the item is gone is not known. The drain keeps that row (never opens or
+// drops it), tells HQ once (Mark), and goes on to the rows behind it.
+var ErrItemStateBounded = errors.New("an item list is longer than muster's page bound")
 
 // The rate limits rateLimits enforces, by kind (limitError).
 const (
@@ -289,7 +307,24 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 	if g.ItemGone == nil {
 		return true, errors.New("muster cannot read the item's state in HQ, so the queued pull request is not opened")
 	}
+	// 🔴 ROOM FIRST: ItemGone is a paged read of the officer's whole item
+	// history, so it runs only for a row that could open NOW. With the open
+	// cap or the daily limit full the drain waits here having read nothing
+	// from HQ (this runs on the create path too, before its 202). The
+	// per-item limit is left to the check under the lock below.
+	if err := g.rateLimits(ctx, sr, q.Item); isLimit(err, limitOpen) || isLimit(err, limitDay) {
+		return true, nil
+	} else if err != nil && !isLimit(err, limitItem) {
+		return true, err
+	}
 	gone, why, err := g.ItemGone(ctx, q.Item)
+	if errors.Is(err, ErrItemStateBounded) {
+		// Not known, so never opened or dropped — but not a wait for the
+		// rows behind it either: it keeps its place, is read again at every
+		// drain, and the drain goes on to the next row.
+		g.waitAtBound(ctx, sr, q, err)
+		return false, nil
+	}
 	if err != nil {
 		return true, fmt.Errorf("item %d's state in HQ is not known: %v", q.Item, err)
 	}
@@ -371,6 +406,13 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 // 422, FIRST. Anything else — 5xx, 400, 401/403 (a token, a permission or a
 // secondary rate limit), 404 (an installation's access), 409, 410, 429, a
 // network error — may pass later, so the drain keeps the row and tries again.
+//
+// ⚠ ASSUMPTION: GitHub documents this endpoint's 422 as "Validation failed, or
+// the endpoint has been spammed", and documents no body that tells the two
+// apart (its secondary rate limits are documented as 403 or 429, both kept
+// here). So a 422 for spamming, if GitHub sends one, is taken as permanent:
+// the row is dropped with a notice carrying GitHub's answer, and the branch
+// is kept, so the create can be asked again.
 func permanentOpenError(err error) bool {
 	return statusOf(err) == http.StatusUnprocessableEntity
 }
@@ -382,6 +424,31 @@ func permanentOpenError(err error) bool {
 func prAlreadyExists(err error) bool {
 	var he *httpError
 	return errors.As(err, &he) && he.status == http.StatusUnprocessableEntity && strings.Contains(he.body, "A pull request already exists")
+}
+
+// boundNote is the note a queued row keeps once HQ was told it waits at the
+// page bound (PRQueue.Mark): its presence is what makes the notice once.
+const boundNote = "HQ was told: it waits, its item's state unknown past the page bound"
+
+// waitAtBound logs that q waits at ItemGone's page bound (err) and — the
+// first time for this row and head only (PRQueue.Mark) — tells HQ, so a row
+// that may wait for good is not silent. q stays queued, in its place.
+func (g *PushGate) waitAtBound(ctx context.Context, sr officers.ShipRepo, q officers.QueuedPR, err error) {
+	g.logf("officers: %s: the queued pull request from %s in %s WAITS AT THE PAGE BOUND (kept in its place; the creates behind it go on): %v",
+		g.OfficerID, q.Branch, sr.Repo, err)
+	ok, merr := g.Queue.Mark(ctx, q.ID, q.HeadSHA, boundNote)
+	if merr != nil {
+		g.logf("officers: %s: the queued pull request from %s in %s could not be marked told (%v); HQ is told at a later drain", g.OfficerID, q.Branch, sr.Repo, merr)
+		return
+	}
+	if !ok {
+		return
+	}
+	g.announce(ctx, officers.Notice{HeadSHA: q.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+		"officer %s: the queued draft pull request from %s in %s (item %d) WAITS: muster cannot tell whether its item is still in HQ, "+
+			"because one of the officer's item lists is longer than muster's page bound. muster keeps it in its place and tries it again at every "+
+			"drain, and the creates queued behind it are opened without waiting for it. This notice is sent once.",
+		g.OfficerID, q.Branch, sr.Repo, q.Item)})
 }
 
 // skipQueued settles q skipped, with why, logs it and — notify — tells HQ

@@ -85,6 +85,28 @@ func prQueueContract(t *testing.T, ctx context.Context, st officers.PRQueueStore
 	if branchesOf(l) != pqZ+","+pqA+","+pqM || again.ID != z.ID || l[0].HeadSHA != pqSha4 || l[0].Title != "Zeta again" {
 		t.Fatalf("after refreshing %s: %s, first %+v; want it first, at the new head", pqZ, branchesOf(l), l[0])
 	}
+	// The mark is told once: only the first mark at the current head sets
+	// the note; one at an old head, or a second one, sets nothing. A
+	// refresh clears it, so the new head is told again.
+	if ok, err := st.PRQueueMark(ctx, pqOfficerA, z.ID, pqSha1, "old head"); err != nil || ok {
+		t.Fatalf("a mark at the OLD head: %v %v, want nothing marked", ok, err)
+	}
+	if ok, err := st.PRQueueMark(ctx, pqOfficerA, z.ID, pqSha4, "waits"); err != nil || !ok {
+		t.Fatalf("the first mark: %v %v", ok, err)
+	}
+	if ok, err := st.PRQueueMark(ctx, pqOfficerA, z.ID, pqSha4, "waits again"); err != nil || ok {
+		t.Fatalf("a second mark: %v %v, want nothing marked", ok, err)
+	}
+	if ok, _ := st.PRQueueMark(ctx, pqOfficerB, z.ID, pqSha4, "not mine"); ok {
+		t.Fatal("officer B marked officer A's row")
+	}
+	if l := list(st, pqOfficerA, pqRepo); l[0].Note != "waits" || l[0].State != officers.PRQueueQueued {
+		t.Fatalf("after the mark the row reads %+v, want queued with note %q", l[0], "waits")
+	}
+	add(pqZ, pqSha4, 31, "Zeta again")
+	if ok, err := st.PRQueueMark(ctx, pqOfficerA, z.ID, pqSha4, "waits"); err != nil || !ok {
+		t.Fatalf("a mark after a refresh: %v %v, want it marked again", ok, err)
+	}
 	// The settle is conditional on the head it was decided on.
 	if ok, err := st.PRQueueSettle(ctx, pqOfficerA, z.ID, pqSha1, officers.PRQueueOpened, 7, ""); err != nil || ok {
 		t.Fatalf("a settle at the OLD head: %v %v, want nothing settled", ok, err)

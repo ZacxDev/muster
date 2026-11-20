@@ -337,8 +337,9 @@ func itemGone(ctx context.Context, c officers.Backend, item int) (bool, string, 
 		return false, "", nil
 	}
 	if len(read.Bounded) > 0 {
-		return false, "", fmt.Errorf("item %d is in none of HQ's lists, but the %s list(s) still had pages after muster's bound of %d pages, "+
-			"so whether it is gone is not known: the queued pull request waits", item, strings.Join(read.Bounded, ", "), officers.MaxStatusPages)
+		return false, "", fmt.Errorf("%w: item %d is in none of HQ's lists, but the %s list(s) still had pages after muster's bound of %d pages, "+
+			"so whether it is gone is not known: the queued pull request waits", officership.ErrItemStateBounded, item, strings.Join(read.Bounded, ", "),
+			officers.MaxStatusPages)
 	}
 	return true, fmt.Sprintf("item %d is no longer in HQ (cancelled or removed), so its pull request is moot", item), nil
 }
@@ -868,6 +869,9 @@ func (p prQueue) List(ctx context.Context, repo string) ([]officers.QueuedPR, er
 }
 func (p prQueue) Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error) {
 	return p.st.PRQueueSettle(p.as(ctx), p.o.ID, id, head, state, pr, note)
+}
+func (p prQueue) Mark(ctx context.Context, id int64, head, note string) (bool, error) {
+	return p.st.PRQueueMark(p.as(ctx), p.o.ID, id, head, note)
 }
 
 type publicBranches struct {

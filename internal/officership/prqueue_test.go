@@ -3,6 +3,7 @@ package officership
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -48,17 +49,31 @@ func (q memQueue) List(ctx context.Context, repo string) ([]officers.QueuedPR, e
 func (q memQueue) Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error) {
 	return q.st.PRQueueSettle(ctx, q.officer, id, head, state, pr, note)
 }
+func (q memQueue) Mark(ctx context.Context, id int64, head, note string) (bool, error) {
+	return q.st.PRQueueMark(ctx, q.officer, id, head, note)
+}
 
 // hqItems is HQ's view of the items for the drain (PushGate.ItemGone): an
 // item named in gone is gone with that reason; any other is still in HQ
 // (whether or not anyone claims it, and whether or not it is completed: the
-// api package's itemGone decides that). err, when set, fails every read.
+// api package's itemGone decides that). err, when set, fails every read;
+// an item in bounded is not known (ErrItemStateBounded). reads counts the
+// reads, per item.
 type hqItems struct {
-	gone map[int]string
-	err  error
+	gone    map[int]string
+	bounded map[int]bool
+	err     error
+	reads   map[int]int
 }
 
 func (h *hqItems) itemGone(_ context.Context, item int) (bool, string, error) {
+	if h.reads == nil {
+		h.reads = map[int]int{}
+	}
+	h.reads[item]++
+	if h.bounded[item] {
+		return false, "", fmt.Errorf("%w: item %d is in none of HQ's lists read", ErrItemStateBounded, item)
+	}
 	if h.err != nil {
 		return false, "", h.err
 	}
@@ -505,6 +520,74 @@ func TestA422PullRequestAlreadyExistsKeepsTheRowAndTellsNobody(t *testing.T) {
 	}
 	if n := skipNotices(r); len(n) != 0 {
 		t.Errorf("HQ was told of a skip: %+v", n)
+	}
+}
+
+// TestARowWaitingAtThePageBoundTellsHQOnceAndHoldsBackNothing: B (queued
+// first, item 19) is not known — HQ's lists do not name it and one ran past
+// the page bound. With a slot free, the drain keeps B in its place and
+// opens A behind it; HQ is told ONCE that B waits at the bound, never told
+// it was dropped. Two later drains with a slot free read B again, keep it,
+// and tell HQ nothing more.
+func TestARowWaitingAtThePageBoundTellsHQOnceAndHoldsBackNothing(t *testing.T) {
+	r, q, hq := newQueueRigHQ(t)
+	hq.bounded = map[int]bool{19: true}
+	queueBA(t, r)
+	r.notices = nil
+	bound := func() []officers.Notice {
+		var out []officers.Notice
+		for _, n := range r.notices {
+			if strings.Contains(n.Summary, "WAITS: muster cannot tell whether its item is still in HQ") {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	closeOpen(r, 101)
+	_ = r.g.Sweep(context.Background())
+	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchA {
+		t.Fatalf("opened %q, want %s (A behind the waiting B)", got, qBranchA)
+	}
+	if got := queuedBranches(t, q); got != qBranchB {
+		t.Fatalf("the queue lists %q, want only %s (kept)", got, qBranchB)
+	}
+	for _, n := range []int{102, 103} {
+		closeOpen(r, n)
+		_ = r.g.Sweep(context.Background())
+	}
+	if got := hq.reads[19]; got != 3 {
+		t.Errorf("B's item was read %d times, want 3 (once per drain with a slot free)", got)
+	}
+	if got := queuedBranches(t, q); got != qBranchB {
+		t.Errorf("after three drains the queue lists %q, want only %s", got, qBranchB)
+	}
+	if n := bound(); len(n) != 1 || !strings.Contains(n[0].Summary, "from "+qBranchB+" in "+dInfra+" (item 19)") || n[0].HeadSHA != qShaB {
+		t.Errorf("the page-bound notices = %+v, want exactly one, for B", n)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a drop: %+v", n)
+	}
+}
+
+// TestADrainAtAFullCapReadsNothingFromHQ: with the open cap full, queueing
+// B and A (each create drains at once, before its 202) and a sweep read no
+// item from HQ: nothing could open, so nothing is read. Control: one slot
+// freed, the next sweep reads B's item once (and opens B; A then meets the
+// full cap again, unread).
+func TestADrainAtAFullCapReadsNothingFromHQ(t *testing.T) {
+	r, _, hq := newQueueRigHQ(t)
+	queueBA(t, r)
+	_ = r.g.Sweep(context.Background())
+	if len(hq.reads) != 0 {
+		t.Fatalf("at a full cap HQ was read: %v, want nothing", hq.reads)
+	}
+	closeOpen(r, 101)
+	_ = r.g.Sweep(context.Background())
+	if hq.reads[19] != 1 || hq.reads[17] != 0 || len(hq.reads) != 1 {
+		t.Errorf("with one slot free HQ was read %v, want item 19 once", hq.reads)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
+		t.Errorf("opened %q, want %s", got, qBranchB)
 	}
 }
 

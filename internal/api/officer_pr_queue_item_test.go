@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officership"
 )
 
 // itemsBackend answers Items from a status -> items map, paged as a backend
@@ -167,16 +168,26 @@ func TestAReadErrorOnALaterPageWaits(t *testing.T) {
 
 // TestAListPastThePageBoundWaits: a done list still with pages after
 // officers.MaxStatusPages, item 19 named nowhere read: not known, so an
-// error that says the bound was reached (the drain waits; never opened,
-// never dropped).
+// error that says the bound was reached and IS officership's
+// ErrItemStateBounded (the drain keeps the row — never opened, never
+// dropped — and goes on to the rows behind it).
 func TestAListPastThePageBoundWaits(t *testing.T) {
 	b := &itemsBackend{by: map[string][]officers.Item{
 		officers.StatusDone: qItems(officers.MaxStatusPages*officers.StatusPageLimit + 7),
 	}}
 	gone, why, err := itemGone(context.Background(), b, 19)
-	want := "item 19 is in none of HQ's lists, but the done list(s) still had pages after muster's bound of " +
+	want := "an item list is longer than muster's page bound: item 19 is in none of HQ's lists, but the done list(s) still had pages after muster's bound of " +
 		strconv.Itoa(officers.MaxStatusPages) + " pages, so whether it is gone is not known: the queued pull request waits"
 	if err == nil || gone || err.Error() != want {
 		t.Fatalf("gone %v (%q), err %v; want the error %q", gone, why, err, want)
+	}
+	// 🔴 THE SEAM: the drain tells this wait from any other by
+	// officership.ErrItemStateBounded (it keeps the row, tells HQ once and
+	// goes on to the rows behind it); an unreadable list is NOT that error.
+	if !errors.Is(err, officership.ErrItemStateBounded) {
+		t.Errorf("the page-bound error %v is not officership.ErrItemStateBounded", err)
+	}
+	if _, _, err := itemGone(context.Background(), &itemsBackend{err: errors.New("fake HQ: 503")}, 19); errors.Is(err, officership.ErrItemStateBounded) {
+		t.Errorf("an unreadable list reads as the page bound: %v", err)
 	}
 }

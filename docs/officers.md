@@ -2315,7 +2315,9 @@ The per-item and per-day limits still refuse.
 - **The drain.** It runs right after a create is queued and in every draft
   sweep (5 minutes), per repository. muster takes the queued creates **oldest
   first** and, while the open limit has room, opens each as a draft with the
-  officer App's token. First it reads each one again. It **skips** the create,
+  officer App's token. First it reads each one again. The open and daily
+  limits are read **before** HQ is: while nothing could open, the drain waits
+  without reading HQ's item lists at all. It **skips** the create,
   and tells HQ (so the item does not end with no pull request and nobody
   told), when:
   - the branch is gone;
@@ -2334,10 +2336,15 @@ The per-item and per-day limits still refuse.
     item is on done's last page). A page over muster's answer cap is asked
     again at half the size (the same reader as a grant's re-run,
     `officers.StatusesOf`). If any page cannot be read, the drain waits: an
-    item is never dropped on a list muster did not read whole. A list still
-    with pages after 400 (10,000 items at the full page size) is not read
-    further; the item's state is then not known and the drain **waits**,
-    with a log line naming that bound, rather than open or drop it;
+    item is never dropped on a list muster did not read whole.
+    A list still with pages after 400 is not read further. That is 10,000
+    items at the full page size of 25, and fewer when large items halve the
+    pages. The item's state is then not known, so that create is neither
+    opened nor dropped: it **keeps its place** and is read again at every
+    drain, and the drain goes on to the creates behind it, so one such
+    create does not hold back the rest. HQ is told **once** per create (and
+    again only after a new create from the branch refreshes it) that it
+    waits at the page bound; every drain logs it;
   - the stored title or body no longer passes the body contract or the
     credential, officer-id and public-repository checks;
   - the item has its pull request now;
@@ -2351,6 +2358,10 @@ The per-item and per-day limits still refuse.
     refusal: the row is kept and HQ is told nothing, and the next drain finds
     that pull request open from the branch and drops the row with no notice
     (below).
+    GitHub documents this 422 as "validation failed, or the endpoint has
+    been spammed" and gives no way to tell the two apart, so a 422 for
+    spamming would also drop the create (the notice carries GitHub's answer,
+    and the branch is kept).
 
   A branch that already has an open pull request is skipped with no notice.
   That check runs again once the create lock is held, so two drains racing
@@ -2360,8 +2371,7 @@ The per-item and per-day limits still refuse.
   the queue, when:
   - the open or daily limit is still full;
   - any read fails (the branch, its pull requests, any page of HQ's item
-    lists, the comparison), or an item list ran past its page bound without
-    naming the item;
+    lists, the comparison);
   - GitHub's open fails in a way that may pass later: a `5xx`, `400`, `401`,
     `403` (a token, a permission or a secondary rate limit), `404`, `409`,
     `410`, `429` or a network error, or a `422` saying the pull request
