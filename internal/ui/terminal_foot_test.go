@@ -19,6 +19,11 @@ import (
 //   - the hiding attribute is set on <html> by an inline script in the head
 //     (before anything of the body can paint), and the head's rule hides
 //     exactly the foot's blocks;
+//   - across the WHOLE document (static scripts inlined, attribute values
+//     included) the attribute is named by exactly three things, in order: the
+//     head's rule, the head's one setter and the body's one reveal — nothing
+//     else sets or clears it (a re-setter after the reveal would hide the
+//     foot for good);
 //   - every block of the body's column from the key bar up to the reveal
 //     script is one that rule hides — a new block added there unhidden fails;
 //   - the reveal is after the end of the LAST foot block (a reveal moved up
@@ -62,20 +67,53 @@ func TestTheTerminalFootIsHiddenUntilItIsWhole(t *testing.T) {
 			if len(heads) != 1 || len(bodies) != 1 {
 				t.Fatalf("%d <head>, %d <body>", len(heads), len(bodies))
 			}
-			var rules, sets []string
-			for _, n := range pinFind(heads[0], func(n *html.Node) bool { return n.Type == html.ElementNode }) {
-				if n.Data == "style" && strings.Contains(text(n), "data-term-foot-pending") {
-					rules = append(rules, text(n))
+			// 🔴 THE LEDGER IS THE WHOLE DOCUMENT'S, static scripts included:
+			// renderString inlines them (expandStaticScripts), so a served
+			// script that touched the attribute is read here too. Everything
+			// that names the attribute — a script, a style, an attribute value
+			// (an inline handler) — is exactly one of: the head's rule, the
+			// head's setter, the body's reveal. A second setter anywhere (one
+			// re-hiding the foot after the reveal), a second reveal, or any
+			// other writer fails.
+			full, err := html.Parse(strings.NewReader(renderString(t, AgentTerminalPage(c.v))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inHead := func(n *html.Node) bool {
+				for p := n.Parent; p != nil; p = p.Parent {
+					if p.Type == html.ElementNode && p.Data == "head" {
+						return true
+					}
 				}
-				if _, src := pinAttr(n, "src"); n.Data == "script" && !src && text(n) == set {
-					sets = append(sets, text(n))
+				return false
+			}
+			var ledger []string
+			for _, n := range pinFind(full, func(n *html.Node) bool { return n.Type == html.ElementNode }) {
+				for _, a := range n.Attr {
+					if strings.Contains(a.Val, termFootPendingAttr) {
+						ledger = append(ledger, "attribute "+a.Key+" of <"+n.Data+">")
+					}
+				}
+				if (n.Data != "script" && n.Data != "style") || !strings.Contains(text(n), termFootPendingAttr) {
+					continue
+				}
+				where := "body"
+				if inHead(n) {
+					where = "head"
+				}
+				switch {
+				case n.Data == "style" && where == "head" && text(n) == rule:
+					ledger = append(ledger, "head rule")
+				case n.Data == "script" && where == "head" && text(n) == set:
+					ledger = append(ledger, "head setter")
+				case n.Data == "script" && where == "body" && text(n) == reveal:
+					ledger = append(ledger, "body reveal")
+				default:
+					ledger = append(ledger, "another "+where+" <"+n.Data+">: "+strings.Join(strings.Fields(text(n)), " "))
 				}
 			}
-			if len(rules) != 1 || rules[0] != rule {
-				t.Errorf("the head's foot rule: %q, want exactly [%q]", rules, rule)
-			}
-			if len(sets) != 1 {
-				t.Errorf("%d inline head scripts set the attribute, want 1", len(sets))
+			if want := "head rule,head setter,body reveal"; strings.Join(ledger, ",") != want {
+				t.Errorf("what names %s, in document order:\n  %s\nwant exactly: %s", termFootPendingAttr, strings.Join(ledger, "\n  "), want)
 			}
 			// The body's column, child by child.
 			var kids []*html.Node
