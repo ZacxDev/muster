@@ -198,6 +198,11 @@ var pgBackedPackages = []string{
 	// focus", "an upsert keeps one row" and "full-text search ranks the right
 	// focus first" are claims about row-level security and SQL.
 	"internal/focus",
+	// Scheduled host jobs (migration 0166). "A due job fires once across two
+	// schedulers", "one running run per job" and "another owner's jobs are
+	// invisible" are claims about a compare-and-set, a partial unique index
+	// and row-level security.
+	"internal/hostjobs",
 	"internal/jobs",
 	"internal/pins",
 	// The send queue (migration 0019). "Another user cannot see, queue into or

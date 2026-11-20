@@ -345,7 +345,16 @@ BEGIN
         ALTER TABLE public.page_version_assets DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.page_version_assets ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0166 (officer_pr_queue), when this schema has it; same reason as 0011.
+    -- 0166 (host_jobs, host_job_runs), when this schema has them; same reason as 0011.
+    IF to_regclass('public.host_jobs') IS NOT NULL THEN
+        ALTER TABLE public.host_jobs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_jobs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_jobs ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.host_job_runs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_job_runs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_job_runs ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0168 (officer_pr_queue), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_queue') IS NOT NULL THEN
         ALTER TABLE public.officer_pr_queue NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_pr_queue DISABLE ROW LEVEL SECURITY;

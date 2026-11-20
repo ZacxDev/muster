@@ -174,6 +174,15 @@ const (
 	// everybody. One site mints it — internal/api's jobPrincipal — handed the
 	// owner of a head jobs.PGStore.Heads read under System.
 	ViaJobQueue Via = "job-queue"
+	// ViaHostJob is the SCHEDULED HOST JOB runner (internal/api's
+	// hostjobs.go): a host's jobs message, a due cron fire, a host's
+	// job-result or the lost-run sweep acting on one owner's host_jobs and
+	// host_job_runs rows, its job's page and its Attention item — as that
+	// OWNER only, never as everybody. One site mints it — internal/api's
+	// hostJobPrincipal. NOT a team acting door: a team host's jobs are
+	// refused before it is reached (a job's page is personal), so a team principal
+	// here is a bug and panics.
+	ViaHostJob Via = "host-job"
 	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0116):
 	// a viewer with no muster account, holding /s/<token>, acting as the
 	// page's OWNER for that one page only — the link's capability, never a
@@ -235,6 +244,9 @@ var requestVias = map[Via]bool{
 	// The job queue's runner, per job owner (internal/api's jobPrincipal).
 	// Without it the first job left queued by a restart PANICS here.
 	ViaJobQueue: true,
+	// The scheduled host job runner, per job owner (internal/api's
+	// hostJobPrincipal). Without it the first jobs message PANICS here.
+	ViaHostJob: true,
 	// A page's share link (internal/api's requirePageLink).
 	ViaPageLink: true,
 	// A team manager's lifecycle door (internal/api's teamAdminContext).

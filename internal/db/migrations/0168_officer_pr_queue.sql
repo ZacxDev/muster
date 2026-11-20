@@ -1,4 +1,4 @@
--- muster 0166 — A DRAFT OFFICER'S PULL-REQUEST QUEUE (internal/officers
+-- muster 0168 — A DRAFT OFFICER'S PULL-REQUEST QUEUE (internal/officers
 -- pr_queue.go; docs/officers.md "The open-pull-request queue").
 --
 --   officer_pr_queue   one row per (owner, officer, repository, branch): a
@@ -23,14 +23,15 @@
 -- with the rest, and --rls-on re-applies this file (db.RLSOn), so every
 -- statement is idempotent.
 --
--- Must apply after its predecessor, 0165 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0167 (the contiguity test refuses a gap):
+-- 0167 is the officer auto-restart migration, which lands first.
 -- 🔴 RENUMBER IT (and db.officerPRQueueMigrationVersion) if another migration
--- takes 0166 first.
+-- takes 0168 first.
 --
 -- ROLLBACK. An older image never reads the table (a create past the cap is
 -- refused there, as before); roll the image back, then (optionally):
 --   DROP TABLE public.officer_pr_queue;   (its policies and owner_fixed trigger go with it)
---   DELETE FROM schema_migrations WHERE version = 166;
+--   DELETE FROM schema_migrations WHERE version = 168;
 -- A create still queued at the rollback is then never opened: the officer's
 -- branch is still pushed, and a human (or the officer, once a slot frees)
 -- opens it.

@@ -22,6 +22,7 @@ The verb set is pinned in two places:
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)), `plugins deliver-to <plugin-id> officer:<id>` / `--clear` ([bind a plugin to an officer](plugins.md#a-plugin-bound-to-an-officer)) |
 | pull requests | `pr-session <owner>/<repo>#<n>` (which of your sessions created a pull request: [below](#which-session-created-a-pull-request)) |
 | setup | `doctor` ([below](#muster-doctor)) |
+| scheduled host jobs | `job list`, `job runs <name>`, `job run <name>`, `job forget <host> <name>` (the jobs your machines declare, their runs, run one now, forget one of a machine that is gone: [host-jobs.md](host-jobs.md#reading-and-running-jobs-muster-job)) |
 | the ask log | `asks log`, `asks summary` (what your agents asked you, how you answered, how long it took: [below](#reading-the-ask-log)) |
 | chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |
 | several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |

@@ -30,7 +30,7 @@ import (
 // number) or skipped (with why: the branch is gone, its head moved with no new
 // create, a pull request is already open from it, or its change was refused).
 //
-// Kept in muster's database (PGPRQueueStore, migration 0166) when it has one,
+// Kept in muster's database (PGPRQueueStore, migration 0168) when it has one,
 // so a restart and a second replica see the same queue; else in this
 // process's memory (MemPRQueueStore), which a restart forgets.
 // ---------------------------------------------------------------------------
@@ -167,7 +167,7 @@ func (m *MemPRQueueStore) PRQueueSettle(_ context.Context, officer string, id in
 	return true, nil
 }
 
-// PGPRQueueStore is PRQueueStore on officer_pr_queue (migration 0166), under
+// PGPRQueueStore is PRQueueStore on officer_pr_queue (migration 0168), under
 // row-level security: ctx must act as the officer's owner.
 type PGPRQueueStore struct{ pool *pgxpool.Pool }
 
@@ -228,7 +228,7 @@ func (s *PGPRQueueStore) PRQueueSettle(ctx context.Context, officer string, id i
 	return tag.RowsAffected() == 1, nil
 }
 
-// maxQueueNote bounds a skip's note (0166's CHECK).
+// maxQueueNote bounds a skip's note (0168's CHECK).
 const maxQueueNote = 1000
 
 func truncateNote(s string) string {

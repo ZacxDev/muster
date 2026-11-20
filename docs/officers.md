@@ -2143,7 +2143,7 @@ A create (`POST pulls`) that passes every rule above **but** the open limit —
 4 of the officer's pull requests already open in that repository — is not
 refused. muster checks its comparison as for any create (a hit is the usual
 409, never queued), reads the branch's head, records the create in its queue
-(`officer_pr_queue`, migration 0166: the branch, that head, the title, the
+(`officer_pr_queue`, migration 0168: the branch, that head, the title, the
 body and the item) and answers **`202`** `{"queued": true, "message": …}`:
 the pull request is queued, muster opens it itself, and the officer must
 **not** escalate it or ask a human to open it (its charter says so too). The
