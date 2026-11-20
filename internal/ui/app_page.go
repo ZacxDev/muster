@@ -38,7 +38,8 @@ import (
 //     app hands to a Custom Tab (its WebView grants no camera to another
 //     origin and has no screen capture).
 //   - While the page is visible it polls the alive route every 30 s (and at
-//     once when it becomes visible); a 404 REMOVES the frame — ending the
+//     once when it becomes visible); a 404 (the plugin is no longer live) or a
+//     401 (the owner signed out or disabled) REMOVES the frame — ending the
 //     plugin's page and with it its camera, microphone and screen capture —
 //     and says AppRemoved. Core's enforcement; it does not need the plugin to
 //     behave.
@@ -63,7 +64,7 @@ func NavAppEntry(id int64) string { return navAppPrefix + strconv.FormatInt(id, 
 func AppPagePath(id int64) string  { return "/apps/" + strconv.FormatInt(id, 10) }
 func AppAlivePath(id int64) string { return "/ui/apps/" + strconv.FormatInt(id, 10) + "/alive" }
 
-// AppRemoved is what the page says once the alive poll answers 404.
+// AppRemoved is what the page says once the alive poll answers 404 or 401.
 const AppRemoved = "This app was removed."
 
 // AppPollSeconds is the alive poll's period while the page is visible.
@@ -251,7 +252,10 @@ var appPageScriptSrc = staticJS("app-page", `
   function alive() {
     if (gone || document.visibilityState !== 'visible') return;
     fetch(root().getAttribute('data-alive'), { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' })
-      .then(function (res) { if (res.status === 404) removed(); })
+      // 404: the plugin is no longer live. 401: the session door refused
+      // the owner (signed out, or the account disabled). Either way the
+      // frame, and any capture in it, goes.
+      .then(function (res) { if (res.status === 404 || res.status === 401) removed(); })
       .catch(function () {});
   }
   function newTab() {

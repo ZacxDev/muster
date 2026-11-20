@@ -172,8 +172,10 @@ func (l listCounting) List(ctx context.Context) ([]plugins.Plugin, error) {
 // /apps/{id} 404 and answers the alive poll 404; the all-open row draws
 // exactly the one tab (the positive control), labelled and linked, and serves
 // both. With plugins off or the origins unset the store's List is not read.
-// (A disabled owner has no session: the session door refuses them before any
-// page is drawn, so it is not a row of this table.)
+// The owner-disabled row needs a GoTrue session, which this seam has not got:
+// it is TestADisabledOwnersAppPageAndPollAreRefused (plugin_app_test.go) —
+// no tab, the page sent to sign-in, and the alive poll 401, which the page
+// script treats as removal (e2e/app-page.test.mjs).
 func TestTheAppTabsGates(t *testing.T) {
 	type row struct {
 		name    string
@@ -336,9 +338,15 @@ func appAttrOf(tag, name string) (string, bool) {
 func TestTheAppPageHeadersAndFrameExactly(t *testing.T) {
 	f := newHandoffSeam(t, hoZone)
 	_, id := f.mustApp(f.a, "app-headers")
+	lists := 0
+	f.srv.ext.Plugins = listCounting{Store: f.srv.ext.Plugins, n: &lists}
 	rec := f.do("GET", "/apps/"+strconv.FormatInt(id, 10), "", f.as(f.a, false))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /apps/{id}: %d", rec.Code)
+	}
+	// The page and its sidebar share one read of the plugin list.
+	if lists != 1 {
+		t.Errorf("GET /apps/{id} listed the plugin store %d times; want 1 (the page's list reused by its sidebar)", lists)
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); got != appPageCSP {
 		t.Errorf("CSP\n got %s\nwant %s", got, appPageCSP)

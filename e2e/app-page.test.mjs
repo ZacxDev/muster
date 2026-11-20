@@ -5,7 +5,8 @@
 //     when it has one) and puts a NEW frame, carrying every attribute of the
 //     drawn one and its src set BEFORE it is inserted, in that one's place;
 //   - while the page is visible it polls the alive route every 30 s, and a
-//     404 REMOVES the frame and says the app was removed (a 204 keeps it);
+//     404 (the plugin is no longer live) or a 401 (the owner is signed out or
+//     disabled) REMOVES the frame and says the app was removed (a 204 keeps it);
 //   - in the Android app (window.musterApp) no frame is loaded: the frame is
 //     removed, the card shown, and Open mints at tap time and navigates the
 //     top level to the minted URL.
@@ -146,6 +147,18 @@ test('the alive poll runs every 30 s and a 404 removes the frame', async () => {
   assert.equal(w.current(), null, 'the frame is still on the page after the alive poll answered 404');
   assert.equal(w.status.textContent, 'This app was removed.');
   assert.equal(w.newtab.hidden, true, 'New tab is still offered for a removed app');
+  assert.equal(w.intervals[0].cleared, true, 'the poll keeps running after the removal');
+});
+
+test('a signed-out or disabled owner (the session door answers 401) also loses the frame', async () => {
+  const w = world();
+  await w.settle(); await w.settle();
+  await w.tick();
+  assert.ok(w.current(), 'CONTROL: a 204 removed the frame');
+  w.setAlive(401);
+  await w.tick();
+  assert.equal(w.current(), null, 'the frame (and its capture) is still on the page after the alive poll answered 401');
+  assert.equal(w.status.textContent, 'This app was removed.');
   assert.equal(w.intervals[0].cleared, true, 'the poll keeps running after the removal');
 });
 

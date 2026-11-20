@@ -24,8 +24,10 @@ import (
 // holding `app`, another owner's, a team's, or an origin and entry URL the
 // CURRENT MUSTER_PLUGIN_ORIGINS no longer allows (the mint's own re-check,
 // ValidViewerLink). With plugins off or MUSTER_PLUGIN_ORIGINS unset nothing is
-// read at all. A disabled owner has no session (the session door refuses it),
-// so there is no page of theirs to draw a tab on.
+// read at all. A disabled (or signed-out) owner is refused by the session
+// door: no page or tab is drawn, and an /apps/{id} page already OPEN gets the
+// alive poll's 401, on which its script removes the frame as on a 404
+// (TestADisabledOwnersAppPageAndPollAreRefused).
 //
 // 🔴 THE PAGE'S HEADERS WIDEN ONLY HERE, AND ONLY TO THE ENTRY URL'S EXACT
 // ORIGIN (appOrigin), never the plugin's origin PATTERN: frame-src <O> (no
@@ -58,6 +60,11 @@ func (s *Server) liveAppPlugins(ctx context.Context) []plugins.Plugin {
 	if s.ext.Plugins == nil || len(s.ext.PluginOrigins) == 0 {
 		return nil
 	}
+	// The page already read it for this request (handleAppPage): the sidebar
+	// reuses that one list rather than reading the store again.
+	if ps, ok := ctx.Value(liveAppsKey{}).([]plugins.Plugin); ok {
+		return ps
+	}
 	owner := requestOwner(ctx)
 	if owner <= 0 {
 		return nil
@@ -84,6 +91,15 @@ func (s *Server) liveAppPlugins(ctx context.Context) []plugins.Plugin {
 	// The store lists newest first; the sidebar is oldest first.
 	slices.Reverse(out)
 	return out
+}
+
+// liveAppsKey carries one request's liveAppPlugins (withLiveApps).
+type liveAppsKey struct{}
+
+// withLiveApps is ctx carrying its liveAppPlugins, read once, for a handler
+// that needs them twice (the page and its sidebar).
+func (s *Server) withLiveApps(ctx context.Context) context.Context {
+	return context.WithValue(ctx, liveAppsKey{}, s.liveAppPlugins(ctx))
 }
 
 // liveAppPlugin is the one of liveAppPlugins with id raw, or false.
@@ -137,6 +153,7 @@ func appPermissionsPolicy(origin string) string {
 // handleAppPage is GET /apps/{id}: the owner's own live app plugin's page, or
 // the one 404 (AppPageNotFound) for anything else.
 func (s *Server) handleAppPage(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.withLiveApps(r.Context()))
 	p, ok := s.liveAppPlugin(r.Context(), r.PathValue("id"))
 	if !ok {
 		s.writeNavDocument(w, r, http.StatusNotFound, "Not found", "", false, `<p class="text-sm text-fg2">`+AppPageNotFound+`</p>`)

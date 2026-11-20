@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,3 +73,42 @@ func TestLiveAppPluginsHoldsEveryClauseOnItsOwn(t *testing.T) {
 	}
 }
 
+// TestADisabledOwnersAppPageAndPollAreRefused is the tab gates' owner-disabled
+// row, on a GoTrue session (the only door that can disable a signed-in
+// owner): before the disable, the owner's page draws the app tab, /apps/{id}
+// is 200 and the alive poll 204 (the positive control); after it, the page
+// draws nothing (a document is sent to sign-in), /apps/{id} is not served and
+// the alive poll is 401 — which the open page's script treats as removal
+// (e2e/app-page.test.mjs).
+func TestADisabledOwnersAppPageAndPollAreRefused(t *testing.T) {
+	pats, err := plugins.ParseOrigins("https://*.meet.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newGoTrueFixtureWith(t, &Extensions{Plugins: appListedPlugins{rows: []plugins.Plugin{appRow(4, 7, nil)}}, PluginOrigins: pats})
+	sub := f.member("owner@example.com", 7, authz.RoleMember)
+	at, rt, _ := f.fake.Mint(sub)
+	acct := do(f.edge, "GET", "/account", nil, withCookies(at, rt))
+	page := do(f.edge, "GET", "/apps/4", nil, withCookies(at, rt), asNavigation)
+	alive := do(f.edge, "GET", "/ui/apps/4/alive", nil, withCookies(at, rt), asXHR)
+	if acct.Code != http.StatusOK || !strings.Contains(acct.Body.String(), `data-app-tab="4"`) ||
+		page.Code != http.StatusOK || alive.Code != http.StatusNoContent {
+		t.Fatalf("POSITIVE CONTROL: account %d (tab drawn %v), page %d, alive %d; want 200 with the tab, 200, 204",
+			acct.Code, strings.Contains(acct.Body.String(), `data-app-tab="4"`), page.Code, alive.Code)
+	}
+	if err := f.s.DisableUser(context.Background(), 7, true); err != nil {
+		t.Fatal(err)
+	}
+	acct = do(f.edge, "GET", "/account", nil, withCookies(at, rt), asNavigation)
+	page = do(f.edge, "GET", "/apps/4", nil, withCookies(at, rt), asNavigation)
+	alive = do(f.edge, "GET", "/ui/apps/4/alive", nil, withCookies(at, rt), asXHR)
+	if strings.Contains(acct.Body.String(), "data-app-tab") {
+		t.Errorf("a disabled owner's page draws the app tab")
+	}
+	if page.Code == http.StatusOK {
+		t.Errorf("/apps/{id} for a disabled owner: 200; want it refused")
+	}
+	if alive.Code != http.StatusUnauthorized {
+		t.Errorf("the alive poll for a disabled owner: %d; want 401 (the page script removes the frame on it)", alive.Code)
+	}
+}

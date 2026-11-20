@@ -176,7 +176,8 @@ other response keeps `microphone=(self)` and its own CSP. Opened as
 outside `^[A-Za-z0-9_-]{1,64}$` is dropped. Treat it as a hint.
 
 **Revocation.** While visible, the page polls `GET /ui/apps/{id}/alive`
-every 30 s (`204` live, `404` not). A `404` removes the frame, which ends your
+every 30 s (`204` live, `404` not, `401` once you are signed out or your
+account is disabled). A `404` or `401` removes the frame, which ends your
 page and any camera, microphone or screen capture in it, and says "This app
 was removed."
 
