@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pages"
@@ -255,5 +258,28 @@ func TestEveryOtherMCPRequestKeepsTheTightBound(t *testing.T) {
 	code, mr, raw = f.mirrorRPC(t, mirrorAs(f.ws, focusSID), list)
 	if code != http.StatusOK || mr == nil || mr.Error == nil || !strings.Contains(mr.Error.Message, "only a tools/call of page_create or page_update may be larger than 64 KiB") {
 		t.Fatalf("tools/list at 80 KiB: %d %.300s", code, raw)
+	}
+}
+
+// TestMusterNamesItselfWhenItCannotReadARequest: a body whose read fails for a
+// reason other than its size is -32700 in words that name muster and the
+// cause — never the old server's bare "could not read the request", which a
+// host proxy reads as an OLD muster's too-large answer and replaces (#833,
+// mirror.LegacyMCPUnreadMessage). At origin/main muster still wrote the old
+// words.
+func TestMusterNamesItselfWhenItCannotReadARequest(t *testing.T) {
+	f := newSizeFixture(t)
+	body := io.MultiReader(strings.NewReader(`{"jsonrpc":"2.0","id":1,`), iotest.ErrReader(errors.New("connection reset by peer")))
+	w := f.call(t, http.MethodPost, "/mirror/mcp", body,
+		map[string]string{"Authorization": "Bearer " + f.ws, mirrorSessionHeader: focusSID, "Content-Type": "application/json"})
+	var r mcpReply
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &r) != nil || r.Error == nil {
+		t.Fatalf("%d %.300s", w.Code, w.Body)
+	}
+	if r.Error.Code != -32700 || r.Error.Message != "muster could not read this MCP request: connection reset by peer" {
+		t.Fatalf("got %d %q", r.Error.Code, r.Error.Message)
+	}
+	if r.Error.Message == mirror.LegacyMCPUnreadMessage {
+		t.Fatal("muster wrote the words a host proxy takes for an old muster")
 	}
 }

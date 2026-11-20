@@ -275,6 +275,9 @@ func (s *Server) sessionStateOwner(octx context.Context, o sessionstate.Owner, b
 	// read through the nudges' own candidate rule. Persons only.
 	if !team {
 		s.feedSessionMinder(octx, owner, read.sessions)
+		// The fleet's step (fleet_actions.go), alongside the stop judge — whoever
+		// judges (fleetPass asks no judge): with fleet proposals on and a chief.
+		s.fleetPass(octx, owner, read.sessions)
 	}
 	for k, ep := range byKey {
 		if seen[k] {
@@ -820,6 +823,20 @@ func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reaso
 // an older rule) would never look moved again, and its episode would never be
 // read. What was READ is kept apart from what was OBSERVED.
 func (s *Server) episodeOwnerActed(octx context.Context, c nudgeCandidate, ep sessionstate.Episode) bool {
+	return s.ownerActedRead(octx, c, ep, true)
+}
+
+// ownerActedRead is episodeOwnerActed's rule; record says whether a read that
+// finds NO owner message is remembered for c's streak (ownerChecked). The pass
+// records it, so a session that sits still is not read again every 30 s.
+//
+// 🔴 THE STATUS HOOK (episodeStatusMoved) DOES NOT. It reads the moment the
+// host reports the window moved, and Claude Code can report the turn before
+// the owner's line is readable in the transcript: a negative recorded then
+// would mark the streak read, the pass would skip it (done), and the episode
+// would wait for the 120 s work rule — or never end, on a short turn. A read
+// that FINDS the owner acting is recorded either way (the episode ends on it).
+func (s *Server) ownerActedRead(octx context.Context, c nudgeCandidate, ep sessionstate.Episode, record bool) bool {
 	f := sessionstate.OwnerFacts{OpenedAt: ep.OpenedAt, WasWaiting: ep.Waiting, Known: c.Status != "",
 		WaitingNow: c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusWaiting}
 	if !f.Known || f.WaitingNow || f.WasWaiting {
@@ -838,9 +855,216 @@ func (s *Server) episodeOwnerActed(octx context.Context, c nudgeCandidate, ep se
 		s.logger.Printf("session state: episode %d: the owner-acted read: injected: %v", ep.ID, err)
 		return false
 	}
-	s.ownerChecked.checked(ep.ID, c.StreakKey)
 	f.Msgs, f.Injected, f.Prefixes = read.Msgs, injected, nudgeInjectedPrefixes
-	return sessionstate.OwnerActed(f)
+	acted := sessionstate.OwnerActed(f)
+	if record || acted {
+		s.ownerChecked.checked(ep.ID, c.StreakKey)
+	}
+	return acted
+}
+
+// EpisodeStatusMoved is episodeStatusMoved for the mirror hub's status hook
+// (MirrorStatusChanged).
+func (s *Server) EpisodeStatusMoved(owner int64) { s.episodeStatusMoved(owner) }
+
+// MirrorStatusChanged is THE hub's status hook (mirror.Service.SetStatusNotify;
+// cmd/muster-server): the hub has one slot, and two readers hear it — the ask
+// log (AskLogMirrorChanged) and the idle stop's owner-acted check
+// (EpisodeStatusMoved). Composed here, not at the wiring, so a test calling
+// this calls exactly what the hub calls.
+func (s *Server) MirrorStatusChanged(owner int64) {
+	s.AskLogMirrorChanged(owner)
+	s.EpisodeStatusMoved(owner)
+}
+
+// episodeStatusMoved ends, the moment its window moves, a PUSHED IDLE STOP the
+// owner has gone back to: the hub reports a window's status changed (the
+// owner typed, Claude Code took the turn: busy), so each of owner's open
+// mirrored episodes that was pushed, is not a wait, and whose window — found by
+// its session key on its host, online and reporting status — now shows a
+// known status other than waiting on a streak other than the episode's, is
+// checked for the owner acting (ownerActedRead, the pass's own rule: a message
+// of the owner's after the episode opened, muster's own pastes and nudges left
+// out). If they did, it ends 'owner' and its push is withdrawn by endEpisode —
+// about a second after the owner typed, not on the next pass (up to
+// SessionStateInterval later).
+//
+// 🔴 IT ONLY EVER ENDS. A read that finds nothing is not recorded
+// (ownerActedRead's record=false), so the pass reads that streak again; an
+// episode whose window is not listed, or whose status is unknown, is left to
+// the pass. A waiting episode is the waiting hook's (episodeWaitsAnswered), an
+// unpushed one has nothing to withdraw and the pass ends it.
+//
+// 🔴 COALESCED PER OWNER, AND ITS READS BOUNDED PER STREAK. The hub fires the
+// hook on its own goroutine for every status change of any of the owner's
+// windows: one run per owner at a time, and every trigger that lands during a
+// run collapses into ONE trailing run after it (statusRuns) — never lost,
+// since the trailing run reads the hosts as they are then. A read that finds
+// no owner message is not repeated for that episode and streak for
+// episodeStatusRecheck (the negative TTL), and schedules ONE re-check of the
+// owner after it — the transcript-lag case: Claude Code reported the turn
+// before the owner's line was readable, and the next status move may be
+// minutes away. So a streak costs the hook at most two reads plus one per
+// later status move outside the TTL, and the owner's line, once readable,
+// ends the stop within about episodeStatusRecheck.
+func (s *Server) episodeStatusMoved(owner int64) {
+	if s == nil || !s.sessionStateOn() || s.ext.Mirror == nil || owner <= 0 {
+		return
+	}
+	r := &s.statusRuns
+	r.mu.Lock()
+	if r.running[owner] {
+		r.again[owner] = true
+		r.mu.Unlock()
+		return
+	}
+	if r.running == nil {
+		r.running, r.again = map[int64]bool{}, map[int64]bool{}
+	}
+	r.running[owner] = true
+	r.mu.Unlock()
+	for {
+		s.episodeStatusRun(owner)
+		r.mu.Lock()
+		if r.again[owner] {
+			delete(r.again, owner)
+			r.mu.Unlock()
+			continue
+		}
+		delete(r.running, owner)
+		r.mu.Unlock()
+		return
+	}
+}
+
+// episodeStatusRecheck is the hook's negative TTL for one episode and streak,
+// and how long after a read that found no owner message it reads once more.
+const episodeStatusRecheck = 2 * time.Second
+
+// episodeStatusRuns is the status hook's per-owner coalescing and its
+// per-episode negative reads (episodeStatusMoved). after, when set (a test),
+// replaces time.AfterFunc for the re-check.
+type episodeStatusRuns struct {
+	mu      sync.Mutex
+	running map[int64]bool // an owner's run in progress
+	again   map[int64]bool // a trigger landed during it: run once more
+	runs    int            // runs started (tests)
+	tried   map[int64]statusTry
+	after   func(d time.Duration, f func())
+}
+
+// statusTry is the hook's last read of an episode that found no owner message.
+type statusTry struct {
+	streak     string
+	at         time.Time
+	rechecking bool // its one re-check for this streak is scheduled or done
+}
+
+// skip reports whether episode id was read on streak, finding nothing, less
+// than episodeStatusRecheck before now.
+func (r *episodeStatusRuns) skip(id int64, streak string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tried[id]
+	return ok && t.streak == streak && now.Sub(t.at) < episodeStatusRecheck
+}
+
+// missed records a read of episode id on streak at now that found no owner
+// message, and reports whether this is the streak's first (its re-check is
+// owed). Entries older than a minute are forgotten.
+func (r *episodeStatusRuns) missed(id int64, streak string, now time.Time) (recheck bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tried == nil {
+		r.tried = map[int64]statusTry{}
+	}
+	for k, t := range r.tried {
+		if now.Sub(t.at) > time.Minute {
+			delete(r.tried, k)
+		}
+	}
+	prev, ok := r.tried[id]
+	recheck = !ok || prev.streak != streak || !prev.rechecking
+	r.tried[id] = statusTry{streak: streak, at: now, rechecking: true}
+	return recheck
+}
+
+// episodeStatusRun is one run of the status hook for owner.
+func (s *Server) episodeStatusRun(owner int64) {
+	r := &s.statusRuns
+	r.mu.Lock()
+	r.runs++
+	r.mu.Unlock()
+	octx := s.attentionPrincipal(context.Background(), owner)
+	open, err := s.ext.Episodes.OpenEpisodes(octx)
+	if err != nil {
+		s.logger.Printf("session state: owner %d: the status hook: open episodes: %v", owner, err)
+		return
+	}
+	var eps []sessionstate.Episode
+	for _, ep := range open {
+		if ep.Kind == sessionstate.KindMirror && !ep.PushedAt.IsZero() && !ep.Waiting && ep.Open() {
+			eps = append(eps, ep)
+		}
+	}
+	if len(eps) == 0 {
+		return
+	}
+	hs := s.ext.Mirror.Hosts(octx)
+	recheck := false
+	for _, ep := range eps {
+		c, ok := s.movedWindow(octx, hs, ep)
+		if !ok || r.skip(ep.ID, c.StreakKey, s.now()) {
+			continue
+		}
+		if s.ownerActedRead(octx, c, ep, false) {
+			s.endEpisode(octx, ep, sessionstate.EndOwner, s.now())
+		} else if r.missed(ep.ID, c.StreakKey, s.now()) {
+			recheck = true
+		}
+	}
+	if !recheck {
+		return
+	}
+	r.mu.Lock()
+	after := r.after
+	r.mu.Unlock()
+	if after == nil {
+		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+	}
+	after(episodeStatusRecheck, func() {
+		if s.streams.context().Err() != nil {
+			return // muster is shutting down
+		}
+		s.episodeStatusMoved(owner)
+	})
+}
+
+// movedWindow is open mirrored episode ep's session as the stall facts would
+// list it (stallFacts' fields for one window), ok only when hs lists it under
+// ep's key on ep's host — online and reporting status — in a known status
+// other than waiting, on a streak (windowStreakKey) other than ep's.
+func (s *Server) movedWindow(octx context.Context, hs []mirror.HostView, ep sessionstate.Episode) (nudgeCandidate, bool) {
+	for _, h := range hs {
+		if h.Host != ep.Host || !h.Online || !h.StatusReport {
+			continue
+		}
+		for _, w := range h.Windows {
+			key, runtime := stateWindowKey(w)
+			if key == "" || key != ep.Key {
+				continue
+			}
+			st := s.ext.Mirror.AgentState(octx, h.Host, w.Session, w.ID)
+			streak := windowStreakKey(st)
+			if st.Unknown != nil || st.Status == "" || st.Status == mirror.StatusWaiting || streak == "" || streak == ep.StreakKey {
+				return nudgeCandidate{}, false
+			}
+			return nudgeCandidate{Session: chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: key, Runtime: runtime, Host: h.Host,
+				TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Status: st.Status, StreakKey: streak,
+				IdleSince: st.Observed}}, true
+		}
+	}
+	return nudgeCandidate{}, false
 }
 
 // ownerInjected is nudgeInjected for the owner-acted check, which runs with

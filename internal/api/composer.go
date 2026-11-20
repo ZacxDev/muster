@@ -329,8 +329,8 @@ func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store"
 
 // formDocument marks a page that carries one of the forms a browser may submit
 // BY ITSELF (a composer, the chat form, the plain confirm page): never stored,
-// and served `Referrer-Policy: same-origin` in place of securityHeaders'
-// no-referrer.
+// and served `Referrer-Policy: same-origin` (securityHeaders' default too since
+// the central origin check; this keeps these pages right if that ever moves).
 //
 // 🔴 WITHOUT THE SECOND HEADER THE FORM'S OWN SUBMIT IS REFUSED. Under
 // no-referrer a browser sends `Origin: null` on a form POST navigation (fetch

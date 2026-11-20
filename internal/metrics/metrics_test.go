@@ -75,6 +75,7 @@ var wantMetrics = map[string][]string{
 	"muster_panics_total":                             {"source"},
 	"muster_plugin_origin_refusals_total":             {},
 	"muster_page_link_requests_total":                 {"route", "outcome"},
+	"muster_csrf_refusals_total":                      {"reason", "route_class"},
 	"muster_page_responses_total":                     {"kind", "outcome"},
 	"muster_page_share_decisions_total":               {"decision"},
 	"muster_page_upload_rollback_failures_total":      {},
@@ -116,6 +117,7 @@ func gather(t *testing.T) map[string][]string {
 	Panics.WithLabelValues("test")
 	PluginHandoffs.WithLabelValues("view", "minted")
 	PageLinkRequests.WithLabelValues("shell", "served")
+	CSRFRefusals.WithLabelValues("tasks", "no-headers")
 	PageResponses.WithLabelValues("submit", "recorded")
 	PageShareDecisions.WithLabelValues("approved")
 	AsksTotal.WithLabelValues("plain_text")

@@ -24,7 +24,7 @@ type memNotifyPrefs struct {
 	// first is "Start notification titles with the tmux name", owner → on.
 	first map[int64]bool
 	// pages is "Let my agents share pages without asking", owner → on; a
-	// missing owner reads on (the default since migration 0160).
+	// missing owner reads on (the default since migration 0163).
 	pages map[int64]bool
 	// teams is the owners that are TEAMS (users.kind = 'team'): each reads
 	// pages off whatever pages holds, as notifypref.PG does (so does a team

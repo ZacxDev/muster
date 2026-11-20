@@ -155,7 +155,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 		// The TEAM's viewer plugins (team sharing 2b.3b), never the viewer's.
 		vp, _ := s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
-		v.Plugins = pluginChips(vp, e)
+		v.Plugins = s.sessionOpenChips(op.begin("pages"), vp, h, e)
 		allowSameOriginFrame(w, viewerFrameSrc(vp))
 		viewDocument(w)
 		op.serverTiming(w)
@@ -189,9 +189,9 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v.Suggest = s.suggestPath(ctx, h, e)
 	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(ctx, h, e)
 	v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
-	// The window's sessions' open attention asks, answerable here
-	// (attention_asker.go).
-	v.Asks, v.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	// The header's badge of the window's sessions' open attention asks,
+	// opening the Asks page filtered to them (attention_asker.go).
+	v.Asks, v.AsksSrc = s.askerAsksBadge(op.begin("asks"), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	// The session switcher below the composer (ui/switcher.go).
 	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
@@ -200,7 +200,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
 	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
-	v.Plugins = pluginChips(vp, e)
+	v.Plugins = s.sessionOpenChips(op.begin("pages"), vp, h, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)
@@ -227,11 +227,6 @@ type mirrorViewBatch struct {
 	// batch changed it (ui.MirrorTranscript.TakeContext).
 	Context *ui.ContextView `json:"context,omitempty"`
 }
-
-// viewCloseRead is the view socket's close detection: c.CloseRead, whose
-// context ends when the page goes. A test replaces it to hold the window in
-// which the page has gone and the context has not ended yet (streamEndReason).
-var viewCloseRead = func(c *websocket.Conn, ctx context.Context) context.Context { return c.CloseRead(ctx) }
 
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
 //
@@ -273,7 +268,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// CloseRead's reader closes the socket when ITS context ends, so a
 	// shutdown that ended that context would close the socket before the page
 	// could be told why (shutdownFrame).
-	ctx, done, ok := s.terminals.add(viewCloseRead(c, r.Context()))
+	ctx, done, ok := s.terminals.add(socketSettingsOf(r.Context()).viewCloseRead(c, r.Context()))
 	if !ok {
 		op.finish(telemetry.ReasonShutdown)
 		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)

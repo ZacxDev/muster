@@ -81,6 +81,17 @@ var personalOwned = []string{
 	// 0156: when a person last looked at an officer's page; each member of
 	// a team looks on their own.
 	"officer_seen",
+	// 0157: an owner's raise of an officer's daily budget for one UTC day;
+	// only the officer's owner raises it.
+	"officer_cap_raises",
+	// 0158: the fleet's action log; same reason.
+	"fleet_actions",
+	// 0160: the confirm cards in a person's chat with an officer; one
+	// manager's cards are never another's.
+	"officer_chat_cards",
+	// 0161: the morning report; it lists its owner's own sessions, tasks and
+	// questions.
+	"morning_reports",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

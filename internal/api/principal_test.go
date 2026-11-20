@@ -178,13 +178,16 @@ var routeVias = map[authz.Via][]string{
 		"GET /usage",
 		// The answer-attempt log's page (answers_page.go).
 		"GET /answers",
+		// The morning report's page (morning_report.go).
+		"GET /morning",
+		"GET /morning/{date}",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
 		"GET /attention/drafts",
 		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
 		"GET /attention/log",
-		// A session page's asks block (attention_asker.go).
+		// A session page's asks badge (attention_asker.go).
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
@@ -302,11 +305,15 @@ var routeVias = map[authz.Via][]string{
 		"POST /officers/{officer}/resume",
 		"POST /officers/{officer}/mode",
 		"POST /officers/{officer}/run",
+		"POST /officers/{officer}/raise-cap",
 		"POST /officers/{officer}/delete",
 		"POST /officers/{officer}/schedules",
 		"POST /officers/{officer}/schedules/{name}/delete",
 		"POST /officers/{officer}/refusals/{item}/refile",
 		"POST /officers/{officer}/refusals/{item}/drop",
+		"POST /officers/{officer}/chat",
+		"POST /officers/{officer}/chat/cards/{card}/approve",
+		"POST /officers/{officer}/chat/cards/{card}/reject",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",
@@ -325,6 +332,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		// A session view's Preview button (plugin_chip.go).
 		"GET /ui/mirror/preview-button",
+		// Its panel's Pages tab.
+		"GET /ui/mirror/session-pages",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
 		// Suggested replies (suggest.go): the composer's set and its counts,
@@ -412,11 +421,17 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/{name}/chat-context",
 		"GET /ui/dispatch-card",
 		"GET /ui/agents/{name}/task",
+		// The agent page's Open button and its Pages tab.
+		"GET /ui/agents/{name}/open-button",
+		"GET /ui/agents/{name}/session-pages",
 		"GET /ui/chief/panel",
 		"GET /ui/chief/threads/search",
 		"GET /ui/chief/fleet",
 		"GET /ui/chief/fleet/session",
 		"POST /ui/chief/fleet/chat",
+		"POST /ui/chief/fleet/actions/{id}/{verb}",
+		"POST /ui/chief/fleet/bulk",
+		"GET /ui/chief/fleet/stepup",
 		"GET /ui/connector-requests",
 		"GET /ui/connectors",
 		"GET /ui/connectors/new",

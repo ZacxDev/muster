@@ -36,7 +36,7 @@ import (
 // (page_share.go). The one exception is the PAGE OWNER'S own switch, "Let my
 // agents share pages without asking" on Account (notify_preferences
 // .pages_agent_share — ON for every person until they turn it off, migration
-// 0160; always off for a team owner; pageAgentShareOn): for that owner's pages
+// 0163; always off for a team owner; pageAgentShareOn): for that owner's pages
 // page_share_request makes the
 // link live at once and the owner is TOLD (a push, the page's card) instead
 // of asked — still only for a page the caller made, under its owner's
@@ -227,7 +227,14 @@ func pageCreatorOf(c toolCaller) (pages.Creator, bool) {
 		// The session id is the one the mirror MCP request bound to
 		// (mirror_mcp.go: the pane's Claude Code session), recorded on a new
 		// page so its owner can open that session from it (pageSessionLink).
-		return pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}, true
+		// And the tmux window it runs in (its session view lists the window's
+		// pages by it, whatever Claude session made them): none for a caller
+		// with no window (a remote one).
+		cr := pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}
+		if c.mirrorWindow != "" && c.mirrorTmuxSession != "" {
+			cr.MirrorTmuxSession, cr.MirrorWindow = c.mirrorTmuxSession, c.mirrorWindow
+		}
+		return cr, true
 	}
 	return pages.Creator{}, false
 }

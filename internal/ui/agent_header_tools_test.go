@@ -90,8 +90,10 @@ func TestAgentHeaderToolsReserveTheirWidth(t *testing.T) {
 		focus string
 		want  []string // the controls' aria-labels, in order
 	}{
-		{"no focus history", "", []string{"New chat session", "Chat history"}},
-		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session", "Chat history", "What it worked on"}},
+		// New chat alone, focus history or not: Chat history and Focus
+		// history are ⋯ menu items (historyMenuItems).
+		{"no focus history", "", []string{"New chat session"}},
+		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := sampleAgentDetailView()
@@ -143,6 +145,9 @@ func TestAgentHeaderToolsReserveTheirWidth(t *testing.T) {
 			}
 			n := float64(len(labels))
 			want := "w-[" + strconv.FormatFloat(n*2.75+(n-1)*0.75, 'f', -1, 64) + "rem]"
+			if n == 1 {
+				want = "w-11" // one control: its own width, Tailwind's spelling
+			}
 			if !hasClass(attrOf(box, "class"), want) {
 				t.Errorf("the tools box's width class: %q, want %s", attrOf(box, "class"), want)
 			}

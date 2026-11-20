@@ -291,6 +291,10 @@ var agentHrefCallLedger = map[string]int{
 	// The fleet digest's Open session for an agent (fleet_read.go): its stop's
 	// conversation, or the bare page when it has none.
 	"AgentSessionHref ← internal/api/fleet_read.go:fleetSessionHref": 1,
+	// The morning report's Stuck lines (morning_report.go): a failed agent's
+	// bare page, and a stalled conversation's own.
+	"AgentSessionHref ← internal/api/morning_report.go:Server.morningStuck": 1,
+	"AgentSessionHref ← internal/api/morning_report.go:stuckHref":           1,
 	// Push-tap targets stay BARE on purpose (#237): a notification is resolved
 	// when TAPPED, and the bare URL picks the latest session at that moment.
 	// askingAgentHref passes session 0 for an agent's own ask (bare, as
@@ -317,6 +321,9 @@ var agentHrefCallLedger = map[string]int{
 	// render, and naming a session would cost it a sessions read per render
 	// for a link that is rarely followed.
 	"AgentPath ← internal/ui/mentions.go:MentionIndex.name": 1,
+	// A session card for an agent in the chief's reply (session_cards.go):
+	// the BARE page, as a mention's, for the same reason.
+	"AgentPath ← internal/api/session_cards.go:Server.sessionCards": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the
@@ -325,7 +332,6 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agent_send.go:agentSendBack":                         1,
 	"AgentSessionHref ← internal/api/agents.go:Server.answerSessionOpened":                1,
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
-	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
 	"AgentSessionHref ← internal/api/chief_chats.go:Server.answerSideChatOpened":          1,
 	// The views: the session drawer, the chief page's chip strip (its chips name

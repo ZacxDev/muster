@@ -38,6 +38,10 @@ import (
 // 🔴 NO ROUTE HERE RETURNS A SECRET. The connector type has no secret field; the
 // only read of one is connectors.Store.Credential, called by the proxy alone.
 
+// TeamConnectorsOff is what a team's Connectors page says on a server with no
+// connector store, in words.
+const TeamConnectorsOff = "Connected accounts aren't turned on for this server."
+
 // ConnectorsUnconfigured is why the connector routes refuse on a server with no
 // connector store.
 const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNECTOR_ENCRYPTION_KEY is not set"

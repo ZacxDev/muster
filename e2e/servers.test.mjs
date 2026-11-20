@@ -57,6 +57,112 @@ test('an address is https, or http on localhost / 127.0.0.1 only', () => {
   no('https://exa mple.com', 'invalid');
 });
 
+// Jargon audit F029: junk typed into Add server is 'invalid' — whatever
+// the engine's URL parser makes of it — and is never put on the list.
+test('an address that is not a server address is refused, and nothing is added', () => {
+  for (const input of ['not a server', 'not%20a%20server', 'https://not%20a%20server', 'https://exa!mple.com', 'https://-atlas.example.org', 'https://atlas..example.org', 'atlas example org']) {
+    deq(plain(core.parseServer(input)), { ok: false, error: 'invalid' }, input);
+    const r = core.add(core.normalize(null, SELF), input);
+    assert.equal(r.ok, false, input);
+    assert.equal(r.list, undefined, input);
+  }
+  // Still addresses: a name with a dot, localhost, an IP, a single label
+  // when the scheme is typed, an international name.
+  deq(plain(core.parseServer('atlas.example.org')), { ok: true, origin: 'https://atlas.example.org' });
+  deq(plain(core.parseServer('localhost:8105')), { ok: true, origin: 'https://localhost:8105' });
+  deq(plain(core.parseServer('https://192.0.2.10')), { ok: true, origin: 'https://192.0.2.10' });
+  deq(plain(core.parseServer('https://[2001:db8::1]:8443')), { ok: true, origin: 'https://[2001:db8::1]:8443' });
+  deq(plain(core.parseServer('https://atlas')), { ok: true, origin: 'https://atlas' });
+  deq(plain(core.parseServer('https://my_server.lan')), { ok: true, origin: 'https://my_server.lan' }, 'the URL standard allows "_"');
+  deq(plain(core.parseServer('acme:40001')), { ok: true, origin: 'https://acme:40001' }, 'a short name with a port');
+});
+
+// A short tailnet name typed alone is refused with a hint that adding
+// https:// works — the whole sentence pinned — and is accepted with it.
+test('one bare word is refused, saying that https:// in front of it works', () => {
+  for (const input of ['acme', 'atlas', 'notaserver']) {
+    deq(plain(core.parseServer(input)), { ok: false, error: 'bareword' }, input);
+    deq(plain(core.parseServer('https://' + input)), { ok: true, origin: 'https://' + input }, input);
+  }
+  assert.equal(core.ERRORS.bareword, "That doesn't look like a server address. If it is one, add https:// in front of it.");
+  assert.equal(core.ERRORS.invalid, "That doesn't look like a server address.");
+  deq(plain(core.parseServer('bücher.example')), { ok: true, origin: 'https://xn--bcher-kva.example' });
+});
+
+// The parser Chromium has (measured live, jargon audit F029): a space in a
+// host is percent-encoded instead of refused, so "not a server" parsed to
+// the origin https://not%20a%20server. servers.js is loaded here with a URL
+// that does what that one did, and must still refuse it — and must not let
+// a stored entry of that shape back onto the list.
+test('junk is refused even under a URL parser that percent-encodes a host', () => {
+  class EncodingURL extends URL {
+    constructor(s) {
+      try { super(s); } catch (e) {
+        const m = /^(https?:\/\/)([^/?#]*)(.*)$/i.exec(String(s));
+        if (!m) throw e;
+        super(m[1] + 'placeholder.test' + m[3]);
+        this._h = m[2].toLowerCase().replace(/ /g, '%20');
+      }
+    }
+    get hostname() { return this._h ?? super.hostname; }
+    get host() { return this._h ?? super.host; }
+    get origin() { return this._h ? this.protocol + '//' + this._h : super.origin; }
+  }
+  assert.equal(new EncodingURL('https://not a server').origin, 'https://not%20a%20server', 'the shim does what Chromium did');
+  const box = { URL: EncodingURL, JSON, Math, Array, String, Number };
+  box.globalThis = box;
+  vm.runInNewContext(src, box);
+  const c = box.musterServersCore;
+  deq(plain(c.parseServer('not a server')), { ok: false, error: 'invalid' });
+  assert.equal(c.add(c.normalize(null, SELF), 'not a server').ok, false);
+  deq(plain(c.normalize({ v: 1, servers: [{ origin: 'https://not%20a%20server', label: '' }] }, SELF)).map((s) => s.origin), [SELF]);
+});
+
+// Never a duplicate: the same server however it is typed — case, a default
+// port, a path, a trailing dot — is refused as 'duplicate', and so is a
+// second add of an offer.
+test('the same server, typed another way, is never added twice', () => {
+  const l = core.add(core.normalize(null, SELF), 'https://atlas.example.org').list;
+  for (const input of ['atlas.example.org', 'HTTPS://Atlas.Example.ORG/', 'https://atlas.example.org:443/tasks', 'atlas.example.org.', 'https://atlas.example.org./']) {
+    const r = core.add(l, input);
+    deq(plain({ ok: r.ok, error: r.error }), { ok: false, error: 'duplicate' }, input);
+  }
+  assert.equal(core.add(l, 'https://atlas.example.org:8443').ok, true, 'another port is another server');
+});
+
+// 🔴 A SAVED server is never lost to a typing rule newer than it (audit of
+// PR #854): an underscore host survives a load as it is, and so does a host
+// only the typing rules refuse ("!"); a trailing-dot entry is migrated to its
+// dot-less form; each keeps its label, and only junk is dropped.
+test('saved servers survive a load with their labels; a trailing dot is migrated, junk dropped', () => {
+  const stored = {
+    v: 1,
+    servers: [
+      { origin: 'https://my_server.lan', label: 'Home lab' },
+      { origin: 'https://atlas.example.', label: 'Atlas' },
+      { origin: 'https://atlas.example', label: 'second copy' },
+      { origin: 'https://exa!mple.example', label: 'Old typing rules' },
+      { origin: 'https://not%20a%20server', label: 'junk' },
+    ],
+  };
+  deq(core.normalize(stored, SELF), [
+    { origin: SELF, label: '' },
+    { origin: 'https://my_server.lan', label: 'Home lab' },
+    { origin: 'https://atlas.example', label: 'Atlas' },
+    { origin: 'https://exa!mple.example', label: 'Old typing rules' },
+  ]);
+});
+
+// A stale trailing-dot copy of THIS server never overwrites its own entry's
+// label, whichever order the two were saved in (audit round 2 of PR #854).
+test('this server keeps its own label over a trailing-dot copy of itself, in either order', () => {
+  const mine = { origin: SELF, label: 'Mine' };
+  const stale = { origin: SELF + '.', label: 'stale' };
+  for (const servers of [[mine, stale], [stale, mine]]) {
+    deq(core.normalize({ v: 1, servers }, SELF), [{ origin: SELF, label: 'Mine' }], JSON.stringify(servers));
+  }
+});
+
 test('an address with a user name or password in it is refused, not stripped', () => {
   for (const input of ['https://user:secret@b.example.net', 'https://user@b.example.net', 'user:secret@b.example.net', 'https://:secret@b.example.net']) {
     deq(plain(core.parseServer(input)), { ok: false, error: 'credentials' }, input);
@@ -146,16 +252,27 @@ test('load and save survive a missing or throwing storage', () => {
   assert.equal(core.save(bad, l), false);
 });
 
-test('labels: the person’s own, else (this server only) its own name, else the host', () => {
+test('labels: the person’s own, else (this server only) its own name, else the host name — never host:port', () => {
   let l = core.add(core.normalize(null, 'http://localhost:8105'), 'https://b.example.net:8443').list;
-  assert.equal(core.display(l[0], ''), 'localhost:8105');
-  assert.equal(core.display(l[1], ''), 'b.example.net:8443');
-  assert.equal(core.display(l[0], 'Team A'), 'Team A', 'this server’s own name, which its page already has');
+  assert.equal(core.display(l[0], '', l), 'localhost');
+  assert.equal(core.display(l[1], '', l), 'b.example.net');
+  assert.equal(core.display(l[0], 'Team A', l), 'Team A', 'this server’s own name, which its page already has');
   l = core.rename(l, l[1].origin, '  Work  ');
-  assert.equal(core.display(l[1], ''), 'Work');
+  assert.equal(core.display(l[1], '', l), 'Work');
   l = core.rename(l, l[1].origin, '');
-  assert.equal(core.display(l[1], ''), 'b.example.net:8443', 'an empty label clears it');
+  assert.equal(core.display(l[1], '', l), 'b.example.net', 'an empty label clears it');
   assert.equal(core.hostLabel('https://b.example.net:443'), 'b.example.net');
+});
+
+// Jargon audit F028: an unnamed server is drawn by its host name with no
+// scheme and no port, wherever it sits on the list; the port comes back
+// only to tell apart two servers on one host name. Pinned as whole labels.
+test('an unnamed server shows no port, unless another on the list shares its host name', () => {
+  const l = core.add(core.add(core.normalize(null, SELF), 'https://atlas.example.org:8443').list, 'https://acme.example.net').list;
+  deq(l.map((s) => core.display(s, '', l)), ['a.example.com', 'atlas.example.org', 'acme.example.net']);
+  const twins = core.add(l, 'https://atlas.example.org:9443').list;
+  deq(twins.map((s) => core.display(s, '', twins)), ['a.example.com', 'atlas.example.org:8443', 'acme.example.net', 'atlas.example.org:9443']);
+  assert.equal(core.display(l[1], '', [l[1]]), 'atlas.example.org', 'itself is not a twin');
 });
 
 test('a label or name is cleaned: control and direction characters go, at most 64', () => {
@@ -248,4 +365,47 @@ test('a hand-off kept through a sign-in is read only while fresh, and only in it
   // What it yields goes through the same check as a fragment.
   assert.equal(core.handoff(core.kept(`${NOW}|${h}`, NOW), B), SELF);
   assert.equal(core.HANDOFF_KEY, 'muster-from');
+});
+
+// ---- the picture and the list's names ---------------------------------------
+
+test('a monogram: the letters and the colour of the one table Go is held to as well', () => {
+  const table = JSON.parse(fs.readFileSync(path.join(here, '..', 'internal', 'ui', 'testdata', 'server-monograms.json'), 'utf8'));
+  assert.ok(table.cases.length >= 10, 'the table loaded');
+  const colours = new Set();
+  for (const c of table.cases) {
+    assert.equal(core.monogram(c.name), c.letters, `letters of ${JSON.stringify(c.name)}`);
+    assert.equal(core.monogramColour(c.name), c.colour, `colour of ${JSON.stringify(c.name)}`);
+    colours.add(c.colour);
+  }
+  assert.ok(colours.size >= 5, 'the cases cover several colours');
+  assert.equal(core.monogram(null), '?');
+});
+
+test('a monogram, code point by code point: the generated table Go is held to as well', () => {
+  const table = JSON.parse(fs.readFileSync(path.join(here, '..', 'internal', 'ui', 'testdata', 'server-monogram-letters.json'), 'utf8'));
+  assert.equal(table.letters.length, 0x500);
+  let changed = 0;
+  const bad = [];
+  table.letters.forEach((want, cp) => {
+    const got = core.monogram(String.fromCodePoint(cp));
+    if (got !== want) bad.push(`U+${cp.toString(16)}: ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+    if (want !== '?' && want !== String.fromCodePoint(cp)) changed++;
+  });
+  deq(bad.slice(0, 20), []);
+  assert.ok(changed >= 200, 'the table does upper-case');
+  // Past those blocks, letters this engine knows and Go's tables do not, and
+  // an iota-subscript letter, are kept as they are (Go keeps them too).
+  for (const s of ['ᲊ', 'ᾳ', '\u{10d70}']) assert.equal(core.monogram(s), s);
+});
+
+test('names that collide (case aside) are the ones the list tells apart by address', () => {
+  deq(core.collisions(['Work', 'Home', 'work', 'Lab']), { work: true });
+  deq(core.collisions(['Work', 'Home', 'Lab']), {});
+  deq(core.collisions(['This server', 'This server', 'This server']), { 'this server': true });
+  deq(core.collisions([]), {});
+});
+
+test('the row button is named for the server in view', () => {
+  assert.equal(core.TOGGLE_LABEL + 'Example Studio', 'Switch server, current: Example Studio');
 });

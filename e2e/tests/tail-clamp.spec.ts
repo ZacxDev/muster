@@ -55,10 +55,13 @@ test.beforeAll(async () => {
     { role: 'user', content: 'Check the fixture loader.' },
     { role: 'assistant', content: lines(N, 'shortreply') },
   ]);
-  // The chief: a long USER message, then a long reply last.
+  // The chief: a long USER message, a long reply, then a long NEWEST reply —
+  // which the chief's chat never folds (operator decision, #871).
   mkchat(CHIEF, [
     { role: 'user', content: lines(30, 'chiefask') },
     { role: 'assistant', content: lines(N, 'chiefreply') },
+    { role: 'user', content: 'And the rest?' },
+    { role: 'assistant', content: lines(N, 'chiefnewest') },
   ], { MUSTER_E2E_DISPLAY_NAME: 'chief' });
   // The layout-shift case: a long transcript of long replies.
   const msgs: object[] = [];
@@ -248,7 +251,7 @@ async function openChiefPanel(page: Page) {
     b.click();
   });
   await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
-  await expect(page.locator('#chief-panel #chat-log [data-bubble="assistant"]')).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator('#chief-panel #chat-log [data-bubble="assistant"]')).toHaveCount(2, { timeout: 15_000 });
 }
 
 // refreshChatLog swaps #chat-log in full, as a task:changed refresh does with
@@ -391,12 +394,23 @@ for (const vp of viewports) {
       await expect(log.locator(`[data-msg-id="${id}"]`)).toHaveAttribute('data-clamp', 'closed');
     });
 
-    test('chief panel: a long chief reply shows its end, opens upward in place and closes; a long owner message shows its start', async ({ page }) => {
+    test('chief panel: an older long chief reply shows its end, opens upward in place and closes; the newest is whole; a long owner message shows its start', async ({ page }) => {
       await openChiefPanel(page);
       const log = page.locator('#chief-panel #chat-log');
-      await expect(log).toContainText(last('chiefreply', N));
-      await headCase(log.locator('[data-bubble="user"]').last(), 'chiefask', 30);
-      await tailCase(vp.touch, log.locator('[data-bubble="assistant"]').last(), 'chiefreply');
+      await expect(log).toContainText(last('chiefnewest', N));
+      await headCase(log.locator('[data-bubble="user"]').first(), 'chiefask', 30);
+      // The NEWEST reply is never folded: no clamp, no control, drawn at its
+      // full height — its first line and its last are both in it.
+      const newest = log.locator('[data-bubble="assistant"]').last();
+      await expect(newest).toHaveAttribute('data-clamp-never', '');
+      await expect(newest).not.toHaveAttribute('data-clamp', /.*/);
+      expect(await newest.evaluate((e) => e.previousElementSibling?.hasAttribute('data-clamp-toggle') ?? false), 'no Show more above it').toBe(false);
+      const [h, sh] = await newest.evaluate((e) => [e.clientHeight, e.scrollHeight]);
+      expect(Math.abs(h - sh), 'drawn at its full height').toBeLessThanOrEqual(1);
+      await newest.evaluate((b) => b.scrollIntoView({ block: 'start' }));
+      expect(await line(newest, first('chiefnewest')), 'its first line is on screen').toMatchObject({ shown: true });
+      // The older one still folds, from its tail.
+      await tailCase(vp.touch, log.locator('[data-bubble="assistant"]').first(), 'chiefreply');
     });
 
     // A long transcript of tail-clamped replies opens at its end with nothing

@@ -41,6 +41,10 @@ type Store interface {
 	Page(ctx context.Context, id int64) (Page, error)
 	// Pages is the caller's pages, newest activity first.
 	Pages(ctx context.Context) ([]Summary, error)
+	// SessionPages is the caller's pages that session s CREATED, newest
+	// first (by when each was made). Nothing, and no query, for an s that
+	// names no session (SessionRef.Valid).
+	SessionPages(ctx context.Context, s SessionRef) ([]Summary, error)
 	// Versions is page id's versions, newest first, without their blocks.
 	Versions(ctx context.Context, id int64) ([]Version, error)
 	// Version is version v of page id; v 0 is the current one.
@@ -152,11 +156,11 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), coalesce(p.mirror_tmux_session, ''), coalesce(p.mirror_window, ''), p.creator_label, p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
-	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
+	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.MirrorTmuxSession, &p.Creator.MirrorWindow, &p.Creator.Label,
 		&p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -225,8 +229,13 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorSession != "" {
 			sess = truncate(c.MirrorSession, 200)
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label) VALUES ($1, $2, $3, $4, $5)
-			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200))
+		// And the tmux window it was made in (0162: both, or neither).
+		var tmuxSess, win any
+		if c.AgentID <= 0 && c.MirrorTmuxSession != "" && c.MirrorWindow != "" {
+			tmuxSess, win = truncate(c.MirrorTmuxSession, 200), truncate(c.MirrorWindow, 200)
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, mirror_tmux_session, mirror_window, creator_label)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+pageCols, title, agent, c.MirrorHost, sess, tmuxSess, win, truncate(c.Label, 200))
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err
@@ -289,7 +298,13 @@ const summaryCols = pageCols + `,
 	(SELECT count(*) FROM page_responses r WHERE r.page_id = p.id)`
 
 func (s *PGStore) summaries(ctx context.Context, where string, args ...any) ([]Summary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY p.updated_at DESC, p.id DESC LIMIT 500`, args...)
+	return s.summariesOrdered(ctx, where, `p.updated_at DESC, p.id DESC`, args...)
+}
+
+// summariesOrdered is summaries in order (a constant ORDER BY list, never a
+// caller's words).
+func (s *PGStore) summariesOrdered(ctx context.Context, where, order string, args ...any) ([]Summary, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY `+order+` LIMIT 500`, args...)
 	if err != nil {
 		return nil, wrap("list", err)
 	}
@@ -315,6 +330,26 @@ func (s *PGStore) PagesFor(ctx context.Context, c Creator) ([]Summary, error) {
 
 // Pages lists the caller's pages.
 func (s *PGStore) Pages(ctx context.Context) ([]Summary, error) { return s.summaries(ctx, "") }
+
+// SessionPages lists the pages session x made, newest made first. Row-level
+// security scopes it to the caller's own rows, whatever x names.
+func (s *PGStore) SessionPages(ctx context.Context, x SessionRef) ([]Summary, error) {
+	if !x.Valid() {
+		return nil, nil
+	}
+	var where string
+	var args []any
+	if x.AgentID > 0 {
+		where, args = ` AND p.agent_id = $1`, []any{x.AgentID}
+	} else {
+		// Made IN the window (its tmux session and window id), or by a
+		// session it runs now — always on the same host.
+		where, args = ` AND p.agent_id IS NULL AND p.mirror_host = $1 AND (
+			(p.mirror_tmux_session = $2 AND p.mirror_window = $3) OR p.mirror_session = ANY($4))`,
+			[]any{x.MirrorHost, x.MirrorTmuxSession, x.MirrorWindow, x.MirrorSessions}
+	}
+	return s.summariesOrdered(ctx, where, `p.created_at DESC, p.id DESC`, args...)
+}
 
 // Versions lists a page's versions without their blocks.
 func (s *PGStore) Versions(ctx context.Context, id int64) ([]Version, error) {

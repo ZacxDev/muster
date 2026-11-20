@@ -161,7 +161,7 @@ func TestAnOwnerWhoDidNotOptInIsStillAsked(t *testing.T) {
 }
 
 // TestOnlyTheOwnerFlipsTheirOwnOptIn: a member's POST sets their own switch
-// and nobody else's; it is ON for everyone until then (migration 0160), and
+// and nobody else's; it is ON for everyone until then (migration 0163), and
 // the Account page draws it on for a member who never chose; the route takes
 // no agent's, anonymous or cross-origin request; and the store refuses a read
 // of another user's row.
@@ -282,7 +282,7 @@ func TestTheToolsReadRightInBothStates(t *testing.T) {
 
 // TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce: an owner with NO
 // notify_preferences row at all — they never touched any switch — gets the
-// default, on (migration 0160): their agent's page_share_request through the
+// default, on (migration 0163): their agent's page_share_request through the
 // real tool path makes the link live, files no attention ask, and a stranger
 // opens it.
 func TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce(t *testing.T) {
@@ -403,10 +403,10 @@ func TestTheOwnersShareButtonGivesOneReusableLink(t *testing.T) {
 	if w := f.get(t, pages.LinkPath(tok), nil); w.Code != http.StatusOK {
 		t.Fatalf("the shared link does not serve: %d", w.Code)
 	}
-	// The page's screen holds its link in the ⓘ beside Share / Copy link —
-	// never drawn in its top layer.
-	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `data-info-code="">`+first["url"].(string)+`</code>`) ||
-		strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") || !strings.Contains(d, "data-page-copy") {
+	// The page's screen copies its link from its row under Links — never
+	// drawn in its top layer, and no longer in an ⓘ or a Copy link.
+	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `data-copy-text="`+first["url"].(string)+`" data-link-copy`) ||
+		strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") || strings.Contains(d, "data-page-copy") {
 		t.Fatalf("the page's screen does not show its link: %s", d)
 	}
 	if l := f.get(t, "/pages", f.ownerHdr()).Body.String(); !strings.Contains(l, `data-share-url="`+first["url"].(string)+`"`) {

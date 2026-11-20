@@ -326,14 +326,42 @@ func MirrorBadgeText(host string) string { return "On " + host }
 // host is what tells two same-named windows apart — so it is tinted, bold, and
 // leads with the HOST'S icon (host_icons.go: the one its sidebar row draws), hostIcon
 // being its key and host what it names.
+//
+// It is one 16px text line (no vertical padding) whose words truncate on
+// their own (min-w-0 truncate): it is the header's second line
+// (mirrorHostLine), and a long computer name ends in "…" there without
+// costing the title any of its width.
 func mirrorBadge(text, host, hostIcon string) g.Node {
 	d := hostIconDefOf(hostIcon, host)
 	return Span(
 		g.Attr("data-host-icon", d.Key),
-		Class("inline-flex items-center gap-1 rounded-full bg-st-progress-bg px-2.5 py-1 text-xs font-semibold text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40"),
-		g.Raw(hostIconSVG(d, "h-3.5 w-3.5")),
-		g.Text(text),
+		Class("inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-st-progress-bg px-2 text-xs leading-4 font-semibold text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40"),
+		g.Raw(hostIconSVG(d, "h-3.5 w-3.5 shrink-0")),
+		Span(Class("min-w-0 truncate"), g.Text(text)),
 	)
+}
+
+// titleNamesHost reports whether a mirrored session's header title already
+// ends "· <host>": its qualifier is drawn (qualified: the title is not a
+// human name, which carries none) and IS the host's name — two computers'
+// windows share a label, so each is told apart by its computer
+// ("mango · atlas"). Its "On <host>" line would say the same again.
+func titleNamesHost(qualified bool, qualifier, host string) bool {
+	return qualified && host != "" && qualifier == host
+}
+
+// mirrorHostLine is a mirrored session's header's "On <computer>" line
+// (mirrorBadge), drawn on its OWN line under the title on both its pages (the
+// rendered view's and the terminal's). It shared the title's one truncating
+// line until the 390×844 phone check of v0.250.0 (F3): the title's words came
+// first, so at 390px the badge was always cut off — even "Disk check" read
+// "Disk check…" with no computer at all. On its own line each truncates
+// independently: the title keeps the header's width, the computer's name
+// keeps it too.
+//
+// Not drawn where the title already names the computer (titleNamesHost).
+func mirrorHostLine(text, host, hostIcon string) g.Node {
+	return Span(g.Attr("data-term-badge", ""), Class("flex min-w-0"), mirrorBadge(text, host, hostIcon))
 }
 
 // podHost is a dispatched agent's host: the literal "cluster" — muster has no

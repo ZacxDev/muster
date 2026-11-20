@@ -188,6 +188,10 @@ var (
 		// global hourly cap and reads the live decisions still in flight; each
 		// decision is then acted on as its own owner (attentionPrincipal).
 		"internal/chiefnudge.sys",
+		// The morning report (migration 0161): which owners get one — enabled
+		// persons' ids only (morning.PG.Owners); each report is then built and
+		// stored as its own owner (attentionPrincipal).
+		"internal/morning.(*PG).Owners",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -372,10 +376,20 @@ var (
 		// security confines it to that user's rows. A fixture command, never
 		// linked into a binary, and it refuses any database not ending in _e2e.
 		"e2e/askfix.run",
+		// The morning report's browser fixture (e2e/morningfix): the same, for
+		// one owner's report of a fixed day and one ask. A fixture command,
+		// never linked into a binary, and it refuses any database not ending in
+		// _e2e.
+		"e2e/morningfix.run",
 		// The Asks card feed's browser fixture (e2e/asksfeedfix): the same, for
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
 		"e2e/asksfeedfix.run",
+		// The Pages screens' browser fixture (e2e/pagesfix): it writes and
+		// clears pages, versions, links and responses through the real store
+		// AS the named fixture user. A fixture command, never linked into a
+		// binary, and it refuses any database not ending in _e2e.
+		"e2e/pagesfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions
@@ -447,6 +461,18 @@ var (
 		// — at the door it was asked through, authz.ViaMirrorHost. Never a
 		// new user id.
 		"internal/api.(*Server).stepUpPrincipal",
+		// A builtin officer's operator chat (officer_own_state.go): the
+		// confirm card an officer tool PROPOSES (a draft, a batch, a Re-file
+		// or Drop) is written as the PERSON whose chat it is, so it lands in
+		// that person's own officer_chat_cards rows (personal row-level
+		// security) and nowhere else. It writes nothing else — the decision
+		// is that person's own signed-in click. The user id is the one muster
+		// minted into the chat's lane key for the person who opened the chat
+		// (officers.OperatorChatID, the call proved by the lane's secret and
+		// the key bound to the calling officer), and it is used only after a
+		// FRESH read says they are the officer's owner or a manager of its
+		// team. Never a team (refused), never an id the caller typed.
+		"internal/api.(*Server).chatPersonPrincipal",
 		// A pairing's hand-out (internal/plugins pairing.go): the token is
 		// minted acting AS the request's owner, whose id the request row
 		// names (read under System above) — the owner who approved it. Never

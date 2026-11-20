@@ -1678,7 +1678,7 @@ on a machine can set it, a spawned agent included. So muster does not take
 the owner-authority tools (`attention_answer`, `connector_request_decide`,
 `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`,
 `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
-`agent_destroy`, `chief_restart`) from such a machine as your decision. On a
+`agent_destroy`) from such a machine as your decision. On a
 machine that **starts agents for the chief**, each of them is a **confirmation
 card on your paired phone**, whichever of your sessions the call names, and
 nothing runs until you answer Confirm there (a signed action; a browser answer
@@ -1708,8 +1708,9 @@ agent can read the new token too.
 
 None of these triggers is anything a window can set, so an agent that names
 your pane, clears its own window's tag, or calls muster with this host's token
-directly — from that machine or from anywhere — is gated, with ONE exception,
-below: the reply to a routed message.
+directly — from that machine or from anywhere — is gated, with two
+exceptions: the reply to a routed message (below), and `chief_restart`, which
+is never gated ([its own section](#chief_restart-is-not-gated)).
 
 - **Replies to routed messages are not carded — while no spawned agent runs
   there.** `route_reply` runs at once when it comes from the very session the
@@ -1744,6 +1745,25 @@ started for the chief outright ("a session muster started for the chief
 cannot use it"), read from muster's own record of the host's dispatches (the
 session and window the host's spawn reply named), not from the window's tag.
 No card is filed for such a call.
+
+### `chief_restart` is not gated
+
+`chief_restart` restarts your chief **at once, on every machine**: one that
+starts agents for the chief, one that runs a host officer, and a remote caller
+alike, with `force` or without. It files no confirmation card. This is an
+operator decision, so that a session can restart the chief after a release
+without your phone; the browser's Stop and Start on the chief's agent page are
+likewise not step-up gated.
+
+🔴 **The accepted risk.** On such a machine any process of your user, an agent
+muster started there included (by naming your pane), can restart your chief,
+and with `force` cut off a turn the chief is in. The worst outcome is an
+interrupted chief turn: no data is lost, no other agent is touched (the tool
+restarts only your own chief and takes no agent), and it is what the web Stop
+and Start already allow. Everything else about the tool is unchanged: it is
+refused mid-turn without `force`, refused outright to a session muster recorded
+as one it started for the chief, and it waits for the new pod
+([chief.md](chief.md#restarting-the-chief)).
 
 ### Starting agents on a tenant's tmux server
 
@@ -1915,17 +1935,61 @@ naming the instance that gave it: `[muster instance: <name>]`.
 
 ### The tool list stays current
 
-Claude Code caches a server's tool list when it connects, so after a muster
-upgrade a session kept a stale schema. The mirror now re-reads every
-instance's list every `-mcp-tools-refresh` (default `1m`; `0` turns it off).
-When what `/mcp` would serve changes, it sends
-`notifications/tools/list_changed` on every open `GET /mcp` stream. It also
-advertises `capabilities.tools.listChanged` in its `initialize` answer. Claude
+Claude Code caches a server's tool list when it connects. Before this, a
+long-running session kept the list from its first connect: one connected for
+two weeks never saw `page_create`, `notify_owner`, `dispatch_*` or `track_task`
+until `/mcp` → Reconnect, although the mirror had been upgraded and restarted
+meanwhile. The mirror now keeps every connected session's list current in
+three ways. All of them apply to a Claude Code caller of this host's tmux
+server while the watch is on (`-mcp-tools-refresh`, default `1m`; `0` turns all
+of this off).
+
+**Each connection is an MCP session.** The `initialize` answer carries an
+`Mcp-Session-Id`, and every later request on `/mcp` (POST, and the `GET`
+stream) must send it back. The mirror remembers what each session last listed:
+a hash of each whole tool object as served (name, description and schema),
+so a reworded description counts as a change too.
+
+**A session holding an old list is told, once.** The mirror re-reads every
+instance's list on each tick, and at once each time its tunnel to muster
+connects again (which is when an upgraded muster arrives). It also learns the
+current list whenever any session lists it. When what `/mcp` serves differs
+from what a session last listed, that session is sent
+`notifications/tools/list_changed`:
+
+- on its open `GET /mcp` stream, at once, or as soon as the stream opens if it
+  was down when the list changed;
+- with no stream, ahead of the answer to its next request. That answer comes as
+  an event stream: the notification first, then the response. A long call's
+  keep-alive becomes an SSE comment.
+
+The `initialize` answer advertises `capabilities.tools.listChanged`. Claude
 Code 2.1.289's client registers its list-changed handler only when a server's
-`initialize` sets that capability, which is why the mirror sets it. The handler
-then re-reads `tools/list`, and Claude Code also re-reads it when the stream
-reopens, for example after the mirror restarts. This works with the primary
-alone too.
+`initialize` sets that capability, and the handler re-reads `tools/list`. This
+works with the primary alone too.
+
+**A session the mirror does not know initializes again.** After the mirror
+restarts it has no record of the sessions its previous process issued. A
+request naming such an id is answered `404 Session not found` (JSON-RPC
+`-32001`), and the call is not run. Claude Code 2.1.289 (its bundled client's
+`isMcpSessionExpiredError`) treats that as an expired session on a tool call:
+it drops the connection, initializes again (reading the current capabilities
+and tool list), and retries the call once. On a `GET` stream it does not
+re-initialize, so recovery happens on the session's next tool call. The table
+holds 512 sessions; past that the least recently seen is forgotten (an open
+`GET` stream counts as activity) and re-initializes the same way.
+
+A request with **no id at all** comes from a session that connected before the
+mirror issued ids. It is refused with `400 Bad Request: Mcp-Session-Id header
+is required` **only** when its `User-Agent` is `claude-code/<version>` at
+2.1.289 or later. That is the first version known to take those words as an
+expired session and re-initialize; 2.1.289's bundle was read, and no earlier
+one was available to measure. Every other caller with no id, such as an
+older or unidentified Claude Code or a script (Node's `fetch` sends
+`User-Agent: node`), is served exactly as before: forwarded, with no list
+tracking, and its `GET` stream is told of every change. The log counts such
+requests. Refusing a client that does not recover would fail every one of its
+calls until someone reconnects it by hand.
 
 The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
 server, at most 64 at once. Everyone else gets the transport's 405: an outsider,
@@ -1961,9 +2025,11 @@ the admin tools above. The call is also refused:
 - when its session is not a Claude session id.
 
 **An owner-authority tool always needs the owner's phone.** These are
-`attention_answer`, `agent_destroy`, `chief_restart`, `connector_request_decide`,
+`attention_answer`, `agent_destroy`, `connector_request_decide`,
 `plugin_draft_decide`, `plugin_request_decide` and `dispatch_approve` (the
-step-up ledger, `hostStepUpTools`). That instance cannot see whether the
+step-up ledger, `hostStepUpTools`). `chief_restart` is not one of them: a
+remote caller's restart runs at once, as a local one's does
+([below](#chief_restart-is-not-gated)). That instance cannot see whether the
 caller's machine runs a host officer, because officers are declared on the
 muster the host is mirrored to. So every such call from a remote caller files a
 step-up confirmation card and runs nothing until the owner confirms it from

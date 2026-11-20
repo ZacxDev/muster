@@ -517,10 +517,10 @@ const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
 // read for the bar — so the page costs no extra read on load. It then refreshes
 // on the events and on each open of the drawer (navWaitingEventsTrigger), and —
 // with poll — once a minute: poll is for a page where nothing else would
-// refresh it (no /events stream, no asks block: a Terminal view, a Rendered
-// view whose window has no asks source). A Rendered view WITH its asks block
-// is refreshed by that block's asks:changed, which fires on every queue change
-// and on the block's own minute's tick, so it reads /ui/nav/waiting about once
+// refresh it (no /events stream, no asks badge: a Terminal view, a Rendered
+// view whose window has no asks source). A Rendered view WITH its asks badge
+// is refreshed by that badge's asks:changed (AskerAsksLive), which fires on
+// every queue change and on the badge's own minute's tick, so it reads /ui/nav/waiting about once
 // a minute anyway. Without a switcher, the badge loads its count and polls
 // (navWaitingTrigger).
 func navWaitingSlot(s *Switcher, poll bool) g.Node {
@@ -699,11 +699,17 @@ func navPreviewOf(e listEntry) g.Node {
 // the window's Preview button is there to open — so internal/api's
 // handleNavAgents (gatePreviewMarks) zeroes the counts unless the owner has a live viewer plugin,
 // the button's own gate.
+//
+// 🔴 IT COUNTS PREVIEWS ONLY, NOT THE SESSION'S PAGES (the Open button counts
+// both): the sidebar's refresh reads the hosts' in-memory counts for every
+// row, and a page count would be a pages query per refresh for every window
+// — for a mark that says "something is running to look at", which a page made
+// an hour ago is not.
 func navPreview(p mirror.WindowPreviews) g.Node {
 	if p.IsZero() {
 		return nil
 	}
-	label := "Preview: " + previewWords(p)
+	label := "Preview: " + openWords(OpenCounts{Previews: p})
 	return Span(
 		g.Attr("data-nav-preview", strconv.Itoa(p.Total())),
 		g.Attr("role", "img"),

@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// pagesAgentShareDefaultOnVersion is 0160_pages_agent_share_default_on's
+// pagesAgentShareDefaultOnVersion is 0163_pages_agent_share_default_on's
 // number: renumber the file and this together.
-const pagesAgentShareDefaultOnVersion = 160
+const pagesAgentShareDefaultOnVersion = 163
 
 // predecessorOf is the newest on-disk migration below v: v-1 once the tree is
 // contiguous, and the right "just before" while an earlier number is still
@@ -32,17 +32,17 @@ func predecessorOf(t *testing.T, v int) int {
 	return prev
 }
 
-// TestMigration0160PagesAgentShareDefaultsOnAndKeepsStoredChoices: a database
-// just before 0160 holds two rows — user 2 wrote "Let my agents share pages
-// without asking" OFF, user 3 wrote it ON. After 0160 both read exactly as
+// TestMigration0163PagesAgentShareDefaultsOnAndKeepsStoredChoices: a database
+// just before 0163 holds two rows — user 2 wrote "Let my agents share pages
+// without asking" OFF, user 3 wrote it ON. After 0163 both read exactly as
 // stored (nothing is backfilled), while a row written with no value for it
 // (user 4, as another switch writes one) reads ON. Then the header's ROLLBACK
 // block, run as written, puts the default back: a row written with no value
 // after it (user 5) reads off, and every earlier row is untouched.
-func TestMigration0160PagesAgentShareDefaultsOnAndKeepsStoredChoices(t *testing.T) {
+func TestMigration0163PagesAgentShareDefaultsOnAndKeepsStoredChoices(t *testing.T) {
 	v := pagesAgentShareDefaultOnVersion
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0160_pages_share_on", predecessorOf(t, v))
+	pool := freshAt(ctx, t, "ms_0163_pages_share_on", predecessorOf(t, v))
 	mustExec(ctx, t, pool, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member'), (3, 'member'), (4, 'member'), (5, 'member') ON CONFLICT (id) DO NOTHING`)
 	mustExec(ctx, t, pool, `INSERT INTO notify_preferences (owner_id, pages_agent_share) VALUES (2, false), (3, true)`)
 	read := func(owner int) bool {
@@ -53,20 +53,20 @@ func TestMigration0160PagesAgentShareDefaultsOnAndKeepsStoredChoices(t *testing.
 		}
 		return on
 	}
-	// Control: before 0160 a row written with no value reads off.
+	// Control: before 0163 a row written with no value reads off.
 	mustExec(ctx, t, pool, `INSERT INTO notify_preferences (owner_id, tmux_address) VALUES (5, true)`)
 	if read(5) {
-		t.Fatal("control: before 0160 a row written with no value reads on")
+		t.Fatal("control: before 0163 a row written with no value reads on")
 	}
 	mustExec(ctx, t, pool, `DELETE FROM notify_preferences WHERE owner_id = 5`)
 
 	applyThroughFrom(ctx, t, pool, v)
 	if read(2) || !read(3) {
-		t.Fatalf("after 0160 the stored choices read user 2 %v, user 3 %v; want false and true (nothing backfilled)", read(2), read(3))
+		t.Fatalf("after 0163 the stored choices read user 2 %v, user 3 %v; want false and true (nothing backfilled)", read(2), read(3))
 	}
 	mustExec(ctx, t, pool, `INSERT INTO notify_preferences (owner_id, tmux_address) VALUES (4, true)`)
 	if !read(4) {
-		t.Fatal("after 0160 a row written by another switch reads the pages switch off, want on")
+		t.Fatal("after 0163 a row written by another switch reads the pages switch off, want on")
 	}
 
 	rb := asksRollbackSQL(t, fmt.Sprintf("%04d_pages_agent_share_default_on.sql", v))

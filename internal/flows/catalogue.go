@@ -57,8 +57,16 @@ type Param struct {
 	// Pattern must match the WHOLE value. Nil means "free text": any printable
 	// characters, newlines and tabs, no other control characters.
 	Pattern *regexp.Regexp
-	// Help is the one-line description the /flows form and the CLI show.
+	// Help is the parameter's exact technical description. The /flows page
+	// shows it only inside its ⓘ details sheet, never in the form itself.
 	Help string
+	// Label is the parameter's PLAIN name, the one the /flows form shows
+	// ("Message"). Help keeps the technical detail for the ⓘ sheet.
+	Label string
+	// Advanced puts the parameter in the form's folded "Advanced" section:
+	// it addresses Muse's internals (a side chat, a thread, a dispatch) that
+	// a person running a task by hand rarely needs.
+	Advanced bool
 	// ID marks a CLOSED identifier (a task id: digits only, by its Pattern). It
 	// is the one kind of parameter that is not prose somebody composed, so it
 	// is the one kind the agent-text screen (requests.go) skips. Every other
@@ -78,6 +86,9 @@ type Flow struct {
 	Params []Param
 	// Help is the one-line description of what the flow does.
 	Help string
+	// PlainName is what the /flows form calls the flow ("Send a message to
+	// Muse"). Name stays the machine name the API, the CLI and the runner use.
+	PlainName string
 }
 
 // Param returns the named parameter's spec.
@@ -114,18 +125,23 @@ var (
 const MaxWaitSeconds = 3600
 
 var (
-	paramTask   = Param{Name: "task", MaxLen: 18, Pattern: taskRE, ID: true, Help: "muster task id the flow posts its result on"}
-	paramThread = Param{Name: "thread", MaxLen: 120, Pattern: threadRE, Help: "Muse side-chat title (default: the main chat)"}
+	paramTask = Param{Name: "task", MaxLen: 18, Pattern: taskRE, ID: true, Help: "muster task id the flow posts its result on",
+		Label: "Post the result on"}
+	paramThread = Param{Name: "thread", MaxLen: 120, Pattern: threadRE, Help: "Muse side-chat title (default: the main chat)",
+		Label: "Side chat", Advanced: true}
 	// session, marker and wait (muse dispatch) are NOT ID: they stay inside the
 	// agent-text screen. The dispatch client enqueues with a personal token, so
 	// no consumer files them as an agent request, and the screen's long-token
 	// rule refusing an agent-composed uuid is the closed default for that door.
 	paramSession = Param{Name: "session", MaxLen: 36, Pattern: sessionRE,
-		Help: "Muse thread id (uuid) — opens that thread directly; exclusive with thread"}
+		Help:  "Muse thread id (uuid) — opens that thread directly; exclusive with thread",
+		Label: "Open a specific chat", Advanced: true}
 	paramMarker = Param{Name: "marker", MaxLen: 9, Pattern: markerRE,
-		Help: "dispatch id; the send completes only when the reply's last line is DONE <marker>"}
+		Help:  "dispatch id; the send completes only when the reply's last line is DONE <marker>",
+		Label: "Completion code", Advanced: true}
 	paramWait = Param{Name: "wait", MaxLen: 4, Pattern: waitRE, Max: MaxWaitSeconds,
-		Help: "seconds to await the reply (1..3600; the runner's job timeout is wait+240s)"}
+		Help:  "seconds to await the reply (1..3600; the runner's job timeout is wait+240s)",
+		Label: "How long to wait for a reply (seconds)", Advanced: true}
 )
 
 // catalogue is the closed set of flows muster will queue. The runner on the
@@ -138,17 +154,19 @@ var (
 // credential, which today is Muse alone.
 var catalogue = []Flow{
 	{
-		Name:   "muse.poll",
-		Class:  ClassRead,
-		Help:   "re-read the latest Muse reply (main chat, or a side chat)",
-		Params: []Param{paramThread, paramTask},
+		Name:      "muse.poll",
+		Class:     ClassRead,
+		Help:      "re-read the latest Muse reply (main chat, or a side chat)",
+		PlainName: "Read Muse's latest reply",
+		Params:    []Param{paramThread, paramTask},
 	},
 	{
-		Name:  "muse.send",
-		Class: ClassWrite,
-		Help:  "send a message to Muse and wait for its reply",
+		Name:      "muse.send",
+		Class:     ClassWrite,
+		Help:      "send a message to Muse and wait for its reply",
+		PlainName: "Send a message to Muse",
 		Params: []Param{
-			{Name: "text", Required: true, MaxLen: 4000, Help: "the message (sent to Meta's Muse)"},
+			{Name: "text", Required: true, MaxLen: 4000, Help: "the message (sent to Meta's Muse)", Label: "Message"},
 			paramThread, paramSession, paramMarker, paramWait, paramTask,
 		},
 	},
@@ -175,6 +193,54 @@ func Lookup(name string) (Flow, bool) {
 // message.
 var ErrInvalid = errors.New("invalid flow request")
 
+// Problem names WHAT a validation refusal is about, so a page can say it in
+// plain words without parsing the message. The message itself (Error) is
+// machine-facing and unchanged: the API answers it verbatim, and scripts and
+// the CLI read it.
+type Problem string
+
+const (
+	ProblemFlow     Problem = "flow"     // not a catalogue flow
+	ProblemHost     Problem = "host"     // not a host label (empty included)
+	ProblemInstance Problem = "instance" // not an instance label
+	ProblemTTL      Problem = "ttl"      // outside MinTTL..MaxTTL
+	ProblemMissing  Problem = "missing"  // a required parameter is absent (Param names it)
+	ProblemValue    Problem = "value"    // a parameter's value is refused (Param names it)
+	// ProblemThreadAndSession: "thread" and "session" given together.
+	ProblemThreadAndSession Problem = "thread-and-session"
+	// ProblemMarkerNeedsSession: "marker" given without "session".
+	ProblemMarkerNeedsSession Problem = "marker-needs-session"
+	// ProblemTask: the task a flow would post on is not the caller's
+	// (internal/api's enqueue path).
+	ProblemTask Problem = "task"
+)
+
+// InvalidError is a validation refusal that names its Problem. It wraps
+// ErrInvalid, and its message is exactly what invalidf would have written.
+type InvalidError struct {
+	Problem Problem
+	// Param is the parameter a ProblemMissing or ProblemValue is about.
+	Param string
+	// Value is the refused value, for ProblemHost and ProblemInstance.
+	Value string
+	msg   string
+}
+
+func (e *InvalidError) Error() string { return ErrInvalid.Error() + ": " + e.msg }
+func (e *InvalidError) Unwrap() error { return ErrInvalid }
+
+// Invalid builds an InvalidError about problem; the message is the
+// machine-facing text, formatted as fmt.Sprintf would.
+func Invalid(problem Problem, format string, a ...any) *InvalidError {
+	return &InvalidError{Problem: problem, msg: fmt.Sprintf(format, a...)}
+}
+
+func invalidParam(problem Problem, param, format string, a ...any) error {
+	e := Invalid(problem, format, a...)
+	e.Param = param
+	return e
+}
+
 func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
@@ -191,7 +257,9 @@ var (
 // ValidHost reports whether host is a legal runner host label.
 func ValidHost(host string) error {
 	if !hostRE.MatchString(host) {
-		return invalidf("host %q is not a host label (lowercase letters, digits and '-')", host)
+		e := Invalid(ProblemHost, "host %q is not a host label (lowercase letters, digits and '-')", host)
+		e.Value = host
+		return e
 	}
 	return nil
 }
@@ -199,7 +267,9 @@ func ValidHost(host string) error {
 // ValidInstance reports whether instance is a legal browser instance label.
 func ValidInstance(instance string) error {
 	if !instanceRE.MatchString(instance) {
-		return invalidf("instance %q is not an instance label (lowercase letters, digits, '_' and '-')", instance)
+		e := Invalid(ProblemInstance, "instance %q is not an instance label (lowercase letters, digits, '_' and '-')", instance)
+		e.Value = instance
+		return e
 	}
 	return nil
 }
@@ -234,7 +304,7 @@ type Request struct {
 func Validate(r *Request) (Flow, error) {
 	f, ok := Lookup(r.Flow)
 	if !ok {
-		return Flow{}, invalidf("unknown flow %q (the catalogue: %s)", r.Flow, strings.Join(Names(), ", "))
+		return Flow{}, Invalid(ProblemFlow, "unknown flow %q (the catalogue: %s)", r.Flow, strings.Join(Names(), ", "))
 	}
 	if err := ValidHost(r.Host); err != nil {
 		return Flow{}, err
@@ -246,13 +316,13 @@ func Validate(r *Request) (Flow, error) {
 	case r.TTL == 0:
 		r.TTL = DefaultTTL
 	case r.TTL < MinTTL || r.TTL > MaxTTL:
-		return Flow{}, invalidf("ttl %s is outside %s..%s", r.TTL, MinTTL, MaxTTL)
+		return Flow{}, Invalid(ProblemTTL, "ttl %s is outside %s..%s", r.TTL, MinTTL, MaxTTL)
 	}
 	clean := map[string]string{}
 	for name, v := range r.Params {
 		p, ok := f.Param(name)
 		if !ok {
-			return Flow{}, invalidf("flow %s takes no parameter %q", f.Name, name)
+			return Flow{}, invalidParam(ProblemValue, name, "flow %s takes no parameter %q", f.Name, name)
 		}
 		if v == "" {
 			continue
@@ -264,17 +334,17 @@ func Validate(r *Request) (Flow, error) {
 	}
 	for _, p := range f.Params {
 		if p.Required && clean[p.Name] == "" {
-			return Flow{}, invalidf("flow %s needs parameter %q", f.Name, p.Name)
+			return Flow{}, invalidParam(ProblemMissing, p.Name, "flow %s needs parameter %q", f.Name, p.Name)
 		}
 	}
 	// Cross-parameter rules. A thread is named by its title OR by its uuid,
 	// never both (which one would win is a guess), and a dispatch marker always
 	// targets the dedicated thread by uuid.
 	if clean["session"] != "" && clean["thread"] != "" {
-		return Flow{}, invalidf("parameters \"session\" and \"thread\" are exclusive; name the thread by one of them")
+		return Flow{}, Invalid(ProblemThreadAndSession, "parameters \"session\" and \"thread\" are exclusive; name the thread by one of them")
 	}
 	if clean["marker"] != "" && clean["session"] == "" {
-		return Flow{}, invalidf("parameter \"marker\" needs \"session\" (a dispatch targets its thread by uuid)")
+		return Flow{}, Invalid(ProblemMarkerNeedsSession, "parameter \"marker\" needs \"session\" (a dispatch targets its thread by uuid)")
 	}
 	r.Params = clean
 	return f, nil
@@ -282,19 +352,19 @@ func Validate(r *Request) (Flow, error) {
 
 func checkValue(p Param, v string) error {
 	if !utf8.ValidString(v) {
-		return invalidf("parameter %q is not valid UTF-8", p.Name)
+		return invalidParam(ProblemValue, p.Name, "parameter %q is not valid UTF-8", p.Name)
 	}
 	if n := utf8.RuneCountInString(v); n > p.MaxLen {
-		return invalidf("parameter %q is %d characters; the limit is %d", p.Name, n, p.MaxLen)
+		return invalidParam(ProblemValue, p.Name, "parameter %q is %d characters; the limit is %d", p.Name, n, p.MaxLen)
 	}
 	if p.Pattern != nil {
 		if !p.Pattern.MatchString(v) {
-			return invalidf("parameter %q has a value this flow does not accept", p.Name)
+			return invalidParam(ProblemValue, p.Name, "parameter %q has a value this flow does not accept", p.Name)
 		}
 		if p.Max > 0 {
 			n, err := strconv.Atoi(v)
 			if err != nil || n > p.Max {
-				return invalidf("parameter %q is %s; the limit is %d", p.Name, v, p.Max)
+				return invalidParam(ProblemValue, p.Name, "parameter %q is %s; the limit is %d", p.Name, v, p.Max)
 			}
 		}
 		return nil
@@ -304,14 +374,14 @@ func checkValue(p Param, v string) error {
 	// be read as a flag there (`--force` skips its pacing guard). The runner
 	// refuses it too; this is the same rule on muster's side of the boundary.
 	if strings.HasPrefix(v, "-") {
-		return invalidf("parameter %q may not begin with '-'", p.Name)
+		return invalidParam(ProblemValue, p.Name, "parameter %q may not begin with '-'", p.Name)
 	}
 	for _, c := range v {
 		if c == '\n' || c == '\t' {
 			continue
 		}
 		if unicode.IsControl(c) {
-			return invalidf("parameter %q carries a control character", p.Name)
+			return invalidParam(ProblemValue, p.Name, "parameter %q carries a control character", p.Name)
 		}
 	}
 	return nil

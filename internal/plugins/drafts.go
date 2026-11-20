@@ -322,6 +322,11 @@ type DraftCard struct {
 	// session's name by the one naming rule (internal/api readDraftViews),
 	// set by the reader for display only; "" draws AgentName.
 	AgentDisplay string
+	// OfficerDisplay is how the cards name the officer that filed an
+	// outbound draft: its display name (internal/api officerDisplayName),
+	// set by the reader for display only; "" draws a generic "your officer",
+	// NEVER the officer's id (the top layer carries no ids).
+	OfficerDisplay string
 	// Person is, for an outreach draft (a follow, a like, a DM), what the
 	// officer's record of the person says of them — the plugin's words, so
 	// UNTRUSTED — set by the reader for display only (internal/api

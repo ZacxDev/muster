@@ -87,7 +87,14 @@ func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, ses
 	v.PageCards = s.pageCardsFor(ctx, v.Messages)
 	v.RouteAnswers = s.routeAnswerCardsFor(ctx, session.AgentID, v.Messages)
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
-	v.Mentions = s.mentionIndex(ctx)
+	// The chief's chat: its replies draw session cards (session_cards.go) and
+	// its newest reply is never folded (ui.AgentDetailView.UnfoldNewest).
+	_, chief, err := s.agentIsChief(ctx, session.AgentID)
+	if err != nil {
+		s.logger.Printf("chat log: agent %d: could not decide whether it is the chief: %v", session.AgentID, err)
+	}
+	v.UnfoldNewest = chief
+	v.Mentions = s.chatMentionIndex(ctx, chief)
 	for _, l := range v.Messages {
 		if l.Role == "assistant" {
 			v.Mentions.Prime(l.Content)

@@ -16,11 +16,11 @@ test.use({ viewport: { width: 412, height: 915 } });
 test('queue a flow on /flows, a runner claims and reports, the page shows it (412px)', async ({ page }) => {
   const host = `e2e${Date.now()}`;
   await page.goto('/flows');
-  await expect(page.getByRole('heading', { name: 'Browser flows' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Browser tasks' })).toBeVisible();
 
   // 1. Mint a runner token for this host; it is shown once.
   await page.fill('#runner-host', host);
-  await page.getByRole('button', { name: 'Create runner token' }).click();
+  await page.getByRole('button', { name: 'Connect a browser' }).click();
   const token = await page.locator('#minted-runner-token').inputValue();
   expect(token).toMatch(/^mfr_[A-Za-z0-9_-]{43}$/);
 
@@ -30,8 +30,11 @@ test('queue a flow on /flows, a runner claims and reports, the page shows it (41
   await page.selectOption('#flow-name', 'muse.poll');
   await page.fill('#flow-host', host);
   await page.fill('#flow-instance', 'personal');
+  // The side chat is an Advanced field: folded until opened.
+  await expect(page.locator('#flow-param-thread')).toBeHidden();
+  await page.locator('[data-flow-advanced] summary').click();
   await page.fill('#flow-param-thread', 'E2E side chat');
-  await page.getByRole('button', { name: 'Queue flow' }).click();
+  await page.getByRole('button', { name: 'Run task' }).click();
   await expect(page).toHaveURL(/\/flows$/);
   const job = page.locator('[data-flow-job-id]').filter({ hasText: 'E2E side chat' }).first();
   await expect(job).toHaveAttribute('data-flow-status', 'queued');

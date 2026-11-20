@@ -101,7 +101,7 @@ func newPageFixture(t *testing.T) *pageFixture {
 }
 
 // askFlow turns the owner's "Let my agents share pages without asking" OFF —
-// on is every person's default since migration 0160 — for a test of the ask
+// on is every person's default since migration 0163 — for a test of the ask
 // flow: an agent's page_share_request files a pending link and an owner card.
 func (f *pageFixture) askFlow(t *testing.T) *pageFixture {
 	t.Helper()
@@ -769,7 +769,7 @@ func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	// Afterwards the page shows its state and label — never the token.
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr())
 	if strings.Contains(detail.Body.String(), token) || strings.Contains(detail.Body.String(), "data-link-new") ||
-		!strings.Contains(detail.Body.String(), `data-info-code="">`+ls[0].Label()+`</code>`) {
+		!strings.Contains(detail.Body.String(), `data-link-id="`+strconv.FormatInt(ls[0].ID, 10)+`" data-link-state="live"`) {
 		t.Fatalf("the detail page after the mint: %s", detail.Body.String())
 	}
 	// It shows a bearer link: never cached. (That it loads no telemetry is

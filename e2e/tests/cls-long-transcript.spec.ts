@@ -287,7 +287,8 @@ test.describe('a 200-message agent transcript', () => {
         held: `!!document.getElementById('sidebar-more') && !document.getElementById('sidebar-more-summary')`,
       },
       // Inside the header's first row, straight after its new-chat button and
-      // before chat history: main's CI frame (0.00017 at 1280px, from
+      // before the ⋯ menu's trigger (chat history was next, before it moved
+      // into the menu): main's CI frame (0.00017 at 1280px, from
       // `button.press.inline-flex.h-11` — the new-chat button, the row's only
       // id-less one) made deterministic. The button was painted at the row's
       // right end and moved left as each later control arrived
@@ -295,7 +296,7 @@ test.describe('a 200-message agent transcript', () => {
       {
         label: "inside the header's first row, after its new-chat button",
         at: (html: string) => { const n = html.indexOf('aria-label="New chat session"'); return n < 0 ? -1 : html.indexOf('</form>', n) + '</form>'.length; },
-        held: `!!document.querySelector('button[aria-label="New chat session"]') && !document.querySelector('label[aria-label="Chat history"]')`,
+        held: `!!document.querySelector('button[aria-label="New chat session"]') && !document.getElementById('agent-actions-open')`,
       },
       // The header's second row, straight after the status strip and before
       // the ⋯ menu: the CI re-run's frame (0.00002 at 390px from #agent-status's

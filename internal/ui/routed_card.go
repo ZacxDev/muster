@@ -119,7 +119,11 @@ func routedPromptCard(rb plugins.RoutedBlock, raw, id, sheetID string) g.Node {
 	if rb.Kind == plugins.RoutedKindRequest {
 		parts = []routedPart{{routedOwnerTypedLabel, rb.OwnerTyped}, {routedChiefRelayedLabel, rb.Body}}
 	}
-	return routedCard("prompt", id, "From "+from, line, rb.Subject, parts,
+	icon := routedIconMessage
+	if from == "your chief" {
+		icon = routedIconChief
+	}
+	return routedCard("prompt", id, icon, "From "+from, line, rb.Subject, parts,
 		InfoSheet{ID: sheetID, Label: routedSheetPromptLabel, Heading: routedSheetPromptHeading, Lead: routedSheetPromptLead, Code: raw, Multiline: true})
 }
 
@@ -138,7 +142,7 @@ func routeAnswerRow(m ChatLine, cards []RouteAnswerCard) g.Node {
 		if i == 0 {
 			sheet = InfoSheet{ID: sheetID, Label: routedSheetAnswerLabel, Heading: routedSheetAnswerHeading, Lead: routedSheetAnswerLead, Code: m.Content, Multiline: true}
 		}
-		nodes = append(nodes, routedCard("answer", "", "From "+c.From, line, "", []routedPart{{"", c.Body}}, sheet))
+		nodes = append(nodes, routedCard("answer", "", routedIconSession, "From "+c.From, line, "", []routedPart{{"", c.Body}}, sheet))
 	}
 	return Div(
 		g.Attr("data-route-answers", ""),
@@ -152,7 +156,7 @@ func routeAnswerRow(m ChatLine, cards []RouteAnswerCard) g.Node {
 // right-hand bubble), its "From …" heading with the ⓘ beside it (a sheet with
 // no ID draws none), the line under it, the subject, and the body's parts as
 // plain text, each under its label when it has one.
-func routedCard(kind, id, heading, line, subject string, parts []routedPart, sheet InfoSheet) g.Node {
+func routedCard(kind, id string, icon routedIcon, heading, line, subject string, parts []routedPart, sheet InfoSheet) g.Node {
 	var body []g.Node
 	for _, p := range parts {
 		if p.text == "" {
@@ -171,12 +175,50 @@ func routedCard(kind, id, heading, line, subject string, parts []routedPart, she
 		Class("flex w-full max-w-[92%] min-w-0 flex-col gap-1 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line"),
 		Div(
 			Class("flex min-w-0 items-center gap-2"),
-			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("✉")),
+			routedIconNode(icon),
 			P(g.Attr("data-routed-from", ""), Class("min-w-0 flex-1 truncate font-semibold text-fg"), g.Text(heading)),
 			g.If(sheet.ID != "", sheet.Node()),
 		),
 		g.If(line != "", P(g.Attr("data-routed-line", ""), Class("text-xs text-muted"), g.Text(line))),
 		g.If(subject != "", P(g.Attr("data-routed-subject", ""), Class("font-medium text-fg"), g.Text(subject))),
 		g.Group(body),
+	)
+}
+
+// THE CARDS' ICONS ARE THE APP'S OWN, NEVER AN EMOJI (operator decision,
+// #871: the ✉ they carried drew as a broken glyph). Each is a 16px
+// stroked glyph in currentColor, text-fg2 — the colour every other card icon
+// is drawn in (hostMark):
+//
+//   - routedIconChief: a card from the chief ("From your chief") — the
+//     chief's own hexagon (clusterIcon: the icon its pill and sidebar row
+//     carry, as muster's own cluster agent);
+//   - routedIconSession: a session's answer ("From <session>") — a session's
+//     conversation, the glyph of its Rendered view (viewIconRendered's);
+//   - routedIconMessage: anything else passed on (an app's message, a task,
+//     the owner's own) — an envelope, drawn, not typed.
+type routedIcon string
+
+const (
+	routedIconChief   routedIcon = "chief"
+	routedIconSession routedIcon = "session"
+	routedIconMessage routedIcon = "message"
+)
+
+// routedIconBodies is each icon's SVG body (24×24).
+var routedIconBodies = map[routedIcon]string{
+	routedIconChief:   clusterIcon.Body,
+	routedIconSession: `<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`,
+	routedIconMessage: `<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>`,
+}
+
+// routedIconNode is icon, decorative: the heading beside it says who it is
+// from.
+func routedIconNode(icon routedIcon) g.Node {
+	return Span(
+		g.Attr("data-routed-icon", string(icon)),
+		g.Attr("aria-hidden", "true"),
+		Class("inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg2"),
+		g.Raw(hostIconSVG(hostIconDef{Key: string(icon), Body: routedIconBodies[icon]}, "h-4 w-4")),
 	)
 }

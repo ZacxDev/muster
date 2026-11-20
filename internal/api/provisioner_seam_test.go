@@ -365,6 +365,12 @@ func admit(s *Server, r *http.Request) {
 		Name:  sessionCookieName,
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
 	})
+	// What muster's own page sends with that cookie: a cookie write without it
+	// is refused by the central origin check (cross_origin.go) before any
+	// provisioner door is reached.
+	if r.Header.Get("Sec-Fetch-Site") == "" {
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/jobs") && s.auth.ServiceToken != "" {
 		r.Header.Set("Authorization", "Bearer "+testServiceToken)
 		r.Header.Set(ActorHeader, "provisioner-seam-test")

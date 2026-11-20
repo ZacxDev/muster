@@ -32,6 +32,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -274,9 +275,13 @@ const (
 	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
 	// session must be idle, the global hourly cap, and the owners whose nudges
 	// are sent (live).
-	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
-	envSessionState         = "MUSTER_SESSION_STATE"
-	envFleetDigest          = "MUSTER_FLEET_DIGEST"
+	envChiefNudges  = "MUSTER_CHIEF_NUDGES"
+	envSessionState = "MUSTER_SESSION_STATE"
+	envFleetDigest  = "MUSTER_FLEET_DIGEST"
+	// envFleetOrchestration is off (the default) or propose: the chief's fleet
+	// write tools and the digest's proposal cards (internal/api
+	// fleet_actions.go). Later phases add shadow and live.
+	envFleetOrchestration   = "MUSTER_FLEET_ORCHESTRATION"
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
@@ -311,6 +316,12 @@ const (
 	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
 	// outside 250ms–5m. A page replaces a stream silent for about two of them.
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
+
+	// The morning report (internal/morning; docs/features.md#morning-report):
+	// on/off, and the zone its fixed 08:00 is read in — a server setting,
+	// since muster stores no time zone per owner yet.
+	envMorningReport   = "MUSTER_MORNING_REPORT"
+	envMorningReportTZ = "MUSTER_MORNING_REPORT_TZ"
 
 	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
 	// asklog_config.go parses them): its switch (off by default), how long
@@ -936,8 +947,18 @@ type config struct {
 	SessionState bool
 	// FleetDigest turns on the chief panel's fleet digest card and
 	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
-	FleetDigest            bool
+	FleetDigest bool
+	// FleetPropose is MUSTER_FLEET_ORCHESTRATION=propose (off by default):
+	// the chief proposes actions on the owner's sessions, each sent only on
+	// the owner's tap. It needs FleetDigest (the cards are the digest's).
+	FleetPropose           bool
 	ChiefNudgeAskThreshold float64
+	// MorningReport runs the morning report (MUSTER_MORNING_REPORT=1; off by
+	// default) on the schedule MorningReportAt: 08:00 (morning.ReportHour) in
+	// MUSTER_MORNING_REPORT_TZ (an IANA zone, default America/Chicago — the
+	// operator's decision).
+	MorningReport   bool
+	MorningReportAt morning.Schedule
 
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
 	// postgres connector dials its database through safedial (dialGuard).
@@ -2048,6 +2069,23 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.FleetDigest = envFlag(getenv, envFleetDigest)
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envFleetOrchestration))); v {
+	case "", "off":
+	case "propose":
+		if !c.FleetDigest {
+			return config{}, fmt.Errorf("%s=propose needs %s=1: its proposals are the fleet digest's cards", envFleetOrchestration, envFleetDigest)
+		}
+		if !c.SessionState {
+			return config{}, fmt.Errorf("%s=propose needs %s=1: a proposal is filed on a session's stop, and stops are session state's", envFleetOrchestration, envSessionState)
+		}
+		c.FleetPropose = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want off or propose", envFleetOrchestration, v)
+	}
+	c.MorningReport = envFlag(getenv, envMorningReport)
+	if c.MorningReportAt, err = parseMorningReportTZ(getenv(envMorningReportTZ)); err != nil {
+		return config{}, err
+	}
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)
@@ -3431,4 +3469,24 @@ func hookTokenRefusal(token string) string {
 			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
 	}
 	return ""
+}
+
+// defaultMorningReportTZ is the morning report's default zone (operator
+// decision).
+const defaultMorningReportTZ = "America/Chicago"
+
+// parseMorningReportTZ is the morning report's schedule from
+// MUSTER_MORNING_REPORT_TZ (an IANA zone, "" for the default). Read whether or
+// not the report is on, so a bad value is refused at boot before anyone turns
+// it on.
+func parseMorningReportTZ(tz string) (morning.Schedule, error) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		tz = defaultMorningReportTZ
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return morning.Schedule{}, fmt.Errorf("invalid %s %q: want an IANA time zone such as America/Chicago", envMorningReportTZ, tz)
+	}
+	return morning.In(loc), nil
 }

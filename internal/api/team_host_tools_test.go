@@ -65,6 +65,11 @@ func TestEveryMirrorToolIsClassifiedForATeamHost(t *testing.T) {
 			t.Errorf("owner-authority tool %s is kept for a team host: a team has no phone, so it must be refused before the step-up gate", n)
 		}
 	}
+	// chief_restart left hostStepUpTools (it is not step-up gated), so the
+	// loop above no longer covers it: a team host is still refused it.
+	if teamHostKeeps(chiefRestartTool) {
+		t.Error("chief_restart is kept for a team host; it restarts an owner's chief, which a team host never does")
+	}
 	if teamHostKeeps(routeReplyToolName) {
 		t.Error("route_reply is kept for a team host; operator decision G2 refuses it")
 	}

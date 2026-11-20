@@ -60,7 +60,7 @@ func focusToolDefs(fleet bool) []agents.ToolDef {
 				"link; an opencode session's is always [] today, because muster links only Claude Code sessions from claimants. " +
 				fleetFields +
 				"active_within_hours lists only recently active sessions. " +
-				"Use focus_search to find one by topic." + focusUntrustedTail,
+				"Use focus_search to find one by topic." + sessionCardToolNote + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{
 				"active_within_hours": intProp("Only sessions active within this many hours (1-720): a mirrored session by its "+
 					"window's last activity, a dispatched agent by the later of its start and its focus's last write. "+

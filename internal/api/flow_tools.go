@@ -90,7 +90,7 @@ func (s *Server) toolFlowRequest(ctx context.Context, a agents.Agent, arguments 
 		s.logger.Printf("flows: agent %d request: %v", a.ID, err)
 		return toolErr("the request could not be filed")
 	}
-	return toolJSON(flowRequestView{Request: q, Next: "Your owner must approve this in muster (Browser flows). Poll browser_flow_status{request_id} until it is approved and its job finishes."})
+	return toolJSON(flowRequestView{Request: q, Next: "Your owner must approve this in muster (Browser tasks). Poll browser_flow_status{request_id} until it is approved and its job finishes."})
 }
 
 func (s *Server) toolFlowStatus(ctx context.Context, a agents.Agent, arguments string) string {

@@ -10,7 +10,7 @@ import (
 // (Account → Pages; notify_preferences.pages_agent_share, migration 0135;
 // docs/pages.md#when-an-agent-shares).
 //
-// On — every person until they turn it off (migration 0160; a stored choice,
+// On — every person until they turn it off (migration 0163; a stored choice,
 // off included, is kept) — page_share_request for THAT OWNER'S pages makes the
 // link live at once and tells them (page_tools.go pageShareAuto). Off, an
 // agent's page_share_request files a pending link and a card only the owner's

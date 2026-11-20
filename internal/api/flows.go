@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html"
 	"net/http"
 	"sort"
@@ -15,6 +14,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // BROWSER FLOWS (internal/flows): an owner queues a named flow for one of their
@@ -22,8 +24,11 @@ import (
 //
 // THREE DOORS, AND WHICH CREDENTIAL OPENS WHICH IS THE DESIGN:
 //
-//   - /flows (the page and its forms): a browser SESSION. Enqueue, cancel, and
-//     minting/revoking runner tokens — minting a credential is a person's act.
+//   - /flows (the page and its forms): a browser SESSION. Cancel, deciding an
+//     agent's request, and minting/revoking one's OWN runner tokens are any
+//     owner's — minting a credential is a person's act, and connecting your
+//     own browser is personal setup. Enqueueing a job by hand from the page is
+//     an ADMIN's (requireAdminRole).
 //   - /api/flows/jobs (enqueue, list, read, cancel): a PERSONAL API token
 //     (mst_…) ONLY, through requireAPIToken. 🔴 THE SHARED HOOK AND SERVICE
 //     TOKENS ARE REFUSED BY CONSTRUCTION: the hook token acts as the admin and is held by every hook
@@ -55,7 +60,13 @@ const FlowsUnconfigured = "this server does not serve browser flows (no database
 
 func (s *Server) registerFlowRoutes(mux Mux) {
 	mux.HandleFunc("GET "+flowsPath, s.requireSession(s.handleFlowsPage))
-	mux.HandleFunc("POST "+flowsPath+"/jobs", s.requireOperatorWrite(s.handleFlowEnqueueForm))
+	// 🔴 RUNNING A TASK BY HAND IS AN ADMIN'S (operator decision 2026-11-18):
+	// the page's enqueue form is requireAdminRole (requireOperatorWrite plus
+	// the role check). Connecting and disconnecting one's OWN browser (the
+	// runner-token routes) is personal setup and stays requireOperatorWrite;
+	// row-level security confines each owner to their own tokens. A member's
+	// /flows says FlowsAskAdminText in place of the run form (renderFlowsPage).
+	mux.HandleFunc("POST "+flowsPath+"/jobs", s.requireAdminRole(s.handleFlowEnqueueForm))
 	mux.HandleFunc("POST "+flowsPath+"/jobs/{id}/cancel", s.requireOperatorWrite(s.handleFlowCancelForm))
 	mux.HandleFunc("POST "+flowsPath+"/runner-tokens", s.requireOperatorWrite(s.handleRunnerTokenCreate))
 	// An agent's request (flow_tools.go) is decided HERE, by its owner, on the
@@ -253,7 +264,7 @@ func (s *Server) enqueueFlow(ctx context.Context, req flows.Request, by string) 
 		}
 		if err != nil {
 			// Another user's task and no task at all are the same refusal.
-			return flows.Job{}, fmt.Errorf("%w: task %s is not one of your tasks", flows.ErrInvalid, task)
+			return flows.Job{}, flows.Invalid(flows.ProblemTask, "task %s is not one of your tasks", task)
 		}
 	}
 	via := string(authz.MustFrom(ctx).Via)
@@ -346,12 +357,12 @@ func (s *Server) writeFlowResult(w http.ResponseWriter, j flows.Job, err error, 
 // --- the page (session) --------------------------------------------------------
 
 func (s *Server) handleFlowsPage(w http.ResponseWriter, r *http.Request) {
-	s.renderFlowsPage(w, r, http.StatusOK, "", "")
+	s.renderFlowsPage(w, r, http.StatusOK, flowsView{})
 }
 
 func (s *Server) handleFlowEnqueueForm(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Flows == nil {
-		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, "", "")
+		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, flowsView{})
 		return
 	}
 	params := map[string]string{}
@@ -368,10 +379,10 @@ func (s *Server) handleFlowEnqueueForm(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 	case errors.Is(err, flows.ErrInvalid), errors.Is(err, flows.ErrPendingCap):
-		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+		s.renderFlowsPage(w, r, http.StatusBadRequest, flowProblem(err))
 	default:
 		s.logger.Printf("flows: enqueue: %v", err)
-		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The flow could not be queued.")
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, flowsView{problem: "The task could not be started. Try again."})
 	}
 }
 
@@ -385,12 +396,13 @@ func (s *Server) handleFlowCancelForm(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 	case errors.Is(err, flows.ErrNotFound):
-		s.renderFlowsPage(w, r, http.StatusNotFound, "", "No such job.")
+		s.renderFlowsPage(w, r, http.StatusNotFound, flowsView{problem: "That task is no longer on the list."})
 	case errors.Is(err, flows.ErrState):
-		s.renderFlowsPage(w, r, http.StatusConflict, "", "That job is running or already finished; a running job is the runner's until it reports (stop the runner to stop it now).")
+		s.renderFlowsPage(w, r, http.StatusConflict, flowsView{problem: "That task is already running or finished, so it cannot be cancelled.",
+			detail: FlowNotCancellable})
 	default:
 		s.logger.Printf("flows: cancel %d: %v", id, err)
-		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The job could not be cancelled.")
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, flowsView{problem: "The task could not be cancelled. Try again."})
 	}
 }
 
@@ -415,32 +427,32 @@ func (s *Server) decideFlowRequest(w http.ResponseWriter, r *http.Request, appro
 	case err == nil:
 		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 	case errors.Is(err, flows.ErrNotFound):
-		s.renderFlowsPage(w, r, http.StatusNotFound, "", "No such request.")
+		s.renderFlowsPage(w, r, http.StatusNotFound, flowsView{problem: "That request is no longer waiting."})
 	case errors.Is(err, flows.ErrState):
-		s.renderFlowsPage(w, r, http.StatusConflict, "", "That request was already decided, or it expired.")
+		s.renderFlowsPage(w, r, http.StatusConflict, flowsView{problem: "That request was already decided, or it expired."})
 	case errors.Is(err, flows.ErrInvalid), errors.Is(err, flows.ErrPendingCap):
-		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+		s.renderFlowsPage(w, r, http.StatusBadRequest, flowProblem(err))
 	default:
 		s.logger.Printf("flows: decide request %d: %v", id, err)
-		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The request could not be decided.")
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, flowsView{problem: "The request could not be decided. Try again."})
 	}
 }
 
 func (s *Server) handleRunnerTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Flows == nil {
-		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, "", "")
+		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, flowsView{})
 		return
 	}
 	tok, _, err := s.ext.Flows.CreateRunnerToken(r.Context(), strings.TrimSpace(r.PostFormValue("host")))
 	switch {
 	case errors.Is(err, flows.ErrInvalid):
-		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+		s.renderFlowsPage(w, r, http.StatusBadRequest, flowProblem(err))
 	case err != nil:
 		s.logger.Printf("flows: runner token create: %v", err)
-		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The runner token could not be created.")
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, flowsView{problem: "The browser could not be connected. Try again."})
 	default:
 		// 200, NOT a redirect: the token is shown in THIS response only.
-		s.renderFlowsPage(w, r, http.StatusOK, tok, "")
+		s.renderFlowsPage(w, r, http.StatusOK, flowsView{minted: tok})
 	}
 }
 
@@ -452,12 +464,12 @@ func (s *Server) handleRunnerTokenRevoke(w http.ResponseWriter, r *http.Request)
 		found, err = s.ext.Flows.RevokeRunnerToken(r.Context(), id)
 		if err != nil {
 			s.logger.Printf("flows: runner token revoke %d: %v", id, err)
-			s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The runner token could not be revoked.")
+			s.renderFlowsPage(w, r, http.StatusInternalServerError, flowsView{problem: "The browser could not be disconnected. Try again."})
 			return
 		}
 	}
 	if !found {
-		s.renderFlowsPage(w, r, http.StatusNotFound, "", "No such runner token.")
+		s.renderFlowsPage(w, r, http.StatusNotFound, flowsView{problem: "That browser is no longer connected."})
 		return
 	}
 	http.Redirect(w, r, flowsPath, http.StatusSeeOther)
@@ -550,85 +562,191 @@ const (
 	flowsCardClass   = `flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge`
 )
 
-// renderFlowsPage writes /flows. minted, when set, is a runner token just
-// created — the only time it is ever rendered.
-func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code int, minted, problem string) {
+// flowsView is what one render of /flows carries beyond the lists: minted,
+// when set, is a runner token just created — the only time it is ever
+// rendered; problem is the plain sentence the page leads with, and detail its
+// exact technical text, which only an admin's ⓘ shows.
+type flowsView struct {
+	minted, problem, detail string
+}
+
+// The /flows page's own plain words (its tests pin them as literals).
+const (
+	FlowsTitle        = "Browser tasks"
+	FlowsIntroText    = "Run a saved browser task on one of your computers."
+	FlowsAskAdminText = "Ask your admin to run a browser task by hand."
+	FlowsConnectText  = "Connect a computer's browser so it can run these tasks."
+	FlowsMintedText   = "Copy this code now. It is shown only once. Use it to connect the browser on that computer."
+)
+
+// flowsQueueRules is the queueing detail behind the page title's ⓘ — the
+// words the page's top layer used to carry.
+const flowsQueueRules = "Queue a named flow for one of your hosts' browsers. That host's runner claims it, runs it, and reports here. " +
+	"A job not claimed within its time limit expires. Time spent waiting behind another job on the same browser does not count, " +
+	"up to 90 minutes per job it waits behind, so a queued job can run well after you queued it. " +
+	"For a message meant for a specific moment, use a short time limit on an idle browser."
+
+// flowsRunnerDetail is the runner-token detail behind the Connected browsers ⓘ.
+const flowsRunnerDetail = "A runner token (" + flows.RunnerTokenPrefix + "…) is for ONE host. It can claim and report that host's jobs and nothing else.\n" +
+	"The runner sends it as Authorization: Bearer … or X-Muster-Token to " + runnerFlowsPrefix + "/claim, /{id}/heartbeat and /{id}/result.\n" +
+	"See docs/browser-flows.md."
+
+// flowParamLabel is a parameter's plain name, from the catalogue.
+func flowParamLabel(name string) string {
+	for _, f := range flows.Catalogue() {
+		if p, ok := f.Param(name); ok && p.Label != "" {
+			return p.Label
+		}
+	}
+	return ""
+}
+
+// flowProblem turns a refused enqueue, approval or runner token into the page's
+// plain sentence, keeping the machine-facing message as the ⓘ's detail.
+//
+// 🔴 TRANSLATED HERE, NEVER AT THE SOURCE. flows' messages are what the JSON
+// API answers verbatim and what scripts and `muster flow` read, so they stay
+// as they are; this branches on the refusal's Problem, never on its words.
+func flowProblem(err error) flowsView {
+	v := flowsView{detail: err.Error(), problem: "That could not be done. Check what you entered and try again."}
+	quoted := func(name string) string {
+		if l := flowParamLabel(name); l != "" {
+			return "“" + l + "”"
+		}
+		return "One of the fields"
+	}
+	var ie *flows.InvalidError
+	switch {
+	case errors.Is(err, flows.ErrPendingCap):
+		v.problem = "You have as many tasks waiting as muster allows. Wait for one to finish, or cancel one."
+	case errors.As(err, &ie):
+		switch ie.Problem {
+		case flows.ProblemHost:
+			v.problem = "A computer's name can use only lowercase letters, numbers and dashes."
+			if ie.Value == "" {
+				v.problem = "Enter the computer's name first."
+			}
+		case flows.ProblemInstance:
+			v.problem = "A browser's name can use only lowercase letters, numbers, dashes and underscores."
+			if ie.Value == "" {
+				v.problem = "Enter the browser's name first."
+			}
+		case flows.ProblemFlow:
+			v.problem = "Choose a task to run."
+		case flows.ProblemTTL:
+			v.problem = "The time limit must be between 1 and " + strconv.Itoa(int(flows.MaxTTL/time.Minute)) + " minutes."
+		case flows.ProblemMissing:
+			v.problem = "Fill in " + quoted(ie.Param) + " first."
+		case flows.ProblemValue:
+			v.problem = quoted(ie.Param) + " has a value this task does not accept."
+		case flows.ProblemThreadAndSession:
+			v.problem = "Use " + quoted("thread") + " or " + quoted("session") + ", not both."
+		case flows.ProblemMarkerNeedsSession:
+			v.problem = quoted("marker") + " also needs " + quoted("session") + "."
+		case flows.ProblemTask:
+			v.problem = "That task is not one of yours."
+		}
+	}
+	return v
+}
+
+// flowTaskOptionsShown bounds the "Post the result on" picker.
+const flowTaskOptionsShown = 50
+
+// flowTaskOptions draws the "Post the result on" picker's options: none, then
+// up to flowTaskOptionsShown unfinished tasks the caller can see (row-level
+// security decides which), by title. ok is false when the server keeps no
+// tasks. ListSummaries is the lightest list the store has (it still reads
+// each body; there is no title-only read).
+func (s *Server) flowTaskOptions(ctx context.Context) (string, bool) {
+	if s.ext.Notes == nil {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString(`<option value="">Nowhere</option>`)
+	list, err := s.ext.Notes.ListSummaries(ctx)
+	if err != nil {
+		s.logger.Printf("flows: page tasks: %v", err)
+		return b.String(), true
+	}
+	n := 0
+	for _, t := range list {
+		if n >= flowTaskOptionsShown {
+			break
+		}
+		if t.Status == notes.StatusComplete {
+			continue
+		}
+		n++
+		// A display, so the one title rule (textplain.Title), then escaped.
+		title := strings.TrimSpace(textplain.Title(t.Title))
+		if title == "" {
+			title = "Untitled task"
+		}
+		b.WriteString(`<option value="` + strconv.FormatInt(t.ID, 10) + `">` + html.EscapeString(title) + `</option>`)
+	}
+	return b.String(), true
+}
+
+// renderFlowsPage writes /flows.
+//
+// 🔴 THE HAND-RUN FORM IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE
+// (authz.IsAdmin, the predicate shellFeatures' Setup reads). An admin gets the
+// run form, its ⓘs and the exact text of a refusal. A member gets
+// FlowsAskAdminText where the form was, no refusal detail, and keeps what is
+// theirs: their agents' requests (approve or deny), their own jobs, and their
+// own connected browsers (connect, disconnect, and that section's ⓘ).
+func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code int, v flowsView) {
+	admin := authz.IsAdmin(r.Context())
 	var jobs []flows.Job
 	var runners []flows.RunnerToken
 	var requests []flows.FlowRequest
 	if s.ext.Flows == nil {
-		problem = "This server has no database, so it cannot queue browser flows."
+		v.problem, v.detail = "This server has no database, so it cannot run browser tasks.", ""
 	} else {
 		var err error
 		if jobs, err = s.ext.Flows.List(r.Context(), 50); err != nil {
 			s.logger.Printf("flows: page list: %v", err)
-			problem = "The job list could not be read."
+			v.problem, v.detail = "The task list could not be loaded.", ""
 		}
 		if requests, err = s.ext.Flows.ListRequests(r.Context(), 50); err != nil {
 			s.logger.Printf("flows: page requests: %v", err)
-			problem = "The request list could not be read."
+			v.problem, v.detail = "The request list could not be loaded.", ""
 		}
 		if runners, err = s.ext.Flows.ListRunnerTokens(r.Context()); err != nil {
 			s.logger.Printf("flows: page runners: %v", err)
-			problem = "The runner list could not be read."
+			v.problem, v.detail = "The list of connected browsers could not be loaded.", ""
 		}
 	}
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="flows-page">
-<h1 class="text-balance text-base font-semibold text-fg">Browser flows</h1>
-<p class="text-sm text-fg2">Queue a named flow for one of your hosts' browsers. That host's runner claims it, runs it, and reports here. A job not claimed within its time limit expires. Time spent waiting behind another job on the same browser does not count, up to 90 minutes per job it waits behind, so a queued job can run well after you queued it. For a message meant for a specific moment, use a short time limit on an idle browser.</p>
+<div class="flex items-center gap-2"><h1 class="min-w-0 flex-1 text-balance text-base font-semibold text-fg">` + FlowsTitle + `</h1>`)
+	if admin {
+		b.WriteString(ui.InfoSheetHTML(ui.InfoSheet{ID: "flows-about", Label: "How browser tasks wait their turn", Heading: "How tasks wait",
+			Lead: "A task waits for its computer's browser to pick it up. The exact rules:", Code: flowsQueueRules, Multiline: true}))
+	}
+	b.WriteString(`</div>
 `)
-	b.WriteString(problemNode(problem))
-	if minted != "" {
+	if !admin {
+		b.WriteString(`<p class="text-sm text-fg" data-flows-ask-admin>` + FlowsAskAdminText + `</p>
+`)
+	} else {
+		b.WriteString(`<p class="text-sm text-fg2" data-flows-intro>` + FlowsIntroText + `</p>
+`)
+	}
+	b.WriteString(flowsProblemHTML(v, admin))
+	if v.minted != "" {
 		b.WriteString(`<div class="flex flex-col gap-2 rounded-md bg-bg px-3 py-3 ring-1 ring-inset ring-edge" data-testid="minted-runner-token">
-<p class="text-sm font-semibold text-fg">Copy it now — it will not be shown again. It can only claim and report this host's jobs.</p>
-<input id="minted-runner-token" readonly value="` + esc(minted) + `" aria-label="New runner token"
+<p class="text-sm font-semibold text-fg">` + FlowsMintedText + `</p>
+<input id="minted-runner-token" readonly value="` + esc(v.minted) + `" aria-label="New connection code"
  class="min-h-[44px] w-full rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge" onclick="this.select()">
 </div>
 `)
 	}
-
-	// The enqueue form: one form, every catalogue parameter (each flow uses the
-	// ones it names; the server refuses the rest).
-	b.WriteString(`<form method="POST" action="` + flowsPath + `/jobs" class="flex flex-col gap-2" data-testid="flow-enqueue">
-<label for="flow-name" class="text-sm font-medium text-fg">Flow</label>
-<select id="flow-name" name="flow" class="` + flowsInputClass + `">`)
-	seen := map[string]bool{}
-	var params []flows.Param
-	for _, f := range flows.Catalogue() {
-		b.WriteString(`<option value="` + esc(f.Name) + `">` + esc(f.Name) + ` (` + string(f.Class) + `) — ` + esc(f.Help) + `</option>`)
-		for _, p := range f.Params {
-			if !seen[p.Name] {
-				seen[p.Name] = true
-				params = append(params, p)
-			}
-		}
+	if admin {
+		s.writeFlowsSetup(&b, r.Context())
 	}
-	b.WriteString(`</select>
-<label for="flow-host" class="text-sm font-medium text-fg">Host</label>
-<input id="flow-host" name="host" value="laptop" maxlength="63" class="` + flowsInputClass + `">
-<label for="flow-instance" class="text-sm font-medium text-fg">Browser instance</label>
-<input id="flow-instance" name="instance" value="personal" maxlength="32" class="` + flowsInputClass + `">
-`)
-	for _, p := range params {
-		id := "flow-param-" + p.Name
-		b.WriteString(`<label for="` + id + `" class="text-sm font-medium text-fg">` + esc(p.Name) + ` <span class="text-xs text-fg2">` + esc(p.Help) + `</span></label>
-`)
-		if p.Pattern == nil {
-			b.WriteString(`<textarea id="` + id + `" name="param_` + esc(p.Name) + `" maxlength="` + strconv.Itoa(p.MaxLen) + `" rows="3" class="` + flowsInputClass + `"></textarea>
-`)
-		} else {
-			b.WriteString(`<input id="` + id + `" name="param_` + esc(p.Name) + `" maxlength="` + strconv.Itoa(p.MaxLen) + `" class="` + flowsInputClass + `">
-`)
-		}
-	}
-	b.WriteString(`<label for="flow-ttl" class="text-sm font-medium text-fg">Time limit (minutes)</label>
-<input id="flow-ttl" name="ttl_minutes" inputmode="numeric" value="` + strconv.Itoa(int(flows.DefaultTTL/time.Minute)) + `" class="` + flowsInputClass + `">
-<button type="submit" class="` + flowsButtonClass + `">Queue flow</button>
-</form>
-`)
-
 	// Agent requests waiting on this owner. 🔴 THE CARD IS THE CONTROL: what the
 	// owner approves is exactly what is drawn here (flowRequestCardHTML).
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Agent requests</h2>
@@ -673,11 +791,11 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 `)
 
 	// The jobs.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Jobs</h2>
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Recent tasks</h2>
 <ul class="flex flex-col gap-2" data-testid="flow-jobs">
 `)
 	if len(jobs) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No jobs yet.</li>`)
+		b.WriteString(`<li class="text-sm text-fg2">No tasks yet.</li>`)
 	}
 	now := time.Now()
 	for _, j := range jobs {
@@ -726,18 +844,136 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 	b.WriteString(`</ul>
 `)
 
-	// The runners.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Runners</h2>
-<p class="text-sm text-fg2">A runner token is for ONE host. It can claim and report that host's jobs and nothing else.</p>
+	writeFlowsRunners(&b, runners)
+	b.WriteString(`<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
+</section>`)
+	s.writeNavDocument(w, r, code, FlowsTitle, "", true, b.String())
+}
+
+// flowsProblemHTML is the page's problem line, and for an admin an ⓘ with its
+// exact technical text beside it. A member gets the plain line only.
+func flowsProblemHTML(v flowsView, admin bool) string {
+	if v.problem == "" {
+		return ""
+	}
+	if !admin || v.detail == "" {
+		return problemNode(v.problem)
+	}
+	return `<div class="flex items-start gap-2" data-flows-problem><div class="min-w-0 flex-1">` + problemNode(v.problem) + `</div>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "flows-problem", Label: "What went wrong, exactly", Heading: "What went wrong",
+			Lead: "The exact reason muster gave:", Code: v.detail}) + `</div>
+`
+}
+
+// writeFlowsSetup draws an admin's form that runs a task by hand. Each parameter shows its plain Label; the ones
+// that address Muse's internals fold under Advanced, and every parameter's
+// exact description is in that section's ⓘ.
+func (s *Server) writeFlowsSetup(b *strings.Builder, ctx context.Context) {
+	esc := html.EscapeString
+	// One form, every catalogue parameter (each flow uses the ones it names;
+	// the handler reads only those).
+	b.WriteString(`<form method="POST" action="` + flowsPath + `/jobs" class="flex flex-col gap-2" data-testid="flow-enqueue">
+<label for="flow-name" class="text-sm font-medium text-fg">Task</label>
+<select id="flow-name" name="flow" class="` + flowsInputClass + `">`)
+	seen := map[string]bool{}
+	var params []flows.Param
+	for _, f := range flows.Catalogue() {
+		b.WriteString(`<option value="` + esc(f.Name) + `">` + esc(f.PlainName) + `</option>`)
+		for _, p := range f.Params {
+			if !seen[p.Name] {
+				seen[p.Name] = true
+				params = append(params, p)
+			}
+		}
+	}
+	b.WriteString(`</select>
+<label for="flow-host" class="text-sm font-medium text-fg">Computer</label>
+<input id="flow-host" name="host" value="laptop" maxlength="63" class="` + flowsInputClass + `">
+<label for="flow-instance" class="text-sm font-medium text-fg">Browser</label>
+<input id="flow-instance" name="instance" value="personal" maxlength="32" class="` + flowsInputClass + `">
+`)
+	taskOpts, hasTasks := s.flowTaskOptions(ctx)
+	field := func(p flows.Param) {
+		id := "flow-param-" + p.Name
+		b.WriteString(`<label for="` + id + `" class="text-sm font-medium text-fg">` + esc(p.Label) + `</label>
+`)
+		switch {
+		case p.Name == "task":
+			b.WriteString(`<select id="` + id + `" name="param_task" class="` + flowsInputClass + `">` + taskOpts + `</select>
+`)
+		case p.Pattern == nil:
+			b.WriteString(`<textarea id="` + id + `" name="param_` + esc(p.Name) + `" maxlength="` + strconv.Itoa(p.MaxLen) + `" rows="3" class="` + flowsInputClass + `"></textarea>
+`)
+		default:
+			b.WriteString(`<input id="` + id + `" name="param_` + esc(p.Name) + `" maxlength="` + strconv.Itoa(p.MaxLen) + `" class="` + flowsInputClass + `">
+`)
+		}
+	}
+	// The plain fields, the task picker last: what to send comes before where
+	// its result goes.
+	var advanced []flows.Param
+	var task *flows.Param
+	for i, p := range params {
+		switch {
+		case p.Name == "task":
+			if hasTasks { // no tasks on this server: nothing to post on
+				task = &params[i]
+			}
+		case p.Advanced:
+			advanced = append(advanced, p)
+		default:
+			field(p)
+		}
+	}
+	if task != nil {
+		field(*task)
+	}
+	b.WriteString(`<label for="flow-ttl" class="text-sm font-medium text-fg">Time limit (minutes)</label>
+<input id="flow-ttl" name="ttl_minutes" inputmode="numeric" value="` + strconv.Itoa(int(flows.DefaultTTL/time.Minute)) + `" class="` + flowsInputClass + `">
+`)
+	if len(advanced) > 0 {
+		var detail []string
+		for _, p := range params {
+			detail = append(detail, p.Label+" ("+p.Name+"): "+p.Help)
+		}
+		b.WriteString(`<details class="flex flex-col gap-2" data-flow-advanced>
+<summary class="min-h-[44px] cursor-pointer py-2 text-sm font-medium text-fg">Advanced</summary>
+<div class="flex flex-col gap-2">
+<div class="flex items-center gap-2"><p class="min-w-0 flex-1 text-xs text-fg2">For Muse's side chats and scheduled messages.</p>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "flows-fields", Label: "What each field does", Heading: "What each field does",
+				Lead: "Each field, its exact name and what it does:", Code: strings.Join(detail, "\n"), Multiline: true}) + `</div>
+`)
+		for _, p := range advanced {
+			field(p)
+		}
+		b.WriteString(`</div>
+</details>
+`)
+	}
+	b.WriteString(`<button type="submit" class="` + flowsButtonClass + `">Run task</button>
+</form>
+`)
+}
+
+// writeFlowsRunners draws the viewer's own connected browsers (any owner's:
+// connecting your own browser is personal setup): the connect form and
+// each runner token by its computer, with its exact detail behind the ⓘ.
+func writeFlowsRunners(b *strings.Builder, runners []flows.RunnerToken) {
+	esc := html.EscapeString
+	b.WriteString(`<div class="flex items-center gap-2"><h2 class="min-w-0 flex-1 text-sm font-semibold text-fg">Connected browsers</h2>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "flows-runner", Label: "How connecting a browser works", Heading: "Connecting a browser",
+			Lead: "Connecting makes a code for that one computer. It can pick up and report that computer's tasks, and nothing else.",
+			Code: flowsRunnerDetail, Multiline: true}) + `</div>
+<p class="text-sm text-fg2">` + FlowsConnectText + `</p>
 <form method="POST" action="` + flowsPath + `/runner-tokens" class="flex flex-col gap-2" data-testid="runner-token-create">
-<label for="runner-host" class="text-sm font-medium text-fg">Host</label>
+<label for="runner-host" class="text-sm font-medium text-fg">Computer name</label>
 <input id="runner-host" name="host" maxlength="63" placeholder="laptop" class="` + flowsInputClass + `">
-<button type="submit" class="` + flowsButtonClass + `">Create runner token</button>
+<button type="submit" class="` + flowsButtonClass + `">Connect a browser</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="runner-tokens">
 `)
 	if len(runners) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No runner tokens yet.</li>`)
+		b.WriteString(`<li class="text-sm text-fg2">No browsers connected yet.</li>`)
 	}
 	for _, t := range runners {
 		used := "never used"
@@ -746,18 +982,16 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-runner-token-id="` + strconv.FormatInt(t.ID, 10) + `">
 <span class="break-all text-sm font-semibold text-fg">` + esc(t.Host) + `</span>
-<span class="text-xs text-fg2">created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
+<span class="text-xs text-fg2">connected ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
 `)
 		if t.RevokedAt != nil {
-			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
+			b.WriteString(`<span class="text-xs font-semibold text-fg2">disconnected</span>`)
 		} else {
 			b.WriteString(`<form method="POST" action="` + flowsPath + `/runner-tokens/` + strconv.FormatInt(t.ID, 10) + `/revoke">
-<button type="submit" class="` + flowsQuietButton + `">Revoke</button></form>`)
+<button type="submit" class="` + flowsQuietButton + `">Disconnect</button></form>`)
 		}
 		b.WriteString("</li>\n")
 	}
 	b.WriteString(`</ul>
-<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
-</section>`)
-	s.writeNavDocument(w, r, code, "Browser flows", "", true, b.String())
+`)
 }

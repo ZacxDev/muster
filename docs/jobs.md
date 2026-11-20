@@ -961,8 +961,82 @@ kept — the job keeps its status and `error` says
    pull-request, default-branch and base refs deleted. For a job without a
    `sha`, the result file is deleted as above.
 
+7. For a `sha` job, still inside step 6 and while the job reads `running`:
+   every other job worktree under `.muster-jobs/` and every
+   `refs/muster-jobs/*` ref is removed (see [a worker's
+   checkout](#a-workers-checkout-shallow-clones-and-left-behind-worktrees)).
+
 The job's `timeout_s` covers steps 3–5, not the wait in step 1; the removal in
-step 6 has its own bound.
+step 6 has its own bound, and so does step 7.
+
+## A worker's checkout: shallow clones and left-behind worktrees
+
+Two things used to grow on a worker's volume without bound (measured on one
+review worker: 161 GiB of git packs, 1,389 of them, plus 19 left-behind job
+worktrees, 4.8 GB).
+
+**A shallow checkout.** muster's own clone of an agent's repository is
+complete (no `--depth`); a checkout can still be shallow when something else
+made it — a session, or an operator. The review worker above was: its
+checkout reported `--is-shallow-repository` true, with 6 shallow roots. Fetching a pull request into a shallow
+checkout, without `--depth`, re-downloads the history **below the pull
+request's merge-base** whenever that merge-base lies below the shallow
+boundary: the server cannot count commits past the client's boundary as
+common ground, and the job's ref is deleted afterwards, so the next such job
+downloads it again. When pull requests branch from commits older than the
+boundary, that can be most of the repository's history, on every such job.
+Measured on a copy of a
+~80,000-object repository: a `--depth 1` clone gained ~18,500 objects per such
+fetch; a complete clone gained only the pull request's own.
+
+So in step 3, **before** the pull request's fetch, a shallow checkout
+(`git rev-parse --is-shallow-repository`) is made complete **once**:
+`git fetch --unshallow` of the repository's default branch, from the same
+anonymous URL (or the same deploy-key mirror, with the same `--upload-pack`)
+and with the same refusals as the job's other fetches. A complete checkout
+skips it. It is bounded by the job's own deadline: it may take at most a third
+of the time left (and at most 10 minutes), is not tried with less than 30
+seconds, and is killed (`timeout`) when its time is up.
+
+**Its failing — out of time, the network, anything — never fails the job;**
+the job proceeds on the shallow checkout. A failed attempt is not free, so its
+cost is contained: the partial pack files a cut-off transfer leaves
+(`objects/pack/tmp_*`, several MB each) are removed — only those created since
+the attempt started, never an older one another git had in flight — and the
+next attempt waits: 1 hour after one failure, doubling up to 16 hours (a count
+in `.git/muster-unshallow-failed`, removed by a success). git's own `gc` is
+left as it is.
+
+`pack.threads=1` limits both sides of the unshallow: the fetch, and — for a
+pool with a deploy key, whose `upload-pack` and `pack-objects` read the pod's
+mirror inside the agent's container — the serving side too, through the
+`--upload-pack` command itself (git does not pass the fetch's own settings to
+a local `upload-pack`). For an anonymous fetch the serving side is GitHub's.
+
+Its cost, measured once per checkout (anonymous memory summed over the
+process tree, depth-50 clone unshallowed from a local copy, serving side with
+git's default threads):
+
+| repository | objects received | fetch side (in the agent) | serving side | wall |
+|---|---|---|---|---|
+| ~80,000 objects | 4,745 → 21,974 | 20 MiB | 229 MiB | 1 s |
+| ~700,000 objects | 42,309 → 430,079 | 136 MiB | 553 MiB | 40 s |
+
+With `pack.threads=1` in the `upload-pack` command, the ~700,000-object
+repository's serving `pack-objects` peaked at 1 thread and 312 MiB, against
+25 threads and 710 MiB without it (a second measurement, so the two serving
+figures differ from run to run). The wall times exclude the network.
+
+**Left-behind worktrees.** A job's worktree is removed by the server running
+the job, so a server that stops or crashes mid-turn (see [What it does not
+do](#what-it-does-not-do)) left it, and its refs, behind. Step 7 sweeps them:
+every `.muster-jobs/<job id>` (entries not named by a job id are left), then
+`git worktree prune`, then every `refs/muster-jobs/*` ref. It runs only while
+the job still reads `running` (re-read first) and its server is not stopping:
+no other job of the agent can be running on any server then, so all of them
+are leftovers. A stopping server fails its own jobs while their turns unwind,
+which lets another server start the agent's next job — so it never sweeps. It
+does not change the job's outcome; what it removed is logged.
 
 ## What it does not do
 
