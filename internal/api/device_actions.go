@@ -170,8 +170,16 @@ func (s *Server) handleDeviceChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, map[string]any{"nonce": nonce, "expires_at": expires.UTC().Format(time.RFC3339),
-		"expires_in": int(devices.ChallengeTTL / time.Second), "message": devices.Message(nonce, c)})
+	out := map[string]any{"nonce": nonce, "expires_at": expires.UTC().Format(time.RFC3339),
+		"expires_in": int(devices.ChallengeTTL / time.Second), "message": devices.Message(nonce, c)}
+	// A step-up confirmation card (host_stepup.go): the card's own text, so
+	// the phone's prompt shows what a Confirm (or Refuse) of it decides —
+	// the one-tap confirm from its notification. Display only: the challenge
+	// and the action are the same as for any ask.
+	if q := s.stepUpCardConfirms(r.Context(), body.Target); q != "" {
+		out["confirms"] = q
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // maxDeviceActionBody bounds a signed action's JSON body: an answer of
