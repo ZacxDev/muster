@@ -611,7 +611,9 @@ ledger, and a test fails when one is added without saying how you confirm it.
 **A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
 an owner-authority tool reached through that machine's MCP door is confirmed
 on the owner's paired phone, one decision per signed action — not by this
-window.
+window. One tool is the exception on every machine: `chief_restart` runs at
+once, `force` included, and asks no phone, like the browser's Stop and Start
+([mirroring.md](mirroring.md#chief_restart-is-not-gated)).
 
 The Interactive choice is remembered per host for the browser session. Adding a
 passkey has its own fixed window of five minutes, separate from the step-up

@@ -63,7 +63,9 @@ import (
 // What is NOT gated: the owner deciding in muster's own web UI (the Reply
 // drafts tab, Connectors, Attention), which is the owner's signed-in browser;
 // any machine mirrored HERE with no host officer declared on it that does not
-// start agents for the chief; the read tools.
+// start agents for the chief; the read tools; and chief_restart, on every
+// machine, force included (operator decision "fully ungated"; its accepted
+// risk is stated at its entry in hostStepUpExempt).
 // ---------------------------------------------------------------------------
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
@@ -75,7 +77,6 @@ var hostStepUpTools = map[string]string{
 	connectorRequestDecideTool:    "decide an agent's connector request as you",
 	pluginDraftDecideTool:         "approve or reject a reply or outbound draft as you",
 	agentDestroyTool:              "destroy one of your agents",
-	chiefRestartTool:              "restart your chief",
 	dispatchApproveTool:           "approve a held agent start as you",
 	routeReplyToolName:            "answer a routed message (which may be relayed to its sender) as you",
 	pluginMessageRouteTool:        "route a plugin message as you",
@@ -105,6 +106,18 @@ var hostStepUpExempt = map[string]string{
 	pageGetTool:                "a read",
 	pageListTool:               "a read",
 	agentReportDoneTool:        "the session's own dispatch",
+	// chief_restart is exempt BY DECISION (operator decision "fully
+	// ungated"): the owner wants a mirrored session to restart their chief
+	// without a phone confirmation. 🔴 THE ACCEPTED RISK: on a machine this
+	// gate covers, any process of the machine's user — an agent muster started
+	// there for the chief included, by naming the owner's pane — can now
+	// restart the owner's chief, and force cuts off a turn the chief is in. The
+	// worst outcome is an interrupted chief turn: no data is lost, no other
+	// agent is touched (the tool resolves only the owner's own chief), and it
+	// is what the web Stop/Start already allows with a session alone. A
+	// session the server recorded as a host dispatch is still refused by the
+	// tool itself (ownersOwnSession).
+	chiefRestartTool: "restarts only the owner's own chief (Stop then Start); the worst outcome is an interrupted chief turn, as the web Stop/Start, which is not step-up gated either",
 	// track_task is exempt BY DECISION, not by default: it is no owner
 	// authority. It writes only the declaration of the session the call is
 	// bound to (no subject argument), which every reader treats as untrusted
@@ -452,10 +465,7 @@ const stepUpTeamRefusal = "step-up: a team has no phone, and a team host files n
 // door would have, for caller c of host. ONLY hostDecisionForAnswer calls it
 // (TestTheStepUpGateIsALedger).
 func (s *Server) runStepUpTool(ctx context.Context, host string, c toolCaller, name, args string) string {
-	switch name {
-	case chiefRestartTool:
-		return s.toolChiefRestart(ctx, c, args)
-	case routeReplyToolName:
+	if name == routeReplyToolName {
 		return s.toolRouteReply(ctx, c, args)
 	}
 	if text, ok := s.dispatchPluginMessageRouteTool(ctx, c, name, args); ok {
