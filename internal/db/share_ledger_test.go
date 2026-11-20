@@ -153,6 +153,9 @@ var personalOwned = []string{
 	// 0161: the morning report; it lists its owner's own sessions, tasks and
 	// questions.
 	"morning_reports",
+	// 0166: scheduled host jobs and their runs; a job writes one of its
+	// owner's personal pages, so a team host's jobs are refused.
+	"host_jobs", "host_job_runs",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

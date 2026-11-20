@@ -34,6 +34,7 @@ var carriesTeams = map[Via]bool{
 	ViaAgentMessage: false,
 	ViaHostDispatch: false,
 	ViaJobQueue:     false,
+	ViaHostJob:      false, // the job runner acts as one person; their teams' rows are not its
 	ViaTeamAdmin:    false, // the team acting principal: a team is nobody's member
 }
 

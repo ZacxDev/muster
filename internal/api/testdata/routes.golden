@@ -32,6 +32,7 @@ DELETE /agents/{id}
 DELETE /api/agents/{name}
 DELETE /api/device
 DELETE /api/device/push
+DELETE /api/host-jobs/{name}
 DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
 DELETE /api/officers/declared/{officer}
@@ -87,6 +88,8 @@ GET /api/directories
 GET /api/doctor
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
+GET /api/host-jobs
+GET /api/host-jobs/{name}/runs
 GET /api/instance
 GET /api/jobs/{id}
 GET /api/officers/declared
@@ -292,6 +295,7 @@ POST /api/device/challenge
 POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel
+POST /api/host-jobs/{name}/run
 POST /api/jobs
 POST /api/officers/declared
 POST /api/officers/declared/{officer}/pause
