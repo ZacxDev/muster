@@ -178,7 +178,7 @@ func AppPage(v AppPageView) g.Node {
 					Div(g.Attr("data-app-card", ""), g.Attr("hidden", ""),
 						Class("m-4 flex-col items-start gap-3 rounded-xl bg-s1 p-4 ring-1 ring-line [&:not([hidden])]:flex"),
 						P(Class("text-sm text-fg"), g.Text(v.Label+" opens in your browser")),
-						Button(Type("button"), g.Attr("data-app-open", ""), Class(btn+" bg-accent text-white"), g.Text("Open")),
+						Button(Type("button"), g.Attr("data-app-open", ""), Class(btn+" bg-accent text-on-accent"), g.Text("Open")),
 					),
 				),
 				appScript(v.Nav.Feat),
