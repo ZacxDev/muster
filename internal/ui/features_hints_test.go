@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"strings"
 	"testing"
 )
@@ -15,8 +16,8 @@ func TestTheComposerShowsMutedHintsWhenDictationAndAttachmentsAreOff(t *testing.
 	for _, want := range []string{
 		`id="mv-dictate-off" href="/account/features#dictation-setup"`,
 		`id="mv-attach-off" href="/account/features#attachments-setup"`,
-		`aria-label="` + DictateOffLabel + `"`,
-		`aria-label="` + AttachOffLabel + `"`,
+		`aria-label="` + html.EscapeString(DictateOffLabel) + `"`,
+		`aria-label="` + html.EscapeString(AttachOffLabel) + `"`,
 	} {
 		if !strings.Contains(off, want) {
 			t.Errorf("feature off: no %s", want)

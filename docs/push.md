@@ -71,7 +71,7 @@ Either part is left out when unknown, and both when neither is known. The
 notification never adds the task's description or a comment's text beyond
 what it already carried.
 
-The same section has **Show tmux sessions** (off unless you
+The same section has **Show technical session names** (off unless you
 turn it on): a notification that names a mirrored session by its human name
 then adds the window's codename (its tmux address when the host sent none)
 and host after it, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-sessions)). It is
@@ -80,7 +80,7 @@ list, in the attention summary and on the session switcher's pills and dock
 rows; its POST is `/account/notifications/tmux`
 (`on=1|0`).
 
-Under it is **Start notification titles with the tmux name** (off unless you
+Under it is **Start notifications with the computer and session name** (off unless you
 turn it on; independent of the switch above): every push title about a tmux
 window then starts with the window's codename and host, so a phone that cuts
 the end of a title still shows it — `mango:1@laptop · Billing migration needs
@@ -203,7 +203,7 @@ member's comment on a team task (below).
 
 - **Each member is decided on their own.** For each recipient muster applies
   that person's own event toggles, their own rate cap, their own **Start
-  notification titles with the tmux name** switch, and the router's admin
+  notifications with the computer and session name** switch, and the router's admin
   rule. A busy team spends each member's cap, not one shared one.
 - **The title names the team.** It starts with the team's name and ` · `, as
   in `platform · Ana is asking`. The prefix goes on before the title is

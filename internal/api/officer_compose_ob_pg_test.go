@@ -1,6 +1,7 @@
 package api
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // OFFICERS WORK ON COMPOSE (officers O-B), the parts that need the real
@@ -76,7 +78,8 @@ func TestThePluginsFormDefaultsTheScopeShowsTheTokenAndTheBinding(t *testing.T) 
 	page := w.do("GET", "/plugins", "", func(r *http.Request) {
 		r.Header.Set("Cookie", sessionCookieFor(w.srv))
 	}).Body.String()
-	bound := regexp.MustCompile(`data-plugin-delivers-to>Delivers to <span[^>]*>officer:` + regexp.QuoteMeta(builtinOfficerID) + `</span>`)
+	// The officer by name, never "officer:<id>" (the jargon audit's F064).
+	bound := regexp.MustCompile(`data-plugin-delivers-to>Delivers to <span[^>]*>` + regexp.QuoteMeta(html.EscapeString(ui.OfficerPlainName("", builtinOfficerID))) + `</span>`)
 	chief := regexp.MustCompile(`data-plugin-delivers-to>Delivers to <span[^>]*>your chief</span>`)
 	if !bound.MatchString(page) || !chief.MatchString(page) {
 		t.Fatalf("the cards do not say where messages go (bound officer and your chief):\n%s", page)
