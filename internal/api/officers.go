@@ -316,6 +316,9 @@ type OfficersConfig struct {
 	// (officers.PGSessionStore); REQUIRED when an officer declares
 	// tiers.judgement.max_sessions_per_day.
 	Sessions officers.SessionStore
+	// Restarts is the auto-restart's record (officers.PGRestartStore,
+	// migration 0161); nil keeps it in memory, per process.
+	Restarts officers.RestartStore
 	// PRLoops keeps draft officers' review-loop announcements
 	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
 	// which a restart forgets.
@@ -573,7 +576,8 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
 		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff, Chats: chats,
-		AutoRestart: cfg.AutoRestart, AutoRestartNotice: s.officerAutoRestartNotice}
+		AutoRestart: cfg.AutoRestart, AutoRestartNotice: s.officerAutoRestartNotice,
+		Restarts: cfg.Restarts, RestartContext: func(ctx context.Context, o officers.Officer) context.Context { return s.officerPrincipal(ctx, o.Owner) }}
 	if cfg.Builtin != nil {
 		// routine_kinds: the store defers a routine item to its officer's next
 		// routine_wake_at, reading the LIVE roster (officers.Registry.ForOwner).
@@ -1010,6 +1014,7 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 			Spent:         f.s.officerRT.spent(o, name)}
 		if in.Error {
 			in.ErrorClass = classifyInstanceError(a, idx[name])
+			in.ErrorText = instanceErrorText(a, idx[name])
 		}
 		switch {
 		case in.Up:

@@ -40,12 +40,13 @@ type fakeFleet struct {
 	busy      map[int]bool                // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
 	errored   map[int]bool                // the instance is in error (holds its slot)
 	class     map[int]officers.ErrorClass // why an errored instance is in error
+	errText   map[int]string              // its recorded error (InstanceState.ErrorText)
 	down      map[int]string              // why a down instance is down (InstanceState.Down)
 }
 
 func newFleet() *fakeFleet {
 	return &fakeFleet{up: map[int]bool{}, exists: map[int]bool{}, pending: map[int]bool{}, errored: map[int]bool{}, busy: map[int]bool{},
-		class: map[int]officers.ErrorClass{}}
+		class: map[int]officers.ErrorClass{}, errText: map[int]string{}}
 }
 
 func (f *fakeFleet) Reprompt(_ context.Context, o officers.Officer, n int, text string) error {
@@ -71,7 +72,7 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 	var out []officers.InstanceState
 	for n := 1; n <= o.Slots(); n++ {
 		out = append(out, officers.InstanceState{N: n, Name: officers.InstanceName(o.ID, n), Exists: f.exists[n], Up: f.up[n] || f.errored[n],
-			Error: f.errored[n], ErrorClass: f.class[n], PromptPending: f.pending[n], Down: f.down[n]})
+			Error: f.errored[n], ErrorClass: f.class[n], ErrorText: f.errText[n], PromptPending: f.pending[n], Down: f.down[n]})
 	}
 	return out, nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -25,6 +26,11 @@ func TestClassifyInstanceErrorNamesWhatARestartCanFix(t *testing.T) {
 	live := func(phase provision.Phase, reason string) *provision.Instance {
 		return &provision.Instance{Phase: phase, Reason: reason}
 	}
+	dwell := agentkickoff.StuckDwellPrefix + " more than 15m0s without a ready instance accepting its first turn"
+	agent := func(reason string, exit int32) *provision.Instance {
+		return &provision.Instance{Phase: provision.PhaseRunning, Reason: reason, AppReported: true, AppReason: reason, AppExitCode: exit}
+	}
+	sidecar := &provision.Instance{Phase: provision.PhaseRunning, Reason: "CrashLoopBackOff", AppReported: true}
 	cases := []struct {
 		name string
 		a    agents.Agent
@@ -34,8 +40,13 @@ func TestClassifyInstanceErrorNamesWhatARestartCanFix(t *testing.T) {
 		{"dwell stuck", stored(agentkickoff.StuckDwellPrefix + " more than 15m0s without a ready instance accepting its first turn"), nil, officers.ErrorKickoffStuck},
 		{"dwell stuck, a not_ready last send", stored(agentkickoff.StuckDwellPrefix + " more than 15m0s without a ready instance accepting its first turn; last send error: " +
 			agents.KickoffNotAcceptedReason + ": the session has not started"), nil, officers.ErrorKickoffStuck},
-		{"dwell stuck, the account refused", stored(agentkickoff.StuckDwellPrefix + " more than 15m0s …; last send error: responses HTTP 502: {\"error\":{\"type\":\"auth_failed\"}}"), nil, officers.ErrorAuth},
-		{"dwell stuck, billing", stored(agentkickoff.StuckDwellPrefix + " more than 15m0s …; last send error: responses HTTP 502: {\"error\":{\"type\":\"billing_error\"}}"), nil, officers.ErrorAuth},
+		{"dwell stuck, the account refused", stored(dwell + agents.LastSendErrorSep + `responses HTTP 502: {"error":{"type":"` + podagent.FailureAuthFailed + `","message":"x"}}`), nil, officers.ErrorAuth},
+		{"dwell stuck, billing", stored(dwell + agents.LastSendErrorSep + `responses HTTP 502: {"error":{"type":"` + podagent.FailureBilling + `"}}`), nil, officers.ErrorAuth},
+		{"dwell stuck, rate limited", stored(dwell + agents.LastSendErrorSep + `responses HTTP 429: {"error":{"type":"` + podagent.FailureRateLimited + `","usage_limit":true}}`), nil, officers.ErrorRateLimited},
+		// The auth check reads the TYPED field of the recorded send failure,
+		// not a word anywhere: a message merely quoting it is not auth.
+		{"dwell stuck, a body quoting the word", stored(dwell + agents.LastSendErrorSep + `responses HTTP 502: {"error":{"type":"turn_failed","message":"see auth_failed docs"}}`), nil, officers.ErrorKickoffStuck},
+		{"the word outside the send failure", stored(agentprovision.StepApplyInstance + `: webhook said "type":"auth_failed"`), nil, officers.ErrorApplyFailed},
 		{"checkout grant never approved", stored(agentkickoff.StuckPrefix + "the github grant was not approved within 24h0m0s, so the repository example/repo was never checked out"), nil, officers.ErrorCheckoutWait},
 		{"no gateway: refused kickoff", stored(agentprovision.KickoffRefusalReason), nil, officers.ErrorConfig},
 		{"build spec", stored(agentprovision.StepBuildSpec + ": the account has no setup-token"), nil, officers.ErrorConfig},
@@ -61,6 +72,11 @@ func TestClassifyInstanceErrorNamesWhatARestartCanFix(t *testing.T) {
 		{"image pull backoff", agents.Agent{Status: agents.StatusRunning}, live(provision.PhasePending, "ImagePullBackOff"), officers.ErrorConfig},
 		{"image pull error", agents.Agent{Status: agents.StatusRunning}, live(provision.PhasePending, "ErrImagePull"), officers.ErrorConfig},
 		{"no instance", agents.Agent{Status: agents.StatusRunning}, nil, officers.ErrorUnknown},
+		// By the agent container alone, when the driver reports it.
+		{"agent crash loop", agents.Agent{Status: agents.StatusRunning}, agent("CrashLoopBackOff", 1), officers.ErrorCrashLoop},
+		{"agent crash loop on a missing config (exit 78)", agents.Agent{Status: agents.StatusRunning}, agent("CrashLoopBackOff", 78), officers.ErrorConfig},
+		{"agent image pull", agents.Agent{Status: agents.StatusRunning}, agent("ImagePullBackOff", 0), officers.ErrorConfig},
+		{"a sidecar crash-loops beside a healthy agent", agents.Agent{Status: agents.StatusRunning}, sidecar, officers.ErrorSidecar},
 	}
 	restartable := 0
 	for _, c := range cases {
@@ -118,5 +134,24 @@ func TestAHeldAutoRestartPushesTheOfficersPageAndARestartPushesNothing(t *testin
 	}
 	if r.s.capHolds[1]["officer-restart-held-"+name] {
 		t.Fatalf("the held notice is still recorded after recovery: %v", r.s.capHolds)
+	}
+}
+
+// TestAnInstancesErrorTextIsWhatItsCardShows: the stored error, scrubbed of
+// the pending note as the card's (machine_agents.go) and bounded; for a live
+// failure with no row, the pod's reason and the agent container's exit code.
+func TestAnInstancesErrorTextIsWhatItsCardShows(t *testing.T) {
+	note := "deploy the widget for ticket 6203"
+	a := agents.Agent{Status: agents.StatusError, PendingNote: note, ErrorMessage: "first turn failed: echoed " + note}
+	if got, want := instanceErrorText(a, nil), agents.ScrubNote(a.ErrorMessage, note); got != want || strings.Contains(got, "6203") {
+		t.Fatalf("stored: %q, want %q (the note scrubbed)", got, want)
+	}
+	long := agents.Agent{Status: agents.StatusError, ErrorMessage: strings.Repeat("x", 5000)}
+	if got := []rune(instanceErrorText(long, nil)); len(got) > officers.MaxRestartErrorText+1 {
+		t.Fatalf("stored: %d runes, want at most %d", len(got), officers.MaxRestartErrorText+1)
+	}
+	live := &provision.Instance{Phase: provision.PhaseRunning, Reason: "CrashLoopBackOff", AppReported: true, AppReason: "CrashLoopBackOff", AppExitCode: 78}
+	if got, want := instanceErrorText(agents.Agent{Status: agents.StatusRunning}, live), `instance running: CrashLoopBackOff (agent container: "CrashLoopBackOff", last exit 78)`; got != want {
+		t.Fatalf("live: %q, want %q", got, want)
 	}
 }

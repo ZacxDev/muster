@@ -1,6 +1,8 @@
 package officers_test
 
 import (
+	"context"
+	"errors"
 	"log"
 	"slices"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
@@ -54,9 +57,23 @@ const restartAfter = 3 * time.Minute
 // newRestartRig is newRig with the auto-restart on (after, perDay).
 func newRestartRig(t *testing.T, max int, after time.Duration, perDay int) (*rig, *restartNotices) {
 	t.Helper()
+	return newRestartRigWith(t, max, after, perDay, nil)
+}
+
+// newRestartRigWith is newRestartRig over store (nil: the book in memory).
+func newRestartRigWith(t *testing.T, max int, after time.Duration, perDay int, store officers.RestartStore) (*rig, *restartNotices) {
+	t.Helper()
 	r := newRig(t, max, 30*time.Minute)
 	n := &restartNotices{}
-	rec, err := officers.NewReconciler(officers.Config{
+	r.rec = r.restartLoop(t, after, perDay, store, n)
+	return r, n
+}
+
+// restartLoop is a NEW reconciler over r's fleet, HQ and clock — a fresh
+// muster process — with the auto-restart on, over store, telling n.
+func (r *rig) restartLoop(t *testing.T, after time.Duration, perDay int, store officers.RestartStore, n *restartNotices) *officers.Reconciler {
+	t.Helper()
+	cfg := officers.Config{
 		Registry:          officers.NewRegistry([]officers.Officer{r.o}),
 		HQ:                officers.NewBackends(nil),
 		Fleet:             r.fleet,
@@ -64,12 +81,17 @@ func newRestartRig(t *testing.T, max int, after time.Duration, perDay int) (*rig
 		Now:               r.clk.Now,
 		AutoRestart:       officers.AutoRestart{After: after, MaxPerDay: perDay},
 		AutoRestartNotice: n.add,
-	})
+	}
+	if store != nil {
+		// As a person, the way internal/api runs it as the officer's owner
+		// (the PG store's row-level security needs one).
+		cfg.Restarts, cfg.RestartContext = store, func(ctx context.Context, _ officers.Officer) context.Context { return authz.Operator(ctx) }
+	}
+	rec, err := officers.NewReconciler(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.rec = rec
-	return r, n
+	return rec
 }
 
 // errorOut puts instance n in error of class c (it exists, and holds its slot).
@@ -205,7 +227,7 @@ func TestTheDailyAutoRestartCapHoldsTheInstance(t *testing.T) {
 // work waiting and long past every backoff; it is told once. A restartable
 // class under the same fixture IS restarted (the positive control).
 func TestANonRestartableErrorClassIsHeld(t *testing.T) {
-	for _, c := range []officers.ErrorClass{officers.ErrorConfig, officers.ErrorAuth, officers.ErrorCheckoutWait, officers.ErrorUnknown, "a-future-class"} {
+	for _, c := range []officers.ErrorClass{officers.ErrorConfig, officers.ErrorAuth, officers.ErrorCheckoutWait, officers.ErrorRateLimited, officers.ErrorSidecar, officers.ErrorUnknown, "a-future-class"} {
 		t.Run(c.String(), func(t *testing.T) {
 			r, notices := newRestartRig(t, 1, restartAfter, 3)
 			r.hq.AddItem(relID, "release.evaluate", "svc:v1")
@@ -323,5 +345,203 @@ func TestAnAutoRestartNeitherDoubleCountsASlotNorAClaim(t *testing.T) {
 	}
 	if got := r.fleet.upCount(); got != 2 {
 		t.Fatalf("the pass after: %d up, want 2", got)
+	}
+}
+
+// memRestartStore is a RestartStore in memory, shared by the reconcilers of a
+// test the way the database is shared by muster processes. fail makes every
+// call fail.
+type memRestartStore struct {
+	mu    sync.Mutex
+	rows  map[string]map[string]officers.RestartRecord // officer|day -> instance
+	fail  bool
+	reads int
+}
+
+func newMemRestartStore() *memRestartStore {
+	return &memRestartStore{rows: map[string]map[string]officers.RestartRecord{}}
+}
+
+var errStoreDown = errors.New("restart store unreachable")
+
+func (m *memRestartStore) RestartDay(_ context.Context, officer, day string) (map[string]officers.RestartRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+	if m.fail {
+		return nil, errStoreDown
+	}
+	out := map[string]officers.RestartRecord{}
+	for k, v := range m.rows[officer+"|"+day] {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m *memRestartStore) row(officer, day, instance string) officers.RestartRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rows[officer+"|"+day][instance]
+}
+
+func (m *memRestartStore) put(officer, day, instance string, f func(*officers.RestartRecord)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fail {
+		return errStoreDown
+	}
+	k := officer + "|" + day
+	if m.rows[k] == nil {
+		m.rows[k] = map[string]officers.RestartRecord{}
+	}
+	rec := m.rows[k][instance]
+	f(&rec)
+	m.rows[k][instance] = rec
+	return nil
+}
+
+func (m *memRestartStore) RecordRestart(_ context.Context, officer, day, instance string, at time.Time, errText string) error {
+	return m.put(officer, day, instance, func(r *officers.RestartRecord) { r.Restarts++; r.LastRestartAt = at; r.LastError = errText })
+}
+
+func (m *memRestartStore) SetRestartHeld(_ context.Context, officer, day, instance string, held bool, errText string) error {
+	return m.put(officer, day, instance, func(r *officers.RestartRecord) {
+		r.HeldTold = held
+		if held {
+			r.LastError = errText
+		}
+	})
+}
+
+const restartDay = "2000-01-01" // the rig's clock's UTC day
+
+// TestAFreshLoopHonoursThePersistedCap: two restarts made by one muster
+// process are counted by the NEXT process (a rollout) through the store: at
+// a cap of 2 it does not restart a third time that UTC day, tells the held
+// notice once, and a third process tells it no second time.
+func TestAFreshLoopHonoursThePersistedCap(t *testing.T) {
+	store := newMemRestartStore()
+	r, notices := newRestartRigWith(t, 1, restartAfter, 2, store)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	for i := 0; i < 2; i++ {
+		r.errorOut(1, officers.ErrorKickoffStuck)
+		r.check(t)
+		r.clk.Advance(time.Hour)
+		if res := r.check(t); len(res.Decision.Restart) != 1 {
+			t.Fatalf("restart %d: %+v", i+1, res.Decision.Restart)
+		}
+	}
+	if got := store.row(relID, restartDay, officers.InstanceName(relID, 1)).Restarts; got != 2 {
+		t.Fatalf("store holds %d restarts, want 2", got)
+	}
+	for proc := 2; proc <= 3; proc++ {
+		r.rec = r.restartLoop(t, restartAfter, 2, store, notices) // a fresh process
+		r.errorOut(1, officers.ErrorKickoffStuck)
+		for i := 0; i < 3; i++ {
+			if res := r.check(t); len(res.Decision.Restart) != 0 {
+				t.Fatalf("process %d restarted past the persisted cap: %+v", proc, res.Decision.Restart)
+			}
+			r.clk.Advance(time.Hour)
+		}
+	}
+	if starts, _ := r.startsStops(); len(starts) != 2 {
+		t.Fatalf("%d starts over three processes, want 2", len(starts))
+	}
+	if got := notices.count(func(e officers.AutoRestartEvent) bool { return e.Held }); got != 1 {
+		t.Fatalf("held notices over two fresh processes = %d, want 1 (the record says it was told): %+v", got, notices.all())
+	}
+	if !store.row(relID, restartDay, officers.InstanceName(relID, 1)).HeldTold {
+		t.Fatalf("the held notice is not recorded")
+	}
+}
+
+// TestAFreshLoopHonoursThePersistedBackoff: one restart of the instance by
+// one process makes the next process's restart of it wait 2×After in error,
+// not After.
+func TestAFreshLoopHonoursThePersistedBackoff(t *testing.T) {
+	store := newMemRestartStore()
+	r, notices := newRestartRigWith(t, 1, restartAfter, 3, store)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.errorOut(1, officers.ErrorCrashLoop)
+	r.check(t)
+	r.clk.Advance(restartAfter)
+	if res := r.check(t); len(res.Decision.Restart) != 1 {
+		t.Fatalf("first restart: %+v", res.Decision.Restart)
+	}
+	r.rec = r.restartLoop(t, restartAfter, 3, store, notices) // a fresh process
+	r.errorOut(1, officers.ErrorCrashLoop)
+	r.check(t) // first sight of this error by the new process
+	r.clk.Advance(2*restartAfter - time.Second)
+	if res := r.check(t); len(res.Decision.Restart) != 0 {
+		t.Fatalf("the fresh process restarted after %s in error, before the persisted %s backoff", 2*restartAfter-time.Second, 2*restartAfter)
+	}
+	r.clk.Advance(time.Second)
+	res := r.check(t)
+	if len(res.Decision.Restart) != 1 || res.Decision.Restart[0].Attempt != 2 {
+		t.Fatalf("after %s: Restart = %+v, want attempt 2 (the store's first counted)", 2*restartAfter, res.Decision.Restart)
+	}
+}
+
+// TestAnUnreadableRestartRecordRestartsNothing: a store that cannot be read
+// is not "no restarts today": nothing is restarted or told held until it
+// reads again (fail closed), and that is logged once.
+func TestAnUnreadableRestartRecordRestartsNothing(t *testing.T) {
+	store := newMemRestartStore()
+	r, notices := newRestartRigWith(t, 1, restartAfter, 3, store)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.errorOut(1, officers.ErrorKickoffStuck)
+	store.mu.Lock()
+	store.fail = true
+	store.mu.Unlock()
+	for i := 0; i < 4; i++ {
+		if res := r.check(t); len(res.Decision.Restart) != 0 {
+			t.Fatalf("restarted with the record unreadable: %+v", res.Decision.Restart)
+		}
+		r.clk.Advance(time.Hour)
+	}
+	if len(notices.all()) != 0 {
+		t.Fatalf("told %+v with the record unreadable", notices.all())
+	}
+	if got := strings.Count(r.logs.String(), "the auto-restart record cannot be read"); got != 1 {
+		t.Fatalf("unreadable log lines = %d, want 1:\n%s", got, r.logs.String())
+	}
+	store.mu.Lock()
+	store.fail = false
+	store.mu.Unlock()
+	if res := r.check(t); len(res.Decision.Restart) != 1 {
+		t.Fatalf("the record reads again: Restart = %+v, want one", res.Decision.Restart)
+	}
+}
+
+// TestARestartAndAHeldRestartKeepTheErrorText: the restart's Stop clears
+// the agent row's error, so the restart's log line and record carry it, and
+// so does a held restart's.
+func TestARestartAndAHeldRestartKeepTheErrorText(t *testing.T) {
+	store := newMemRestartStore()
+	r, _ := newRestartRigWith(t, 2, restartAfter, 1, store)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.hq.AddItem(relID, "release.evaluate", "svc:v2")
+	r.errorOut(1, officers.ErrorKickoffStuck)
+	r.errorOut(2, officers.ErrorConfig)
+	r.fleet.mu.Lock()
+	r.fleet.errText[1] = "kickoff never delivered: the agent dwelt more than 15m0s (fixture 4471)"
+	r.fleet.errText[2] = "build spec: the account has no setup-token (fixture 4483)"
+	r.fleet.mu.Unlock()
+	r.check(t)
+	r.clk.Advance(restartAfter)
+	r.check(t)
+	logs := r.logs.String()
+	if !strings.Contains(logs, "AUTO-RESTARTED instance 1") || !strings.Contains(logs, "its error was: kickoff never delivered: the agent dwelt more than 15m0s (fixture 4471)") {
+		t.Fatalf("the restart's log line does not carry its error:\n%s", logs)
+	}
+	if !strings.Contains(logs, "instance 2 is in error (config) for 3m0s with work waiting and is NOT auto-restarted") ||
+		!strings.Contains(logs, "its error: build spec: the account has no setup-token (fixture 4483)") {
+		t.Fatalf("the held line does not carry its error:\n%s", logs)
+	}
+	if got := store.row(relID, restartDay, officers.InstanceName(relID, 1)).LastError; !strings.Contains(got, "fixture 4471") {
+		t.Fatalf("restart record's last error = %q", got)
+	}
+	if got := store.row(relID, restartDay, officers.InstanceName(relID, 2)).LastError; !strings.Contains(got, "fixture 4483") {
+		t.Fatalf("held record's last error = %q", got)
 	}
 }

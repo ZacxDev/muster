@@ -108,10 +108,10 @@ func (a *Adapter) Rebind(ctx context.Context, agentID int64, from, to string, pr
 	}
 	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
-		return res, a.fail(ctx, ag, "build spec after an account failover", err)
+		return res, a.fail(ctx, ag, StepBuildSpec+" after an account failover", err)
 	}
 	if err := a.driver.Update(ctx, spec); err != nil {
-		return res, a.fail(ctx, ag, "apply instance after an account failover", err)
+		return res, a.fail(ctx, ag, StepApplyInstance+" after an account failover", err)
 	}
 	if err := a.setStatus(ctx, ag.ID, agents.StatusProvisioning); err != nil {
 		return res, err

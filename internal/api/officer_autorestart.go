@@ -8,8 +8,8 @@ import (
 	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -28,36 +28,63 @@ import (
 //     agentprovision's refuseKickoff (KickoffRefusalSummary: the deployment
 //     names no gateway) and the kickoff deliverer's two stuck verdicts
 //     (agentkickoff.StuckPrefix). Each is matched by the writer's own
-//     exported constant, so a reworded message moves both or neither.
-//   - the live instance: CrashLoopBackOff or a failed phase is a crash loop;
-//     an image that will not pull is configuration (the image reference).
+//     exported constant, so a reworded message moves both or neither. A
+//     stuck verdict whose recorded send failure (after
+//     agents.LastSendErrorSep) is the runtime's typed auth_failed or
+//     billing_error is auth, and rate_limited is rate_limited: a restart
+//     sends the same credential into the same limit.
+//   - the live instance, by its AGENT container alone when the driver
+//     reports it (provision.Instance.AppReported): a crash loop exiting 78
+//     (EX_CONFIG: the runtime's "Missing config") or an image that will not
+//     pull is configuration; any other crash loop or a failed pod is a crash
+//     loop; an instance in error with the agent container itself not failing
+//     is a failing sidecar, held. A driver that reports no container split
+//     runs one process, whose Reason is the agent's.
 //
 // 🔴 EVERY OTHER TEXT IS officers.ErrorUnknown, WHICH IS HELD. A writer added
 // later, or a reworded step, falls to the old behaviour (the slot is held
-// until an operator acts), never to a restart loop. And a credential failure
-// the runtime reported in a stuck verdict's last send error (ccd's
-// auth_failed, a billing_error) is auth, whatever the verdict: a restart
-// sends the same credential.
+// until an operator acts), never to a restart loop.
 func classifyInstanceError(a agents.Agent, inst *provision.Instance) officers.ErrorClass {
 	if a.Status == agents.StatusError {
 		return classifyStoredError(a.ErrorMessage)
 	}
-	switch {
-	case inst == nil:
+	if inst == nil {
 		return officers.ErrorUnknown
-	case inst.Reason == "ImagePullBackOff" || inst.Reason == "ErrImagePull":
+	}
+	reason := inst.Reason
+	if inst.AppReported {
+		reason = inst.AppReason
+	}
+	switch {
+	case reason == "ImagePullBackOff" || reason == "ErrImagePull":
 		return officers.ErrorConfig
-	case agents.InstanceFailed(inst):
+	case inst.AppReported && inst.AppExitCode == exitConfig:
+		return officers.ErrorConfig
+	case reason == "CrashLoopBackOff" || inst.Phase == provision.PhaseFailed:
 		return officers.ErrorCrashLoop
+	case inst.AppReported && agents.InstanceFailed(inst):
+		// The instance reads failed by another container's reason alone.
+		return officers.ErrorSidecar
 	}
 	return officers.ErrorUnknown
 }
 
+// exitConfig is EX_CONFIG (sysexits.h), the exit status of an agent runtime
+// that refuses to start for a missing or bad configuration
+// (provision.Health's "Missing config", exit 78).
+const exitConfig = 78
+
 // classifyStoredError is classifyInstanceError's stored half: msg is the
 // agent row's error_message.
 func classifyStoredError(msg string) officers.ErrorClass {
-	if strings.Contains(msg, ccpool.FailureAuthFailed) || strings.Contains(msg, "billing_error") {
-		return officers.ErrorAuth
+	if _, last, ok := strings.Cut(msg, agents.LastSendErrorSep); ok {
+		typed := func(t string) bool { return strings.Contains(last, `"type":"`+t+`"`) }
+		switch {
+		case typed(podagent.FailureAuthFailed), typed(podagent.FailureBilling):
+			return officers.ErrorAuth
+		case typed(podagent.FailureRateLimited):
+			return officers.ErrorRateLimited
+		}
 	}
 	step := func(s string) bool { return strings.HasPrefix(msg, s+":") || strings.HasPrefix(msg, s+" ") }
 	switch {
@@ -80,6 +107,30 @@ func classifyStoredError(msg string) officers.ErrorClass {
 		return officers.ErrorApplyFailed
 	}
 	return officers.ErrorUnknown
+}
+
+// maxInstanceErrorText bounds InstanceState.ErrorText.
+const maxInstanceErrorText = officers.MaxRestartErrorText
+
+// instanceErrorText is officer instance agent a's error as its card shows it
+// (the stored error_message, scrubbed of its pending note, as
+// machine_agents.go shows it), or — for a live instance's own failure, which
+// writes no row — the pod's reason and exit code; bounded.
+func instanceErrorText(a agents.Agent, inst *provision.Instance) string {
+	if a.Status == agents.StatusError && a.ErrorMessage != "" {
+		return truncateRunes(agents.ScrubNote(a.ErrorMessage, a.PendingNote), maxInstanceErrorText)
+	}
+	if inst == nil {
+		return ""
+	}
+	t := "instance " + string(inst.Phase)
+	if inst.Reason != "" {
+		t += ": " + inst.Reason
+	}
+	if inst.AppReported {
+		t += fmt.Sprintf(" (agent container: %q, last exit %d)", inst.AppReason, inst.AppExitCode)
+	}
+	return truncateRunes(t, maxInstanceErrorText)
 }
 
 // officerAutoRestartNotice is the wake loop's officers.Config.

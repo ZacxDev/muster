@@ -89,6 +89,8 @@ var personalOwned = []string{
 	// 0160: the confirm cards in a person's chat with an officer; one
 	// manager's cards are never another's.
 	"officer_chat_cards",
+	// 0161: an officer's auto-restart record; only its owner's loop writes it.
+	"officer_auto_restarts",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

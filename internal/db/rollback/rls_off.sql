@@ -335,6 +335,12 @@ BEGIN
         ALTER TABLE public.officer_chat_cards DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_chat_cards ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0161 (officer_auto_restarts), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_auto_restarts') IS NOT NULL THEN
+        ALTER TABLE public.officer_auto_restarts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_auto_restarts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_auto_restarts ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;

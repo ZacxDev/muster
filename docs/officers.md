@@ -898,8 +898,8 @@ that has an agent), never every instance in the cluster.
 instances, so a restarted muster makes the same decisions. What is kept in
 memory is when the officer was first seen idle — a restart forgets it and
 waits a full idle window again, which can delay a scale-down, never cause one
-— and the [auto-restart](#an-instance-in-error)'s counts and clock, which a
-restart starts again.
+— and the [auto-restart](#an-instance-in-error)'s clock for an error in
+progress, which a restart starts again (its counts are kept in the database).
 
 **Shutdown.** A re-prompt being sent when muster shuts down is cancelled
 with the other in-flight deliveries, releases the instance's session claim,
@@ -930,21 +930,30 @@ A pass restarts instance *n* only when all of these hold:
   | class | what it is | restarted |
   |---|---|---|
   | `kickoff_stuck` | its first turn never landed: no ready session took it within the kickoff deliverer's bound (nothing was sent, so nothing is paid twice) | yes |
-  | `crash_loop` | the pod is crash-looping, or failed | yes |
+  | `crash_loop` | the instance's **agent** container is crash-looping, or the pod failed | yes |
   | `apply_failed` | a write to the backend failed: apply, scale, create, or a token store beside them | yes |
-  | `config` | the spec could not be built, the image cannot be pulled, an instance of that name exists with another spec, or the deployment cannot deliver a first turn | no |
+  | `config` | the spec could not be built, the image cannot be pulled, the agent container crash-loops exiting 78 (its runtime's "Missing config"), an instance of that name exists with another spec, or the deployment cannot deliver a first turn | no |
   | `auth` | the Claude account's credential could not be read or a token minted, or the model account refused it (`auth_failed`, `billing_error`) | no |
   | `checkout_wait` | its first turn waited for a repository checkout that never came (a grant nobody approved) | no |
+  | `rate_limited` | its first turn's last send was refused `rate_limited` (a restart sends the next one into the same limit) | no |
+  | `sidecar` | the instance reads error only because another container in its pod (a sidecar, a key holder) is failing, not its agent | no |
   | `unknown` | anything else, or nothing recorded | no |
 
   A cause muster does not recognise is held: a new kind of error never
-  becomes a restart loop by default.
+  becomes a restart loop by default. The live instance is judged by its agent
+  container alone: a crash-looping sidecar does not end a live session.
 - **There is work for it.** An item its pool could claim now (for a queue
   instance), a chat waiting for a lane it could give, or a live claim it holds
-  itself. An idle officer's instance is not restarted (the idle scale-down
-  stops it instead), and neither is one of an officer over its
-  [daily budget](officers-builtin.md#daily-budget-and-routine-batching) or its
-  judgement pool's session cap, which count no item claimable.
+  itself that a fresh instance could claim again. An idle officer's instance
+  is not restarted (the idle scale-down stops it instead), and neither is one
+  of an officer over its
+  [daily budget](officers-builtin.md#daily-budget-and-routine-batching) (or
+  whose spend cannot be read) or its judgement pool's session cap: those count
+  no item claimable, and a claim the instance holds counts only if it would
+  be claimable again (the owner's own item over the budget; an item already
+  counted today under the cap). A waiting chat is subject to neither: chats
+  run only on an HQ officer, which has no daily budget, and a chat turn is
+  not a judgement session.
 - **It has waited out its backoff.** The first restart of the instance in a
   UTC day comes once this muster has seen it in error for
   `MUSTER_OFFICER_AUTO_RESTART_AFTER` (default `5m`), the next once its next
@@ -966,12 +975,15 @@ fails starts nothing and releases nothing.
 
 **What you see.** Each restart is logged —
 `officers: <id>: AUTO-RESTARTED instance <n> from error (<class>, in error
-<d>): auto-restart <k> of <max> today (UTC)` — and counted on
+<d>): auto-restart <k> of <max> today (UTC); its error was: <error>` — the
+instance's `error_message` as its card shows it (its pending note scrubbed,
+at most 300 characters in the log), since the restart's Stop clears the agent
+row's — and counted on
 `muster_officer_auto_restarts_total`; it is not pushed (the instance is working
 again). A restart muster would make now but will not — the class is not
 restartable, or the day's cap is spent — is logged once per error episode
 (`… is NOT auto-restarted: <why> — it holds its slot until an operator stops
-and starts it`), counted on `muster_officer_auto_restarts_held_total`, and
+and starts it; its error: <error>`), counted on `muster_officer_auto_restarts_held_total`, and
 **pushed to the officer's owner** once per episode, opening the officer's page;
 the instance leaving error withdraws it. That instance then holds its slot
 until an operator stops and starts it, as before.
@@ -981,11 +993,16 @@ until an operator stops and starts it, as before.
 its slot until an operator acts. The boot banner says which
 (`officers: auto-restart ON — …` or `OFF`).
 
-The counts and the backoff clock are this muster process's, in memory: a
-restarted muster starts the day's count again, and its clock for an instance
-already in error starts when it first sees it. That can allow more restarts in
-a day than the cap across muster restarts, never a restart every poll. Two
-replicas each count their own.
+**It survives a rollout.** The record is kept in the database
+(`officer_auto_restarts`, migration 0161), one row per officer, UTC day and
+instance: its restarts that day (the cap's sum, the backoff's exponent), the
+last one's time, whether its held notice was told, and its last error (at
+most 1,000 characters). A restarted muster, or another replica, reads the
+day's rows, so neither the cap nor the backoff resets and a held notice is not
+pushed again. Only the clock of an error already in progress starts again
+when a new process first sees it, which can only delay a restart. If the
+record cannot be read, no instance is restarted until it can (logged once).
+Without a database the record is in memory, per process.
 
 ### A claim held by a stopped instance
 
