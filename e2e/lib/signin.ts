@@ -36,6 +36,8 @@ import { noteFormSignIn } from './server';
 type Cookies = Awaited<ReturnType<BrowserContext['cookies']>>;
 
 // The password-mode session cookie (internal/api auth.go sessionCookieName).
+// Unprefixed: every e2e server's public URL is http://localhost, and only an
+// https deployment names its cookies `__Host-…` (internal/api cookie_names.go).
 const sessionCookie = 'muster_session';
 const sessions = new Map<string, Cookies>();
 

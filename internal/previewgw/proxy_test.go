@@ -159,8 +159,8 @@ var codeRE = regexp.MustCompile(`^[a-z_]{1,32}$`)
 
 // ------------------------------------------------------------ the tests
 
-// 🔴 Credentials never reach the app: the gateway's cookies, muster_*
-// cookies, Forwarded / X-Forwarded-* / X-Real-IP / CF-* / True-Client-IP /
+// 🔴 Credentials never reach the app: the gateway's cookies, muster_* and
+// __Host-muster_* cookies (any case), Forwarded / X-Forwarded-* / X-Real-IP / CF-* / True-Client-IP /
 // X-Muster-* are all gone; the viewer's address is not forwarded; the app's
 // own cookie and Authorization pass; Host is localhost:<the preview's port>
 // (4174, not the app's real port), with the public host in
@@ -171,7 +171,7 @@ func TestCredentialsNeverReachTheApp(t *testing.T) {
 	var rc recorder
 	_, id, cookie, _ := e.admitted(t, 4174, rc.start(t, nil))
 	h := own(id, cookie)
-	h.Set("Cookie", "app=1; "+OwnerCookie+"="+cookie+"; muster_session=s3cret; "+ShareCookie+"=x; theme=dark")
+	h.Set("Cookie", "app=1; "+OwnerCookie+"="+cookie+"; muster_session=s3cret; __Host-muster_session=s3cret; __host-MUSTER_at=t; "+ShareCookie+"=x; theme=dark")
 	for k, v := range map[string]string{
 		"X-Forwarded-For": "203.0.113.9", "Forwarded": "for=203.0.113.9", "X-Forwarded-Host": "evil.example",
 		"X-Real-IP": "203.0.113.9", "CF-Connecting-IP": "203.0.113.9", "CF-Ray": "abc", "True-Client-IP": "203.0.113.9",

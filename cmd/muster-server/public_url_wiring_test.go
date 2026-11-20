@@ -38,7 +38,8 @@ func TestMusterPublicURLReachesTheSameOriginCheck(t *testing.T) {
 		}
 		resp.Body.Close()
 		for _, c := range resp.Cookies() {
-			if c.Value != "" && c.Name == "muster_session" {
+			// __Host-muster_session with an https public URL (api cookie_names.go).
+			if c.Value != "" && (c.Name == "muster_session" || c.Name == "__Host-muster_session") {
 				session = c
 			}
 		}
