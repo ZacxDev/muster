@@ -184,6 +184,68 @@ func TestOutboundBareRepoNameExemptsOnlyThatWord(t *testing.T) {
 	}
 }
 
+// TestOutboundBareRepoNameIsOnlyTheStandaloneName (security guard): the
+// exemption is for the project's OWN name standing alone. Prose punctuation
+// beside it keeps it bare; a name-continuing character on either side (a
+// letter or digit, `-`, `_`, `/`, a `.` before a letter or digit) makes it
+// part of another name, which is screened as at base.
+func TestOutboundBareRepoNameIsOnlyTheStandaloneName(t *testing.T) {
+	allow := []string{widgetRepo}
+	only := []string{"widget"}
+	for _, text := range []string{
+		"widget has a new logo.",
+		"widget's",
+		"Try widget.",
+		"Try widget...",
+		"...widget",
+		"(widget), widget: widget!",
+		"widget\u2019s new logo",
+	} {
+		if why := OutboundTextRefusal(text, only, allow); why != "" {
+			t.Errorf("bare %q refused: %s", text, why)
+		}
+	}
+	for _, text := range []string{
+		"widget-prod is up",
+		"prod-widget is up",
+		"the widget.staging box",
+		"see x.widget",
+		"see a/widget",
+		"see \u00e9widget",
+		"see example.org/acme/widget-private",
+		"see github.com/acme/widget-private",
+	} {
+		if why := OutboundTextRefusal(text, only, allow); why != nameRefusal {
+			t.Errorf("compound %q: %q; want %q", text, why, nameRefusal)
+		}
+	}
+	// Built at run time, as above, so the leak gate never reads a private host.
+	if why := OutboundTextRefusal("widget."+"internal is up", only, allow); why == "" {
+		t.Error("the name before an internal suffix passed")
+	}
+	// The pattern screens see the text unmasked: a token-shaped run the bare
+	// name sits inside (between `+`, which does not continue a name) is still
+	// one run.
+	token := strings.Repeat("a", 20) + "+widget+" + strings.Repeat("b", 20)
+	if why := OutboundTextRefusal("key "+token, only, allow); !strings.Contains(why, "a long token-shaped string") {
+		t.Errorf("a token around the bare name: %q; want the token refusal", why)
+	}
+	// A compound that is itself a deny word: the bare name inside it is not
+	// masked, so the compound is still found whole.
+	for _, c := range []struct{ text, word string }{
+		{"widget_staging is up", "widget_staging"},
+		{"widget-prod is up", "widget-prod"},
+		{"widget.staging is up", "widget.staging"},
+		{"see widgetco", "widgetco"},
+		{"widget2 is up", "widget2"},
+		{"see prod/widget", "prod/widget"},
+	} {
+		if why := OutboundTextRefusal(c.text, []string{"widget", c.word}, allow); why != nameRefusal {
+			t.Errorf("%q with %q denied: %q; want %q", c.text, c.word, why, nameRefusal)
+		}
+	}
+}
+
 // TestReplyScreenKeepsThePublicRepoName: AgentTextRefusal (every non-officer
 // agent text) has no allowlist and so no exempt name.
 func TestReplyScreenKeepsThePublicRepoName(t *testing.T) {

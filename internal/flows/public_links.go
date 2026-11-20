@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // PUBLIC LINKS IN AN OFFICER'S OUTBOUND DRAFT (OutboundTextRefusal).
@@ -30,12 +32,18 @@ import (
 //     every other word. A link the allowlist does not name — another repository
 //     of the same owner included — is not exempt at all.
 //   - A REPOSITORY ENTRY's name may also stand alone. An entry of exactly the
-//     shape `host/<owner>/<repo>` declares <repo> public, so a deny word that
-//     is exactly <repo> (without case, a `.git` suffix dropped) is not refused
-//     anywhere in an outbound draft — "<repo> has a new logo" passes
-//     (publicRepoNames). Only the repository name: never <owner>, never a
+//     shape `host/<owner>/<repo>` declares <repo> public (publicRepoNames), and
+//     each STANDALONE occurrence of <repo> in the draft (without case) is
+//     masked before the deny-word scan (MaskBareNames): "<repo> has a new
+//     logo." passes though <repo> is a deny word. Standalone means no
+//     name-continuing character touches it (continuesName): a letter or digit,
+//     `-`, `_`, `/`, or a `.` with a letter or digit on its far side — so
+//     `<repo>-prod`, `<repo>_x`, `<repo>.internal`, `x.<repo>` and
+//     `…/<repo>-private` are screened as ever, while prose punctuation
+//     (`<repo>.` at a sentence's end, `<repo>,`, `<repo>'s`, `(<repo>)`) is
+//     not a continuation. Only the repository name: never <owner>, never a
 //     name that is also an entry's owner, never a host-only or deeper entry's
-//     last segment, and never a deny word that merely CONTAINS <repo>.
+//     last segment.
 //   - Everything else in the screen is unchanged: an IP address, an internal
 //     host name, a credential- or token-shaped string, an infrastructure word
 //     or any other deployment name anywhere OUTSIDE an allowlisted link is
@@ -174,6 +182,56 @@ func publicRepoNames(allow []string) map[string]bool {
 		delete(names, o)
 	}
 	return names
+}
+
+// MaskBareNames is text with every standalone occurrence of a name in names
+// (lower-case; compared without case) replaced by as many spaces: one that no
+// name-continuing character touches on either side (continuesName).
+func MaskBareNames(text string, names map[string]bool) string {
+	for n := range names {
+		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(n))
+		var b strings.Builder
+		last := 0
+		for _, m := range re.FindAllStringIndex(text, -1) {
+			if continuesName(text[:m[0]], true) || continuesName(text[m[1]:], false) {
+				continue
+			}
+			b.WriteString(text[last:m[0]])
+			b.WriteString(strings.Repeat(" ", m[1]-m[0]))
+			last = m[1]
+		}
+		b.WriteString(text[last:])
+		text = b.String()
+	}
+	return text
+}
+
+// continuesName reports whether the text beside a name continues it into a
+// longer one: side is what precedes the name (before) or what follows it. A
+// letter or digit, `-`, `_` or `/` continues it; so does a `.` whose far
+// side is a letter or digit (`x.<name>`, `<name>.internal`), while a `.`
+// ending a sentence does not.
+func continuesName(side string, before bool) bool {
+	next := func(s string) (rune, string) {
+		if before {
+			r, n := utf8.DecodeLastRuneInString(s)
+			return r, s[:len(s)-n]
+		}
+		r, n := utf8.DecodeRuneInString(s)
+		return r, s[n:]
+	}
+	if side == "" {
+		return false
+	}
+	r, rest := next(side)
+	switch {
+	case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '/':
+		return true
+	case r == '.' && rest != "":
+		f, _ := next(rest)
+		return unicode.IsLetter(f) || unicode.IsDigit(f)
+	}
+	return false
 }
 
 // segmentIs reports whether link segment got is allowlist segment want,

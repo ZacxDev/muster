@@ -831,14 +831,19 @@ out of the text, then screens what is left:
   A link the allowlist does not name is not exempt at all, including another
   repository of the same owner (`github.com/<owner>/muster-private`): it is
   refused if it spells a deployment name.
-- **The repository's own name may stand alone.** A deny word that is exactly
-  the `<repo>` of an allowlist entry `github.com/<owner>/<repo>` (compared
-  without case, a `.git` suffix dropped) is not refused anywhere in the
-  draft, so a post may say "widget has a new logo" when `acme/widget` is a
-  standing-read repository and `widget` is also one of your deny words. Only
-  that exact name: `<owner>` is still refused (even when it is also a declared
-  repository's name), and so is a deny word that merely contains `<repo>`
-  (`widget-private`).
+- **The repository's own name may stand alone.** When `<repo>` of an
+  allowlist entry `github.com/<owner>/<repo>` is also one of your deny words,
+  each occurrence of it that **stands alone** in the draft (compared without
+  case) is not refused, so a post may say "widget has a new logo." when
+  `acme/widget` is a standing-read repository. Standing alone means no
+  name-continuing character touches it on either side: a letter or digit,
+  `-`, `_`, `/`, or a `.` with a letter or digit beyond it. So
+  `widget-prod`, `prod-widget`, `widget.staging`, `x.widget` and an
+  undeclared `github.com/<owner>/widget-private` are screened as before,
+  while prose punctuation (`widget.` at the end of a sentence, `widget,`,
+  `widget's`, `(widget)`) still counts as the bare name. Only that name is
+  exempt: `<owner>` is still refused (even when it is also a declared
+  repository's name), and so is every other deny word.
 - **Everything else is unchanged.** Any other deployment name in the prose
   around the link (another project, a cluster, the owner), an internal host
   name, an IP address, a credential- or token-shaped string or an

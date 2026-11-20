@@ -147,30 +147,45 @@ func AgentTextRefusal(text string, words []string) string {
 //     before the screen runs (StripPublicLinks), so `github.com/<owner>/<repo>`
 //     may spell a deployment name when the deployment declared that
 //     repository public;
-//   - a deny word that is exactly the <repo> of an entry `host/<owner>/<repo>`
-//     (without case; publicRepoNames) is not screened at all, so the post may
-//     name the public project bare. <owner>, and every other deny word, is.
+//   - a STANDALONE occurrence of the <repo> of an entry `host/<owner>/<repo>`
+//     (without case; publicRepoNames) is masked before the deny-word scan
+//     (MaskBareNames), so the post may name the public project bare even when
+//     that name is a deny word. Standalone only: the name inside a compound
+//     run (`<repo>-prod`, `<repo>_x`, `<repo>.internal`, `x.<repo>`,
+//     `…/<repo>`) is screened as ever, and so are <owner> and every other
+//     deny word. The pattern screens (hosts, IPs, secrets, infrastructure
+//     words) see the unmasked text.
 //
 // 🔴 Only an outbound draft of a plugin bound to an officer is screened by
 // this; every other agent text keeps AgentTextRefusal, with no allowlist and
 // no exempt name.
 func OutboundTextRefusal(text string, words, publicLinks []string) string {
-	exempt := publicRepoNames(publicLinks)
-	var screened []string
-	for _, w := range words {
-		if !exempt[strings.ToLower(strings.TrimSpace(w))] {
-			screened = append(screened, w)
-		}
+	text = StripPublicLinks(text, publicLinks)
+	if why := patternRefusal(outboundTextDeny, text); why != "" {
+		return why
 	}
-	return textRefusal(outboundTextDeny, StripPublicLinks(text, publicLinks), screened)
+	return wordRefusal(MaskBareNames(text, publicRepoNames(publicLinks)), words)
 }
 
 func textRefusal(deny []textDeny, text string, words []string) string {
+	if why := patternRefusal(deny, text); why != "" {
+		return why
+	}
+	return wordRefusal(text, words)
+}
+
+// patternRefusal is why text matches one of deny's patterns, or "".
+func patternRefusal(deny []textDeny, text string) string {
 	for _, d := range deny {
 		if d.re.MatchString(text) {
 			return "the text carries " + d.what + "; an agent may not send that to a third party"
 		}
 	}
+	return ""
+}
+
+// wordRefusal is why text carries one of the deployment's own names, or "".
+func wordRefusal(text string, words []string) string {
 	low := strings.ToLower(text)
 	for _, w := range words {
 		if w = strings.ToLower(strings.TrimSpace(w)); w != "" && containsWord(low, w) {
