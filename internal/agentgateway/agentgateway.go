@@ -184,6 +184,66 @@ type Gateway struct {
 	// noAccount says an agent runs on none of the shared Claude accounts
 	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
 	noAccount func(context.Context, agents.Agent) bool
+	// parks tells a pane still on an old usage-limit menu from a live limit
+	// (UseLimitParks); nil = every usage-limit failure marks, as before.
+	parks LimitParks
+	// limitRestartable says which agents a stale menu is restarted for
+	// (UseLimitRestartable); nil = none, so no refusal is ever suppressed.
+	limitRestartable func(context.Context, agents.Agent) bool
+}
+
+// LimitParks is internal/limitpark.Board: which agents' panes are parked on
+// their account's usage-limit menu, and whether a refusal from one is STALE —
+// the pane parked since before a newer live reading showed the account
+// usable. The gateway records every usage-limit failure there, and a stale
+// one marks no account and moves no agent.
+type LimitParks interface {
+	NoteLimit(ctx context.Context, agentID int64, lane string, owner int64, account, detail string, menu bool) (stale bool, why string)
+	Clear(agentID int64, lane string)
+}
+
+// turnLane is the ccd lane a turn runs in: its route's HeaderCCSession (a
+// session of its own, e.g. an officer instance's chat lane), "" for ccd's
+// primary CLI. A park is per lane: one lane's success or busy says nothing
+// about another lane's menu.
+func turnLane(ctx context.Context) string {
+	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Header != nil {
+		return r.Header.Get(agents.HeaderCCSession)
+	}
+	return ""
+}
+
+// UseLimitParks installs the limit-park board (cmd/muster-server, beside the
+// usage poller that feeds it its readings). A second call replaces the first.
+func (g *Gateway) UseLimitParks(p LimitParks) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.parks = p
+}
+
+// UseLimitRestartable installs THE rule for which agents muster restarts off
+// a stale usage-limit menu (internal/api Server.LimitRestartable: a pod
+// officer's instance, which the wake loop restarts). Only for those is a stale
+// menu refusal kept from marking the account: every other agent's refusal
+// marks it and runs the failover exactly as before, since nothing else would
+// end its menu. nil (never installed): no refusal is suppressed.
+func (g *Gateway) UseLimitRestartable(f func(context.Context, agents.Agent) bool) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.limitRestartable = f
+}
+
+func (g *Gateway) restartsLimitMenu(ctx context.Context, a agents.Agent) bool {
+	g.failoverMu.RLock()
+	f := g.limitRestartable
+	g.failoverMu.RUnlock()
+	return f != nil && f(ctx, a)
+}
+
+func (g *Gateway) limitParks() LimitParks {
+	g.failoverMu.RLock()
+	defer g.failoverMu.RUnlock()
+	return g.parks
 }
 
 // AccountFailover is what the gateway tells after a usage limit (a
@@ -326,6 +386,9 @@ type Target struct {
 	account string
 	owner   int64
 	agentID int64
+	// limitRestart: muster restarts this agent off a stale usage-limit menu
+	// (UseLimitRestartable), so its stale menu refusal marks nothing.
+	limitRestart bool
 }
 
 // Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
@@ -342,7 +405,8 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.AccountOf(ctx, a), owner: a.OwnerID, agentID: a.ID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.AccountOf(ctx, a), owner: a.OwnerID, agentID: a.ID,
+		limitRestart: g.restartsLimitMenu(ctx, a)}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
@@ -402,12 +466,39 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if !errors.As(err, &rt) {
 		return err
 	}
+	parks := g.limitParks()
+	if parks != nil && t.agentID > 0 && rt.Status == http.StatusConflict && rt.Type == "busy" {
+		// ccd says a turn is running in the session (or a dialog other than
+		// the limit menu is up): the pane is not refusing from a limit menu.
+		parks.Clear(t.agentID, turnLane(ctx))
+	}
 	// 🔴 NOT EVERY rate_limited: only the account's usage limit marks it and
 	// fails the agent over (ccpool.AccountFailure, the one place that decides).
 	// A transient 429 marks nothing; the caller retries on the same account.
 	failure := ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status)
 	if failure == "" {
 		return err
+	}
+	// 🔴 A STALE MENU MARKS NOTHING. A 409 rate_limited is ccd refusing a turn
+	// because the pane still shows the usage-limit menu, which stays until
+	// someone answers it. When the pane has been parked there since before a
+	// newer live reading showed the account usable (limitpark, by timestamps),
+	// the refusal is not evidence about the account: marking it again undid
+	// the usage poller's clear every interval and kept every agent on the
+	// account from being placed. The wake loop restarts such an officer
+	// instance instead (internal/officers restartLimitParked). A 429 — a turn
+	// that was typed and hit the limit — is always recorded and always marks.
+	//
+	// 🔴 ONLY FOR AN AGENT THAT IS RESTARTED (t.limitRestart, the one rule
+	// UseLimitRestartable installs). Any other agent's stale refusal still
+	// marks the account and runs the failover, as before this board existed:
+	// a rebind is what gives such an agent a fresh CLI, and nothing else would
+	// end its menu. (It still does not count as a fresh hit on the account,
+	// so it cannot hold back the restart of the officer instances.)
+	if failure == ccpool.FailureRateLimited && parks != nil && t.agentID > 0 {
+		if stale, _ := parks.NoteLimit(ctx, t.agentID, turnLane(ctx), t.owner, t.account, rt.Message, rt.Status == http.StatusConflict); stale && t.limitRestart {
+			return err
+		}
 	}
 	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
 	defer cancel()
@@ -454,7 +545,14 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 // turn's, as noteFailure's mark does, so a caller that hangs up on the reply
 // does not cancel it.
 func (g *Gateway) noteSuccess(ctx context.Context, t Target, reply string, err error) {
-	if err != nil || strings.TrimSpace(reply) == "" || g.kickoff == nil || t.agentID <= 0 {
+	if err != nil || strings.TrimSpace(reply) == "" || t.agentID <= 0 {
+		return
+	}
+	// A completed turn: the pane is not on a limit menu.
+	if parks := g.limitParks(); parks != nil {
+		parks.Clear(t.agentID, turnLane(ctx))
+	}
+	if g.kickoff == nil {
 		return
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)

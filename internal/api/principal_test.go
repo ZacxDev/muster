@@ -137,6 +137,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins",
 		// A viewer hand-off's mint (plugin_handoffs.go).
 		"POST /plugin-handoffs",
+		// An app tab's page and its alive poll (plugin_app.go).
+		"GET /apps/{id}",
+		"GET /ui/apps/{id}/alive",
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/{id}/tasks",
@@ -491,6 +494,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /tasks/{id}/complete",
 		"POST /tasks/{id}/edit",
 		"POST /tasks/{id}/tags",
+		"POST /ui/connector-grants/{id}/rerun",
 		"POST /ui/connector-requests/{id}/approve",
 		"POST /ui/connector-requests/{id}/deny",
 		// Browser flows (0012): the page and its forms.
@@ -715,6 +719,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/task-writes/claim",
 		"POST /plugin/v1/task-writes/{id}/result",
 		"POST /plugin/v1/messages/{id}/owner-answered",
+		"POST /plugin/v1/notify",
+		"DELETE /plugin/v1/notify/{ref}",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
@@ -773,7 +779,7 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 	if tok == pPluginToken {
 		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
 			// Every capability, so the probe reaches every plugin route's handler.
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension}}, nil
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension, plugins.CapApp}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

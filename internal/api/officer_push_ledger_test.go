@@ -70,6 +70,8 @@ var notOfficerRouted = map[string]string{
 	"outreach_batch.go Server.clearBatchNote -> goNotify":                 "a withdrawal (resolved), never a new notification",
 	"team_withdraw.go Server.withdrawTeamItemsNow -> goNotify":            "a withdrawal (resolved), never a new notification",
 	"push_task.go Server.notifyTaskDone -> goNotify":                      "the withdrawal when a task leaves review (resolved)",
+	"plugin_notify.go Server.handlePluginNotify -> goNotify":              "an app plugin's knock (POST /plugin/v1/notify): only a plugin's own token with `app` reaches it, never an agent or an officer instance, and its text is muster's",
+	"plugin_notify.go Server.handlePluginNotifyWithdraw -> goNotify":      "a withdrawal (resolved), never a new notification",
 	"attention_tools.go Server.toolAttentionAsk -> askFiled":              "shared: any agent's attention_ask, an officer instance's included — a question, a decision, opening the ask's card",
 	"page_tools.go Server.toolPageShareRequest -> askFiled":               "shared: any agent's page_share_request — approve or deny the share, opening the ask's card",
 	"host_stepup.go Server.hostStepUpGate -> askFiled":                    "shared: a host pane's step-up confirmation — confirm or refuse, opening its card",

@@ -140,10 +140,17 @@ const (
 	whyAccessor = "the accessor itself; every display caller applies Title to its result"
 	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
 	whyPerson   = "a person's (user account's) display name, not a title"
+	whyAppLabel = "an app tab's label: validated plain text at mint (ValidAppLabel), drawn as stored; Title would rewrite a valid one"
 )
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
+	// An app tab's label (meetings PR 1b): the owner's own words, validated at
+	// mint (plugins.ValidAppLabel: 1-24 letters, digits, spaces and - . & ').
+	// Title would REWRITE a valid label ("1. Calls" and "- Calls" both draw as
+	// "Calls"), so it is drawn exactly as stored, through g.Text/g.Attr.
+	"app_page.go AppPage v.Label":         {4, whyAppLabel},
+	"app_page.go appTabLinks a.Label":     {1, whyAppLabel},
 	"mirror_ask.go askForm o.Description": {2, whyOption},
 	// The chief's question card (owner_ask.go): an option is sent verbatim as the
 	// owner's answer, so it is shown verbatim; the decoder's reads only check it.

@@ -3,6 +3,7 @@ package plugins
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ func mustViewer(t *testing.T, s *PGStore, uid int64, name string, caps ...Capabi
 
 func hoIn() HandoffIn {
 	return HandoffIn{Target: HandoffTarget{Mirror: &MirrorTarget{Host: "ws", Session: "main", Window: "@3"}},
-		Purpose: PurposeView, SteppedUp: true, Origins: []OriginPattern{{Wildcard: true, Host: "viewer.example.net"}}}
+		SteppedUp: true, Origins: []OriginPattern{{Wildcard: true, Host: "viewer.example.net"}}}
 }
 
 // TestCreatePluginStoresTheViewerLinkAndNoneScope: a viewer-only token stores
@@ -155,4 +156,47 @@ func mustCreateTok(t *testing.T, s *PGStore, uid int64, name string) Plugin {
 	t.Helper()
 	_, p := mustCreate(t, s, uid, name)
 	return p
+}
+
+// TestAHandoffsPurposeAndCapabilityAreItsTargets: an app target mints only for
+// a plugin holding `app` and redeems with purpose `app` and its ref; a mirror
+// target mints only for one holding `viewer`; a target with neither, both, or
+// an app ref outside 1-64 of A-Z a-z 0-9 _ - is ErrInvalid. The store is the
+// guard here, not only the route.
+func TestAHandoffsPurposeAndCapabilityAreItsTargets(t *testing.T) {
+	s, _, _ := pgStore(t)
+	_, app, err := s.CreatePlugin(session(2), appIn("app-only"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := mustViewer(t, s, 2, "viewer-only", CapViewer)
+	t0 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	appIn := hoIn()
+	appIn.Target = HandoffTarget{App: &AppTarget{Ref: "m-1_x"}}
+	code, _, err := s.MintHandoff(session(2), app.ID, appIn, t0)
+	if err != nil {
+		t.Fatalf("an app target for an app plugin: %v", err)
+	}
+	h, err := s.RedeemHandoff(plugin(2), app.ID, code, t0)
+	if err != nil || h.Purpose != PurposeApp || h.Target.Mirror != nil || h.Target.App == nil || h.Target.App.Ref != "m-1_x" {
+		t.Fatalf("redeemed app code = %+v, %v; want purpose app, target app ref m-1_x", h, err)
+	}
+	if _, _, err := s.MintHandoff(session(2), viewer.ID, appIn, t0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("an app target for a viewer-only plugin: %v; want ErrNotFound", err)
+	}
+	if _, _, err := s.MintHandoff(session(2), app.ID, hoIn(), t0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a mirror target for an app-only plugin: %v; want ErrNotFound", err)
+	}
+	for name, target := range map[string]HandoffTarget{
+		"no target":  {},
+		"both":       {Mirror: &MirrorTarget{Host: "ws", Session: "main", Window: "@3"}, App: &AppTarget{}},
+		"a bad ref":  {App: &AppTarget{Ref: "../x"}},
+		"a long ref": {App: &AppTarget{Ref: strings.Repeat("r", 65)}},
+	} {
+		in := hoIn()
+		in.Target = target
+		if _, _, err := s.MintHandoff(session(2), app.ID, in, t0); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v; want ErrInvalid", name, err)
+		}
+	}
 }

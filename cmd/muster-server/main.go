@@ -85,6 +85,7 @@ import (
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/limitpark"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -720,6 +721,18 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
+	// The limit-park board (internal/limitpark): only with the usage poller,
+	// whose live readings are what make a pane's usage-limit menu stale. The
+	// gateway records every usage-limit failure there (a stale menu refusal
+	// marks nothing), and the officer runtime restarts an instance whose pane
+	// is stuck on one.
+	if a.ccUsage != nil && ccPool != nil && gw != nil {
+		board := limitpark.New(ccPool.MarksOwner, nil)
+		board.Logger = logger
+		a.ccUsage.Reading = board.NoteReading
+		gw.UseLimitParks(board)
+		ext.LimitParks = board
+	}
 	// The claude-code account failover (internal/ccfailover): with the pool, the
 	// lifecycle adapter and the gateway that reports the failures it acts on.
 	if f, err := buildAccountFailover(cfg, ccPool, ext.Agents, prov, a.pool, logger); err != nil {
@@ -1120,6 +1133,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// and both of its inputs (EnableOfficers, EnableChiefLLM) are set.
 	if gw != nil {
 		gw.UseNoAccount(srv.NoClaudeAccount)
+		// The one rule for whose stale usage-limit menu refusal marks nothing:
+		// the agents the wake loop restarts off one (api.Server.LimitRestartable).
+		gw.UseLimitRestartable(srv.LimitRestartable)
 		a.gw = gw
 	}
 
