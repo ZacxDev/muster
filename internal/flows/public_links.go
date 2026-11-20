@@ -29,9 +29,17 @@ import (
 //     deeper path: `/blob/main/<name>`) stays in the text and is screened like
 //     every other word. A link the allowlist does not name — another repository
 //     of the same owner included — is not exempt at all.
+//   - A REPOSITORY ENTRY's name may also stand alone. An entry of exactly the
+//     shape `host/<owner>/<repo>` declares <repo> public, so a deny word that
+//     is exactly <repo> (without case, a `.git` suffix dropped) is not refused
+//     anywhere in an outbound draft — "<repo> has a new logo" passes
+//     (publicRepoNames). Only the repository name: never <owner>, never a
+//     name that is also an entry's owner, never a host-only or deeper entry's
+//     last segment, and never a deny word that merely CONTAINS <repo>.
 //   - Everything else in the screen is unchanged: an IP address, an internal
 //     host name, a credential- or token-shaped string, an infrastructure word
-//     or a deployment name anywhere OUTSIDE an allowlisted link is refused.
+//     or any other deployment name anywhere OUTSIDE an allowlisted link is
+//     refused.
 
 var (
 	// publicLinkRE is an allowlist entry, after parsePublicLink took off a
@@ -139,6 +147,33 @@ func StripPublicLinks(text string, allow []string) string {
 	}
 	b.WriteString(text[last:])
 	return b.String()
+}
+
+// publicRepoNames are the repository names allow declares public, lower-case:
+// the <repo> of each entry (parsePublicLink) of exactly the shape
+// `host/<owner>/<repo>`, a `.git` suffix dropped — less any name that is also
+// an entry's <owner>, so an owner name is never exempt. An entry that does not
+// parse, or has another number of path segments, declares none.
+func publicRepoNames(allow []string) map[string]bool {
+	names, owners := map[string]bool{}, map[string]bool{}
+	for _, a := range allow {
+		p, err := parsePublicLink(a)
+		if err != nil {
+			continue
+		}
+		segs := strings.Split(p, "/")[1:]
+		if len(segs) != 2 {
+			continue
+		}
+		owners[strings.ToLower(segs[0])] = true
+		if n := strings.TrimSuffix(strings.ToLower(segs[1]), ".git"); n != "" {
+			names[n] = true
+		}
+	}
+	for o := range owners {
+		delete(names, o)
+	}
+	return names
 }
 
 // segmentIs reports whether link segment got is allowlist segment want,

@@ -141,15 +141,28 @@ func AgentTextRefusal(text string, words []string) string {
 // OutboundTextRefusal is AgentTextRefusal for an officer's OUTBOUND draft
 // (internal/plugins outbound.go): public host names and URLs pass, so a post
 // can link to the project; internal host names, IP addresses, secrets,
-// infrastructure words and the deployment's own names are refused as ever —
-// except INSIDE a link on publicLinks, whose allowlisted prefix is taken out
-// before the screen runs (StripPublicLinks, public_links.go), so
-// `github.com/<owner>/<repo>` may spell a deployment name when the deployment
-// declared that repository public.
+// infrastructure words and the deployment's own names are refused as ever,
+// with two exemptions, both from publicLinks (public_links.go):
+//   - INSIDE a link on publicLinks, whose allowlisted prefix is taken out
+//     before the screen runs (StripPublicLinks), so `github.com/<owner>/<repo>`
+//     may spell a deployment name when the deployment declared that
+//     repository public;
+//   - a deny word that is exactly the <repo> of an entry `host/<owner>/<repo>`
+//     (without case; publicRepoNames) is not screened at all, so the post may
+//     name the public project bare. <owner>, and every other deny word, is.
+//
 // 🔴 Only an outbound draft of a plugin bound to an officer is screened by
-// this; every other agent text keeps AgentTextRefusal, with no allowlist.
+// this; every other agent text keeps AgentTextRefusal, with no allowlist and
+// no exempt name.
 func OutboundTextRefusal(text string, words, publicLinks []string) string {
-	return textRefusal(outboundTextDeny, StripPublicLinks(text, publicLinks), words)
+	exempt := publicRepoNames(publicLinks)
+	var screened []string
+	for _, w := range words {
+		if !exempt[strings.ToLower(strings.TrimSpace(w))] {
+			screened = append(screened, w)
+		}
+	}
+	return textRefusal(outboundTextDeny, StripPublicLinks(text, publicLinks), screened)
 }
 
 func textRefusal(deny []textDeny, text string, words []string) string {

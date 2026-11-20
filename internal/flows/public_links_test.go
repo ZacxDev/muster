@@ -57,9 +57,11 @@ func TestOutboundAllowlistExemptsOnlyTheLinkPrefix(t *testing.T) {
 	// private-looking host or address in this file.
 	internalHost, privateIP, meshIP := "store.example."+"lan", "192.168."+"0.10", "100.64."+"0.9"
 	cases := []struct{ text, want string }{
-		{"muster is out: " + liveHTTPS, nameRefusal},
+		// "muster" itself is the declared repository's name, exempt anywhere
+		// (TestOutboundBarePublicRepoName); another deployment name is not.
+		{"examplecluster is out: " + liveHTTPS, nameRefusal},
 		{liveBare + " runs on examplecluster", nameRefusal},
-		{liveBare + "/tree/muster", nameRefusal},
+		{liveBare + "/tree/examplecluster", nameRefusal},
 		{liveBare + " see " + internalHost, "an internal host name"},
 		{liveBare + " on api.default.svc." + "cluster." + "local", "an internal host name"},
 		{liveBare + " from " + privateIP, "an IP address"},
@@ -76,13 +78,19 @@ func TestOutboundAllowlistExemptsOnlyTheLinkPrefix(t *testing.T) {
 
 // TestOutboundUndeclaredRepoIsNotExempt (security guard): a link the
 // allowlist does not name — another repository of the same owner, another
-// owner's repository of the same name, a look-alike host, a userinfo or a
-// path in front — keeps the deny-word screen.
+// owner, a look-alike host, a userinfo or a path in front — keeps the
+// deny-word screen. The deny word here is the OWNER: the declared
+// repository's name is exempt anywhere (TestOutboundBarePublicRepoName), so
+// only a word that is not can show whether the link prefix was stripped.
 func TestOutboundUndeclaredRepoIsNotExempt(t *testing.T) {
+	ownerWords := []string{"zacxdev", "muster"}
+	if why := OutboundTextRefusal(liveBare, ownerWords, []string{liveRepo}); why != "" {
+		t.Fatalf("control: the declared link with the owner denied was refused: %s", why)
+	}
 	for _, text := range []string{
 		"github.com/ZacxDev/muster-private",
 		"github.com/ZacxDev/musterx/muster",
-		"github.com/other/muster",
+		"github.com/ZacxDev-other/muster",
 		"evil.github.com/ZacxDev/muster",
 		"github.com.evil/ZacxDev/muster",
 		"https://user@github.com/ZacxDev/muster",
@@ -91,13 +99,96 @@ func TestOutboundUndeclaredRepoIsNotExempt(t *testing.T) {
 		"gitlab.com/ZacxDev/muster",
 		"x\u00e9github.com/ZacxDev/muster",
 	} {
-		if why := OutboundTextRefusal(text, liveWords, []string{liveRepo}); why != nameRefusal {
+		if why := OutboundTextRefusal(text, ownerWords, []string{liveRepo}); why != nameRefusal {
 			t.Errorf("%q: %q; want %q", text, why, nameRefusal)
 		}
 	}
 	// A suffix that makes it another name entirely is screened as that name.
 	if why := OutboundTextRefusal(liveBare+".l"+"an", liveWords, []string{liveRepo}); why == "" {
 		t.Error("a repository link ending in an internal suffix was allowed")
+	}
+}
+
+// A made-up deployment for the bare-name exemption: its public project is
+// `example.org/acme/widget`, and "widget" is also one of its deny words.
+const widgetRepo = "example.org/acme/widget"
+
+var widgetWords = []string{"Widget", "acme", "examplecluster", "widgetstore"}
+
+// TestOutboundBarePublicRepoName (regression, red at base): an outbound draft
+// may name the declared public repository bare, though its name is a deny
+// word — case-insensitively, the entry in any accepted spelling.
+func TestOutboundBarePublicRepoName(t *testing.T) {
+	for _, entry := range []string{widgetRepo, "https://Example.org/acme/Widget/", "example.org/acme/widget.git"} {
+		for _, text := range []string{
+			"widget has a new logo",
+			"WIDGET has a new logo!",
+			"The new Widget release.",
+		} {
+			if why := OutboundTextRefusal(text, widgetWords, []string{entry}); why != "" {
+				t.Errorf("entry %q, %q refused: %s", entry, text, why)
+			}
+		}
+	}
+	if why := OutboundTextRefusal("widget has a new logo: https://"+widgetRepo, widgetWords, []string{widgetRepo}); why != "" {
+		t.Errorf("the bare name beside its link refused: %s", why)
+	}
+}
+
+// TestOutboundBareRepoNameNeedsTheDeclaration (control): the exemption comes
+// from the allowlist entry — none, another repository, the owner alone, a
+// host alone or a deeper path (whatever its segments) declare nothing.
+func TestOutboundBareRepoNameNeedsTheDeclaration(t *testing.T) {
+	for _, allow := range [][]string{
+		nil,
+		{"example.org/acme/gadget"},
+		{"example.org/acme"},
+		{"widget.example.org"},
+		{"example.org/acme/gadget/widget"},
+		{"example.org/acme/widget/wiki"},
+		{"example.org/widget"},
+	} {
+		if why := OutboundTextRefusal("widget has a new logo", widgetWords, allow); why != nameRefusal {
+			t.Errorf("allowlist %q: %q; want %q", allow, why, nameRefusal)
+		}
+	}
+}
+
+// TestOutboundBareRepoNameExemptsOnlyThatWord (security guard): every other
+// deny word in the same draft is refused as before — another deployment name,
+// the repository's OWNER, a deny word that merely contains the name, and the
+// owner even when it is also a declared repository's name.
+func TestOutboundBareRepoNameExemptsOnlyThatWord(t *testing.T) {
+	allow := []string{widgetRepo}
+	for _, text := range []string{
+		"widget has a new logo, built on examplecluster",
+		"widget has a new logo, from acme",
+		"widget has a new logo; widgetstore is down",
+	} {
+		if why := OutboundTextRefusal(text, widgetWords, allow); why != nameRefusal {
+			t.Errorf("%q: %q; want %q", text, why, nameRefusal)
+		}
+	}
+	// A deny word that contains the name is screened whole, as before: it
+	// does not match the bare name, and the name does not unlock it.
+	if why := OutboundTextRefusal("widgets and widgetry", widgetWords, allow); why != "" {
+		t.Errorf("words that only contain the name: %q; want passed, as at base", why)
+	}
+	// An owner that is also a declared repository's name stays refused.
+	if why := OutboundTextRefusal("acme has a new logo", widgetWords, []string{widgetRepo, "example.org/other/acme"}); why != nameRefusal {
+		t.Errorf("an owner that is also a repository name: %q; want %q", why, nameRefusal)
+	}
+	// The rest of the outbound screen is unchanged beside the exempt name.
+	if why := OutboundTextRefusal("widget is in the namespace", widgetWords, allow); !strings.Contains(why, "an infrastructure word") {
+		t.Errorf("an infrastructure word beside the name: %q", why)
+	}
+}
+
+// TestReplyScreenKeepsThePublicRepoName: AgentTextRefusal (every non-officer
+// agent text) has no allowlist and so no exempt name.
+func TestReplyScreenKeepsThePublicRepoName(t *testing.T) {
+	if why := AgentTextRefusal("widget has a new logo", widgetWords); why != nameRefusal {
+		t.Errorf("reply screen: %q; want %q", why, nameRefusal)
 	}
 }
 

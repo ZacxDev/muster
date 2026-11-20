@@ -831,13 +831,22 @@ out of the text, then screens what is left:
   A link the allowlist does not name is not exempt at all, including another
   repository of the same owner (`github.com/<owner>/muster-private`): it is
   refused if it spells a deployment name.
-- **Everything else is unchanged.** A deployment name in the prose around the
-  link ("muster is out: …"), an internal host name, an IP address, a
-  credential- or token-shaped string or an infrastructure word is refused as
-  before.
+- **The repository's own name may stand alone.** A deny word that is exactly
+  the `<repo>` of an allowlist entry `github.com/<owner>/<repo>` (compared
+  without case, a `.git` suffix dropped) is not refused anywhere in the
+  draft, so a post may say "widget has a new logo" when `acme/widget` is a
+  standing-read repository and `widget` is also one of your deny words. Only
+  that exact name: `<owner>` is still refused (even when it is also a declared
+  repository's name), and so is a deny word that merely contains `<repo>`
+  (`widget-private`).
+- **Everything else is unchanged.** Any other deployment name in the prose
+  around the link (another project, a cluster, the owner), an internal host
+  name, an IP address, a credential- or token-shaped string or an
+  infrastructure word is refused as before.
 
 The allowlist only widens the outbound screen. A reply your chief drafts,
-and a browser flow's text, have none.
+and a browser flow's text, have none — they refuse the repository's name
+too.
 
 #### `GET /plugin/v1/drafts/checks` for an outbound draft
 
