@@ -33,10 +33,11 @@ agreed.
   not stream** ([finding](#finding-the-existing-stt-service-does-not-stream)).
   Recommended: **Kyutai `stt-1b-en_fr`** on its own websocket server on the GPU
   host for live captions, with an **utterance mode** on the existing service
-  as the zero-new-service fallback and the post-meeting accuracy pass.
+  as the zero-new-service fallback. (A post-meeting re-transcription pass
+  was dropped in review: there is no per-track audio to feed it.)
 - **Action items** come from an LLM on OpenRouter over a rolling window of
   the transcript, every 10 s, emitting only items it has not emitted before.
-  The candidate is **`scaledown/extract`**, with **`deepseek/deepseek-v4-flash`**
+  The candidate is **`scaledown/extract`**, with **`deepseek/deepseek-v4.1-flash-1017`**
   as the fallback, chosen by a [labelled evaluation](#action-item-evaluation)
   with a stated pass bar. The model is one config value. Only transcript
   **text** goes to OpenRouter, never audio; on by default, off per meeting.
@@ -50,6 +51,10 @@ agreed.
 - **Two more small core seams** beside `app`: a [knock notification](#core-seam-knock-notification)
   through muster's existing push path, and a narrow [`tasks` capability](#core-seam-the-tasks-capability)
   so the plugin need not hold `messages`.
+- **Two core hardenings gate go-live** of the subdomain: a central origin
+  check for every cookie-authenticated write (PR 1g; today many such routes
+  check none, so any sibling subdomain can forge them), and `__Host-` cookie
+  names (PR 1f). Both are worth shipping on their own.
 - **muster still never calls out.** The plugin calls muster (hand-off redeem,
   `GET /plugin/v1/self`, `POST /plugin/v1/tasks`, `POST /plugin/v1/notify`).
   muster calls nothing.
@@ -102,7 +107,7 @@ agreed.
 | The Android shell | `muster-android`, `feature/shell/.../ShellChromeClient.kt` | grants the microphone only to the muster origin, audio alone; denies camera and every other origin |
 | Object store | [uploads.md](../uploads.md) | muster's bucket, with a key scoped to `uploads/*` and `pages/*` |
 | Session cookies | `internal/api/login.go:203-216`, `login.go:279-286`, `accounts.go:879-883`, `known_device.go:61-68`, `push_routes.go:409-414` | every cookie muster sets is **host-only** (no `Domain`), `HttpOnly`, `SameSite=Lax` ([below](#origins-and-hosts)) |
-| CSRF check | `internal/api/auth.go:317-331` (`requireSameOrigin`), `auth.go:363` (`isSameOrigin`) | state-changing requests must carry muster's own **origin** (full host), because a sibling subdomain is same-site |
+| CSRF check | `internal/api/auth.go:317-331` (`requireSameOrigin`), `auth.go:363` (`isSameOrigin`), `internal/api/connectors.go:111` (`requireOperatorWrite`) | **per route, not central.** Some session-authenticated writes check the full-host **origin**; many do not (e.g. `POST /tasks`, `/tasks/{id}/edit`, `/tasks/{id}/comments`, `/tasks/{id}/tags`, `/tasks/merge` at `internal/api/notes_routes.go:43-44,134,141,161`; `/agents/{id}/start`, `/stop`, `/name`, `/model` at `internal/api/agents.go:161-171`; `/chief/provision` at `internal/api/server.go:908`). The middleware chain (`internal/api/middleware.go:50-54`) and `requireSession` (`auth.go:277`) check no `Origin`. Those routes rely on `SameSite=Lax`, which does **not** stop a sibling subdomain ([R1, below](#core-seam-a-central-origin-check-for-cookie-authenticated-writes)) |
 | Web push | [push.md](../push.md) | per-event toggles on Account → Notifications, tags that replace and withdraw, muster-written text for plugin events |
 
 ### Finding: the existing STT service does not stream
@@ -124,7 +129,7 @@ we could find (a search result, not proof:
 
 So the live transcript needs a streaming model ([choice](#choosing-the-streaming-stt-model)),
 and the existing service is reused where batch is what is wanted: utterance
-mode and the post-meeting pass.
+mode.
 
 ## User flow
 
@@ -137,9 +142,9 @@ mode and the post-meeting pass.
    camera preview, a mute and camera toggle, and the link with a **Copy link**
    button. Two switches, both **on** by default: **Record**, and **AI action
    items** ("sends the transcript text, never audio, to an AI service"). Either
-   can be turned off at any time; turned off, it cannot be turned back on once
-   a guest has been admitted, so nobody is recorded or sent to the AI service
-   who knocked while it was off.
+   can be turned off at any time; turned off, it cannot be turned back on
+   once any guest has knocked (waiting, admitted, or since gone), so nobody
+   is recorded or sent to the AI service who knocked while it was off.
 3. Pastes the link wherever they like (a chat, an email). That is all the
    setup there is.
 4. When a guest knocks, a row appears at the top of the call: "**Ada** wants
@@ -393,7 +398,8 @@ DELETE /plugin/v1/notify/<ref>
 
 ### Core seam: `__Host-` cookie names
 
-Decision 16. **Must land before `meet.<muster host>` is live.** It is not
+Decision 16, core PR 1f. **Must land before `meet.<muster host>` is live**
+(with 1g). It is not
 specific to meetings, and it hardens every deployment against any subdomain.
 
 | today (`file:line`) | becomes |
@@ -407,13 +413,29 @@ specific to meetings, and it hardens every deployment against any subdomain.
   `Secure`, has `Path=/` and has **no** `Domain`. A page on a subdomain can
   therefore never set one that muster would read. muster's cookies already
   meet all three, except on the loopback-http page below.
-- **The loopback exception.** On a page muster serves itself over plain http
-  on loopback, `Secure` is dropped (`passwordCookieSecure`,
-  `internal/api/login.go:237`, for WebKit). A `__Host-` cookie without `Secure` is refused,
-  so there the **old name** is kept. The name is chosen by the same predicate
-  that chooses `Secure`, in one function (`cookieName(base, secure)`), and the
-  reader accepts only the name for the request's mode. An https deployment
-  never reads an unprefixed name.
+- **The name is chosen per deployment, never per request.** The `Secure`
+  flag today is per request: `passwordCookieSecure`
+  (`internal/api/login.go:237-239`) drops it when `loopbackHTTPPage`
+  (`login.go:248-265`) sees a plain-http request whose `Origin` or `Referer`
+  is loopback. A `GET` page load carries no `Origin`, and muster's
+  `Referrer-Policy: no-referrer` strips the `Referer`, so the same browser
+  would be "loopback" on its sign-in `POST` and "not loopback" on the next
+  `GET`. A name chosen that way would be written under one name and read
+  under the other: a sign-in loop. So the name comes from configuration,
+  once, at boot:
+  - **prefixed** (`__Host-…`) when `MUSTER_PUBLIC_URL` is `https` and
+    `MUSTER_SECURE_COOKIES` is not `0`;
+  - **unprefixed** (today's names) otherwise: a plain-http or loopback
+    install (the Compose stack's `http://localhost:8105`), and any
+    deployment with `MUSTER_SECURE_COOKIES=0`. The per-request `Secure`
+    exception is unchanged for these.
+
+  The boot banner names the choice. An unprefixed deployment gets no
+  protection from cookie tossing, so **muster refuses to boot** when it would
+  use unprefixed names and an entry of `MUSTER_PLUGIN_ORIGINS` is under
+  `MUSTER_PUBLIC_URL`'s own host (a subdomain plugin). One function,
+  `cookieName(base)`, holds the rule, and every reader and writer calls it.
+  A prefixed deployment never reads an unprefixed name.
 - **One sign-in for everyone.** Old names are not read after the upgrade, so
   every browser is signed out once. On its first response after the upgrade,
   muster also expires each old-named cookie (`Max-Age=-1`), so no stale
@@ -426,8 +448,56 @@ specific to meetings, and it hardens every deployment against any subdomain.
   not a cookie. The push-device cookie only links a browser to its
   subscription. Losing it means the account page asks that browser to enable
   notifications again, and the old subscription stays until removed.
+- **All seven `http.Cookie` literals**, the sets and the clears, go through
+  `cookieName` ([the cookie table](#origins-and-hosts)).
 - **e2e helpers** that read or set cookies by name (`e2e/lib/signin.ts`) move
   to the new names in the same PR.
+
+### Core seam: a central origin check for cookie-authenticated writes
+
+**Core PR 1g. Must land before `meet.<muster host>` is live**, like 1f. It
+closes a gap that exists today on any deployment with a sibling host
+([origins](#origins-and-hosts)), so it is worth shipping on its own, first.
+
+- **One middleware, inside the auth layer.** For every request whose method
+  is not `GET`, `HEAD` or `OPTIONS` and whose principal was admitted **by a
+  cookie** (`authz.ViaSession`, and the GoTrue session path
+  `requireGoTrueSession`, `internal/api/accounts.go:762`), muster requires,
+  before any handler runs:
+  1. `Origin` present: it must be one of muster's own origins (the
+     `wsAllowedOrigins` set that `isSameOrigin`, `internal/api/auth.go:363`,
+     already uses). `Origin: null` (a sandboxed or opaque document, such as
+     an uploaded file's page) is refused.
+  2. `Origin` absent: `Sec-Fetch-Site` must be `same-origin`.
+  3. Both absent: the existing same-origin `Referer` fallback (for privacy
+     settings that strip `Origin`), else **refused**.
+
+  A refusal is `403` with `CrossOriginRefusal`, counted in a new
+  `muster_csrf_refusals_total{route_class}` and logged without the body.
+- **Who is exempt, and why that is safe.** A request authenticated by a
+  bearer credential (`mst_`, `mpl_`, runner, agent, hook and service tokens)
+  is not cookie-authenticated: a cross-site page cannot make a browser
+  attach those. A request carrying **both** a cookie and a bearer is checked
+  by the credential that admitted it. Unauthenticated routes (sign-in, the
+  plugin pairing, webhooks) are listed in the ledger with their own reason.
+- **What real clients send.** Chromium, Firefox and Safari send `Origin` on
+  every cross- and same-origin `POST`/`PUT`/`PATCH`/`DELETE` from `fetch`,
+  htmx and forms. Android's WebView is Chromium and sends `Origin` and
+  `Sec-Fetch-Site`; the installed PWA is the browser. The muster CLI and
+  `muster-mirror` use bearer tokens. Each of these is a case in the tests
+  below (the WebView by its user agent and headers as recorded from the app,
+  **UNVERIFIED** until captured; spike S7).
+- **`requireSameOrigin` and `requireOperatorWrite` stay** where they are; they
+  become redundant for cookie requests, and the ledger records that.
+- **The route ledger.** A test enumerates every route registered on the mux
+  with a method other than `GET`/`HEAD`/`OPTIONS` (from the mux itself, not a
+  hand list) and classifies each as `cookie` (guarded by the middleware),
+  `bearer-only` or `unauthenticated` (with a reason). It fails when a route is
+  unclassified, when a `cookie` route reaches its handler with a sibling
+  `Origin`, and when the set **grows or shrinks** without the ledger changing.
+- **Size: L** (one middleware is small; the ledger over every write route,
+  and the GoTrue path, are not). It touches every form, so the full browser
+  suite is its gate.
 
 ### The frame, exactly
 
@@ -565,10 +635,11 @@ reasons, each enough:
   Framed from muster's own origin, the plugin's script would *be* muster's
   origin: it could read muster's DOM through `window.parent`, call muster's
   APIs with the owner's session (the browser attaches it to same-origin
-  requests) and pass `requireSameOrigin`. The sandbox protects muster only
-  because the frame's origin differs.
+  requests) and pass every origin check muster has. The sandbox protects
+  muster only because the frame's origin differs.
 
-**The cookie check: no blocker.** Every cookie muster sets is **host-only**:
+**The cookie check: host-only, so no read; but see the CSRF gap below.**
+Every cookie muster sets is **host-only**:
 none sets a `Domain` attribute, so the browser never sends one to
 `meet.<muster host>`, and all are `HttpOnly`, so no script reads them on
 muster's own origin either. The places:
@@ -578,10 +649,11 @@ muster's own origin either. The places:
 | password-mode session (`muster_session`) | `internal/api/login.go:203-216`, `login.go:279-286` | `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` (except loopback http), no `Domain` |
 | GoTrue access and refresh | `internal/api/accounts.go:879-883` (cleared `:889-892`) | `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure`, no `Domain` |
 | known device | `internal/api/known_device.go:61-68` | the same, no `Domain` |
-| push device | `internal/api/push_routes.go:409-414` | the same, no `Domain` |
+| push device | `internal/api/push_routes.go:409-414` (cleared `:417-421`) | the same, no `Domain` |
 
-(Searched `internal/` and `cmd/`, non-test code, at `5fd6f7632`: those five
-`http.Cookie` literals are every cookie muster-server sets, none has a
+(Searched `internal/` and `cmd/`, non-test code, at `5fd6f7632`: those
+**seven** `http.Cookie` literals, for five cookie names (sets and clears),
+are every cookie muster-server writes; none has a
 `Domain` field, and no code writes a raw `Set-Cookie` header. The only other
 cookie code is the preview gateway's, `internal/previewgw/cookie.go`, a
 separate process on its own host. The finding is pinned by a test,
@@ -589,15 +661,27 @@ separate process on its own host. The finding is pinned by a test,
 
 **What host-only does not cover, and why it holds anyway:**
 
-- **Same-site.** `meet.<muster host>` is **same-site** with muster (site is
-  the registrable domain). `SameSite=Lax` therefore does not stop the
-  browser attaching muster's cookies to a request the meetings page makes to
-  muster. What stops it acting is `requireSameOrigin`
-  (`internal/api/auth.go:317-331`), which compares the full-host **origin**
-  and refuses every state-changing request from another host; its own comment
-  names exactly this sibling-subdomain case. A `GET` passes and changes
-  nothing. The meetings page's own CSP (`connect-src 'self' …`) does not
-  list muster at all, and the plugin calls muster server-to-server only.
+- 🔴 **Same-site: a real CSRF gap today, closed by core PR 1g before the
+  subdomain goes live.** `meet.<muster host>` is **same-site** with muster
+  (site is the registrable domain), so `SameSite=Lax` does not stop the
+  browser attaching muster's cookies to a request a page there makes to
+  muster. `requireSameOrigin` (`internal/api/auth.go:317-331`) compares the
+  full-host origin and its comment names this exact case, but it guards only
+  the routes that opt in. Many cookie-authenticated writes do not
+  ([what exists today](#what-exists-today)), so a script on any sibling
+  subdomain can blind-POST them with the owner's session today (create or
+  merge tasks, start or stop agents, provision the chief). The meetings
+  page's own CSP (`connect-src`) does not list muster, but that is the
+  plugin's promise, not muster's protection. PR **1g**
+  ([the central origin check](#core-seam-a-central-origin-check-for-cookie-authenticated-writes))
+  makes it muster's. It is also a pre-existing hardening worth shipping on
+  its own: any deployment with a sibling host it does not control has the
+  gap now.
+- **Cookie flooding.** A sibling can set many large cookies for
+  `Domain=<muster host>`, pushing the request's headers past the server's
+  limit so muster answers `431` or `400` until they expire (a nuisance denial
+  of service, not a read or a write). Accepted: the sibling is the
+  operator's own plugin, and clearing site data recovers.
 - **Cookie tossing.** A page on `meet.<muster host>` *can* set a cookie with
   `Domain=<muster host>`, which muster would then receive beside its own.
   Today muster's cookie names carry no `__Host-` prefix, so a page there
@@ -635,8 +719,10 @@ previews do; one owner is the common case.
   128-bit value held in the guest page's memory. The name is trimmed, 1–40
   characters, control and bidi characters refused; it is shown to the owner
   as text, with "(guest)" after it, never as HTML.
-- **Wait:** `GET /j/<code>/wait?ticket=…` is an SSE stream that ends with
-  `admitted {"livekit_url", "token"}`, `denied`, or `ended`.
+- **Wait:** `POST /j/<code>/wait {"ticket"}` answers an event stream (read
+  with `fetch`, not `EventSource`, so the ticket travels in the body and never
+  in a URL or an access log) that ends with `admitted {"livekit_url",
+  "token"}`, `denied`, or `ended`.
 - **Admit:** the owner's `POST /api/meetings/{id}/lobby/{pid}/admit` mints the
   guest's LiveKit token and sends it down that guest's wait stream. **A guest
   never holds a LiveKit token before admission**, so the lobby cannot be
@@ -644,15 +730,22 @@ previews do; one owner is the common case.
 - **Limits:** 20 waiting knocks per meeting, 10 knocks per source address per
   10 minutes, 8 admitted participants (owner included) by default. Over the
   limit is `429`, never a silent drop.
-- **The owner can remove** an admitted guest (`RemoveParticipant`); a removed
-  guest's ticket is dead, so they must knock again.
+- **The owner can remove** an admitted guest. Removal, in this order: the
+  identity is marked revoked in SQLite, LiveKit's `RemoveParticipant` drops
+  the connection, and the ticket dies, so the guest must knock again and gets
+  a new identity if admitted. A LiveKit JWT stays valid until its expiry, and
+  LiveKit refreshes tokens for connected clients, so the token alone cannot
+  be trusted to end access. Two backstops: guest tokens live **2 minutes**
+  (only to connect), and on every `participant_joined` webhook the plugin
+  calls `RemoveParticipant` at once for any identity that is not currently
+  admitted in its own state (revoked, removed, denied, or unknown).
 
 ### LiveKit tokens
 
 | who | grants | TTL |
 |---|---|---|
-| owner | `roomJoin`, `room=<meeting room>`, `canPublish` (camera, microphone, screen_share, screen_share_audio), `canSubscribe`, `roomAdmin`, `canPublishData` | 10 min to connect |
-| guest | `roomJoin`, `room=<meeting room>`, `canPublish` (camera, microphone, screen_share, screen_share_audio), `canSubscribe`. **Not** `roomAdmin`, **not** `canPublishData`, **not** `hidden` | 10 min to connect |
+| owner | `roomJoin`, `room=<meeting room>`, `canPublish` (camera, microphone, screen_share, screen_share_audio), `canSubscribe`, `roomAdmin`, `canPublishData` | 2 min to connect |
+| guest | `roomJoin`, `room=<meeting room>`, `canPublish` (camera, microphone, screen_share, screen_share_audio), `canSubscribe`. **Not** `roomAdmin`, **not** `canPublishData`, **not** `hidden` | 2 min to connect; the `participant_joined` check [above](#guests-links-the-lobby-admission) ends any identity not admitted |
 | the plugin itself | server API key, never sent to a browser | — |
 
 Transcript lines and action items reach browsers over the plugin's own SSE,
@@ -701,12 +794,12 @@ is `401`, another owner's meeting is `404`.
 | `POST /api/meetings {"title"?, "record"?}` | create; answers `{"id", "join_url"}` |
 | `GET /api/meetings/{id}` | one meeting: participants, recording state, items, summary |
 | `POST /api/meetings/{id}/token` | the owner's LiveKit token |
-| `POST /api/meetings/{id}/record {"on"}` · `POST /api/meetings/{id}/ai {"on"}` | off at any time; on again only until the first guest is admitted |
+| `POST /api/meetings/{id}/record {"on"}` · `POST /api/meetings/{id}/ai {"on"}` | off at any time; on again only while **no guest is waiting or admitted** (and none has been) |
 | `GET /api/meetings/{id}/events` | SSE: lobby changes, transcript segments, action items, recording state |
 | `POST /api/meetings/{id}/lobby/{pid}/admit` · `/deny` · `DELETE …/participants/{pid}` | lobby and removal |
 | `POST /api/meetings/{id}/end` | end it |
 | `GET /api/meetings/{id}/transcript?format=json\|txt\|vtt` | the transcript |
-| `GET /api/meetings/{id}/recording` | a `302` to a presigned object URL valid 5 minutes, or a stream through the plugin if the store is not reachable from browsers |
+| `POST /api/meetings/{id}/recording-url` | `{"url", "expires_at"}`: a URL on the plugin's own origin, `/media/<meeting id>?exp=…&sig=…` (HMAC over the path and expiry, valid 15 minutes). A `<video src>` or a download link cannot carry the bearer header, so the page asks for this URL with its bearer and hands the URL to the element. `/media/…` streams the object from the store through the plugin with `Range` support (seeking), so the store is never exposed to browsers |
 | `POST /api/items/{id}/task` · `POST /api/items/{id}/dismiss` | [Make task](#make-this-a-muster-task), dismiss |
 | `DELETE /api/meetings/{id}` | delete now: rows and objects |
 | `GET/PUT /api/settings` | record and AI defaults, retention |
@@ -717,14 +810,20 @@ Guest and machine routes:
 |---|---|
 | `GET /j/{code}` | the guest page (`410` once ended) |
 | `POST /j/{code}/knock` · `GET /j/{code}/wait` | above |
-| `GET /j/{code}/events?ticket=…` | SSE for an admitted guest: transcript and items |
+| `POST /j/{code}/events {"ticket"}` | event stream (read with `fetch`) for an admitted guest: transcript, items, and the current notice state |
 | `POST /livekit/webhook` | LiveKit's events; the `Authorization` JWT is verified against the API secret and the body's SHA-256 inside it; anything else `401` |
-| `GET /healthz`, `GET /metrics` | on an internal port only |
+| `GET /healthz`, `GET /metrics`, `WS /stt/ingest/<track>` | on an **internal** port only. The ingest also requires a shared secret (`MEETINGS_INGEST_SECRET`, sent by Egress as a header on the websocket upgrade); without it, `401` |
 
-Every page sets its own strict CSP (`default-src 'self'`, `connect-src 'self'
-wss://meet-rtc.<muster host>`, `frame-ancestors <muster's origin>` on owner pages and
-`'none'` on guest pages), `Referrer-Policy: no-referrer`, and
-`Permissions-Policy: camera=(self), microphone=(self), display-capture=(self)`.
+Every page sets its own strict CSP (`default-src 'self'`; `connect-src 'self'
+wss://meet-rtc.<muster host> https://meet-rtc.<muster host>`, the second for
+the LiveKit client's `/rtc/validate` check on a failed connect; `media-src
+'self' blob:`, for the recording via `/media/…` and the call's own streams;
+`frame-ancestors <muster's origin>` on owner pages and `'none'` on guest
+pages), `Referrer-Policy: no-referrer`, and `Permissions-Policy:
+camera=(self), microphone=(self), display-capture=(self)`. Access logs
+record the path only: no query string is logged, and no route takes a code
+or ticket in its query apart from `/enter`'s one-time `muster_code`, which is
+dead once redeemed.
 
 ## Media: LiveKit, TURN, Egress
 
@@ -749,14 +848,26 @@ wss://meet-rtc.<muster host>`, `frame-ancestors <muster's origin>` on owner page
 - **Recording: room composite Egress** (a headless Chrome rendering the
   default grid layout) to MP4 in the meetings bucket, key
   `meetings/<owner_id>/<meeting_id>/recording.mp4`. Started when the first
-  guest is admitted with **Record** on, stopped at end. About 2–4 CPU and
-  2–4 GiB per concurrent recording (**UNVERIFIED** for our hardware; S3).
+  guest is admitted with **Record** on, stopped at end.
+- **Egress capacity is reserved, not measured.** Egress admits a job only if
+  its configured CPU cost fits: `roomCompositeCpuCost = 4`, `trackCpuCost =
+  0.5`, `maxCpuUtilization = 0.8` (`pkg/config/service.go:32-38` in
+  `livekit/egress`, read 2026-11-20). So one recorded 8-person meeting
+  reserves **4 + 8 × 0.5 = 8 CPU** (composite plus one track egress per
+  microphone), and an unrecorded one still reserves 4 CPU for the STT track
+  egresses. With the 0.8 ceiling, that is a 10-CPU Egress node per recorded
+  meeting. The costs are configurable and may be lowered if S3 shows real use
+  is far below; S3 measures both the composite and the per-track jobs.
 - **Audio for STT: track Egress to a websocket** (per audio track, raw PCM to
   `ws://muster-meetings:…/stt/ingest/<track>`), started by the plugin on
-  every `track_published` webhook for a microphone track. No browser, little
-  CPU. **UNVERIFIED** (S2): if the PCM format or reliability is not what the
-  docs suggest, the fallback is a server-side participant built on LiveKit's
-  Go SDK with an Opus decoder.
+  every `track_published` webhook for a microphone track. No browser, but
+  0.5 CPU **reserved** per track (above). **UNVERIFIED** (S2): if the PCM
+  format, its reliability or the reservation is not acceptable, the fallback
+  is a server-side participant built on LiveKit's Go SDK with an Opus
+  decoder, which reserves nothing in Egress. Egress authenticates to the
+  ingest with `MEETINGS_INGEST_SECRET`; on Kubernetes a NetworkPolicy admits
+  only Egress to the ingest port, and in Compose the ingest port is on an
+  internal network only Egress joins.
 - **The object store** is a bucket of its own (`meetings`), with an access
   key scoped to `meetings/*` that only the plugin and Egress hold. muster's
   own upload key is not reused and gains nothing.
@@ -805,7 +916,7 @@ type Engine interface {
     Open(ctx context.Context, track TrackRef) (Stream, error)
 }
 type Stream interface {
-    Write(pcm []int16) error            // 16 kHz mono (resampled from Egress' rate)
+    Write(pcm []float32) error          // mono at the engine's rate: 24 kHz for kyutai, 16 kHz for utterance (resampled from Egress' rate)
     Segments() <-chan Segment           // partial and final, with start/end ms
     Close() error
 }
@@ -814,7 +925,7 @@ type Stream interface {
 | engine | `MEETINGS_STT_ENGINE` | output | use |
 |---|---|---|---|
 | `kyutai` | `kyutai` + `MEETINGS_STT_URL` (`wss://…`) | word-level partials, finals at semantic end of turn | live captions (recommended) |
-| `utterance` | `utterance` + the existing `MUSTER_STT_URL`/token pair | one final per utterance, after a pause (≤15 s segments, energy-based endpointing) | zero new service; dev; Compose without a second GPU service |
+| `utterance` | `utterance` + `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN` pointed at the existing `stt-cohere` | one final per utterance, after a pause (≤15 s segments, energy-based endpointing) | zero new service; dev; Compose without a second GPU service |
 | `fake` | `fake` | scripted text per participant | tests only; refuses to start unless `MEETINGS_TEST_MODE=1` |
 
 The utterance engine sends each VAD-cut utterance to the existing
@@ -823,12 +934,13 @@ The utterance engine sends each VAD-cut utterance to the existing
 run on 10 s windows anyway, but not word-by-word. It shares the GPU and the
 threadpool with dictation, so it is capped at 4 in flight.
 
-**The post-meeting pass (phase 6, optional):** after the meeting, each
-participant's audio (kept by the track Egress as Opus files) is sent to the
-existing Cohere service and the result replaces the live segments as
-`pass=final`, aligned by time. This gets Cohere's accuracy for the archive at
-no new cost. Off by default; it is the one place long audio meets the
-service's 3600 s cap, so a longer meeting is sent in 30-minute parts.
+**No post-meeting re-transcription in v1.** The track egress streams to the
+ingest and stores nothing, so there is no per-track audio to re-transcribe,
+and the room composite mixes everyone into one track, which loses the
+per-speaker split. Storing per-track audio would add objects to the data
+model, retention, Delete now and the consent notice for one gain (archive
+accuracy). Dropped as the simpler option; it can return later as its own
+proposal.
 
 ### Segments
 
@@ -872,8 +984,10 @@ date from a second entity type. Whether that reads well enough is what the
 evaluation decides. It is cheap enough that the cost is nearly zero either
 way.
 
-**The fallback: `deepseek/deepseek-v4-flash`** ($0.09 / M in, $0.18 / M out,
-per OpenRouter's listing on 2026-11-19), a chat model with `response_format`
+**The fallback: `deepseek/deepseek-v4.1-flash-1017`**, a dated snapshot
+($0.036 / M in, $0.50 / M out, per OpenRouter's listing on 2026-11-19; the
+undated `deepseek/deepseek-v4-flash` is not used, so the evaluated model
+cannot move), a chat model with `response_format`
 (JSON schema) support, which rewrites each item as owner, task, due. Strict
 schema enforcement on its route is **UNVERIFIED** until one live request
 with `strict: true` (S6). The `~deepseek/deepseek-flash-latest` alias is not
@@ -954,8 +1068,18 @@ code** (guards and dedupe included), so it measures what ships.
 | cost | USD per meeting-hour, from OpenRouter's reported usage | **≤ $0.05** |
 
 - Each model runs **3 times**; the worst run is the score.
+- **Production's routing, exactly.** The harness sends every request through
+  the same client code with the same OpenRouter `provider` object as
+  production (`MEETINGS_ITEMS_PROVIDER_PREFS`, default `{"data_collection":
+  "deny"}`), so a model that passes is one that routes under that policy.
+  The report records which provider answered each request. `scaledown/extract`
+  has a **single provider** (ScaleDown); if it does not satisfy
+  `data_collection: deny`, every request fails in the harness as it would in
+  production, and that is a failed run, not a skipped one. A model that
+  passes only with looser preferences is a decision for the operator, not a
+  default.
 - **Choice:** `scaledown/extract` if it passes every gate; else
-  `deepseek/deepseek-v4-flash` if it does; if both pass, the one with the
+  `deepseek/deepseek-v4.1-flash-1017` if it does; if both pass, the one with the
   better recall, then the cheaper. If neither passes, action items ship
   `off` and the result is reported to the operator.
 - **The harness's own controls**, run first every time: a **null** model
@@ -995,8 +1119,8 @@ code** (guards and dedupe included), so it measures what ships.
 | **(b) Recording/transcribing notice + per-meeting toggles** | **yes, in the MVP**, not as an extra | Recording is on by default (decision 9), so the notice is not optional: it ships with the first recording and the first transcript. Toggles: **Record** and **AI action items**, both on, both off per meeting |
 | **(c) Post-meeting summary** | **yes**, phase 6 | One LLM call at meeting end, on the same transcript; cheap, and it is what makes the past-meetings list scannable. Follows the **AI action items** switch: off, no summary |
 | **(d) Retention** for recordings and transcripts | **yes**, phase 5 with recording | Recordings are the largest and most sensitive objects; they need an end date from day one. Defaults 30 days (recordings) and 365 days (text), decision 9 |
-| Post-meeting Cohere re-transcription | optional, phase 6 | Better archive accuracy using the service that already exists |
-| Knock notification to the owner's phone | **yes**, phase 1d (core) + 2b (plugin) | Decision 10: a [core seam](#core-seam-knock-notification) on muster's existing push path, muster-written text |
+| Post-meeting Cohere re-transcription | **no** (dropped) | There is no per-track audio to re-transcribe; storing it would widen the data model, retention and consent for archive accuracy alone ([why](#three-engines-one-interface)) |
+| Knock notification to the owner's phone | **yes**, phase 1e (core) + 2b (plugin) | Decision 10: a [core seam](#core-seam-knock-notification) on muster's existing push path, muster-written text |
 | Chat in the call | **no** | Not asked for; every participant already has a chat elsewhere |
 
 ### Make this a muster task
@@ -1047,9 +1171,13 @@ top of the past meeting. Not regenerated automatically.
   notice carries the weight: it is shown to a guest before they knock, with
   one clause per switch that is on, and stays on screen for everyone as a
   badge while either is on. Either switch can be turned off at any time;
-  turning one back on after a guest was admitted is refused, so nobody is
-  recorded or sent to the AI service who knocked while it was off. The owner
-  sees the same badge.
+  turning one back on is refused once **any guest has knocked** (waiting,
+  admitted, denied or gone), so nobody is recorded or sent to the AI service
+  who knocked while it was off, including a guest still in the lobby. Because
+  a switch can only go off after the first knock, the notice a guest read can
+  only have shrunk by the time they are admitted; the admitted page shows the
+  **current** state from the meeting's event stream, never the state cached
+  at knock time. The owner sees the same badge.
 - **What leaves the network.** Audio and video never do: the SFU, TURN,
   Egress and STT are self-hosted in the tenant. **Transcript text does**, by
   default (decision 7), to OpenRouter (and through it to ScaleDown or
@@ -1082,11 +1210,12 @@ top of the past meeting. Not regenerated automatically.
 - **The webhook** accepts only LiveKit-signed requests.
 - **Logs** never carry transcript text, item text, guest names or codes.
 - **Same-site with muster.** `meet.<muster host>` is a different origin but
-  the same site. muster's cookies are host-only and `HttpOnly`, and its
-  state-changing routes check the full-host origin, so the plugin's pages
-  can neither read nor use the owner's muster session, and after PR 1f
-  ([`__Host-` names](#core-seam-__host--cookie-names)) it cannot plant one
-  either.
+  the same site. muster's cookies are host-only and `HttpOnly`, so the
+  plugin's pages cannot read the owner's muster session. **Today they could
+  use it**: many cookie-authenticated writes check no origin. After PR 1g
+  ([the central origin check](#core-seam-a-central-origin-check-for-cookie-authenticated-writes))
+  they cannot, and after PR 1f ([`__Host-` names](#core-seam-__host--cookie-names))
+  they cannot plant one either. Both gate go-live.
 - **Knock pushes** carry muster's text only, never a guest's name, are
   capped per meeting and per plugin, and open muster's own page.
 - **muster's own surface widens in exactly three places,** all on
@@ -1122,8 +1251,11 @@ subdomains of muster's own host.
 
 - `muster-meetings`: a Deployment, 1 replica, `strategy: Recreate` (one
   SQLite writer), a small PVC, its `mpl_` token, the LiveKit key and secret,
-  the bucket key and the OpenRouter key from Secrets of its own (muster's
-  Secrets are not mounted). It calls muster at muster's in-namespace Service.
+  the bucket key, the OpenRouter key, `MEETINGS_INGEST_SECRET` and (for the
+  `utterance` engine) the STT bearer from Secrets of its own. muster's
+  Secrets are not mounted: `stt-cohere` accepts one bearer, so its value is
+  **copied** into the plugin's Secret as `MEETINGS_STT_TOKEN`, and rotating it
+  means updating both. It calls muster at muster's in-namespace Service.
   An ingress rule for `meet.<muster host>`, beside muster's own rule for
   `<muster host>`; an internal port for the webhook, STT ingest and metrics.
 - LiveKit server: the upstream Helm chart or a plain Deployment, with
@@ -1166,12 +1298,13 @@ with the test plan's tests included.
 | phase | PR | repository | size |
 |---|---|---|---|
 | **0: spikes** | S1–S6 below; results written into this page | — | M |
-| **1: core `app`** | 1a: migration, capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
-| | 1b: hand-off `app` target (with `ref`) and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card | muster | L |
-| | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger, the host-only cookie golden | muster | M |
-| | 1d: the `tasks` capability (new, decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
-| | 1f: **`__Host-` cookie names (decision 16): must merge and be released before `meet.<muster host>` goes live.** Rename, the loopback exception, expiring the old names, e2e helpers, release note | muster | M |
-| | 1e: knock notification (new, decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md | muster | M |
+| **1: core** | 1g: **central origin check for cookie-authenticated writes** (R1): the middleware, the GoTrue path, the route ledger, the sibling-origin negative controls, `muster_csrf_refusals_total`. Pre-existing hardening; ship first. **Gates the subdomain's go-live** | muster | L |
+| | 1f: **`__Host-` cookie names** (decision 16): the per-deployment name rule, the boot refusal, all seven literals, expiring the old names, e2e helpers, release note. **Gates the subdomain's go-live** | muster | M |
+| | 1a: migration, `app` capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
+| | 1b: hand-off `app` target (with `ref`) and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card, **and the CSP, Permissions-Policy and frame-attribute goldens** (the PR that widens the headers carries the tests that pin them) | muster | L |
+| | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
+| | 1d: the `tasks` capability (decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
+| | 1e: knock notification (decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md, **and the new paired-device TLS push sink for e2e** ([knock push spec](#the-knock-push-spec)). **Needs 1a** (the `app` capability) **and 1b** (the `?ref=` page) | muster | L |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
 | | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress and TURN/relay notes | muster-meetings | M |
@@ -1183,19 +1316,29 @@ with the test plan's tests included.
 | | 4b: worker, guards, `extract` and `chat_json` adapters, live panel for owner and guests, the per-meeting **AI action items** switch | muster-meetings | M |
 | | 4c: run the evaluation, set the default model, commit the result | muster-meetings | S |
 | **5: recording** | 5: room composite Egress, record toggle (on by default) and badge, playback, retention settings (30 / 365 days) and sweeper, bucket lifecycle docs | muster-meetings | M |
-| **6: extras** | 6a: Make task; 6b: summary; 6c: Cohere post-pass (optional); 6d: ecosystem.md row | both | S each |
+| **6: extras** | 6a: Make task; 6b: summary; 6d: ecosystem.md row (6c, the Cohere post-pass, is dropped) | both | S each |
 | **7: in-app calls on Android (optional)** | the `app-origins` bridge message and the camera grant | muster, muster-android | M |
 
 Core first because every later PR stands on it, and because it is the only
-part that changes muster for everyone. The 2026-11-20 decisions add three core
-PRs (1d, S; 1e, M; 1f, M), about 5–7 engineer-days in all. **1f gates
-phase 2c's go-live**: the plugin may be developed and tested before 1f, but
-`meet.<muster host>` is not added to DNS or `MUSTER_PLUGIN_ORIGINS` on a live
-muster until a release carrying 1f is deployed there; no plugin PR changes size
-(in-tenant hosting simplifies 2c's DNS and certificates rather than adding
-to it). 1d and 1e are independent of 1b and can go in parallel; 2b's knock
-calls need 1e, and 6a needs 1d. The plugin's phases 2–5 can each ship
-alone: a call with no transcript is already useful.
+part that changes muster for everyone. **Order and gates:**
+
+- **1g and 1f ship first**, in either order, each on its own: both close
+  gaps that exist today for any sibling host, and neither depends on
+  meetings. They **gate go-live**: the plugin may be built and tested
+  before them, but `meet.<muster host>` is not added to DNS or
+  `MUSTER_PLUGIN_ORIGINS` on a live muster until a release carrying **both**
+  is deployed there.
+- **1a → 1b → 1c** in sequence; **1d** is independent of all of them; **1e
+  needs 1a and 1b**.
+- On the plugin side, 2b's knock calls need 1e, and 6a needs 1d.
+
+Core gains four PRs over the first revision: 1g (L) and 1f (M) for the
+subdomain, 1d (S) and 1e (L, with its push-sink harness) for the 2026-11-20
+decisions, about 11–16 engineer-days of core work beyond 1a–1c. No plugin PR changes size:
+in-tenant hosting simplifies 2c's DNS and certificates, and the review
+fixes (removal backstop, consent check, signed media URLs, ingest secret)
+fit inside 2b, 3a and 5. Dropping 6c removes one S. The plugin's phases 2–5
+can each ship alone: a call with no transcript is already useful.
 
 ### Phase 0 spikes
 
@@ -1205,10 +1348,11 @@ Each answers one **UNVERIFIED** claim above, with a go/no-go.
 |---|---|---|
 | S1 | Do media and TURN work through the relay, from a phone on a mobile network and from a network that blocks UDP? | both connect; p95 round trip under 300 ms on UDP |
 | S2 | Does track Egress to a websocket deliver usable PCM (format, rate, gaps) for 30 minutes? | yes, or the Go-SDK participant fallback is chosen |
-| S3 | Room composite Egress CPU and memory for one 8-person, 1-hour recording | fits the cluster with one concurrent recording |
+| S3 | Egress cost, measured beside its reservation: one 8-person, 1-hour meeting with room composite **and** 8 track egresses (and the same unrecorded, track egresses only); CPU, memory, and whether jobs are refused at the default `cpu_cost`s | the cluster fits one recorded and one unrecorded meeting at once, at default or justified lowered costs; otherwise S2's Go-SDK participant replaces track egress |
 | S4 | Kyutai `stt-1b-en_fr` on the GPU host: memory beside `stt-cohere`, 8 concurrent streams, WER on the AMI subset | meets the [STT bar](#stt-evaluation) |
 | S5 | In Chrome, Firefox and Safari: camera, microphone and `getDisplayMedia` inside the sandboxed cross-origin frame with the `allow` and `Permissions-Policy` above; Android WebView `getDisplayMedia` | all three desktop browsers work (Safari's screen share is the likeliest gap); the Android result decides whether phase 7 is worth it |
-| S6 | One live request each: `scaledown/extract` with `provider.options.scaledown.entities`, and `deepseek/deepseek-v4-flash` with a strict JSON schema | both answer in the documented shape |
+| S6 | One live request each: `scaledown/extract` with `provider.options.scaledown.entities`, and `deepseek/deepseek-v4.1-flash-1017` with a strict JSON schema | both answer in the documented shape |
+| S7 | The headers a cookie-authenticated `POST` actually carries from Android's WebView (the muster app), the installed PWA, and Safari with strict privacy settings | each sends `Origin` or `Sec-Fetch-Site: same-origin`, so 1g refuses none of muster's own pages |
 
 ## Test plan
 
@@ -1261,26 +1405,52 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
 - **Host-only cookies (decision 8's premise).** A golden over every
   `Set-Cookie` muster-server emits across the sign-in, step-up, GoTrue,
   known-device and push-device paths: each has no `Domain` attribute and is
-  `HttpOnly`. *Red if:* a `Domain` is added to any one of the five literals
-  (one mutation each). An invariant guard: no cookie violates it today.
-- **`__Host-` names (PR 1f).** On an https test server, every `Set-Cookie`
-  muster emits on the five paths is named `__Host-…`, is `Secure`, has
-  `Path=/` and no `Domain` (pinned whole strings). *Red if:* one literal keeps
-  its old name, or gains a `Domain`. A request carrying only an old-named
-  valid session is treated as signed out and its response expires the old
-  name (red if the old name is still read). On the loopback-http page the
-  old name is used and read, and the `__Host-` name is not (red if the
-  prefix is applied there: WebKit would drop it and loopback sign-in would
-  break). Playwright: a browser with an old-named session cookie lands on
+  `HttpOnly`. *Red if:* a `Domain` is added to any one of the seven
+  literals, sets and clears (one mutation each). An invariant guard: no cookie violates it today.
+- **`__Host-` names (PR 1f).** With `MUSTER_PUBLIC_URL` https, every
+  `Set-Cookie` muster emits from the seven literals is named `__Host-…`, is
+  `Secure`, has `Path=/` and no `Domain` (pinned whole strings). *Red if:* one
+  literal keeps its old name, or gains a `Domain`. A request carrying only an
+  old-named valid session is treated as signed out and its response expires
+  the old name (red if the old name is still read).
+- **The name is per deployment (Y1).** A table over configurations: https
+  URL → prefixed; https URL with `MUSTER_SECURE_COOKIES=0` → unprefixed;
+  plain-http and loopback URLs → unprefixed. For each, a sign-in `POST`
+  (with a loopback `Origin`) and the following `GET` with **no** `Origin` and
+  no `Referer` (what `no-referrer` makes a page load) use the **same** name,
+  and the `GET` is signed in. *Red if:* the name is derived from
+  `loopbackHTTPPage(r)` (the `GET` goes signed out: the loop the per-request
+  rule would cause). Boot: unprefixed names with a `MUSTER_PLUGIN_ORIGINS`
+  entry under the public host refuses to start; with an entry on another
+  domain it starts (the positive control). Playwright, in Chromium and
+  WebKit, on the loopback http install (`http://localhost`): sign in, reload,
+  open two more pages, still signed in. Playwright: a browser with an old-named session cookie lands on
   `/login`, signs in once and is signed in afterwards; a cookie
   `__Host-muster_session` set by a page on a sibling host with
   `Domain=<host>` is refused by Chromium and muster sees no session (the
   browser-side control that the prefix does what this design relies on).
-- **Sibling subdomain refused.** A `POST` to a state-changing route with a
-  valid session cookie and `Origin: https://meet.example.test` (a sibling of
-  the test server's host) is refused by `requireSameOrigin`; the same request
-  with muster's own origin passes (the positive control). Invariant guard
-  for the existing check, now load-bearing for this design.
+- **The central origin check (PR 1g).**
+  - **Route ledger:** every route registered on the mux with a method other
+    than `GET`/`HEAD`/`OPTIONS`, enumerated from the mux, is classified
+    `cookie`, `bearer-only` or `unauthenticated` (with a reason). The test
+    fails on an unclassified route and when the set grows or shrinks.
+  - **Negative control, every `cookie` route:** a valid session cookie with
+    `Origin: https://meet.example.test` (a sibling of the test host), and
+    separately with `Origin: null`, and with no `Origin` and
+    `Sec-Fetch-Site: same-site`, is `403` **before the handler** (a spy handler
+    records no call). Run for every `cookie` route, not a sample: today's
+    unguarded `POST /tasks`, `/tasks/merge`, `/agents/{id}/start` and
+    `/chief/provision` are named in it and are red at `5fd6f7632`.
+  - **Positive control, every `cookie` route:** the same request with
+    muster's own `Origin` (or `Sec-Fetch-Site: same-origin`, or a same-origin
+    `Referer`) reaches the handler.
+  - **Bearer requests unaffected:** an `mst_` token with a sibling `Origin`
+    reaches the handler; a request with both a cookie and a bearer is judged
+    by the credential that admitted it.
+  - **GoTrue mode:** the same three cases on the GoTrue session path.
+  - **Both headers absent, cookie present:** refused.
+  - The browser suite runs whole on the PR (every form and htmx write is a
+    real-browser positive control).
 - **`tasks` capability.** A `tasks`-only token files and comments on
   `POST /plugin/v1/tasks`, and is `403` on `POST /plugin/v1/messages`, the
   draft routes, chief instructions and the task-write queue; `route_to_chief`
@@ -1329,6 +1499,9 @@ each result to the test:
 In `muster-meetings`, Go, fakes from `internal/mustertest` (extended with
 redeem, self and tasks) and a fake LiveKit server API:
 
+- **Knock limits:** the 21st waiting knock on a meeting and the 11th knock
+  from one address in 10 minutes are `429`; the 20th and 10th pass (the
+  boundary's positive side). *Red if:* either cap is removed.
 - **Join code:** 22 characters, base64url, distinct across 10,000 draws,
   stored only hashed. *Red if:* a shorter random source is used.
 - **Lobby state machine:** a table of every (state, event) pair: waiting →
@@ -1352,9 +1525,31 @@ redeem, self and tasks) and a fake LiveKit server API:
   sessions and ends their meetings within one poll. *Red if:* the poll's
   handler is a no-op.
 - **Defaults and toggles:** a new meeting has `record` and `ai` on; either
-  can be turned off at any time; turning either back on after a guest was
-  admitted is refused. *Red if:* a default flips, or the re-enable check is
-  removed (one each).
+  can be turned off at any time; turning either back on is refused while a
+  guest is **waiting**, while one is **admitted**, and after one has left,
+  and allowed before any knock (the positive control). *Red if:* a default
+  flips, or the check looks only at admitted guests (the waiting case goes
+  red), or it is removed (one each).
+- **Notice is current:** a guest knocks with both on, the owner turns
+  recording off, the guest is admitted: the admitted page's badge and the
+  event stream say "Transcribing · AI", not "Recording". *Red if:* the page
+  renders the state cached at knock time.
+- **Removed guest cannot rejoin (Y2):** against the fake LiveKit API, a
+  removal calls `RemoveParticipant`; a `participant_joined` webhook for a
+  revoked, denied or unknown identity calls `RemoveParticipant` at once, and
+  for an admitted one does not (the positive control); guest token `exp` is
+  2 minutes after mint. *Red if:* the webhook check is removed, or the
+  removal skips the LiveKit call (one each). The integration test below does
+  it against real LiveKit.
+- **Signed media URLs (Y4):** `/media/…` with a valid signature streams with
+  `Range` (a `206` for `bytes=0-99`); an expired, tampered, or other
+  meeting's signature is `403`; the URL is minted only for the owner's own
+  meeting. *Red if:* the expiry or the path is left out of the HMAC.
+- **Ingest secret:** a websocket upgrade to `/stt/ingest/…` without
+  `MEETINGS_INGEST_SECRET` is `401`. *Red if:* the check is removed.
+- **No ticket in URLs or logs:** every route that takes a ticket refuses it
+  in the query string, and a captured access log of a full meeting contains
+  no ticket or join code.
 - **AI off sends nothing:** with **AI action items** off, the fake
   OpenRouter receives zero requests over a whole scripted meeting, while the
   same meeting with it on sends at least one (the positive control), and the
@@ -1402,6 +1597,10 @@ scripted completions):
 - **Recording:** with **Record** on, room composite Egress writes an object;
   its size is non-zero and `ffprobe` reads a duration within 10% of the
   meeting's.
+- **Removed guest cannot rejoin, against real LiveKit:** a guest is admitted
+  and connected, the owner removes them, and the guest client reconnects with
+  the token it still holds: it is disconnected within 2 s of
+  `participant_joined`, and an admitted control guest who reconnects is not.
 - **Lifecycle:** `room_finished` after the empty timeout (shortened to 10 s
   in the test config) ends the meeting and kills the link.
 - **Restart:** killing and restarting the plugin mid-meeting resumes
@@ -1440,20 +1639,42 @@ support **UNVERIFIED**; if absent this step runs headed under Xvfb).
    both panels (fake engine in the default leg).
 8. An action item "send the budget to Sam" appears in the owner's panel
    **and the guest's** within 15 s of the line (fake OpenRouter in the
-   default leg); the guest's has no Make task button. Between steps 3 and 4, the
-   knock push reaches the owner while they are not on the meeting page. muster's
-   own `push.spec.ts` stubs the browser side and has no receiver, so this
-   needs a **new push sink**: a local HTTP server registered as the owner's
-   subscription endpoint (admitted by `MUSTER_PUSH_EXTRA_HOSTS`), holding the
-   subscription's key pair so it can decrypt the payload. The test asserts
-   muster's text and no guest name.
-9. **Make task**: muster's API shows a task tagged
+   default leg); the guest's has no Make task button.
+9. (The knock push is tested in its own spec, [below](#the-knock-push-spec).)
+   **Make task**: muster's API shows a task tagged
    `meetings:<meeting>-<item>`; a second tap files nothing new.
 10. **End meeting**: the guest sees "This meeting has ended"; reloading the
     guest link answers `410`.
 11. The past meeting is listed with Ada, its transcript (the line, under
-    "Ada"), a recording whose `<video>` plays to a non-zero duration, the
-    action item marked "Task #n", and a summary.
+    "Ada"), the action item marked "Task #n", and a summary. **Play** asks
+    `POST /api/meetings/{id}/recording-url`, the `<video>` gets that
+    `/media/…` URL and plays to a non-zero `currentTime`; a seek to the
+    middle issues a `Range` request; **Download** fetches the same URL. The
+    page reports no CSP violation (a `securitypolicyviolation` listener).
+
+#### The knock push spec
+
+The click path cannot test the push: there the owner holds the meeting's
+event stream, and the plugin sends no push while it does. A separate spec:
+
+1. The owner creates a meeting, then leaves its page (the Meetings list or
+   another muster page), so no owner session holds the stream.
+2. A guest knocks.
+3. The push arrives at a **test push sink** and decrypts to muster's text
+   ("Someone is waiting to join your meeting", the tab label as title) with
+   no guest name; a second knock within 30 s sends none; the owner opening
+   the meeting withdraws it.
+
+**This is new harness work** (in muster's e2e, size M, part of 1e). muster
+accepts a browser subscription only on the public push services, and
+`MUSTER_PUSH_EXTRA_HOSTS` admits an extra host **for paired phones only**,
+on `https` and the **default port** ([push.md](../push.md#which-push-services)).
+So the sink is a **paired device**: the spec pairs a test device through
+the device routes, registers a UnifiedPush-style endpoint on a TLS sink
+listening on 443 under a test host name (a container with a test CA that
+muster trusts through `SSL_CERT_FILE`), holds the device's key pair, and
+decrypts payload v2. Nothing in muster's e2e does this today:
+`push.spec.ts` stubs `pushManager` and has no receiver.
 
 **Defaults:** the guest's notice at step 3 names recording, transcription
 and the AI service, because all three are on by default; a second meeting
@@ -1497,6 +1718,23 @@ positive control):
 | core cookie names | read the old name on https | "`__Host-` names" |
 | core `tasks` | admit `tasks` on `POST /plugin/v1/messages` | "`tasks` capability" |
 | core knock | take the push body from the request | "knock notification" |
+| core knock | drop the `app` capability check; drop the 429 cap | "knock notification" (one each) |
+| core `ref` | drop the `ref` pattern check | "the `ref` hint" |
+| core redeem | admit only `CapViewer` on redeem; admit any capability | "capability per target" (one each) |
+| core tab | draw the tab with each gate removed in turn | "the tab's gates" (one per gate) |
+| core `/apps` | skip the owner check on `/apps/{id}` | "`/apps/{id}` access" |
+| core alive poll | never remove the frame on `404` | `plugin-app.spec.ts` revoke case |
+| core `tasks` | admit `tasks` on the draft routes, on chief instructions | "`tasks` capability" (one each) |
+| core CSRF (1g) | remove the middleware; exempt one route class; accept `Origin: null`; accept both-absent | "the central origin check" (one each) |
+| core CSRF ledger | register a new `POST` route without classifying it | "route ledger" |
+| core cookie name | derive the name from the request (`loopbackHTTPPage`) | "the name is per deployment" |
+| guest stream | serve the event stream to a waiting ticket | "guest event stream" |
+| join code | shorten the code to 64 bits | "join code" |
+| knock limits | remove the per-meeting or per-address knock cap | a knock-limit case (one each) |
+| rejoin | remove the `participant_joined` check | "removed guest cannot rejoin" and the integration case |
+| consent | check only admitted guests | "defaults and toggles" (waiting case) |
+| media URL | leave the expiry out of the HMAC | "signed media URLs" |
+| ingest | remove the secret check | "ingest secret" |
 | AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
 ## Open questions
@@ -1517,7 +1755,7 @@ design.
    TURN.
 3. **Transcription uses the existing STT service if it streams.** It does
    not; this page recommends a streaming model and keeps the existing service
-   for utterance mode and the post-pass. Transcription is per track, not
+   for utterance mode. Transcription is per track, not
    diarized.
 4. **Action items use OpenRouter:** ScaleDown Extract first, a DeepSeek model
    as the fallback, decided by an evaluation, switchable by config, in a
@@ -1536,7 +1774,9 @@ design.
    `MUSTER_PLUGIN_ORIGINS`. That is a different origin from muster, never the
    same one (muster's `421`, and the `allow-same-origin` frame). The earlier
    recommendation of a separate domain is dropped. The cookie check found
-   every muster cookie host-only, so this is not a blocker
+   every muster cookie host-only. Review then found that a same-site
+   subdomain can still forge cookie-authenticated writes muster does not
+   origin-check; core PR 1g closes that before go-live
    ([origins](#origins-and-hosts)).
 9. **(2026-11-20, operator) Recording is on by default,** with a per-meeting
    switch to turn it off and a visible notice to every participant while it is
