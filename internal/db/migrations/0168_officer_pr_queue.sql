@@ -7,9 +7,10 @@
 --       answers the officer "queued" (202) instead of refusing; the draft
 --       sweep opens the oldest queued row of a repository (queued_at, then
 --       id) as a draft once a slot frees, and settles it 'opened' (pr) or
---       'skipped' (note: the branch is gone, its head moved with no new
---       create, a pull request is already open from it, or its change was
---       refused). A second create from a QUEUED branch refreshes head_sha,
+--       'skipped' (note: the branch is gone, the item is finished in HQ, the
+--       stored title or body or the change at the branch's current head is
+--       refused, the item has its pull request, or one is already open from
+--       the branch). A second create from a QUEUED branch refreshes head_sha,
 --       title and body and keeps queued_at (its place); a create from a
 --       settled one queues it again at the back. The settle is conditional on
 --       head_sha and state = 'queued', so a decision on an older head never

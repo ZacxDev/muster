@@ -67,6 +67,9 @@ func prQueueContract(t *testing.T, ctx context.Context, st officers.PRQueueStore
 	z := add(pqZ, pqSha1, 31, "Zeta")
 	add(pqA, pqSha2, 52, "Alpha")
 	add(pqM, pqSha3, 17, "Mu")
+	if !z.Fresh {
+		t.Fatalf("a new row is not Fresh: %+v", z)
+	}
 	if z.State != officers.PRQueueQueued || z.Repo != pqRepo || z.HeadSHA != pqSha1 || z.Item != 31 || z.Title != "Zeta" || z.Instance != "officer-example-a-1" {
 		t.Fatalf("the first row = %+v", z)
 	}
@@ -75,6 +78,9 @@ func prQueueContract(t *testing.T, ctx context.Context, st officers.PRQueueStore
 	}
 	// A second create from a queued branch refreshes it and keeps its place.
 	again := add(pqZ, pqSha4, 31, "Zeta again")
+	if again.Fresh {
+		t.Fatalf("a refresh of a queued row is Fresh: %+v", again)
+	}
 	l := list(st, pqOfficerA, pqRepo)
 	if branchesOf(l) != pqZ+","+pqA+","+pqM || again.ID != z.ID || l[0].HeadSHA != pqSha4 || l[0].Title != "Zeta again" {
 		t.Fatalf("after refreshing %s: %s, first %+v; want it first, at the new head", pqZ, branchesOf(l), l[0])
@@ -93,7 +99,14 @@ func prQueueContract(t *testing.T, ctx context.Context, st officers.PRQueueStore
 		t.Fatalf("after opening %s the queue lists %s", pqZ, got)
 	}
 	// A create from a settled branch queues it again, at the BACK.
-	add(pqZ, pqSha1, 31, "Zeta, third")
+	if third := add(pqZ, pqSha1, 31, "Zeta, third"); !third.Fresh {
+		t.Fatalf("a settled row queued again is not Fresh: %+v", third)
+	}
+	for _, q := range list(st, pqOfficerA, pqRepo) {
+		if q.Fresh {
+			t.Fatalf("a listed row reads Fresh: %+v", q)
+		}
+	}
 	if got := branchesOf(list(st, pqOfficerA, pqRepo)); got != pqA+","+pqM+","+pqZ {
 		t.Fatalf("a settled branch queued again: %s, want it last", got)
 	}

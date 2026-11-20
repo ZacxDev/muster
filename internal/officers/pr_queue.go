@@ -65,6 +65,11 @@ type QueuedPR struct {
 	PR       int
 	Note     string
 	QueuedAt time.Time
+	// Fresh is set on PRQueueAdd's answer only: true when that Add made the
+	// row queued — a new row, or a settled one queued again — and false when
+	// it refreshed a row that was already queued (the cap-triggered close
+	// runs for a fresh one only).
+	Fresh bool
 }
 
 // PRQueueStore keeps the queue, per officer. ctx acts as the officer's owner
@@ -117,15 +122,19 @@ func (m *MemPRQueueStore) PRQueueAdd(_ context.Context, officer string, q Queued
 			continue
 		}
 		r.q.HeadSHA, r.q.Title, r.q.Body, r.q.Item, r.q.Instance = q.HeadSHA, q.Title, q.Body, q.Item, q.Instance
-		if r.q.State != PRQueueQueued {
+		fresh := r.q.State != PRQueueQueued
+		if fresh {
 			m.next++
 			r.q.State, r.q.PR, r.q.Note, r.q.QueuedAt, r.seq = PRQueueQueued, 0, "", now(), m.next
 		}
-		return r.q, nil
+		out := r.q
+		out.Fresh = fresh
+		return out, nil
 	}
 	m.next++
-	q.ID, q.State, q.PR, q.Note, q.QueuedAt = m.next, PRQueueQueued, 0, "", now()
+	q.ID, q.State, q.PR, q.Note, q.QueuedAt, q.Fresh = m.next, PRQueueQueued, 0, "", now(), false
 	m.rows[q.ID] = &memQueued{officer: officer, q: q, seq: m.next}
+	q.Fresh = true
 	return q, nil
 }
 
@@ -178,17 +187,23 @@ const prQueueColumns = `id, repo, branch, head_sha, title, body, item, instance,
 
 // PRQueueAdd implements PRQueueStore: ONE upsert on the (owner, officer,
 // repository, branch) key. A queued row keeps queued_at; a settled one is
-// queued again with queued_at now.
+// queued again with queued_at now. Fresh is an INSERT (xmax = 0), or an update
+// of a row the statement's snapshot (prev) shows settled: a concurrent Add
+// that lost the insert race to a new row reads it as a refresh, not fresh.
 func (s *PGPRQueueStore) PRQueueAdd(ctx context.Context, officer string, q QueuedPR) (QueuedPR, error) {
 	var out QueuedPR
-	err := s.pool.QueryRow(ctx, `INSERT INTO officer_pr_queue (officer, repo, branch, head_sha, title, body, item, instance)
+	err := s.pool.QueryRow(ctx, `WITH prev AS (SELECT state FROM officer_pr_queue
+			WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint AND officer = $1 AND repo = lower($2) AND branch = $3)
+		INSERT INTO officer_pr_queue (officer, repo, branch, head_sha, title, body, item, instance)
 		VALUES ($1, lower($2), $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (owner_id, officer, repo, branch) DO UPDATE SET
 			head_sha = EXCLUDED.head_sha, title = EXCLUDED.title, body = EXCLUDED.body, item = EXCLUDED.item, instance = EXCLUDED.instance,
 			queued_at = CASE WHEN officer_pr_queue.state = 'queued' THEN officer_pr_queue.queued_at ELSE now() END,
 			state = 'queued', pr = NULL, note = '', settled_at = NULL
-		RETURNING `+prQueueColumns, officer, q.Repo, q.Branch, q.HeadSHA, q.Title, q.Body, q.Item, q.Instance).Scan(
-		&out.ID, &out.Repo, &out.Branch, &out.HeadSHA, &out.Title, &out.Body, &out.Item, &out.Instance, &out.State, &out.PR, &out.Note, &out.QueuedAt)
+		RETURNING `+prQueueColumns+`, (xmax = 0 OR coalesce((SELECT state <> 'queued' FROM prev), false))`,
+		officer, q.Repo, q.Branch, q.HeadSHA, q.Title, q.Body, q.Item, q.Instance).Scan(
+		&out.ID, &out.Repo, &out.Branch, &out.HeadSHA, &out.Title, &out.Body, &out.Item, &out.Instance, &out.State, &out.PR, &out.Note, &out.QueuedAt,
+		&out.Fresh)
 	return out, err
 }
 

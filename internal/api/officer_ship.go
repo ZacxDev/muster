@@ -156,8 +156,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Loops:          s.prLoopsFor(cfg, o),
 		PublicBranches: s.publicBranchesFor(cfg, o),
 		Queue:          s.prQueueFor(cfg, o),
-		ItemHeld: func(ctx context.Context, item int) (bool, string, error) {
-			return itemHeldByOfficer(ctx, hq.c, o.ID, item)
+		ItemFinished: func(ctx context.Context, item int) (bool, string, error) {
+			return itemFinished(ctx, hq.c, item)
 		},
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
@@ -303,28 +303,52 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
 }
 
-// itemHeldByOfficer is the queue drain's item re-read (PushGate.ItemHeld):
-// held when HQ (read with officer officerID's own token) shows item claimed
-// by an instance of that officer — whatever its lease — and why not
-// otherwise: it was completed, cancelled, released back to the queue or
-// reassigned, which all leave it out of the officer's claimed items. HQ
-// unreadable is an error (the drain waits).
-func itemHeldByOfficer(ctx context.Context, c officers.Backend, officerID string, item int) (bool, string, error) {
-	items, err := c.AllItems(ctx, officers.StatusClaimed)
-	if err != nil {
-		return false, "", fmt.Errorf("HQ's claimed items could not be read: %v", err)
-	}
+// itemLiveStatuses are the statuses of an item whose work is not over: its
+// queued pull request is still opened (open, released or claimed again by
+// anyone; waiting on a person; escalated to one).
+var itemLiveStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated}
+
+// itemFinished is the queue drain's item re-read (PushGate.ItemFinished),
+// with officer c's own token: NOT finished when HQ lists item in a live
+// status (itemLiveStatuses), whoever holds it; finished when it lists it
+// done (completed: done or no_action); finished as cancelled when it lists it
+// nowhere. 🔴 A claim is not the test: a lease lasts at most an hour and only
+// the officer heartbeats it, and a down holder's claim is released, while a
+// queued create may wait longer than that. An unreadable list, or a live list
+// at its page bound that does not name the item (officers.AllItemsFull: not
+// proven absent), is an error: the drain waits.
+func itemFinished(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
 	want := strconv.Itoa(item)
-	for _, it := range items {
-		if string(it.ID) != want {
-			continue
+	has := func(items []officers.Item) bool {
+		for _, it := range items {
+			if string(it.ID) == want {
+				return true
+			}
 		}
-		if it.OfficerID != "" && it.OfficerID != officerID {
-			return false, fmt.Sprintf("HQ shows item %d claimed by officer %s now", item, it.OfficerID), nil
-		}
-		return true, "", nil
+		return false
 	}
-	return false, fmt.Sprintf("HQ no longer shows item %d claimed by this officer (it was completed, cancelled, released or reassigned)", item), nil
+	cut := false
+	for _, st := range itemLiveStatuses {
+		items, err := c.AllItems(ctx, st)
+		if err != nil {
+			return false, "", fmt.Errorf("HQ's %s items could not be read: %v", st, err)
+		}
+		if has(items) {
+			return false, "", nil
+		}
+		cut = cut || officers.AllItemsFull(len(items))
+	}
+	done, err := c.AllItems(ctx, officers.StatusDone)
+	if err != nil {
+		return false, "", fmt.Errorf("HQ's done items could not be read: %v", err)
+	}
+	if has(done) {
+		return true, fmt.Sprintf("item %d is completed in HQ, so its pull request is moot", item), nil
+	}
+	if cut {
+		return false, "", fmt.Errorf("item %d is in none of HQ's lists read, and one was at its page bound, so its state is unknown", item)
+	}
+	return true, fmt.Sprintf("item %d is no longer in HQ (cancelled or removed), so its pull request is moot", item), nil
 }
 
 // fixItemsHeld is the draft gate's FixItems: the pull-request fix items

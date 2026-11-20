@@ -31,6 +31,9 @@ import (
 // as rateLimits counts it: an App two officers share does not make the other's
 // pull requests this one's), never one marked ready for review — when it has
 // been idle CloseOldestDraft.IdleDays or more, with a comment, and tells HQ.
+// Only for a create that newly queued its row (a repeat create of a queued
+// branch closes nothing more), and not while the daily limit is full too (the
+// freed slot could not be used today).
 //
 // THE DRAIN runs right after a create is queued (drainNow, once the create
 // lock is released) and in every draft sweep (Sweep, every SweepInterval), per
@@ -40,8 +43,11 @@ import (
 // item does not end with no pull request and nobody told — when:
 //
 //   - its branch is gone;
-//   - HQ no longer shows its item claimed by this officer (ItemHeld: it was
-//     completed, cancelled, released or reassigned);
+//   - its item is FINISHED in HQ (ItemFinished: completed, cancelled or
+//     gone), which makes the pull request moot. An item that is open,
+//     released, waiting, escalated or claimed again still has its pull
+//     request opened: the work is in the pushed branch, and claims lapse
+//     (an hour's lease, released when its holder is down) while it waits;
 //   - its stored title or body no longer passes createTextWhy (the body
 //     contract, credential shapes, the officer's id or an internal detail in a
 //     public repository);
@@ -50,7 +56,10 @@ import (
 //     the create is checked here like any create's head).
 //
 // A pull request already open from the branch is skipped with no notice
-// (nothing is lost). The open cap or the daily limit still full, a read that
+// (nothing is lost) — read before the create lock and AGAIN once it is held,
+// so a drain racing another drain of the same row finds the other's pull
+// request rather than counting it against the item. A skip whose settle finds
+// the row already settled (another drain decided it) tells HQ nothing. The open cap or the daily limit still full, a read that
 // fails (the branch, the pull requests from it, HQ, the comparison), STOPS the
 // drain: nothing behind jumps the queue, and the next drain tries again. An
 // opened one is re-checked and announced exactly as a create the officer made
@@ -177,8 +186,11 @@ func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	g.logf("officers: %s: QUEUED the draft pull request from %s in %s at %s (queue position %d of %d; item %d): %s",
 		g.OfficerID, head, sr.Repo, shortSHA(sha), pos, total, item, why)
 	freed := ""
-	if capped {
-		if closed, ok := g.closeOldestDraft(ctx, sr, gh); ok {
+	// 🔴 ONE CLOSE PER QUEUED ROW: only a create that made its row queued
+	// (q.Fresh) closes a draft; a repeat create of a queued branch would
+	// otherwise close one more each time it is asked.
+	if capped && q.Fresh {
+		if closed, ok := g.closeOldestDraftIfUsable(ctx, sr, gh, item); ok {
 			freed = fmt.Sprintf(" muster closed your oldest idle draft, #%d, to free a slot, so the queue is opened now.", closed.Number)
 		}
 	}
@@ -187,10 +199,9 @@ func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		where = fmt.Sprintf("position %d of %d in the queue", pos, total)
 	}
 	return queued("the pull request from %s is QUEUED, not refused: %s. muster recorded it (%s for %s) and opens it as a draft itself, "+
-		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it.%s "+
-		"Keep your item claimed until a pull request from %s exists: muster re-reads the item first, and drops a queued branch whose item is no "+
-		"longer claimed by you (completed, released or reassigned). A push to %s since is fine: the drain checks the branch's head when it opens it",
-		head, why, where, sr.Repo, freed, head, head)
+		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it; you may "+
+		"complete your item.%s A push to %s since is fine: the drain checks the branch's head when it opens it",
+		head, why, where, sr.Repo, freed, head)
 }
 
 // drainNow drains sr's queue right after a create was queued, on the
@@ -252,14 +263,14 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number), nil, false)
 		return false, nil
 	}
-	if g.ItemHeld == nil {
-		return true, errors.New("muster cannot read HQ's claim on the item, so the queued pull request is not opened")
+	if g.ItemFinished == nil {
+		return true, errors.New("muster cannot read the item's state in HQ, so the queued pull request is not opened")
 	}
-	held, why, err := g.ItemHeld(ctx, q.Item)
+	finished, why, err := g.ItemFinished(ctx, q.Item)
 	if err != nil {
-		return true, fmt.Errorf("HQ's claim on item %d could not be read: %v", q.Item, err)
+		return true, fmt.Errorf("item %d's state in HQ could not be read: %v", q.Item, err)
 	}
-	if !held {
+	if finished {
 		g.skipQueued(ctx, sr, q, why, nil, true)
 		return false, nil
 	}
@@ -274,6 +285,15 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		return true, err
 	}
 	defer g.releaseCreate()
+	// 🔴 AGAIN, UNDER THE LOCK: another drain of this row may have opened it
+	// while this one waited for the lock, and its pull request would read
+	// below as the item's (a false "dropped" to HQ).
+	if open, err := g.openPRsFrom(ctx, sr, gh, q.Branch); err != nil {
+		return true, fmt.Errorf("the pull requests from its branch could not be read: %v", err)
+	} else if len(open) > 0 {
+		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number), nil, false)
+		return false, nil
+	}
 	if err := g.rateLimits(ctx, sr, q.Item); err != nil {
 		switch {
 		case isLimit(err, limitOpen), isLimit(err, limitDay):
@@ -318,8 +338,16 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 // (paths, never content), so the item does not end with no pull request and
 // nobody told.
 func (g *PushGate) skipQueued(ctx context.Context, sr officers.ShipRepo, q officers.QueuedPR, why string, paths []string, notify bool) {
-	if _, err := g.Queue.Settle(ctx, q.ID, q.HeadSHA, officers.PRQueueSkipped, 0, why); err != nil {
+	ok, err := g.Queue.Settle(ctx, q.ID, q.HeadSHA, officers.PRQueueSkipped, 0, why)
+	if err != nil {
 		g.logf("officers: %s: the queued pull request from %s in %s could not be dropped (%v); the next drain reads it again", g.OfficerID, q.Branch, sr.Repo, err)
+		return
+	}
+	if !ok {
+		// 🔴 SETTLED ALREADY (another drain opened or dropped it, or a create
+		// refreshed it since it was read): this decision is not the row's, so
+		// HQ is told nothing.
+		g.logf("officers: %s: the queued pull request from %s in %s was settled elsewhere first; not dropped here (%s)", g.OfficerID, q.Branch, sr.Repo, why)
 		return
 	}
 	g.logf("officers: %s: SKIPPED the queued pull request from %s in %s: %s", g.OfficerID, q.Branch, sr.Repo, why)
@@ -354,6 +382,25 @@ func IdleDraftComment(days int) string {
 	return "This draft pull request had no activity for " + strconv.Itoa(days) + " days or more, and its author reached its limit of open " +
 		"pull requests here, so it was closed automatically to make room for a newer one. Its branch is kept: reopen this pull request when " +
 		"the work resumes."
+}
+
+// closeOldestDraftIfUsable is closeOldestDraft, unless the daily limit is full
+// too (the freed slot could not open anything today) or it cannot be read.
+func (g *PushGate) closeOldestDraftIfUsable(ctx context.Context, sr officers.ShipRepo, gh GitHub, item int) (PR, bool) {
+	if g.Ship.CloseOldestDraft == nil {
+		return PR{}, false
+	}
+	_, today, _, err := g.limitCounts(ctx, sr, item)
+	switch {
+	case err != nil:
+		g.logf("officers: %s: no idle draft closed in %s: the daily count could not be read: %v", g.OfficerID, sr.Repo, err)
+		return PR{}, false
+	case today >= g.Ship.NewPRsPerDay():
+		g.logf("officers: %s: no idle draft closed in %s: the daily limit (%d) is full too, so a freed slot opens nothing today", g.OfficerID,
+			sr.Repo, g.Ship.NewPRsPerDay())
+		return PR{}, false
+	}
+	return g.closeOldestDraft(ctx, sr, gh)
 }
 
 // closeOldestDraft is the cap-triggered close (see the comment at the top):

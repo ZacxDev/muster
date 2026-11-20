@@ -361,6 +361,11 @@ func (c *Client) Items(ctx context.Context, q ItemsQuery) (ItemsPage, error) {
 // maxItemPages bounds AllItems: the wake loop needs a count, not a census.
 const maxItemPages = 5
 
+// AllItemsFull reports whether an AllItems answer of n items may have been
+// cut at its page bound (maxItemPages pages of 100): an item missing from it
+// is then not proven absent.
+func AllItemsFull(n int) bool { return n >= maxItemPages*100 }
+
 // AllItems reads up to maxItemPages pages of items in status (PageAll).
 func (c *Client) AllItems(ctx context.Context, status string) ([]Item, error) {
 	return PageAll(ctx, c.Items, status)

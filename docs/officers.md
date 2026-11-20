@@ -2163,7 +2163,10 @@ same. The per-item and per-day limits still refuse.
 - **Closing the oldest idle draft** (`close_oldest_draft`, **on by default**).
   When a create is queued *because the limit is full*, muster closes the
   officer's **one** oldest draft in that repository, if it has been idle
-  `idle_days` (default 2) or more.
+  `idle_days` (default 2) or more. It closes one only for a create that
+  newly queued its row: a repeat create of a branch already queued closes
+  nothing more. It closes none while the daily limit is full too, since the
+  freed slot could not open anything that day.
   - "Oldest" is by last activity: GitHub's `updated_at`, which moves on a
     push, a comment, a review or an edit. A tie goes to the lower number.
   - It is only ever the officer's **own** draft, counted the way the limits
@@ -2188,9 +2191,14 @@ same. The per-item and per-day limits still refuse.
   and tells HQ (so the item does not end with no pull request and nobody
   told), when:
   - the branch is gone;
-  - HQ no longer shows the item claimed by this officer (completed,
-    cancelled, released or reassigned). The officer keeps its item claimed
-    until a pull request from its branch exists;
+  - the item is **finished** in HQ: listed done (completed, `done` or
+    `no_action`), or listed nowhere (cancelled or removed). An item that is
+    open, released, waiting, escalated or claimed again by anyone still has
+    its pull request opened, because the work is in the pushed branch. A
+    claim is not the test: a lease lasts at most an hour, and a down holder's
+    claim is released, while a queued create may wait longer. The officer may
+    complete its item once it is queued. If HQ cannot be read, or a list
+    it reads is at its page bound without naming the item, the drain waits;
   - the stored title or body no longer passes the body contract or the
     credential, officer-id and public-repository checks;
   - the item has its pull request now;
@@ -2198,6 +2206,9 @@ same. The per-item and per-day limits still refuse.
     the create is fine: that head is what is checked and opened.
 
   A branch that already has an open pull request is skipped with no notice.
+  That check runs again once the create lock is held, so two drains racing
+  on one row open one pull request. A skip whose row another drain already
+  settled tells HQ nothing.
   The drain **stops**, and the next one tries again, so nothing behind jumps
   the queue, when:
   - the open or daily limit is still full;

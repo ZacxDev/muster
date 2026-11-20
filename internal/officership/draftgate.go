@@ -318,25 +318,45 @@ func (g *PushGate) officerNamedWhy(sr officers.ShipRepo, what, text string) stri
 // itself (a human may have edited the body); a pull request whose item
 // resolves neither way is not the officer's shape and is not counted.
 func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item int) error {
+	open, today, forItem, err := g.limitCounts(ctx, sr, item)
+	if err != nil {
+		return err
+	}
+	// Each refusal is a limitError of its kind: the open cap queues a create
+	// (queueCreate) and the drain waits on it (prqueue.go).
+	switch {
+	case forItem >= officers.MaxPRsPerItem:
+		return limit(limitItem, "item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
+	case open >= officers.MaxOpenPRsPerRepo:
+		return limit(limitOpen, "%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
+	case today >= g.Ship.NewPRsPerDay():
+		return limit(limitDay, "this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
+	}
+	return nil
+}
+
+// limitCounts is what rateLimits counts for a new pull request for item in
+// sr: the officer's open pull requests in sr, the ones it opened this UTC day
+// across its repositories, and item's in any state (see rateLimits).
+func (g *PushGate) limitCounts(ctx context.Context, sr officers.ShipRepo, item int) (open, today, forItem int, err error) {
 	now := time.Now
 	if g.Now != nil {
 		now = g.Now
 	}
 	t := now().UTC()
 	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	open, today, forItem := 0, 0, 0
 	for _, r := range g.Ship.RepoList(g.Repo) {
 		gh := g.ghFor(r.Repo)
 		if gh == nil {
-			return fmt.Errorf("no GitHub reader for %s", r.Repo)
+			return 0, 0, 0, fmt.Errorf("no GitHub reader for %s", r.Repo)
 		}
 		slug, err := gh.AppSlug(ctx)
 		if err != nil {
-			return fmt.Errorf("could not read the officer App's identity: %v", err)
+			return 0, 0, 0, fmt.Errorf("could not read the officer App's identity: %v", err)
 		}
 		prs, err := g.officerPRs(ctx, r, gh, BotLogin(slug), "all")
 		if err != nil {
-			return fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
+			return 0, 0, 0, fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
 		}
 		for _, p := range prs {
 			if !strings.EqualFold(p.Author, BotLogin(slug)) || p.AuthorType != "Bot" {
@@ -357,17 +377,7 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 			}
 		}
 	}
-	// Each refusal is a limitError of its kind: the open cap queues a create
-	// (queueCreate) and the drain waits on it (prqueue.go).
-	switch {
-	case forItem >= officers.MaxPRsPerItem:
-		return limit(limitItem, "item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
-	case open >= officers.MaxOpenPRsPerRepo:
-		return limit(limitOpen, "%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
-	case today >= g.Ship.NewPRsPerDay():
-		return limit(limitDay, "this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
-	}
-	return nil
+	return open, today, forItem, nil
 }
 
 // itemOf is the item of the officer's pull request p in r: from its body's

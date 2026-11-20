@@ -49,18 +49,22 @@ func (q memQueue) Settle(ctx context.Context, id int64, head, state string, pr i
 	return q.st.PRQueueSettle(ctx, q.officer, id, head, state, pr, note)
 }
 
-// itemHeldFrom is PushGate.ItemHeld over the rig's claims (an item is held
-// while the claims map names it), failing with hqErr when set.
-func itemHeldFrom(r *draftRig, hqErr *error) func(context.Context, int) (bool, string, error) {
-	return func(_ context.Context, item int) (bool, string, error) {
-		if hqErr != nil && *hqErr != nil {
-			return false, "", *hqErr
-		}
-		if _, ok := r.claims[item]; ok {
-			return true, "", nil
-		}
-		return false, "HQ no longer shows item " + itoa(item) + " claimed by this officer", nil
+// hqItems is HQ's view of the items for the drain (PushGate.ItemFinished):
+// an item named in finished is finished with that reason; any other is live
+// (whether or not anyone claims it). err, when set, fails every read.
+type hqItems struct {
+	finished map[int]string
+	err      error
+}
+
+func (h *hqItems) itemFinished(_ context.Context, item int) (bool, string, error) {
+	if h.err != nil {
+		return false, "", h.err
 	}
+	if why, ok := h.finished[item]; ok {
+		return true, why, nil
+	}
+	return false, "", nil
 }
 
 // newQueueRig is the draft rig with a queue, items 17 and 19 claimed, the
@@ -70,12 +74,19 @@ func itemHeldFrom(r *draftRig, hqErr *error) func(context.Context, int) (bool, s
 // clean at fxHead): the open cap is full. No cap-triggered close (the fixture
 // ship has none; a test turns it on).
 func newQueueRig(t *testing.T) (*draftRig, memQueue) {
+	r, q, _ := newQueueRigHQ(t)
+	return r, q
+}
+
+// newQueueRigHQ is newQueueRig with HQ's item view, to change.
+func newQueueRigHQ(t *testing.T) (*draftRig, memQueue, *hqItems) {
 	t.Helper()
 	r := newDraftRig()
 	r.claims[19] = dInstance
 	q := memQueue{st: officers.NewMemPRQueueStore(), officer: dOfficer}
+	hq := &hqItems{finished: map[int]string{}}
 	r.g.Queue = q
-	r.g.ItemHeld = itemHeldFrom(r, nil)
+	r.g.ItemFinished = hq.itemFinished
 	r.g.CreateWait = 50 * time.Millisecond
 	yesterday := dNow.Add(-16 * time.Hour)
 	for item := 1; item <= 4; item++ {
@@ -93,7 +104,7 @@ func newQueueRig(t *testing.T) (*draftRig, memQueue) {
 		r.infra.compares["trunk..."+b] = c
 		r.infra.compares["trunk..."+sha] = c
 	}
-	return r, q
+	return r, q, hq
 }
 
 func createFor(branch string, item int) map[string]any {
@@ -171,7 +182,7 @@ func TestACappedCreateIsQueuedNotRefused(t *testing.T) {
 		t.Fatalf("a fifth create (four open): err = %v, want queued and NOT a refusal", err)
 	}
 	for _, want := range []string{"QUEUED, not refused", "4 of this officer's pull requests are open in " + dInfra + "; the limit is 4",
-		"do NOT escalate", "position 1 of 1 in the queue", "Keep your item claimed until a pull request from " + qBranchB + " exists"} {
+		"do NOT escalate", "position 1 of 1 in the queue", "you may complete your item"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the queued answer %q does not say %q", err, want)
 		}
@@ -311,37 +322,42 @@ func TestASlotFreeingOpensTheOldestQueuedBranch(t *testing.T) {
 // moved head with a clean change is opened at that head (no "superseded"
 // skip). HQ unreadable stops the drain: nothing is opened, nothing is told.
 func TestTheDrainSkipsAndTellsHQ(t *testing.T) {
-	var hqErr error
 	for name, c := range map[string]struct {
-		change func(r *draftRig, q memQueue)
+		change func(r *draftRig, q memQueue, hq *hqItems)
 		// opened is the branch opened (at head); why what the skip notice
 		// says ("" for no notice); paths its paths.
 		opened, head, why string
 		paths             []string
 	}{
-		"its branch is gone": {func(r *draftRig, _ memQueue) { delete(r.infra.branches, qBranchB) }, qBranchA, qShaA, "its branch is gone", nil},
-		"its item is no longer claimed": {func(r *draftRig, _ memQueue) { delete(r.claims, 19) }, qBranchA, qShaA,
-			"HQ no longer shows item 19 claimed by this officer", nil},
-		"its stored body holds a credential": {func(r *draftRig, q memQueue) {
+		"its branch is gone": {func(r *draftRig, _ memQueue, _ *hqItems) { delete(r.infra.branches, qBranchB) }, qBranchA, qShaA, "its branch is gone", nil},
+		"its item is completed": {func(_ *draftRig, _ memQueue, hq *hqItems) { hq.finished[19] = "item 19 is completed in HQ" }, qBranchA, qShaA,
+			"item 19 is completed in HQ", nil},
+		"its item is cancelled": {func(_ *draftRig, _ memQueue, hq *hqItems) {
+			hq.finished[19] = "item 19 is no longer in HQ (cancelled or removed)"
+		}, qBranchA, qShaA, "item 19 is no longer in HQ (cancelled or removed)", nil},
+		// 🔴 A RELEASED (or lapsed, or re-claimed) item still has its pull
+		// request opened: the work is in the pushed branch.
+		"its item was released (no claim)": {func(r *draftRig, _ memQueue, _ *hqItems) { delete(r.claims, 19) }, qBranchB, qShaB, "", nil},
+		"its stored body holds a credential": {func(r *draftRig, q memQueue, _ *hqItems) {
 			_, _ = q.Add(context.Background(), officers.QueuedPR{Repo: dInfra, Branch: qBranchB, HeadSHA: qShaB, Title: "Fix item 19",
 				Body: goodBody(19) + "\n" + dToken, Item: 19})
 		}, qBranchA, qShaA, "its title or body was refused: its title or body has a credential-shaped value", nil},
-		"its stored body breaks the contract": {func(r *draftRig, q memQueue) {
+		"its stored body breaks the contract": {func(r *draftRig, q memQueue, _ *hqItems) {
 			_, _ = q.Add(context.Background(), officers.QueuedPR{Repo: dInfra, Branch: qBranchB, HeadSHA: qShaB, Title: "Fix item 19",
 				Body: "no first line", Item: 19})
 		}, qBranchA, qShaA, "its body no longer keeps the contract: the body's first line must be exactly", nil},
-		"its item has its pull request now": {func(r *draftRig, _ memQueue) {
+		"its item has its pull request now": {func(r *draftRig, _ memQueue, _ *hqItems) {
 			r.infra.all = append(r.infra.all, PR{Number: 120, State: "closed", Author: BotLogin(r.infra.slug), AuthorType: "Bot",
 				HeadRef: "bot/engineering-example-web/19-other", CreatedAt: dNow.Add(-48 * time.Hour), Body: goodBody(19)})
 		}, qBranchA, qShaA, "item 19 already has 1 pull request(s)", nil},
-		"its change at the current head is refused": {func(r *draftRig, _ memQueue) {
+		"its change at the current head is refused": {func(r *draftRig, _ memQueue, _ *hqItems) {
 			r.infra.branches[qBranchB] = qShaC
 			bad := r.infra.compares["trunk..."+qShaB]
 			bad.Commits = []string{qShaC}
 			bad.Files = []File{{Path: "nodes/n1.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a\n+b"}}
 			r.infra.compares["trunk..."+qShaC] = bad
 		}, qBranchA, qShaA, "its change was refused", []string{"nodes/n1.yaml"}},
-		"its head moved, cleanly (opened at the new head)": {func(r *draftRig, _ memQueue) {
+		"its head moved, cleanly (opened at the new head)": {func(r *draftRig, _ memQueue, _ *hqItems) {
 			r.infra.branches[qBranchB] = qShaC
 			c := r.infra.compares["trunk..."+qShaB]
 			c.Commits = []string{qShaC}
@@ -349,15 +365,13 @@ func TestTheDrainSkipsAndTellsHQ(t *testing.T) {
 		}, qBranchB, qShaC, "", nil},
 		// 🔴 NO QUEUE-JUMPING: HQ cannot be read for B, so B waits and A,
 		// behind it, is not opened in the free slot either.
-		"HQ unreadable": {func(r *draftRig, _ memQueue) { hqErr = errors.New("fake HQ: 503") }, "", "", "", nil},
+		"HQ unreadable": {func(_ *draftRig, _ memQueue, hq *hqItems) { hq.err = errors.New("fake HQ: 503") }, "", "", "", nil},
 		// The same for B's comparison.
-		"its comparison unreadable": {func(r *draftRig, _ memQueue) { delete(r.infra.compares, "trunk..."+qShaB) }, "", "", "", nil},
+		"its comparison unreadable": {func(r *draftRig, _ memQueue, _ *hqItems) { delete(r.infra.compares, "trunk..."+qShaB) }, "", "", "", nil},
 	} {
-		hqErr = nil
-		r, q := newQueueRig(t)
-		r.g.ItemHeld = itemHeldFrom(r, &hqErr)
+		r, q, hq := newQueueRigHQ(t)
 		queueBA(t, r)
-		c.change(r, q)
+		c.change(r, q, hq)
 		r.notices = nil
 		closeOpen(r, 101)
 		_ = r.g.Sweep(context.Background())
@@ -395,7 +409,7 @@ func TestQueuedCreatesOutliveTheGateThatQueuedThem(t *testing.T) {
 	restarted.web, restarted.infra, restarted.claims = r.web, r.infra, r.claims
 	restarted.g.GH, restarted.g.GHFor = r.web, map[string]GitHub{fxRepo: r.web, dInfra: r.infra}
 	restarted.g.Queue = memQueue{st: q.st, officer: dOfficer}
-	restarted.g.ItemHeld = itemHeldFrom(restarted, nil)
+	restarted.g.ItemFinished = (&hqItems{}).itemFinished
 	closeOpen(r, 101)
 	_ = restarted.g.Sweep(context.Background())
 	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
@@ -514,4 +528,142 @@ func TestTheCloseNeverReachesBeyondTheOfficersOwnDrafts(t *testing.T) {
 	if got := queuedBranches(t, q); got != qBranchB {
 		t.Fatalf("the queue lists %q", got)
 	}
+}
+
+// TestARepeatCreateOfAQueuedBranchClosesNoMoreDrafts: with the close on and
+// FOUR idle drafts, B's first capped create closes ONE (#101, the oldest);
+// B cannot be opened yet (its head's comparison is unreadable, so the drain
+// waits), and the freed slot is taken by another pull request. Asked again
+// four times at the full cap, B — still queued, refreshed in place — closes
+// nothing more.
+func TestARepeatCreateOfAQueuedBranchClosesNoMoreDrafts(t *testing.T) {
+	r, q := newQueueRig(t)
+	day := 24 * time.Hour
+	for n, idle := range map[int]time.Duration{101: 9 * day, 102: 8 * day, 103: 7 * day, 104: 6 * day} {
+		idle := idle
+		setPR(r, n, func(p *PR) { p.UpdatedAt = dNow.Add(-idle) })
+	}
+	r.g.Ship.CloseOldestDraft = &officers.CloseOldestDraft{IdleDays: 2}
+	delete(r.infra.compares, "trunk..."+qShaB)
+	if err := r.create(createFor(qBranchB, 19)); !isQueued(err) || !strings.Contains(err.Error(), "#101") {
+		t.Fatalf("B's first create: %v, want queued, closing #101", err)
+	}
+	if got := strings.Join(intsOf(r.infra.closed), ","); got != "101" {
+		t.Fatalf("B's first create closed %s, want 101", got)
+	}
+	taken := PR{Number: 140, State: "open", Draft: true, Author: BotLogin(r.infra.slug), AuthorType: "Bot",
+		HeadRef: "bot/engineering-example-web/40-x", HeadSHA: fxHead, HeadRepo: dInfra, BaseRef: "trunk",
+		CreatedAt: dNow.Add(-20 * time.Hour), UpdatedAt: dNow, Body: goodBody(40)}
+	r.infra.all = append(r.infra.all, taken)
+	r.infra.prs[taken.Number] = taken
+	for i := 0; i < 4; i++ {
+		if err := r.create(createFor(qBranchB, 19)); !isQueued(err) || strings.Contains(err.Error(), "closed your oldest") {
+			t.Fatalf("B asked again (%d): %v, want queued with nothing closed", i+1, err)
+		}
+	}
+	if got := strings.Join(intsOf(r.infra.closed), ","); got != "101" {
+		t.Fatalf("after four re-asks: closed %s, want only 101", got)
+	}
+	if got := queuedBranches(t, q); got != qBranchB {
+		t.Fatalf("the queue lists %q, want B", got)
+	}
+}
+
+// TestNoDraftIsClosedWhileTheDailyLimitIsFull: at the full cap with an idle
+// draft, but with three pull requests already opened today (in the other
+// repository), the capped create closes nothing: the slot could not be used
+// today. Control: the same with two opened today closes the idle draft.
+func TestNoDraftIsClosedWhileTheDailyLimitIsFull(t *testing.T) {
+	for _, c := range []struct {
+		today  int
+		closed string
+	}{{3, ""}, {2, "102"}} {
+		r, _ := newQueueRig(t)
+		setPR(r, 102, func(p *PR) { p.UpdatedAt = dNow.Add(-5 * 24 * time.Hour) })
+		r.g.Ship.CloseOldestDraft = &officers.CloseOldestDraft{IdleDays: 2}
+		for i := 0; i < c.today; i++ {
+			r.web.all = append(r.web.all, PR{Number: 60 + i, State: "closed", Author: BotLogin(r.web.slug), AuthorType: "Bot",
+				HeadRef: "officer/engineering-example-web/" + itoa(60+i) + "-x", CreatedAt: dNow.Add(-time.Hour), Body: goodBody(60 + i)})
+		}
+		if err := r.create(createFor(qBranchB, 19)); !isQueued(err) {
+			t.Fatalf("%d today: %v, want queued", c.today, err)
+		}
+		if got := strings.Join(intsOf(r.infra.closed), ","); got != c.closed {
+			t.Errorf("%d opened today: closed %q, want %q", c.today, got, c.closed)
+		}
+	}
+}
+
+// TestTwoDrainsOfOneRowOpenOnePullRequestAndTellNoDrop: drain X holds the
+// create lock while drain Y, which listed the row and passed its first reads,
+// waits for it. X then (a) OPENS the row's pull request and settles it, (b)
+// opens it but has NOT settled it yet (its settle still in flight, or
+// failed), or (c) DROPS the row (settles it skipped) while the item gains a
+// pull request elsewhere; Y, once it has the lock, must open no second pull
+// request and send HQ no "dropped" notice of its own.
+func TestTwoDrainsOfOneRowOpenOnePullRequestAndTellNoDrop(t *testing.T) {
+	for _, mode := range []string{"opened", "opened, unsettled", "dropped"} {
+		opened := mode != "dropped"
+		r, q, hq := newQueueRigHQ(t)
+		r.g.CreateWait = 10 * time.Second
+		if err := r.create(createFor(qBranchB, 19)); !isQueued(err) {
+			t.Fatalf("queueing B: %v", err)
+		}
+		closeOpen(r, 101)
+		ctx := context.Background()
+		row, _ := q.List(ctx, dInfra)
+		// X takes the lock; Y signals once past its reads before the lock.
+		if err := r.g.acquireCreate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		reached := make(chan struct{}, 1)
+		r.g.ItemFinished = func(c context.Context, item int) (bool, string, error) {
+			select {
+			case reached <- struct{}{}:
+			default:
+			}
+			return hq.itemFinished(c, item)
+		}
+		done := make(chan error, 1)
+		go func() { _, err := r.g.drainOne(ctx, r.g.Ship.Repos[1], r.infra, row[0]); done <- err }()
+		<-reached
+		time.Sleep(100 * time.Millisecond) // Y is now waiting for the lock
+		if opened {
+			pr, _ := r.infra.OpenDraftPR(ctx, row[0].Title, row[0].Branch, "trunk", row[0].Body)
+			if mode == "opened" {
+				if ok, _ := q.Settle(ctx, row[0].ID, row[0].HeadSHA, officers.PRQueueOpened, pr.Number, ""); !ok {
+					t.Fatal("X's settle")
+				}
+			}
+		} else {
+			if ok, _ := q.Settle(ctx, row[0].ID, row[0].HeadSHA, officers.PRQueueSkipped, 0, "X dropped it"); !ok {
+				t.Fatal("X's settle")
+			}
+			r.infra.all = append(r.infra.all, PR{Number: 121, State: "closed", Author: BotLogin(r.infra.slug), AuthorType: "Bot",
+				HeadRef: "bot/engineering-example-web/19-other", CreatedAt: dNow.Add(-48 * time.Hour), Body: goodBody(19)})
+		}
+		r.notices = nil
+		r.g.releaseCreate()
+		if err := <-done; err != nil {
+			t.Fatalf("%s: Y: %v", mode, err)
+		}
+		wantOpened := 0
+		if opened {
+			wantOpened = 1
+		}
+		if len(r.infra.openedDrafts) != wantOpened {
+			t.Errorf("%s: %d pull request(s) opened from B (%v), want %d", mode, len(r.infra.openedDrafts), r.infra.openedDrafts, wantOpened)
+		}
+		if n := skipNotices(r); len(n) != 0 {
+			t.Errorf("%s: Y told HQ of a drop: %+v", mode, n)
+		}
+	}
+}
+
+func intsOf(ns []int) []string {
+	var out []string
+	for _, n := range ns {
+		out = append(out, itoa(n))
+	}
+	return out
 }
