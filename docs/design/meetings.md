@@ -638,9 +638,24 @@ everywhere.
   (actor, name, origin, entry URL, capabilities), and `plugin.server.hidden`
   and `.shown` for a person's opt-out. A redeem writes no audit row: it is
   counted in `muster_plugin_server_grants_total{outcome}`.
+- **Who installed it.** From the page, `installed_by` is the admin's user id
+  and the audit actor is that admin. From the command line there is no user:
+  `installed_by` is NULL, `installed_via` is `cli`, and the audit row's actor
+  is `users.Actor{Via: "cli"}` with no user id, as `SetUserDisabledAs`
+  (`internal/api/accounts.go:943`) audits a CLI disable. The plugins store's
+  own `audit()` (`internal/plugins/store.go:223`) refuses a principal with no
+  user, so the CLI writes go through `users.AuditTx` with that actor.
+  🔴 `installed_by` is **bookkeeping only**. No `/plugin/v1` handler reads
+  it, and it is never an owner, a principal or a push recipient: a knock or a
+  task reaches the person it was for, never the admin who installed the app
+  ([who each handler acts as](#who-each-route-acts-as)).
 - **Rotate** gives the same row a new `token_hash` and kills the old token at
   once. Subjects and grants stay, so the plugin's archive stays reachable
-  (fork 7).
+  (fork 7). ⚠ **Rotate ends every live call until the plugin is
+  redeployed with the new token.** The running plugin's next `/self` gets
+  `401`, and it then ends every owner session and open meeting it holds, as
+  on an uninstall. The rotate dialog says so, and rotation belongs in the
+  same change window as the plugin's redeploy.
 
 #### The server token: what it is
 
@@ -663,14 +678,66 @@ table is pinned to `routes.golden` and fails when it grows or shrinks.
 | `POST /plugin/v1/handoffs/redeem` | yes, for app codes minted **for this server app** | nobody; the answer names the person who minted it, and records the grant |
 | `POST /plugin/v1/owners/check` (new) | yes | nobody: which of the subjects it sends hold a live grant |
 | `POST /plugin/v1/notify`, `DELETE /plugin/v1/notify/{ref}` | yes, with `Muster-Act-For` | the person whose live grant that subject names |
-| `POST /plugin/v1/tasks` | yes, if installed with **Files tasks**, with `Muster-Act-For`; create and comment only (`route_to_chief` and `reference` are `400`, as on a `tasks`-only token today) | the same |
+| `POST /plugin/v1/tasks` | yes, if installed with **Files tasks**, with `Muster-Act-For`; create and comment only (`route_to_chief` and `reference` are `400`, as on a `tasks`-only token today), and only on tasks **this app filed** ([tasks](#tasks-for-a-server-app)) | the same |
 | every other `/plugin/v1` route (messages, drafts, checks, media, task writes, `GET /plugin/v1/tasks`, chief instructions, owner-answered) | **no**, `403` | — |
+
+#### Who each route acts as
+
+`authz.WithPrincipal` panics on a principal with no user (`UserID <= 0`,
+`internal/authz/authz.go:407`), and a password-mode server has no GoTrue
+users store to build one from. So the "acts as nobody" routes **carry no
+request principal at all**. They are not given a fake one, and they never
+borrow `installed_by`.
+
+| route | request principal | owner id the handler sees | where it comes from |
+|---|---|---|---|
+| `GET /plugin/v1/self` | **none** | none; `p.OwnerID` is `0` and the handler reads only `p` | — |
+| `POST /plugin/v1/handoffs/redeem` | **none** | the code row's `owner_id` | the `UPDATE … RETURNING owner_id` on the code, run as System ([redeem](#the-owner-scoped-redeem)) |
+| `POST /plugin/v1/owners/check` | **none** | none: it answers subjects, never owners | — |
+| `POST /plugin/v1/notify`, `DELETE /plugin/v1/notify/{ref}` | `{UserID: <grant owner>, Role: <that user's role>, Via: ViaServerPlugin}`, built by `principalFor(grant owner, ViaServerPlugin)` | the principal's `UserID`, which is also the push recipient | the act-for grant row ([below](#acting-for-a-person-muster-act-for)) |
+| `POST /plugin/v1/tasks` | the same | the same | the same |
+
+- **The door's second entry.** `requirePluginToken`'s server arm calls a new
+  `admitServerPlugin(w, r, next, actFor)` beside `admit`
+  (`internal/api/principal.go:200`). It runs the same pre-handler checks
+  `admit` does. With `actFor` unset it calls the handler with no principal,
+  and any store call that needs one fails closed, as it does today with no
+  principal. With `actFor` set it calls `admit` with the grant owner's
+  principal. Those three handlers make only explicit `authz.System` calls,
+  each keyed on the authenticated app's id and listed in the System ledger.
+- 🔴 **Every site that branches on `ViaPlugin` must learn `ViaServerPlugin`.**
+  The closed list, and the test that keeps it closed (below):
+  - **`requestVias`** (`internal/authz/authz.go:210`) gains
+    `ViaServerPlugin`, or the first act-for request panics in
+    `WithPrincipal`. It is **not** added to the team-acting set
+    (`authz.go:330`) or to `teamAgentDoors` (`internal/api/principal.go:191`):
+    a server app never acts as a team.
+  - **`refusePluginTokenElsewhere`** (`internal/api/plugins.go:277`) exempts
+    only `via == ViaPlugin`. As written it would **`401` every act-for
+    request**, because that request carries an `mpl_` token and is admitted
+    as `ViaServerPlugin`. It becomes `authz.IsPluginVia(via)`, one predicate
+    true for both.
+  - **`ruleWriter`** (`internal/plugins/rules.go:336`) refuses only
+    `ViaPlugin`, so a server app acting as a person **could write routing
+    rules**. It uses `authz.IsPluginVia` too.
+  - **The notify recipient** (`internal/api/plugin_notify.go:143`,
+    `owner, tag := p.OwnerID, …`, and the withdrawal's `p.OwnerID` at `:205`
+    and `:213`) becomes the **request principal's `UserID`** for both
+    kinds. For a personal token that is `p.OwnerID`, unchanged. For a server
+    token `p.OwnerID` is `0`, and the principal is the grant's person.
+  - Every other `p.OwnerID` read reachable from a served route (there is
+    none today beyond notify) is classed in the same test.
+- **The pin.** A test walks every non-test `.go` file for `authz.ViaPlugin`
+  and `p.OwnerID` / `pluginFromContext(…).OwnerID` and asserts the set of
+  sites, failing when it grows or shrinks. A new site must then decide what
+  a server token does there.
 
 **What it can never do:** read anything of any person's (no read route is
 served); learn that a person exists before that person opens the tab; name a
 person by muster's user id; act for a person whose grant has ended; post to
-a chief, file a draft or write chief instructions; auto-start an agent
-(that needs `messages`); be paired.
+a chief, file a draft or write chief instructions; find, comment on or
+learn of a task it did not file; auto-start an agent (that needs
+`messages`); be paired.
 
 #### The owner-scoped redeem
 
@@ -679,26 +746,49 @@ a chief, file a draft or write chief instructions; auto-start an agent
    `MintHandoff` gains its second arm: the row is a live server app, the
    principal is a **person** (never a team's acting principal), the person
    has not hidden it, and its origin still passes the current
-   `MUSTER_PLUGIN_ORIGINS`. That plugin-row read runs under `authz.System`
-   (a server row has no owner, so row-level security hides it from everyone;
-   a System-ledger entry). The code row is **owned by the person**
-   (`owner_id` = the principal) and names the app in a new column,
-   `server_plugin_id`, with `plugin_id` NULL ([data model](#data-model-and-migration-0171)).
-   The 60-per-minute cap, the 60 s life and single use are unchanged.
+   `MUSTER_PLUGIN_ORIGINS`. The code row is **owned by the person** and names
+   the app in a new column, `server_plugin_id`, with `plugin_id` NULL
+   ([data model](#data-model-and-migration-0171)). The 60-per-minute cap,
+   the 60 s life and single use are unchanged.
+   - **It records the minting session's sign-in time** on the code row, as
+     `signed_in_at`: `stepup.AuthTime(ctx)`, the time the pairing code
+     already reads for `paired_signin_at` (`internal/api/devices.go:215`;
+     the session's `IssuedAt` in password mode, `internal/api/auth.go:301`).
+     A session that records no sign-in time is refused `401` "sign in again",
+     as pairing refuses it, rather than mint a code nothing could revoke.
+   - **The whole mint transaction runs as `authz.System`** (a System-ledger
+     entry), because a server row has no owner and row-level security hides
+     it from every principal. Every statement names its owner explicitly:
+     the code row's `owner_id` is written as the **principal's `UserID`**,
+     taken from the request before the transaction, never from the column's
+     `muster.uid` default, which a System context does not set.
 2. **The redeem.** `POST /plugin/v1/handoffs/redeem {"code"}` with the server
-   token. In one transaction, under `authz.System` for these two statements
-   only (System-ledger entry: the code is how the person is learned, as the
-   token is in `pluginFor`):
-   - `UPDATE plugin_handoffs SET redeemed_at = now() WHERE code_hash = $1 AND server_plugin_id = $2 AND redeemed_at IS NULL AND expires_at > now() RETURNING owner_id, …`
+   token. **One transaction, entirely as `authz.System`** (System-ledger
+   entry: the code is how the person is learned, as the token is in
+   `pluginFor`), every write naming `owner_id` explicitly:
+   - `UPDATE plugin_handoffs SET redeemed_at = now() WHERE code_hash = $1 AND server_plugin_id = $2 AND redeemed_at IS NULL AND expires_at > now() RETURNING owner_id, signed_in_at, …`
      A code minted for a personal plugin has `server_plugin_id` NULL, so no
      server token can spend it, and a server code has `plugin_id` NULL, so no
      personal token can. Unknown, spent, expired or another app's is the one
      `404` it is today.
-   - The person is re-checked: an enabled `person`, not hidden from this
-     app. Otherwise the same `404`.
+   - **The person is re-checked, on a fresh read, in the same transaction:**
+     an enabled `person`, not hidden from this app, and the code's
+     `signed_in_at` strictly after both cutoffs by the whole-second rule
+     (`sec(signed_in_at) > sec(sessions_not_before)` and the same against
+     `signed_out_at`: the rule the paired-device query uses,
+     `internal/devices/devices.go:333-334`, and `atOrBefore` in
+     `internal/api/send_queue.go:1343` refuses). A person hidden or disabled
+     between the mint and the redeem, or a code minted by a session that a
+     later Sign out everywhere ended, is the same `404`, and the code is
+     spent all the same.
    - **The grant is upserted** on `plugin_server_users (plugin_id, owner_id)`:
      the subject is kept if the row exists, or a new random 128-bit one is
-     made; `granted_at = now()`; `act_until = greatest(act_until, now() + 8 h)`.
+     made. `signin_at` is set to **the code's `signed_in_at`**, the sign-in
+     of the session that minted the code being redeemed, and 🔴 **never
+     stamped from `now()`**, on a first redeem or a later one. `granted_at =
+     now()` is kept for display only and no gate reads it. `act_until =
+     greatest(act_until, now() + 8 h)`, unless `hidden_at` is set, which the
+     re-check above has already refused.
 3. **The answer** carries no muster user id and no email (fork 2):
 
    ```json
@@ -730,22 +820,43 @@ under that person's row-level security.
 
 The check, exactly, as one statement under `authz.System` (a System-ledger
 entry), keyed on the authenticated app's id and never on anything else the
-request says:
+request says. 🔴 **The predicate is one Go constant, `serverGrantLive`,** and
+`owners/check` ([below](#self-for-a-server-token)) uses the same constant,
+so the two can never disagree about who is live:
 
 ```sql
-SELECT g.owner_id
-  FROM plugin_server_users g
-  JOIN plugins p ON p.id = g.plugin_id
-  JOIN users   u ON u.id = g.owner_id
- WHERE g.plugin_id = $1                  -- the token's own app (from Authenticate)
-   AND g.subject   = $2                  -- the header
-   AND g.act_until > now()               -- a redeem in the last 8 hours (fork 3)
-   AND g.hidden_at IS NULL               -- the person has not hidden the app
-   AND p.revoked_at IS NULL AND p.scope = 'server'
-   AND u.kind = 'person' AND u.disabled_at IS NULL
-   AND (u.signed_out_at       IS NULL OR u.signed_out_at       < g.granted_at)
-   AND (u.sessions_not_before IS NULL OR u.sessions_not_before < g.granted_at)
+-- serverGrantLive: g = plugin_server_users, p = plugins, u = users
+      g.plugin_id = $1                   -- the token's own app (from Authenticate)
+  AND g.act_until > now()                -- a redeem in the last 8 hours (fork 3)
+  AND g.hidden_at IS NULL                -- the person has not hidden the app
+  AND g.signin_at IS NOT NULL            -- a grant only a redeem creates
+  AND p.revoked_at IS NULL AND p.scope = 'server'
+  AND u.kind = 'person' AND u.disabled_at IS NULL
+  -- the cutoffs against the SIGN-IN that minted the code, whole seconds,
+  -- at-or-before refuses (devices.go:333-334's rule; send_queue.go:1343's atOrBefore)
+  AND (u.signed_out_at       IS NULL OR floor(extract(epoch FROM g.signin_at)) > floor(extract(epoch FROM u.signed_out_at)))
+  AND (u.sessions_not_before IS NULL OR floor(extract(epoch FROM g.signin_at)) > floor(extract(epoch FROM u.sessions_not_before)))
 ```
+
+```sql
+-- act-for
+SELECT g.owner_id FROM plugin_server_users g
+  JOIN plugins p ON p.id = g.plugin_id JOIN users u ON u.id = g.owner_id
+ WHERE g.subject = $2 AND <serverGrantLive>
+```
+
+🔴 **Why the sign-in time and not the redeem time.** In GoTrue mode, the
+session check that applies Sign out everywhere works from each process's
+memory (the finding of this design's first audit round), so a stolen session
+from before the sign-out can still pass `requireSession` on a pod that
+restarted, or on another pod. Had the gate compared the cutoffs with the
+**redeem** time, that session's code, redeemed after the sign-out, would
+have got a fresh 8-hour grant. Comparing with the persisted sign-in time of
+the minting session refuses it at the redeem, and again on every act-for
+call, whatever any process remembers. The comparison is in whole seconds
+with at-or-before refused, the rule the paired-device query and the send
+queue already use. (The Go helper is `atOrBefore`; the SQL form is the
+paired-device query's.)
 
 The app's origin and entry URL must also still pass the current
 `MUSTER_PLUGIN_ORIGINS`. Then:
@@ -761,8 +872,9 @@ The app's origin and entry URL must also still pass the current
   is `400`. On a **personal** token the header is `400` on every route, so a
   plugin that mixes the two models fails loudly instead of acting as the
   token's owner.
-- "Sign out everywhere" and a disable end every grant at once, because both
-  move `signed_out_at` or `sessions_not_before` past `granted_at`. A sign-out
+- "Sign out everywhere" and the session cutoff end every grant at once,
+  because each moves `signed_out_at` or `sessions_not_before` to or past the
+  grant's `signin_at`. A disable ends it through `u.disabled_at`. A sign-out
   in one browser does not (fork 3).
 
 **The notify state is keyed by person too.** Today the knock caps and the
@@ -774,13 +886,39 @@ B's caps. The per-plugin caps (30 knocks an hour, 60 withdrawals of nothing
 an hour) become **per (plugin, person)**, under a new per-app ceiling of 600
 knocks an hour. The person's own knock budget (10 per 10 minutes across all
 their app plugins) is unchanged. The knock's title is the server app's label,
-the admin's words. Task filing keeps the route's existing caps, counted per
-acting person.
+the admin's words.
 
-**Tasks** filed by a server app carry the comment author `plugin:<name>`,
-as today, and the same `MUSTER_PLUGIN_TASK_NAMESPACES` keys. Key lookup
-("the open task carrying `key` among all your tasks") is the acting
-person's, by row-level security. No `gate:` or `auto:` tag, and no auto-start.
+#### Tasks for a server app
+
+`POST /plugin/v1/tasks` today has **no rate cap on filing or commenting**.
+Its only `429` is the notice route's (`route_to_chief`), which a server app
+may not send. And its key lookup is global across the owner's tasks: it
+finds "the open task carrying `key` among **all** your tasks, whichever
+plugin or person filed it" (`FindLiveByTag`). For a server app, acting for
+someone who never chose it, both are wrong. A global lookup is a
+**membership oracle** (does this person have an open task tagged
+`meetings:x`?) and a **comment target** (append text to a task another
+plugin or the person filed). So for a server token:
+
+- **Only tasks this app filed.** A new ledger, `plugin_server_tasks
+  (plugin_id, owner_id, key, task_id)`, `UNIQUE (plugin_id, owner_id, key)`,
+  owned by `owner_id` (forced row-level security), gets a row whenever the
+  app creates a task. Create and comment resolve `key` **through the ledger
+  only**: `(this app, the acting person, key)` → `task_id`, and that task
+  must still be live. A key with no ledger row behaves exactly as a key no
+  task carries. With `create` a new task is filed and ledgered, under an
+  advisory lock on `(app, person, key)` so two retries file one. With a
+  bare `comment` the answer is the same `404` as for a key nobody holds.
+  So a task the person or another plugin tagged with the same key is never
+  found, never commented on, and never revealed. A personal token's lookup
+  is unchanged.
+- **Caps.** Each `(app, person)` may make 60 task writes an hour (a create
+  or a comment), and each app 600 an hour across everyone. Past either, the
+  answer is `429` with `Retry-After`. A repeat that the route's idempotency
+  answers from the stored row spends nothing.
+- The comment author is `plugin:<name>`, as today, and keys still need
+  `MUSTER_PLUGIN_TASK_NAMESPACES`. No `gate:` or `auto:` tag, and no
+  auto-start.
 
 #### `/self` for a server token
 
@@ -793,7 +931,8 @@ person's, by row-level security. No `gate:` or `auto:` tag, and no auto-start.
 No person, no count of people, no list. `401` once the app is uninstalled or
 rotated away. **`POST /plugin/v1/owners/check {"subjects": [...]}`** (1 to
 200 subjects, each the subject shape) answers `{"live": [...]}`: the subset
-whose grant passes the act-for check above. It can say nothing about a
+whose grant passes **`serverGrantLive`**, the same constant the act-for
+check uses (`WHERE g.subject = ANY ($2) AND <serverGrantLive>`). It can say nothing about a
 subject the plugin did not already hold. A personal token is `403`. 60 calls
 a minute per app.
 
@@ -809,10 +948,19 @@ a minute per app.
 - **Opt-out:** Account → **Apps** lists every server app with what it may do
   ("can show its page in muster; can notify you; can file tasks for you; it
   learns your display name when you open it") and its live grant ("can act
-  for you until 18:00"). **Hide** sets `hidden_at`, which removes the tab,
-  makes the mint and the redeem `404`, ends the grant at once, and makes an
-  open page's alive poll `404`, so its frame goes. **Show** undoes it. Shown
-  is the default.
+  for you until 18:00"). **Hide** removes the tab, makes the mint and the
+  redeem `404`, ends the grant at once, and makes an open page's alive poll
+  `404`, so its frame goes. **Show** clears `hidden_at` only, so the tab is
+  back but the plugin may not act for the person until **a fresh redeem**
+  (the person opens the tab again). Shown is the default.
+  - **What Hide writes:** an upsert on `plugin_server_users (plugin_id,
+    owner_id)` setting `hidden_at = now()` **and `act_until = now()`**. When
+    the person has never opened the app there is no row yet. Hide then
+    inserts one with a new random subject, `signin_at` NULL, `act_until =
+    now()` and `hidden_at = now()`. That subject is never sent anywhere, and
+    `signin_at IS NULL` alone fails `serverGrantLive`, so the row can never
+    act. A later Show then redeem fills `signin_at` and `act_until` as any
+    redeem does, keeping that subject.
 - **Order:** server apps first, oldest install first, then the person's own
   app plugins, oldest first. At most 5 + 5.
 - **One predicate.** `liveAppPlugins` gains the server arm, so the tab, the
@@ -822,7 +970,12 @@ a minute per app.
   Server apps do not count against it. Minting a personal app plugin whose
   entry URL equals a live server app's is refused ("this server already
   offers <label> to everyone"), so one person does not get two tabs into the
-  same plugin under two identities (fork 9).
+  same plugin under two identities (fork 9). 🔴 That check reads **server
+  rows**, which row-level security hides from the minting person, so it is
+  an explicit `authz.System` read (a System-ledger entry: `SELECT 1 FROM
+  plugins WHERE scope = 'server' AND revoked_at IS NULL AND entry_url = $1`).
+  Under the person's own principal it would see no server row and **allow
+  every mint**.
 - **Paths and ids:** a server app is a `plugins` row, so its id shares the
   sequence with personal plugins (fork 1). `/apps/{id}`, the push tag
   `app-<id>-<ref>` and its tap URL need no second namespace.
@@ -855,13 +1008,24 @@ a minute per app.
 - `plugins.scope TEXT NOT NULL DEFAULT 'person'`, `CHECK (scope IN ('person', 'server'))`.
 - `plugins.owner_id DROP NOT NULL`, with `plugins_scope_owner`:
   `(scope = 'person') = (owner_id IS NOT NULL)`. 🔴 **A server row has no
-  owner, so row-level security shows it to no principal**: the
-  `owner_isolation` policy compares `owner_id` to `muster.uid`, and NULL
-  equals nothing. Every read of one is a deliberate `authz.System` read in
-  the System ledger. A code path that forgets the server arm sees nothing
-  (fails closed), rather than seeing the admin's rows.
-- `plugins.installed_by BIGINT REFERENCES users (id)`, set exactly on server
-  rows.
+  owner, so row-level security shows it to no principal.** `plugins` is in
+  0127's table list, so its policies are `team_read`, `team_insert`,
+  `team_update` and `team_delete` (0127 replaced 0015's `owner_isolation`).
+  Each admits `owner_id = muster.uid`, **or** `owner_id = ANY
+  (muster_team_ids(…))`, or `muster.scope = 'all'`. A NULL `owner_id`
+  matches neither of the first two, whatever teams the principal belongs to.
+  Every read of a server row is a deliberate `authz.System` read in the
+  System ledger. A code path that forgets the server arm sees nothing (fails
+  closed), rather than seeing the admin's rows.
+- `plugins.installed_by BIGINT REFERENCES users (id)` (NULL for a command-line
+  install) and `plugins.installed_via TEXT` (`page` or `cli`), both set only
+  on server rows: `plugins_server_installer`, `(scope = 'server') =
+  (installed_via IS NOT NULL)`. Bookkeeping only (see
+  [who installs](#who-installs-and-where)).
+- `data_scope` is NOT NULL on every row (0015). A server row stores `none`,
+  as an app-only personal token does today: a server app brings no messages
+  and has no chief to scope for. `plugins_server_caps` also requires
+  `data_scope = 'none'` on server rows.
 - `plugins_server_caps`: `scope <> 'server' OR (capabilities <@ ARRAY['app','tasks'] AND 'app' = ANY (capabilities))`.
   **No new capability**, so `plugins_capabilities_known` is not rebuilt.
 - `plugins_server_name_live`: a unique index on `(name)` where
@@ -873,13 +1037,24 @@ a minute per app.
   `(plugin_id, owner_id)` stays as it is: under `MATCH SIMPLE` a NULL
   `plugin_id` skips it, and it still guards every personal code. Index on
   `(server_plugin_id)`.
+- `plugin_handoffs.signed_in_at TIMESTAMPTZ`: the minting session's sign-in
+  time. `plugin_handoffs_server_signin`: `server_plugin_id IS NULL OR
+  signed_in_at IS NOT NULL`, so a server code can never lack it.
 - **`plugin_server_users`**: `plugin_id` (→ `plugins`, cascade), `owner_id`
-  (→ `users`), `subject TEXT` (22 base64url characters), `granted_at`,
-  `act_until`, `hidden_at`, `UNIQUE (plugin_id, owner_id)`,
-  `UNIQUE (plugin_id, subject)`. It is **owned**: forced row-level security
-  under `owner_isolation`, so a person's Account → Apps reads their own rows
-  and nobody else's. The redeem and the door write and read it under System.
-  It joins `db.RLSOn`'s table list and the `rls_off` rollback.
+  (→ `users`), `subject TEXT` (22 base64url characters), `signin_at` (the
+  minting session's sign-in, copied from the code at each redeem, never from
+  `now()`; NULL on a row only Hide created), `granted_at` (display only),
+  `act_until`, `hidden_at`, `UNIQUE (plugin_id, owner_id)` and
+  `UNIQUE (plugin_id, subject)`.
+- **`plugin_server_tasks`**: `plugin_id`, `owner_id`, `key`, `task_id`,
+  `UNIQUE (plugin_id, owner_id, key)` ([tasks](#tasks-for-a-server-app)).
+- **Both new tables are owned:** forced row-level security under an
+  owner-only policy in 0015's `owner_isolation` shape. They are **not** in
+  0127's team list, because a team never owns one. So a person's Account →
+  Apps reads their own rows and nobody else's, and a team member's
+  principal reads no other member's. The redeem, the door and Hide's upsert
+  write them under System with an explicit `owner_id`. Both join
+  `db.RLSOn`'s table list and the `rls_off` rollback.
 
 🔴 **The RLSOn caveat.** `db.RLSOn` re-applies the bodies of 0104 and 0141
 (and 0015's defaults) on every RLS cycle. 0171 is written so that a
@@ -902,7 +1077,7 @@ it cycles RLS with a server row, a server code and a grant present
 **ROLLBACK** (in the migration's header): uninstall every server app first,
 then roll the image back. Then delete the server rows and their codes,
 restore `plugin_id NOT NULL` and `owner_id NOT NULL`, drop the new columns,
-constraints, index and table, and `DELETE FROM schema_migrations WHERE version = 171`.
+constraints, index and both tables, and `DELETE FROM schema_migrations WHERE version = 171`.
 
 #### Threat model
 
@@ -929,8 +1104,9 @@ The plugin now sees **every person who opens the tab**.
    authenticated app and a 128-bit subject. A request can only name a
    subject; it never names a user id.
 4. **Row-level security does the rest.** Once admitted, the request is that
-   one person's principal, so a task lands in their rows and a comment's key
-   is matched among theirs.
+   one person's principal, so a task lands in their rows. A key is matched
+   only among the tasks **this app filed for this person** (the
+   `plugin_server_tasks` ledger), never among all of theirs.
 5. **Per-person keys** for every notify cap and the withdrawal ledger, so one
    person's knocks cannot be withdrawn, throttled or replaced through
    another's.
@@ -953,11 +1129,21 @@ sidebar. That is the admin's power by design (the admin already controls
 `MUSTER_PLUGIN_ORIGINS`), and it is made visible: the step-up, the audit row,
 and Account → Apps listing what each server app may do.
 
-**Residual, not new:** a link that opens the plugin's `/enter` with
-**someone else's** unspent code would sign the victim's frame in as that
-person (a sign-in-CSRF shape). It needs a code the attacker minted in their
-own muster session within 60 s, and it exists for personal tokens today. The
-plugin's page names whose session it is.
+**Sign-in CSRF, now any person to any person.** A link that opens the
+plugin's `/enter` with **someone else's** unspent code signs the victim in
+as that person (the attacker mints a code in their own muster session, then
+sends the URL within 60 s). With a personal token only that token's owner
+could be planted. With one server token **any person can plant themselves
+on any other**, so the victim might, for example, start a meeting and share
+its link inside the attacker's account. Closed in the plugin
+([2a changes](#what-changes-in-the-plugins-phase-2a)): **`/enter` refuses
+unless `Sec-Fetch-Dest: iframe`**, and owner pages carry `frame-ancestors
+<muster's origin>`. Only muster's own page may frame `/enter`, and muster
+frames it only with a code it just minted for the signed-in person. A
+top-level navigation (`Sec-Fetch-Dest: document`), a request from another
+site's frame (refused by `frame-ancestors`), and a client that sends no
+`Sec-Fetch-Dest` are all refused. This drops two top-level entries for a
+server app: **New tab**, and the Android **Open in browser** card (fork 10).
 
 #### 1h tests
 
@@ -977,13 +1163,38 @@ the mutation that must turn it red, and each is watched red before it counts.
   server app are each `404` with **identical bodies**. *Red if:* the
   principal is taken from the header, or the subject lookup ignores
   `plugin_id`.
-- **Grant gates, one closed at a time.** A table over `act_until` passed,
-  hidden, disabled, signed out everywhere after the redeem, `sessions_not_before`
-  moved, app uninstalled, origin retired, and a team row. Each alone is
-  `404`, and the all-open row is `202`. Times are pinned: the boundary case
-  redeems at `t0` and calls at `t0 + 8 h − 1 s` (pass) and `t0 + 8 h` (fail),
-  with `t0` not on an hour boundary. *Red if:* any one predicate is dropped
-  (one mutant per line of the check).
+- **Grant gates, one closed at a time, on BOTH consumers.** One table, run
+  once against act-for (`POST /plugin/v1/notify`) and once against
+  `owners/check`. Its rows: `act_until` passed, hidden, a Hide-only row
+  (`signin_at` NULL), disabled, signed out everywhere after the sign-in,
+  `sessions_not_before` moved past the sign-in, app uninstalled, origin
+  retired, and a team row. Each alone is `404` on act-for and **absent from
+  `live`** on `owners/check`. The all-open row is `202` and present. Times
+  are pinned: the boundary case redeems at `t0` and calls at
+  `t0 + 8 h − 1 s` (pass) and `t0 + 8 h` (fail), with `t0` not on an hour
+  boundary. *Red if:* any one predicate is dropped (one mutant per line of
+  `serverGrantLive`, each caught on both routes).
+- 🔴 **Minted before the sign-out, redeemed after.** A session signs in at
+  `s0` and mints a code. Sign out everywhere follows at `s0 + 5 s`. The
+  code is redeemed at `s0 + 10 s`, after the sign-out, **as if on another
+  process** (the test does not use the in-memory sign-out state at all).
+  The redeem is `404`, and no grant row gains a `signin_at`. Its sibling: a
+  grant from a session that signed in before the sign-out but redeemed
+  before it is live until the sign-out, then `404` on act-for. And the
+  whole-second boundary: a sign-in in the **same second** as the cutoff is
+  refused, one second later passes. *Red if:* the cutoffs are compared with
+  `granted_at` or `now()` (the redeem time); `signin_at` is re-stamped
+  from `now()` on a re-redeem; or the comparison is `>=` instead of
+  at-or-before refused.
+- **The redeem re-checks.** A person hidden, and a person disabled,
+  **between the mint and the redeem**, each get a redeem `404`, and the
+  code is spent. *Red if:* the redeem trusts the mint's checks.
+- **One predicate, pinned structurally.** A test asserts that the act-for
+  query and the `owners/check` query are each built from the
+  `serverGrantLive` constant, and that no other SQL string in the package
+  carries `act_until`. So a second, drifting copy of the predicate cannot
+  appear. The behavioural table above is the other half: a structural check
+  alone would type-check past a wrong argument.
 - **The door runs first.** A spy handler records no call on any act-for
   refusal, and no store call happens but the lookup.
 - **Header shape.** Missing or doubled on a server act-for route is `400`;
@@ -1002,6 +1213,56 @@ the mutation that must turn it red, and each is watched red before it counts.
   the owner.
 - **`owners/check`.** It answers only the subset of subjects it was given;
   201 subjects is `400`; a personal token is `403`.
+- **Who each route acts as.** A's knock reaches **A's devices and nobody
+  else's**: with A, B and the installing admin each holding a fake device,
+  act-for A sends exactly one push, to A's device, and none to B's or the
+  admin's (fixture user ids pairwise distinct, and the admin's id is never
+  1 or the app's id). The same holds for a withdrawal. A task filed for A
+  lands in A's rows and not the admin's. *Red if:* the recipient stays
+  `p.OwnerID` (it is 0, so the push goes nowhere: the A-device assertion
+  catches it), or becomes `installed_by` (the admin-device assertion catches
+  it). `/self`, the redeem and `owners/check` run with **no** request
+  principal (`authz.From` is false in a spy handler). Act-for runs as
+  `ViaServerPlugin` with the grant owner's `UserID`. `ruleWriter` refuses a
+  `ViaServerPlugin` principal. An act-for request is not refused by
+  `refusePluginTokenElsewhere`. *Red if:* `ViaServerPlugin` is missing from
+  `requestVias` (the act-for case panics), the tokens-elsewhere exemption
+  stays `== ViaPlugin` (act-for gets `401`), or `ruleWriter` checks only
+  `ViaPlugin`.
+- **The `ViaPlugin` site ledger.** The set of `authz.ViaPlugin` and
+  plugin-`OwnerID` read sites is pinned, failing when it grows or shrinks.
+- **Tasks only through the ledger.** A task the person filed with key
+  `meetings:x`, and one another plugin filed with it, are each invisible to
+  the server app: a `comment` on `meetings:x` is `404` and appends nothing
+  to either task, and a `create` files a **new** task and ledgers it. The
+  server app's own task under that key takes its comment (the positive
+  control). *Red if:* the server path calls `FindLiveByTag` across the
+  person's tasks.
+- **Task caps.** The 61st write in an hour for one `(app, person)` is
+  `429`, and another person's 1st still passes. The app's 601st write in an
+  hour, spread over 11 people, is `429`. A repeat answered from the stored
+  row spends nothing.
+- **The notify ceiling.** With 21 people each under their own 30-an-hour
+  cap, the app's 601st knock in an hour is `429` with `Retry-After`. The
+  600th passes. *Red if:* the per-app ceiling is removed.
+- **Hide.** Hide on a live grant sets `act_until = now()`, after which
+  act-for is `404`. Show then act-for, with no redeem in between, is still
+  `404`. Show then a redeem then act-for is `202`, with the **same
+  subject** as before. Hide by a person who never opened the app creates a
+  row that can never act. *Red if:* Hide sets only `hidden_at` (Show revives
+  the old grant).
+- **Rotate keeps subjects.** After Rotate, the old token is `401` on every
+  route. A redeem with the new token returns the **same subject** for a
+  person who had one, and their existing grant still passes act-for. *Red
+  if:* Rotate recreates the row (new id, new subjects).
+- **Fork 9's System read.** With a live server app at entry URL X, a
+  person's mint of a personal app plugin at X is refused, and at Y it is
+  allowed (the positive control). *Red if:* the check runs under the
+  person's own principal: it then sees no server row, and the X mint
+  succeeds.
+- **Sign-in time on the mint.** A session with no recorded sign-in time is
+  refused `401` at the mint. A server code row always has `signed_in_at`
+  (the 0171 CHECK, and a test that a mint stores the session's own value).
 - **Mint arm.** A team's acting principal, a hidden app, a retired origin
   and an uninstalled app each refuse the mint `404`; a person mints. *Red
   if:* the System read drops `scope = 'server'` (a personal plugin of
@@ -1018,8 +1279,12 @@ the mutation that must turn it red, and each is watched red before it counts.
   The rollback list is checked against the previous migration.
   `TestEveryPluginRowReadSaysWhoseRowsItReads` classes each new System
   read. *Red if:* 0171's constraints are written unguarded and a re-applied
-  body narrows one; or a server row is readable by a person's principal
-  (an invariant guard on the NULL-owner policy).
+  body narrows one. **The NULL-owner invariant** (an invariant guard: no
+  policy admits a NULL owner today): a server row is invisible to a person's
+  principal **that carries team memberships**, so the `team_read` arm's
+  `owner_id = ANY (muster_team_ids(…))` is exercised, not only the
+  `muster.uid` arm. The same principal reads none of another member's
+  `plugin_server_users` or `plugin_server_tasks` rows.
 - **Ledgers:** `routes.golden` gains `/admin/apps*`, `POST /plugin/v1/owners/check`
   and the Account → Apps routes; the 1g route ledger classes the admin and
   Account writes `cookie` and `owners/check` `bearer-only`; the nav ledger
@@ -1032,9 +1297,22 @@ the mutation that must turn it red, and each is watched red before it counts.
 
 Rows for the [mutation sweep](#mutation-and-negative-controls-for-the-security-gates):
 the principal from the header; the subject lookup without `plugin_id`; each
-grant predicate dropped; the door reading row capabilities; `appNotifyKey`
-without the owner; the redeem answer with `owner_id`; 0171 unguarded; the
-mint's System read without `scope = 'server'`.
+grant predicate dropped; the cutoffs compared with the redeem time;
+`signin_at` re-stamped from `now()`; the door reading row capabilities;
+`appNotifyKey` without the owner; the notify recipient as `p.OwnerID` or as
+`installed_by`; `ViaServerPlugin` missing from `refusePluginTokenElsewhere`'s
+exemption or from `ruleWriter`'s refusal; the server task lookup through
+`FindLiveByTag`; the per-person task cap, and each per-app ceiling,
+removed; Hide without `act_until = now()`; Rotate as a new row; fork 9's
+read under the person's principal; the redeem answer with `owner_id`; 0171
+unguarded; the mint's System read without `scope = 'server'`. Two for the
+subject: **a subject derived from the user id** (for example its decimal
+or a hash of it: caught by a fixture whose user ids are known, asserting
+the subject is not derivable from them and differs between two installs
+with the same users), and **a subject not pairwise across apps** (one
+subject per person for every app: caught by the "A's subject under a second
+server app is `404`" case and by an assertion that A's two subjects
+differ).
 
 #### What changes in the plugin's phase 2a
 
@@ -1050,6 +1328,20 @@ keys `owners` on muster's `owner_id`. Under 1h:
 - **`/enter`** redeems with the one token and accepts only purpose `app`,
   an app target and `scope: server` with an `owner.subject`. `muster_plugin`
   must equal the token's own `plugin_id`; it no longer picks a token.
+- 🔴 **`/enter` refuses unless `Sec-Fetch-Dest: iframe`**, before it
+  redeems anything, and its pages keep `frame-ancestors <muster's origin>`.
+  This closes the any-person-to-any-person sign-in CSRF
+  ([threat model](#threat-model)). A request with `document`, any other
+  value, or no `Sec-Fetch-Dest` header gets a plain page saying "Open
+  Meetings from muster", and the code is **not** redeemed, so it stays
+  spendable by the frame it was minted for. **New tab** and the Android
+  top-level **Open** therefore do not reach a server app's `/enter` (fork
+  10). Tests: `/enter` with `Sec-Fetch-Dest: document`, with `empty`, and
+  with none, is each refused and makes no redeem call to the fake muster.
+  With `iframe` it redeems (the positive control). And a real-browser case
+  (Playwright) loads `/enter` top-level and in muster's frame: top-level is
+  refused, framed works. *Red if:* the check is removed, or accepts a
+  missing header.
 - **SQLite:** `owners` is keyed on `subject` and holds `display_name` (from
   the redeem), and loses `token_ref` and `owner_login`. Owner sessions,
   meetings and audit carry the subject. Nothing is migrated: meetings is not
@@ -1133,6 +1425,14 @@ built until these are answered.
    (a) Refused at mint, as above; or (b) allowed, giving two tabs into one
    plugin under two identities. **Recommend (a).** A different entry URL
    (a developer's own build, say) is still allowed.
+10. **Top-level entry for a server app**, given `/enter`'s
+    `Sec-Fetch-Dest: iframe` rule *(security)*. (a) A server app has **no
+    New tab**, and in the Android app the card opens **muster's own**
+    `/apps/{id}` in the system browser, which then frames the plugin as a
+    desktop browser does (a person not signed in there signs in first). (b)
+    Keep a top-level `/enter`, behind a plugin-drawn "Continue as
+    <display name>?" confirm. **Recommend (a).** A confirm only asks the
+    victim to spot a wrong name; it does not close the CSRF.
 
 Decision 14 is unchanged: team-owned meeting tabs, with a shared archive,
 are still later work. Under 1h every team member gets the tab as a person.
@@ -2261,7 +2561,7 @@ with the test plan's tests included.
 | | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
 | | 1d: the `tasks` capability (decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
 | | 1e: knock notification (decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md, **and the new paired-device TLS push sink for e2e** ([knock push spec](#the-knock-push-spec)). **Needs 1a** (the `app` capability) **and 1b** (the `?ref=` page) | muster | L |
-| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–9 open): migration 0171 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id`, `plugin_server_users`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and its grant check, per-person notify keys, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
+| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–10 open): migration 0171 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id` and `signed_in_at`, `plugin_server_users` with the sign-in time, `plugin_server_tasks`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and the one `serverGrantLive` predicate, `ViaServerPlugin` at every `ViaPlugin` branch site, per-person notify keys and the per-app ceiling, server tasks through the ledger with their caps, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link. **After 1h:** one server token in place of the comma-separated list ([what changes](#what-changes-in-the-plugins-phase-2a)), S | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |
 | | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress, the TURN/TLS-only LiveKit config, Egress `cpu_cost`s, and the **`meet-turn` route** ([operator steps](#deployment)), then the owed real-network S1 run | muster-meetings + operator | M |
@@ -2851,8 +3151,8 @@ positive control):
    default variant (S6). Its latency was not tested, and action items run on
    10 s windows. Worth measuring it in the action-item evaluation as a third
    candidate, or keep the default variant only?
-2. **Server-installed app plugins (core PR 1h):** nine forks, three of them
-   (2, 3 and 5) security forks, listed with recommendations in
+2. **Server-installed app plugins (core PR 1h):** ten forks, four of them
+   (2, 3, 5 and 10) security forks, listed with recommendations in
    [1h forks for the operator](#1h-forks-for-the-operator).
 
 ## Decisions
