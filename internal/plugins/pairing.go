@@ -185,7 +185,7 @@ func (in *PairIn) validate() error {
 	if err := ValidScope(in.DataScope); err != nil {
 		return err
 	}
-	// tasks is pairable as messages is (0166): it widens no page policy.
+	// tasks is pairable as messages is (0167): it widens no page policy.
 	if !slices.Contains(in.Capabilities, CapMessages) && !slices.Contains(in.Capabilities, CapTasks) {
 		return invalid("capabilities must include messages or tasks")
 	}

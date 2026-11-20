@@ -1,4 +1,4 @@
--- muster 0166 — THE `tasks` PLUGIN CAPABILITY (docs/plugins.md "Capabilities";
+-- muster 0167 — THE `tasks` PLUGIN CAPABILITY (docs/plugins.md "Capabilities";
 -- docs/design/meetings.md "Core seam: the tasks capability", decision 11).
 --
 --   plugins.capabilities 'tasks'   the plugin FILES TASKS and nothing else: it
@@ -19,8 +19,9 @@
 -- live CHECKs to internal/plugins KnownCapabilities and PairableCapabilities,
 -- and each migration's ROLLBACK list to the previous migration's.
 --
--- Must apply after 0165 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
--- another migration takes 0166 first. Idempotent. 0141's body (which db.RLSOn
+-- Written as 0166, renumbered 0167 at merge (after 0166, host jobs). Must apply
+-- after 0166 (the contiguity test refuses a gap); 🔴 RENUMBER IT if another
+-- migration takes 0167 first. Idempotent. 0141's body (which db.RLSOn
 -- re-applies) is guarded so that it no longer narrows the CHECK this sets.
 --
 -- ROLLBACK (roll the image back first; an older image does not know the
@@ -38,7 +39,7 @@
 --   ALTER TABLE public.plugin_pair_requests DROP CONSTRAINT IF EXISTS plugin_pair_requests_capabilities_check;
 --   ALTER TABLE public.plugin_pair_requests ADD CONSTRAINT plugin_pair_requests_capabilities_check
 --     CHECK (capabilities <@ ARRAY['messages', 'draft_checks']::text[] AND 'messages' = ANY (capabilities));
---   DELETE FROM schema_migrations WHERE version = 166;
+--   DELETE FROM schema_migrations WHERE version = 167;
 -- (A plugin whose only capability was tasks cannot keep an empty set,
 -- plugins_capabilities_nonempty: it is revoked first, and its revoked row then
 -- names messages, which a revoked token never opens.)

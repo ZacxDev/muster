@@ -165,7 +165,7 @@ const (
 	// chief nothing. Chosen at mint, and toggled on the plugin's card, as
 	// CapDraftChecks is.
 	CapChiefExtension Capability = "chief_extension"
-	// CapTasks is a plugin that FILES TASKS and nothing else (migration 0166,
+	// CapTasks is a plugin that FILES TASKS and nothing else (migration 0167,
 	// docs/design/meetings.md decision 11): it opens POST /plugin/v1/tasks,
 	// filing and commenting by key. CapMessages opens that route too, so a
 	// messages token is unchanged. A token with CapTasks and not CapMessages

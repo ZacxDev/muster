@@ -18,7 +18,7 @@ import (
 )
 
 // THE PLUGIN CAPABILITY CHECKS AND GO'S LISTS ARE ONE SET. Each capability
-// migration REPLACES plugins_capabilities_known (and, from 0166, the pairing
+// migration REPLACES plugins_capabilities_known (and, from 0167, the pairing
 // request's check) whole, so a migration written beside another's — two
 // capability PRs in flight — that lists only its own value silently refuses
 // every token of the other's. This pins three relationships:

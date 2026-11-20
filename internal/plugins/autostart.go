@@ -52,7 +52,7 @@ const AutostartStopWindow = 30 * 24 * time.Hour
 
 // AutostartAllowed is THE ONE PREDICATE of whether a plugin with caps may
 // auto-start agents at all: it needs CapMessages. A plugin without it (a
-// `tasks`-only one, 0166) files tasks and never starts an agent on one, so
+// `tasks`-only one, 0167) files tasks and never starts an agent on one, so
 // auto-start is not offered on its card (internal/api pluginAutostartHTML),
 // refused by SetAutostart, and skipped by the start path
 // (autostartPluginTask) even if a row says on. No path removes messages from

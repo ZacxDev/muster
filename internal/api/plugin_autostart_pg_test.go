@@ -848,7 +848,7 @@ func TestAnAutostartedAgentIsToldMusterStartedIt(t *testing.T) {
 	}
 }
 
-// TestATasksOnlyPluginNeverAutostarts (0166, plugins.AutostartAllowed):
+// TestATasksOnlyPluginNeverAutostarts (0167, plugins.AutostartAllowed):
 // auto-start needs messages. SetAutostart refuses a tasks-only plugin
 // (ErrInvalid, nothing stored); a row that says on anyway — written straight
 // to the table, as no muster path can — is inert: the plugin's new task starts

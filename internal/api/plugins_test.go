@@ -34,7 +34,7 @@ const (
 	pgnChecksTok = "mpl_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
 	// pgnExtTok is a live token with chief_extension alone.
 	pgnExtTok = "mpl_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-	// pgnTasksTok is a live token with tasks alone (0166).
+	// pgnTasksTok is a live token with tasks alone (0167).
 	pgnTasksTok = "mpl_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
 	pgnSvc      = "plugins-test-service-token-0123456789abcd"
 	pgnRunner   = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"

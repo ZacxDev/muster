@@ -552,6 +552,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/usage",
 		"PUT /api/officers/defs/{officer}/schedules/{name}",
 		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		// Scheduled host jobs (hostjobs.go): requireArmedHookToken.
+		"GET /api/host-jobs",
+		"GET /api/host-jobs/{name}/runs",
+		"POST /api/host-jobs/{name}/run",
+		"DELETE /api/host-jobs/{name}",
 		"GET /api/officers/defs/{officer}/contacts",
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
@@ -623,6 +628,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/usage",
 		"PUT /api/officers/defs/{officer}/schedules/{name}",
 		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		// Scheduled host jobs (hostjobs.go): requireArmedHookToken.
+		"GET /api/host-jobs",
+		"GET /api/host-jobs/{name}/runs",
+		"POST /api/host-jobs/{name}/run",
+		"DELETE /api/host-jobs/{name}",
 		"GET /api/officers/defs/{officer}/contacts",
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",

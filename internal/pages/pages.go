@@ -131,6 +131,14 @@ type Creator struct {
 	// is its creator, and the database blanks it — and for a team agent
 	// whose starter is not recorded. It identifies; it never scopes a tool.
 	ByUser int64
+	// RollingVersions, at Create, makes the page a ROLLING one
+	// (pages.rolling_versions, migration 0166): past MaxVersionsPerPage, a
+	// new version drops the oldest version nothing references (RollingDrop)
+	// instead of being refused, so the page never fills and its id and links
+	// never change. Set only by the scheduled host job runner (internal/api
+	// hostjobs.go) for the page it makes for a job; every other page keeps
+	// the cap.
+	RollingVersions bool
 }
 
 // Valid reports whether c names exactly one creator.

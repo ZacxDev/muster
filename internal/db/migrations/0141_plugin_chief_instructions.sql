@@ -58,7 +58,7 @@ SET LOCAL lock_timeout = '3s';
 
 -- 🔴 GUARDED: db.RLSOn RE-APPLIES THIS BODY on every RLS cycle. Unguarded, it
 -- replaced plugins_capabilities_known with this list even after a later
--- migration (0166) had widened it, refusing every newer capability — and
+-- migration (0167) had widened it, refusing every newer capability — and
 -- failing outright once a row held one. It replaces the CHECK only while the
 -- live one does not yet admit chief_extension (a later list always does:
 -- internal/db TestPluginCapabilityChecksMatchGo).
