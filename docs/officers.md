@@ -2303,20 +2303,31 @@ The per-item and per-day limits still refuse.
     pushed branch, and the officer is told it may complete its item once it
     is queued. A claim is not the test: a lease lasts at most an hour, and a
     down holder's claim is released, while a queued create may wait longer.
-    A list at its page bound (500 items) that does not name the item does
-    not prove it gone, so the create is opened: the done list only grows,
-    and waiting on it would block the officer's queue in that repository for
-    good. If HQ cannot be read, the drain waits;
+    To know the item is gone, muster reads each status list **to its end**,
+    page by page: open, claimed, waiting and escalated first, done last (it
+    is the officer's whole history), stopping at the first page that names
+    the item. Every page is read, so the order a backend lists in does not
+    matter (the built-in backend lists oldest first, so a recently completed
+    item is on done's last page). A page over muster's answer cap is asked
+    again at half the size (the same reader as a grant's re-run,
+    `officers.StatusesOf`). If any page cannot be read, the drain waits: an
+    item is never dropped on a list muster did not read whole. A list still
+    with pages after 400 (10,000 items at the full page size) is not read
+    further; the item's state is then not known and the drain **waits**,
+    with a log line naming that bound, rather than open or drop it;
   - the stored title or body no longer passes the body contract or the
     credential, officer-id and public-repository checks;
   - the item has its pull request now;
   - the comparison at the branch's **current** head is refused. A push after
     the create is fine: that head is what is checked and opened;
-  - GitHub refuses to open it **for good**: `400`, `410` or `422` (for
-    example *"No commits between"*, a branch with nothing ahead of the
-    base). The notice carries GitHub's answer. Asking again would get the
-    same answer, and a row left at the front would block every create queued
-    behind it.
+  - GitHub refuses to open it **for good**: `422` only (for example *"No
+    commits between"*, a branch with nothing ahead of the base). The notice
+    carries GitHub's answer. Asking again would get the same answer, and a
+    row left at the front would block every create queued behind it. A `422`
+    saying *"A pull request already exists"* for the branch is not a
+    refusal: the row is kept and HQ is told nothing, and the next drain finds
+    that pull request open from the branch and drops the row with no notice
+    (below).
 
   A branch that already has an open pull request is skipped with no notice.
   That check runs again once the create lock is held, so two drains racing
@@ -2325,10 +2336,13 @@ The per-item and per-day limits still refuse.
   The drain **stops**, and the next one tries again, so nothing behind jumps
   the queue, when:
   - the open or daily limit is still full;
-  - any read fails (the branch, its pull requests, HQ, the comparison);
-  - GitHub's open fails in a way that may pass later: a `5xx`, `401`, `403`
-    (a token, a permission or a secondary rate limit), `404`, `409`, `429`
-    or a network error.
+  - any read fails (the branch, its pull requests, any page of HQ's item
+    lists, the comparison), or an item list ran past its page bound without
+    naming the item;
+  - GitHub's open fails in a way that may pass later: a `5xx`, `400`, `401`,
+    `403` (a token, a permission or a secondary rate limit), `404`, `409`,
+    `410`, `429` or a network error, or a `422` saying the pull request
+    already exists.
 
   **No age bound.** A queued create leaves the queue only by being opened or
   by one of the skips above, never by age. Every way a row can stay is a

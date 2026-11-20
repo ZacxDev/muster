@@ -57,20 +57,28 @@ import (
 //   - its item now has its pull request (the per-item limit);
 //   - checkComparison at the branch's CURRENT head refuses it (a push since
 //     the create is checked here like any create's head);
-//   - GitHub refuses to open it for good (permanentOpenError: 400, 410 or
-//     422 — e.g. "No commits between" for a branch with nothing ahead of the
-//     base). Asking again would get the same answer, and a row left first
-//     would block every create queued behind it forever.
+//   - GitHub refuses to open it for good (permanentOpenError: 422 only —
+//     e.g. "No commits between" for a branch with nothing ahead of the base).
+//     Asking again would get the same answer, and a row left first would
+//     block every create queued behind it forever. A 422 that says a pull
+//     request ALREADY EXISTS for the branch (prAlreadyExists) is not a
+//     refusal: nothing is lost, so HQ is told nothing — the row is kept and
+//     the next drain's own read finds that pull request and drops it with
+//     no notice (the skip above).
 //
 // A pull request already open from the branch is skipped with no notice
 // (nothing is lost) — read before the create lock and AGAIN once it is held,
 // so a drain racing another drain of the same row finds the other's pull
 // request rather than counting it against the item. A skip whose settle finds
-// the row already settled (another drain decided it) tells HQ nothing. The open cap or the daily limit still full, a read that
-// fails (the branch, the pull requests from it, HQ, the comparison), or an
-// open GitHub may yet accept (any other error: 5xx, 401, 403, 404, 409, 429,
-// the network) STOPS the drain: nothing behind jumps the queue, and the next
-// drain tries again. An opened one is re-checked and announced exactly as a
+// the row already settled (another drain decided it) tells HQ nothing.
+//
+// The open cap or the daily limit still full, a read that fails (the branch,
+// the pull requests from it, any page of HQ's item lists, the comparison), an
+// item HQ's lists do not name but one of them ran past its page bound
+// (ItemGone's error: not known), an open GitHub may yet accept (any other
+// error: 5xx, 400, 401, 403, 404, 409, 410, 429, the network), or a 422 saying
+// the pull request already exists, STOPS the drain: nothing behind jumps the
+// queue, and the next drain tries again. An opened one is re-checked and announced exactly as a
 // create the officer made itself (recheckCreated).
 //
 // NO AGE BOUND: a queued row leaves the queue only by being opened or by one
@@ -283,7 +291,7 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 	}
 	gone, why, err := g.ItemGone(ctx, q.Item)
 	if err != nil {
-		return true, fmt.Errorf("item %d's state in HQ could not be read: %v", q.Item, err)
+		return true, fmt.Errorf("item %d's state in HQ is not known: %v", q.Item, err)
 	}
 	if gone {
 		g.skipQueued(ctx, sr, q, why, nil, true)
@@ -328,6 +336,10 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		return false, nil
 	}
 	pr, err := gh.OpenDraftPR(ctx, q.Title, q.Branch, sr.Base, q.Body)
+	if prAlreadyExists(err) {
+		return true, fmt.Errorf("GitHub says a pull request already exists from its branch, though none was listed open: "+
+			"the row is kept, and the next drain finds that pull request and drops the row with no notice: %v", err)
+	}
 	if permanentOpenError(err) {
 		g.skipQueued(ctx, sr, q, fmt.Sprintf("GitHub refused to open it (%d), and asking again gets the same answer: %v", statusOf(err), err), nil, true)
 		return false, nil
@@ -354,17 +366,22 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 }
 
 // permanentOpenError reports whether err, from OpenDraftPR, is GitHub refusing
-// the create for good: 400 (malformed), 410 (gone) or 422 (validation: no
-// commits between base and head, an invalid head or base). Anything else —
-// 5xx, 401/403 (a token, a permission or a secondary rate limit), 404 (an
-// installation's access), 409, 429, a network error — may pass later, so the
-// drain keeps the row and tries again.
+// the create for good: 422 only (validation: no commits between base and
+// head, an invalid head or base). The caller checks prAlreadyExists, also a
+// 422, FIRST. Anything else — 5xx, 400, 401/403 (a token, a permission or a
+// secondary rate limit), 404 (an installation's access), 409, 410, 429, a
+// network error — may pass later, so the drain keeps the row and tries again.
 func permanentOpenError(err error) bool {
-	switch statusOf(err) {
-	case http.StatusBadRequest, http.StatusGone, http.StatusUnprocessableEntity:
-		return true
-	}
-	return false
+	return statusOf(err) == http.StatusUnprocessableEntity
+}
+
+// prAlreadyExists reports whether err, from OpenDraftPR, is GitHub's 422 for
+// a head that already has an open pull request ("A pull request already
+// exists for owner:branch."). GitHub gives that case no code of its own (its
+// errors[] entry is code "custom"), so its message is the only signal.
+func prAlreadyExists(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.status == http.StatusUnprocessableEntity && strings.Contains(he.body, "A pull request already exists")
 }
 
 // skipQueued settles q skipped, with why, logs it and — notify — tells HQ

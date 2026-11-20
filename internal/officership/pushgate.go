@@ -134,8 +134,9 @@ type PushGate struct {
 	// reads it before it opens a queued create (prqueue.go); gone true says
 	// why. An item that is open, waiting, escalated, claimed (by anyone) or
 	// COMPLETED (done or no_action) is not gone: the officer may complete its
-	// item once its create is queued. nil: the drain opens nothing (fail
-	// closed).
+	// item once its create is queued. An error (a list unreadable, or not
+	// read to its end) means not known: the drain waits. nil: the drain opens
+	// nothing (fail closed).
 	ItemGone func(ctx context.Context, item int) (gone bool, why string, err error)
 
 	// createSem serialises a draft officer's creates (draftCreate holds it

@@ -398,13 +398,13 @@ func TestTheDrainSkipsAndTellsHQ(t *testing.T) {
 }
 
 // TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits: B (queued
-// first) is opened by GitHub with an error. A permanent refusal (400, 410,
-// 422 — "No commits between" for a branch with nothing ahead of its base)
-// drops B with a notice naming GitHub's answer, and A, behind it, takes the
-// free slot: B can never open, and left first it would block A for good. A
-// transient one (5xx, 401, 403, 404, 409, 429, a network error) keeps both
-// rows queued, tells HQ nothing and opens nothing (no queue-jumping); once
-// GitHub accepts, the next drain opens B.
+// first) is opened by GitHub with an error. A permanent refusal — 422 only
+// ("No commits between" for a branch with nothing ahead of its base) — drops
+// B with a notice naming GitHub's answer, and A, behind it, takes the free
+// slot: B can never open, and left first it would block A for good. A
+// transient one (5xx, 400, 401, 403, 404, 409, 410, 429, a network error)
+// keeps both rows queued, tells HQ nothing and opens nothing (no
+// queue-jumping); once GitHub accepts, the next drain opens B.
 func TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits(t *testing.T) {
 	noCommits := `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between trunk and ` + qBranchB + `"}]}`
 	for name, c := range map[string]struct {
@@ -412,8 +412,8 @@ func TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits(t *testing.T) {
 		permanent bool
 	}{
 		"422 no commits between": {&httpError{status: 422, body: noCommits, op: "opening a draft pull request"}, true},
-		"400":                    {&httpError{status: 400, body: `{"message":"Problems parsing JSON"}`, op: "opening a draft pull request"}, true},
-		"410":                    {&httpError{status: 410, body: `{"message":"Gone"}`, op: "opening a draft pull request"}, true},
+		"400":                    {&httpError{status: 400, body: `{"message":"Problems parsing JSON"}`, op: "opening a draft pull request"}, false},
+		"410":                    {&httpError{status: 410, body: `{"message":"Gone"}`, op: "opening a draft pull request"}, false},
 		"502":                    {&httpError{status: 502, body: "bad gateway", op: "opening a draft pull request"}, false},
 		"500":                    {&httpError{status: 500, body: "", op: "opening a draft pull request"}, false},
 		"429":                    {&httpError{status: 429, body: `{"message":"rate limit"}`, op: "opening a draft pull request"}, false},
@@ -458,6 +458,53 @@ func TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits(t *testing.T) {
 		if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
 			t.Errorf("%s: once GitHub accepts, opened %q, want %s", name, got, qBranchB)
 		}
+	}
+}
+
+// TestA422PullRequestAlreadyExistsKeepsTheRowAndTellsNobody: GitHub answers
+// B's open with 422 "A pull request already exists" (one was opened from B
+// after the drain's own reads found none). That is not a refusal — nothing
+// is lost — so HQ is told nothing, the row is KEPT (first, so A does not
+// jump it) and the drain's error says why. The next drain's own read finds
+// that pull request and drops B's row with no notice.
+func TestA422PullRequestAlreadyExistsKeepsTheRowAndTellsNobody(t *testing.T) {
+	exists := `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for example:` + qBranchB + `."}]}`
+	r, q, _ := newQueueRigHQ(t)
+	queueBA(t, r)
+	r.notices = nil
+	r.infra.openDraftErrFor = map[string]error{qBranchB: &httpError{status: 422, body: exists, op: "opening a draft pull request"}}
+	closeOpen(r, 101)
+	sr := r.g.Ship.Repos[1]
+	err := r.g.drainQueue(context.Background(), sr, r.infra)
+	if err == nil || !strings.Contains(err.Error(), "GitHub says a pull request already exists from its branch, though none was listed open: the row is kept") {
+		t.Errorf("the drain's error = %v, want it to say the pull request already exists and the row is kept", err)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != "" {
+		t.Errorf("opened %q, want nothing (B kept first, A does not jump it)", got)
+	}
+	if got := queuedBranches(t, q); got != qBranchB+","+qBranchA {
+		t.Errorf("the queue lists %q, want both still queued", got)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a skip: %+v", n)
+	}
+	// The pull request GitHub named is open from B (it fills the freed slot).
+	p := PR{Number: 777, State: "open", Draft: true, Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: qBranchB, HeadSHA: qShaB,
+		HeadRepo: dInfra, BaseRef: "trunk", CreatedAt: dNow, UpdatedAt: dNow, Body: goodBody(19)}
+	r.infra.all = append(r.infra.all, p)
+	r.infra.prs[p.Number] = p
+	r.infra.openDraftErrFor = nil
+	if err := r.g.drainQueue(context.Background(), sr, r.infra); err != nil {
+		t.Fatalf("the next drain: %v", err)
+	}
+	if got := queuedBranches(t, q); got != qBranchA {
+		t.Errorf("after the next drain the queue lists %q, want only %s (B's row dropped, its pull request found)", got, qBranchA)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != "" {
+		t.Errorf("the next drain opened %q, want nothing (B has #777; the cap is full again)", got)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a skip: %+v", n)
 	}
 }
 
