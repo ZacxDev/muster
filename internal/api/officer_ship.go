@@ -156,6 +156,9 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Loops:          s.prLoopsFor(cfg, o),
 		PublicBranches: s.publicBranchesFor(cfg, o),
 		Queue:          s.prQueueFor(cfg, o),
+		ItemHeld: func(ctx context.Context, item int) (bool, string, error) {
+			return itemHeldByOfficer(ctx, hq.c, o.ID, item)
+		},
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
@@ -298,6 +301,30 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 		return it, nil
 	}
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+}
+
+// itemHeldByOfficer is the queue drain's item re-read (PushGate.ItemHeld):
+// held when HQ (read with officer officerID's own token) shows item claimed
+// by an instance of that officer — whatever its lease — and why not
+// otherwise: it was completed, cancelled, released back to the queue or
+// reassigned, which all leave it out of the officer's claimed items. HQ
+// unreadable is an error (the drain waits).
+func itemHeldByOfficer(ctx context.Context, c officers.Backend, officerID string, item int) (bool, string, error) {
+	items, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return false, "", fmt.Errorf("HQ's claimed items could not be read: %v", err)
+	}
+	want := strconv.Itoa(item)
+	for _, it := range items {
+		if string(it.ID) != want {
+			continue
+		}
+		if it.OfficerID != "" && it.OfficerID != officerID {
+			return false, fmt.Sprintf("HQ shows item %d claimed by officer %s now", item, it.OfficerID), nil
+		}
+		return true, "", nil
+	}
+	return false, fmt.Sprintf("HQ no longer shows item %d claimed by this officer (it was completed, cancelled, released or reassigned)", item), nil
 }
 
 // fixItemsHeld is the draft gate's FixItems: the pull-request fix items

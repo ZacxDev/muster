@@ -89,16 +89,9 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		return refused("a pull request from %s: %s", head, g.notOwnBranch(sr, err))
 	}
 	title, body := jsonString(m["title"]), jsonString(m["body"])
-	if err := g.bodyContract(sr, body, item); err != nil {
-		return err
-	}
-	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
-		return g.contentRefusal(ctx, sr, 0, "", head, nil, "its title or body has a credential-shaped value")
-	}
-	if why := g.officerNamedWhy(sr, "its title or body", title+"\n"+body); why != "" {
-		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
-	}
-	if why := g.publicTextWhy(sr, "its title or body", title+"\n"+body); why != "" {
+	if contract, why := g.createTextWhy(sr, title, body, item); contract != nil {
+		return contract
+	} else if why != "" {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
 	}
 	if err := g.claimed(ctx, item); err != nil {
@@ -109,18 +102,54 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	}
 	err = g.rateLimits(ctx, sr, item)
 	switch {
+	case err == nil && g.Queue != nil:
+		// 🔴 NO QUEUE-JUMPING (prqueue.go): with a slot free but creates of
+		// this officer still queued in this repository, this one queues behind
+		// them; the drain below opens the oldest first.
+		var ahead int
+		if ahead, err = g.queuedAhead(ctx, sr, head); err == nil && ahead > 0 {
+			err = g.queueCreate(ctx, sr, gh, head, item, title, body,
+				fmt.Sprintf("%d earlier pull request(s) of this officer are queued in %s, and are opened first", ahead, sr.Repo), false)
+		} else if err == nil {
+			err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+		}
 	case err == nil:
 		err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
 	case isLimit(err, limitOpen) && g.Queue != nil:
 		// 🔴 THE OPEN CAP QUEUES, IT DOES NOT REFUSE (prqueue.go): the create
-		// is checked, recorded and answered 202; the sweep opens it once a
-		// slot frees. Every other limit still refuses.
-		err = g.queueCreate(ctx, sr, gh, head, item, title, body, err)
+		// is checked, recorded and answered 202, the officer's oldest idle
+		// draft is closed to free a slot (closeOldestDraft), and the queue is
+		// drained. Every other limit still refuses.
+		err = g.queueCreate(ctx, sr, gh, head, item, title, body, limitWhy(err), true)
 	}
 	if err != nil {
 		g.releaseCreate()
+		if errors.Is(err, connectors.ErrGateQueued) {
+			// With the create lock released: a slot may be free now (one
+			// just closed, or the create queued behind others), so the
+			// queue is drained at once rather than at the next sweep.
+			g.drainNow(ctx, sr, gh)
+		}
 	}
 	return err
+}
+
+// createTextWhy is THE title-and-body check of a draft officer's new pull
+// request, at the create and again when the drain opens a queued one: contract
+// is the body contract's 403 refusal (bodyContract), why a content refusal's
+// reason — a credential-shaped value, the officer's own id in a public
+// repository, an internal detail there — "" when the text passes.
+func (g *PushGate) createTextWhy(sr officers.ShipRepo, title, body string, item int) (contract error, why string) {
+	if err := g.bodyContract(sr, body, item); err != nil {
+		return err, ""
+	}
+	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
+		return nil, "its title or body has a credential-shaped value"
+	}
+	if why := g.officerNamedWhy(sr, "its title or body", title+"\n"+body); why != "" {
+		return nil, why
+	}
+	return nil, g.publicTextWhy(sr, "its title or body", title+"\n"+body)
 }
 
 // claimed refuses a new pull request for item unless HQ shows the requesting
@@ -1071,15 +1100,6 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			if pr.State != "open" || pr.HeadSHA == "" || (pr.HeadRepo != "" && !strings.EqualFold(pr.HeadRepo, sr.Repo)) {
 				continue
 			}
-			// The stale-draft age-out (prqueue.go; off unless the ship block
-			// enables it): a closed one frees its slot for the drain below.
-			if g.ageOut(ctx, sr, gh, BotLogin(slug), pr) {
-				g.mu.Lock()
-				delete(g.checked, key)
-				delete(g.misses, key)
-				g.mu.Unlock()
-				continue
-			}
 			g.mu.Lock()
 			done := g.checked[key] == pr.HeadSHA
 			g.mu.Unlock()
@@ -1116,8 +1136,8 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 		}
 		g.mu.Unlock()
 		// 🔴 THE QUEUE'S DRAIN (prqueue.go): with this repository's pull
-		// requests read and the stale ones closed, the oldest queued creates
-		// are opened while the open cap has room.
+		// requests read, the oldest queued creates are opened while the open
+		// cap has room (a slot a human freed by closing or merging one).
 		if err := g.drainQueue(ctx, sr, gh); err != nil {
 			errs = append(errs, err)
 		}

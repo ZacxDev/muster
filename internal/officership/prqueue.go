@@ -21,32 +21,46 @@ import (
 // is checked through checkComparison like any create, recorded in the queue
 // (Queue: the branch, its head now, the title and body, the item) and answered
 // 202 (connectors.ErrGateQueued) with a message saying muster opens it itself
-// once a slot frees — so the officer does not escalate to a human to open it.
+// — so the officer does not escalate to a human to open it. A create with a
+// slot free is queued too while creates of the officer are already queued in
+// that repository (NO QUEUE-JUMPING: queuedAhead).
 //
-// THE DRAIN runs in the draft sweep (Sweep, every SweepInterval), per
-// repository, after the sweep's own reads: the repository's queued creates,
-// oldest first, each opened as a draft by muster (OpenDraftPR, the officer
-// App's token) while the open cap has room. Each is first re-read:
+// THE CAP-TRIGGERED CLOSE (Ship.CloseOldestDraft, ON by default): a create
+// queued because the cap is full closes the officer's ONE oldest draft — by
+// last activity (GitHub's updated_at), only one this officer owns (itemOf,
+// as rateLimits counts it: an App two officers share does not make the other's
+// pull requests this one's), never one marked ready for review — when it has
+// been idle CloseOldestDraft.IdleDays or more, with a comment, and tells HQ.
 //
-//   - its branch is gone: skipped;
-//   - its branch's head is not the one it was queued at (a newer push with no
-//     new create): skipped as superseded — a create asked again after the
-//     push refreshes the head and keeps the place;
-//   - a pull request is already open from it: skipped;
-//   - the rate limits again (rateLimits): the open cap or the daily limit
-//     still full stops the drain (the next sweep tries again); the per-item
-//     limit skips it;
-//   - checkComparison at that head: unreadable stops the drain; a hit skips
-//     it and is told to HQ as a refusal.
+// THE DRAIN runs right after a create is queued (drainNow, once the create
+// lock is released) and in every draft sweep (Sweep, every SweepInterval), per
+// repository: the repository's queued creates, oldest first, each opened as a
+// draft by muster (OpenDraftPR, the officer App's token) while the open cap
+// has room. Each is first read again, and SKIPPED — with a notice to HQ, so the
+// item does not end with no pull request and nobody told — when:
 //
-// An opened one is re-checked and announced exactly as a create the officer
-// made itself (recheckCreated). The claim on the item is NOT read again: it
-// was checked when the create was asked, and the officer may have completed
-// its item since, as its answer told it it could.
+//   - its branch is gone;
+//   - HQ no longer shows its item claimed by this officer (ItemHeld: it was
+//     completed, cancelled, released or reassigned);
+//   - its stored title or body no longer passes createTextWhy (the body
+//     contract, credential shapes, the officer's id or an internal detail in a
+//     public repository);
+//   - its item now has its pull request (the per-item limit);
+//   - checkComparison at the branch's CURRENT head refuses it (a push since
+//     the create is checked here like any create's head).
 //
-// THE AGE-OUT (Ship.StaleDrafts, OFF by default): in the same sweep, an open
-// DRAFT of the officer's with no activity (updated_at) for StaleDrafts.Days is
-// closed with a comment, which frees its slot for the drain.
+// A pull request already open from the branch is skipped with no notice
+// (nothing is lost). The open cap or the daily limit still full, a read that
+// fails (the branch, the pull requests from it, HQ, the comparison), STOPS the
+// drain: nothing behind jumps the queue, and the next drain tries again. An
+// opened one is re-checked and announced exactly as a create the officer made
+// itself (recheckCreated).
+//
+// ⚠ ONE muster PROCESS. The create lock (createSem) is per process, as the
+// draft gate's is: two replicas draining one officer's queue at once could
+// each open a row in the same moment and take the officer one over its cap
+// (never two pull requests from one branch: GitHub refuses a second). muster
+// runs officers on one replica.
 // ---------------------------------------------------------------------------
 
 // PRQueue is a draft officer's queue of creates the open cap held back
@@ -112,26 +126,44 @@ func (g *PushGate) now() time.Time {
 	return time.Now()
 }
 
-// queueCreate is draftCreate's answer to a create the open cap refused
-// (capErr), when the officer has a queue: its comparison is checked as a
-// create's would be (a hit is refused, never queued), the branch's head read,
-// and the create recorded. It answers queued (ErrGateQueued), or the refusal,
-// or a plain error when the branch or the queue cannot be read (502: nothing
-// was recorded, so the officer may ask again).
-func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh GitHub, head string, item int, title, body string, capErr error) error {
+// queuedAhead is how many creates of the officer are queued in sr from a
+// branch other than head: a create with a slot free queues behind them.
+func (g *PushGate) queuedAhead(ctx context.Context, sr officers.ShipRepo, head string) (int, error) {
+	list, err := g.Queue.List(ctx, sr.Repo)
+	if err != nil {
+		return 0, fmt.Errorf("the pull-request queue of %s could not be read, so this create cannot be ordered behind it (ask again): %v", sr.Repo, err)
+	}
+	n := 0
+	for _, q := range list {
+		if q.Branch != head {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// queueCreate is draftCreate's answer to a create that must wait (why: the
+// open cap, or creates queued ahead of it), when the officer has a queue: its
+// comparison is checked as a create's would be (a hit is refused, never
+// queued), the branch's head read, and the create recorded; capped, the
+// officer's oldest idle draft is closed to free a slot (closeOldestDraft). It
+// answers queued (ErrGateQueued), or the refusal, or a plain error when the
+// branch or the queue cannot be read (502: nothing was recorded, so the
+// officer may ask again).
+func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh GitHub, head string, item int, title, body, why string, capped bool) error {
 	if err := g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head)); err != nil {
 		return err
 	}
 	sha, err := gh.BranchSHA(ctx, head)
 	if err != nil {
-		return fmt.Errorf("the open cap is reached in %s, and the branch %s could not be read to queue the pull request (nothing was queued; ask again): %v",
-			sr.Repo, head, err)
+		return fmt.Errorf("the pull request from %s must wait in %s (%s), and its branch could not be read to queue it (nothing was queued; ask again): %v",
+			head, sr.Repo, why, err)
 	}
 	q, err := g.Queue.Add(ctx, officers.QueuedPR{Repo: sr.Repo, Branch: head, HeadSHA: sha, Title: title, Body: body, Item: item,
 		Instance: callerInstance(ctx)})
 	if err != nil {
-		return fmt.Errorf("the open cap is reached in %s, and the pull request from %s could not be queued (nothing was queued; ask again): %v",
-			sr.Repo, head, err)
+		return fmt.Errorf("the pull request from %s must wait in %s (%s), and could not be queued (nothing was queued; ask again): %v",
+			head, sr.Repo, why, err)
 	}
 	pos, total := 0, 0
 	if list, err := g.Queue.List(ctx, sr.Repo); err == nil {
@@ -143,17 +175,38 @@ func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		}
 	}
 	g.logf("officers: %s: QUEUED the draft pull request from %s in %s at %s (queue position %d of %d; item %d): %s",
-		g.OfficerID, head, sr.Repo, shortSHA(sha), pos, total, item, limitWhy(capErr))
+		g.OfficerID, head, sr.Repo, shortSHA(sha), pos, total, item, why)
+	freed := ""
+	if capped {
+		if closed, ok := g.closeOldestDraft(ctx, sr, gh); ok {
+			freed = fmt.Sprintf(" muster closed your oldest idle draft, #%d, to free a slot, so the queue is opened now.", closed.Number)
+		}
+	}
 	where := "in the queue"
 	if pos > 0 {
 		where = fmt.Sprintf("position %d of %d in the queue", pos, total)
 	}
-	return queued("the pull request from %s is QUEUED, not refused: %s. muster recorded it at %s (%s for %s) and opens it as a draft itself, "+
-		"oldest first, once one of your pull requests there closes or merges — you do not need a human for it: do NOT escalate it and do not ask anyone to open it; "+
-		"you may complete your item. If you push to %s again, send this same create again so the new head is queued (it keeps its place); "+
-		"a queued branch that is deleted, or whose head moves with no new create, is dropped from the queue",
-		head, limitWhy(capErr), shortSHA(sha), where, sr.Repo, head)
+	return queued("the pull request from %s is QUEUED, not refused: %s. muster recorded it (%s for %s) and opens it as a draft itself, "+
+		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it.%s "+
+		"Keep your item claimed until a pull request from %s exists: muster re-reads the item first, and drops a queued branch whose item is no "+
+		"longer claimed by you (completed, released or reassigned). A push to %s since is fine: the drain checks the branch's head when it opens it",
+		head, why, where, sr.Repo, freed, head, head)
 }
+
+// drainNow drains sr's queue right after a create was queued, on the
+// request's context detached from the client (it runs before the 202 is
+// answered, bounded by drainNowTimeout). A failure is logged: the sweep
+// drains again.
+func (g *PushGate) drainNow(ctx context.Context, sr officers.ShipRepo, gh GitHub) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainNowTimeout)
+	defer cancel()
+	if err := g.drainQueue(ctx, sr, gh); err != nil {
+		g.logf("officers: %s: draining the queue after a create: %v (the sweep drains it again)", g.OfficerID, err)
+	}
+}
+
+// drainNowTimeout bounds drainNow.
+const drainNowTimeout = 2 * time.Minute
 
 // drainQueue opens sr's queued creates, oldest first, while the open cap has
 // room (see the comment at the top). It stops at the first one that must
@@ -185,21 +238,36 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 	sha, err := gh.BranchSHA(ctx, q.Branch)
 	switch {
 	case errors.Is(err, ErrRefMissing):
-		g.skipQueued(ctx, sr, q, "its branch is gone")
+		g.skipQueued(ctx, sr, q, "its branch is gone", nil, true)
 		return false, nil
 	case err != nil:
 		return true, fmt.Errorf("its branch could not be read: %v", err)
-	case sha != q.HeadSHA:
-		g.skipQueued(ctx, sr, q, fmt.Sprintf("superseded: its branch moved from %s to %s after it was queued, and no create asked for the new head",
-			shortSHA(q.HeadSHA), shortSHA(sha)))
-		return false, nil
 	}
 	open, err := g.openPRsFrom(ctx, sr, gh, q.Branch)
 	if err != nil {
 		return true, fmt.Errorf("the pull requests from its branch could not be read: %v", err)
 	}
 	if len(open) > 0 {
-		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number))
+		// Nothing is lost: the branch has its pull request.
+		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number), nil, false)
+		return false, nil
+	}
+	if g.ItemHeld == nil {
+		return true, errors.New("muster cannot read HQ's claim on the item, so the queued pull request is not opened")
+	}
+	held, why, err := g.ItemHeld(ctx, q.Item)
+	if err != nil {
+		return true, fmt.Errorf("HQ's claim on item %d could not be read: %v", q.Item, err)
+	}
+	if !held {
+		g.skipQueued(ctx, sr, q, why, nil, true)
+		return false, nil
+	}
+	if contract, why := g.createTextWhy(sr, q.Title, q.Body, q.Item); contract != nil {
+		g.skipQueued(ctx, sr, q, "its body no longer keeps the contract: "+strings.TrimPrefix(contract.Error(), connectors.ErrGateRefused.Error()+": "), nil, true)
+		return false, nil
+	} else if why != "" {
+		g.skipQueued(ctx, sr, q, "its title or body was refused: "+why, nil, true)
 		return false, nil
 	}
 	if err := g.acquireCreate(ctx); err != nil {
@@ -211,7 +279,7 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		case isLimit(err, limitOpen), isLimit(err, limitDay):
 			return true, nil
 		case isLimit(err, limitItem):
-			g.skipQueued(ctx, sr, q, limitWhy(err))
+			g.skipQueued(ctx, sr, q, limitWhy(err), nil, true)
 			return false, nil
 		}
 		return true, err
@@ -221,8 +289,7 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		return true, v.Err
 	}
 	if len(v.Paths) > 0 {
-		_ = g.contentRefusal(ctx, sr, 0, sha, q.Branch, v.Paths, v.Why)
-		g.skipQueued(ctx, sr, q, "its change was refused: "+v.Why)
+		g.skipQueued(ctx, sr, q, "its change was refused: "+v.Why, v.Paths, true)
 		return false, nil
 	}
 	pr, err := gh.OpenDraftPR(ctx, q.Title, q.Branch, sr.Base, q.Body)
@@ -247,13 +314,26 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 	return false, nil
 }
 
-// skipQueued settles q skipped, with why, and logs it.
-func (g *PushGate) skipQueued(ctx context.Context, sr officers.ShipRepo, q officers.QueuedPR, why string) {
+// skipQueued settles q skipped, with why, logs it and — notify — tells HQ
+// (paths, never content), so the item does not end with no pull request and
+// nobody told.
+func (g *PushGate) skipQueued(ctx context.Context, sr officers.ShipRepo, q officers.QueuedPR, why string, paths []string, notify bool) {
 	if _, err := g.Queue.Settle(ctx, q.ID, q.HeadSHA, officers.PRQueueSkipped, 0, why); err != nil {
 		g.logf("officers: %s: the queued pull request from %s in %s could not be dropped (%v); the next drain reads it again", g.OfficerID, q.Branch, sr.Repo, err)
 		return
 	}
 	g.logf("officers: %s: SKIPPED the queued pull request from %s in %s: %s", g.OfficerID, q.Branch, sr.Repo, why)
+	if !notify {
+		return
+	}
+	summary := fmt.Sprintf("officer %s: muster did NOT open the queued draft pull request from %s in %s (item %d) and dropped it from the queue: %s",
+		g.OfficerID, q.Branch, sr.Repo, q.Item, why)
+	ps := paths
+	if len(ps) > officers.MaxNoticePaths {
+		summary += fmt.Sprintf(" (+%d more paths)", len(ps)-officers.MaxNoticePaths)
+		ps = ps[:officers.MaxNoticePaths]
+	}
+	g.announce(ctx, officers.Notice{HeadSHA: q.HeadSHA, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
 }
 
 // recheckCreated is a new pull request's re-check, the create's or the
@@ -267,37 +347,83 @@ func (g *PushGate) recheckCreated(ctx context.Context, sr officers.ShipRepo, gh 
 	}
 }
 
-// StaleDraftComment is the comment the age-out posts on a draft it closes
-// (days: its idle bound). It names no officer and no item: it is posted in
-// public repositories too.
-func StaleDraftComment(days int) string {
-	return "This draft pull request had no activity for " + strconv.Itoa(days) + " days, so it was closed automatically to free " +
-		"the open-pull-request slot it held. Its branch is kept: reopen this pull request, or open a new one, when the work resumes."
+// IdleDraftComment is the comment the cap-triggered close posts on the draft
+// it closes (days: its idle bound). It names no officer and no item: it is
+// posted in public repositories too.
+func IdleDraftComment(days int) string {
+	return "This draft pull request had no activity for " + strconv.Itoa(days) + " days or more, and its author reached its limit of open " +
+		"pull requests here, so it was closed automatically to make room for a newer one. Its branch is kept: reopen this pull request when " +
+		"the work resumes."
 }
 
-// ageOut closes pr, an open pull request of sr authored by login, when the
-// officer's stale_drafts block is enabled, pr is a draft of the officer's
-// App, and it has had no activity for the block's days; it reports whether it
-// closed it. The close comes first, then the comment (a close that failed
-// leaves no comment saying it was closed); either failure is logged.
-func (g *PushGate) ageOut(ctx context.Context, sr officers.ShipRepo, gh GitHub, login string, pr PR) bool {
-	sd := g.Ship.StaleDrafts
-	if sd == nil || !pr.Draft || pr.UpdatedAt.IsZero() || !strings.EqualFold(pr.Author, login) || pr.AuthorType != "Bot" {
-		return false
+// closeOldestDraft is the cap-triggered close (see the comment at the top):
+// of the officer's OWN open drafts in sr, the one with the oldest last
+// activity (ties: the lower number), closed — then commented, then told to
+// HQ — when it has been idle CloseOldestDraft.IdleDays or more. It is read
+// again before the close, and left open if it is no longer an open draft or
+// saw activity since. It reports the pull request it closed.
+func (g *PushGate) closeOldestDraft(ctx context.Context, sr officers.ShipRepo, gh GitHub) (PR, bool) {
+	co := g.Ship.CloseOldestDraft
+	if co == nil {
+		return PR{}, false
 	}
-	idle := g.now().Sub(pr.UpdatedAt)
-	if idle < sd.After() {
-		return false
+	slug, err := gh.AppSlug(ctx)
+	if err != nil {
+		g.logf("officers: %s: no idle draft closed in %s: the officer App's identity: %v", g.OfficerID, sr.Repo, err)
+		return PR{}, false
 	}
-	if err := gh.ClosePR(ctx, pr.Number); err != nil {
-		g.logf("officers: %s: the stale draft #%d in %s (no activity for %s) could not be closed: %v", g.OfficerID, pr.Number, sr.Repo,
-			idle.Round(time.Hour), err)
-		return false
+	login := BotLogin(slug)
+	prs, err := g.officerPRs(ctx, sr, gh, login, "open")
+	if err != nil {
+		g.logf("officers: %s: no idle draft closed in %s: its open pull requests could not be listed: %v", g.OfficerID, sr.Repo, err)
+		return PR{}, false
 	}
-	if err := gh.CommentPR(ctx, pr.Number, StaleDraftComment(sd.Days)); err != nil {
-		g.logf("officers: %s: closed the stale draft #%d in %s, but its comment could not be posted: %v", g.OfficerID, pr.Number, sr.Repo, err)
+	var oldest PR
+	found := false
+	for _, p := range prs {
+		if p.State != "open" || !p.Draft || p.UpdatedAt.IsZero() || !strings.EqualFold(p.Author, login) || p.AuthorType != "Bot" ||
+			(p.HeadRepo != "" && !strings.EqualFold(p.HeadRepo, sr.Repo)) {
+			continue
+		}
+		// 🔴 THIS OFFICER'S OWN, as rateLimits counts them: an App two
+		// officers share authors both officers' pull requests.
+		if _, own := g.itemOf(ctx, sr, gh, p); !own {
+			continue
+		}
+		if !found || p.UpdatedAt.Before(oldest.UpdatedAt) || (p.UpdatedAt.Equal(oldest.UpdatedAt) && p.Number < oldest.Number) {
+			oldest, found = p, true
+		}
 	}
-	g.logf("officers: %s: CLOSED stale draft #%d (%s) in %s: no activity for %s (stale_drafts.days %d)", g.OfficerID, pr.Number, pr.HeadRef,
-		sr.Repo, idle.Round(time.Hour), sd.Days)
-	return true
+	if !found {
+		return PR{}, false
+	}
+	idle := g.now().Sub(oldest.UpdatedAt)
+	if idle < co.After() {
+		g.logf("officers: %s: no idle draft closed in %s: its oldest draft, #%d, was active %s ago (the bound is %d days)", g.OfficerID, sr.Repo,
+			oldest.Number, idle.Round(time.Hour), co.IdleDays)
+		return PR{}, false
+	}
+	cur, err := gh.PR(ctx, oldest.Number)
+	if err != nil || cur.State != "open" || !cur.Draft || cur.UpdatedAt.After(oldest.UpdatedAt) {
+		g.logf("officers: %s: the idle draft #%d in %s was not closed: it changed since it was listed (%v)", g.OfficerID, oldest.Number, sr.Repo, err)
+		return PR{}, false
+	}
+	if err := gh.ClosePR(ctx, oldest.Number); err != nil {
+		g.logf("officers: %s: the idle draft #%d in %s could not be closed: %v", g.OfficerID, oldest.Number, sr.Repo, err)
+		return PR{}, false
+	}
+	if err := gh.CommentPR(ctx, oldest.Number, IdleDraftComment(co.IdleDays)); err != nil {
+		g.logf("officers: %s: closed the idle draft #%d in %s, but its comment could not be posted: %v", g.OfficerID, oldest.Number, sr.Repo, err)
+	}
+	key := sr.Repo + "#" + strconv.Itoa(oldest.Number)
+	g.mu.Lock()
+	delete(g.checked, key)
+	delete(g.misses, key)
+	g.mu.Unlock()
+	g.logf("officers: %s: CLOSED idle draft #%d (%s) in %s to free a slot for the queue: no activity for %s", g.OfficerID, oldest.Number,
+		oldest.HeadRef, sr.Repo, idle.Round(time.Hour))
+	g.announce(ctx, officers.Notice{PR: oldest.Number, HeadSHA: oldest.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+		"officer %s: muster closed its idle draft #%d (%s) in %s — no activity for %s — to free a slot for its queued pull requests; the branch is kept",
+		g.OfficerID, oldest.Number, oldest.HeadRef, sr.Repo, idle.Round(time.Hour))})
+	return oldest, true
 }
