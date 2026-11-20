@@ -143,7 +143,7 @@ mode.
    button. Two switches, both **on** by default: **Record**, and **AI action
    items** ("sends the transcript text, never audio, to an AI service"). Either
    can be turned off at any time; turned off, it cannot be turned back on
-   once any guest has knocked (waiting, admitted, or since gone), so nobody
+   once any guest has knocked (waiting, admitted, denied, or since gone), so nobody
    is recorded or sent to the AI service who knocked while it was off.
 3. Pastes the link wherever they like (a chat, an email). That is all the
    setup there is.
@@ -423,19 +423,38 @@ specific to meetings, and it hardens every deployment against any subdomain.
   `GET`. A name chosen that way would be written under one name and read
   under the other: a sign-in loop. So the name comes from configuration,
   once, at boot:
-  - **prefixed** (`__Host-…`) when `MUSTER_PUBLIC_URL` is `https` and
-    `MUSTER_SECURE_COOKIES` is not `0`;
-  - **unprefixed** (today's names) otherwise: a plain-http or loopback
-    install (the Compose stack's `http://localhost:8105`), and any
-    deployment with `MUSTER_SECURE_COOKIES=0`. The per-request `Secure`
-    exception is unchanged for these.
+  - **prefixed** (`__Host-…`) when the **resolved** secure-cookie setting,
+    `secureCookies(v, publicURL)` (`cmd/muster-server/config.go:2785-2791`),
+    is true **and** `MUSTER_PUBLIC_URL` is `https`;
+  - **unprefixed** (today's names) otherwise. That includes a plain-http or
+    loopback install, and the Compose stack, which sets
+    `MUSTER_SECURE_COOKIES=1` on an `http://localhost` URL: there the
+    per-request loopback exception still drops `Secure`, and a `__Host-`
+    cookie without `Secure` would be refused, so it must stay unprefixed. It
+    also includes any deployment where the setting resolves false
+    (`MUSTER_SECURE_COOKIES=0`). The per-request `Secure` exception is
+    unchanged for unprefixed deployments.
 
-  The boot banner names the choice. An unprefixed deployment gets no
-  protection from cookie tossing, so **muster refuses to boot** when it would
-  use unprefixed names and an entry of `MUSTER_PLUGIN_ORIGINS` is under
-  `MUSTER_PUBLIC_URL`'s own host (a subdomain plugin). One function,
-  `cookieName(base)`, holds the rule, and every reader and writer calls it.
-  A prefixed deployment never reads an unprefixed name.
+  The boot banner names the choice. One function, `cookieName(base)`, holds
+  the rule, and every reader and writer calls it. A prefixed deployment
+  never reads an unprefixed name.
+- **Boot refusal, by registrable domain.** An unprefixed deployment gets no
+  protection from cookie tossing, so **muster refuses to boot** when it
+  would use unprefixed names and any `MUSTER_PLUGIN_ORIGINS` entry has the
+  same **registrable domain** as `MUSTER_PUBLIC_URL`'s host (eTLD+1, by
+  `golang.org/x/net/publicsuffix.EffectiveTLDPlusOne`). The comparison is
+  by registrable domain, not "under muster's host": `meet.example.com` is a
+  same-site sibling of muster at `app.example.com`, and it can toss cookies
+  for `example.com` just as well. An IP-address public URL has no
+  registrable domain and compares by exact host.
+- **A prefixed deployment reached over loopback http.** An operator of an
+  https deployment who opens `http://localhost:<port>` directly would get
+  `__Host-` cookies that WebKit refuses over http (Chromium accepts `Secure`
+  cookies on `localhost`), so sign-in would silently fail in one engine.
+  Instead, on a prefixed deployment, a sign-in or step-up `POST` that arrives
+  as a loopback plain-http request (`loopbackHTTPPage`) is refused with a page
+  saying "This muster is set up for `<MUSTER_PUBLIC_URL>`. Sign in there."
+  No cookie is set. Every other request is unchanged.
 - **One sign-in for everyone.** Old names are not read after the upgrade, so
   every browser is signed out once. On its first response after the upgrade,
   muster also expires each old-named cookie (`Max-Age=-1`), so no stale
@@ -459,18 +478,38 @@ specific to meetings, and it hardens every deployment against any subdomain.
 closes a gap that exists today on any deployment with a sibling host
 ([origins](#origins-and-hosts)), so it is worth shipping on its own, first.
 
-- **One middleware, inside the auth layer.** For every request whose method
-  is not `GET`, `HEAD` or `OPTIONS` and whose principal was admitted **by a
-  cookie** (`authz.ViaSession`, and the GoTrue session path
-  `requireGoTrueSession`, `internal/api/accounts.go:762`), muster requires,
-  before any handler runs:
-  1. `Origin` present: it must be one of muster's own origins (the
-     `wsAllowedOrigins` set that `isSameOrigin`, `internal/api/auth.go:363`,
-     already uses). `Origin: null` (a sandboxed or opaque document, such as
-     an uploaded file's page) is refused.
-  2. `Origin` absent: `Sec-Fetch-Site` must be `same-origin`.
-  3. Both absent: the existing same-origin `Referer` fallback (for privacy
-     settings that strip `Origin`), else **refused**.
+- **One check, in `admit`.** `admit` (`internal/api/principal.go:200`) is,
+  by its own comment, the only way an auth wrapper may call the next
+  handler, so the check goes there. For every request whose method is not
+  `GET`, `HEAD` or `OPTIONS` (a **method-less** mux pattern, such as
+  `/connect/{connector}/{host}/{path...}` at `internal/api/connectors.go:83`
+  or the LLM prefix at `internal/api/officer_llm.go:43`, counts as a write)
+  and whose principal was admitted **by a cookie** (`authz.ViaSession`,
+  including the GoTrue session path, `requireGoTrueSession`,
+  `internal/api/accounts.go:762`), muster requires, before the handler:
+  1. **`Sec-Fetch-Site` first.** `same-origin` admits. `same-site`,
+     `cross-site` and `none` are refused.
+  2. **Only if it is absent, `Origin`:** it must be one of muster's own
+     origins (the `wsAllowedOrigins` set that `isSameOrigin`,
+     `internal/api/auth.go:363`, already uses). `Origin: null` is refused.
+  3. **Only if both are absent, `Referer`:** a same-origin `Referer` admits.
+  4. **None of the three:** refused.
+
+  Why `Sec-Fetch-Site` comes first: muster's default `Referrer-Policy:
+  no-referrer` (`internal/api/middleware.go:238`) makes a browser send
+  **`Origin: null` on a native form `POST` navigation**, while `fetch` from
+  the same page sends the real origin. muster has hit this twice already and
+  overrides the policy on those pages (`internal/api/composer.go:335-342`,
+  `internal/api/login.go:435-441`, both measured in Chromium). An
+  `Origin`-first rule would refuse muster's own no-JS forms;
+  `Sec-Fetch-Site: same-origin` is sent on them regardless of the referrer
+  policy. Go's `net/http.CrossOriginProtection` (Go 1.25+, and `go.mod` is
+  1.26) already checks `Sec-Fetch-Site` first and then `Origin` against
+  `Host`. 1g builds on it for steps 1–2, with muster's origin set in place of
+  `Host`, and adds what it does not do: refusing `none`, refusing
+  `Origin: null`, and refusing a request with **no** header (the standard
+  library lets that through, for non-browser clients; here a cookie request
+  with no header is not one of muster's pages).
 
   A refusal is `403` with `CrossOriginRefusal`, counted in a new
   `muster_csrf_refusals_total{route_class}` and logged without the body.
@@ -480,21 +519,26 @@ closes a gap that exists today on any deployment with a sibling host
   attach those. A request carrying **both** a cookie and a bearer is checked
   by the credential that admitted it. Unauthenticated routes (sign-in, the
   plugin pairing, webhooks) are listed in the ledger with their own reason.
-- **What real clients send.** Chromium, Firefox and Safari send `Origin` on
-  every cross- and same-origin `POST`/`PUT`/`PATCH`/`DELETE` from `fetch`,
-  htmx and forms. Android's WebView is Chromium and sends `Origin` and
-  `Sec-Fetch-Site`; the installed PWA is the browser. The muster CLI and
+- **What real clients send.** Current Chromium, Firefox and Safari send
+  `Sec-Fetch-Site` on every request, and `Origin` on `fetch` and htmx writes;
+  a native form `POST` under `no-referrer` sends `Origin: null` (above), which
+  is why the rule does not start with `Origin`. Android's WebView is Chromium
+  and sends `Sec-Fetch-Site`; the installed PWA is the browser. An older
+  browser without `Sec-Fetch-Site` falls to `Origin`, then `Referer`. The muster CLI and
   `muster-mirror` use bearer tokens. Each of these is a case in the tests
   below (the WebView by its user agent and headers as recorded from the app,
   **UNVERIFIED** until captured; spike S7).
 - **`requireSameOrigin` and `requireOperatorWrite` stay** where they are; they
   become redundant for cookie requests, and the ledger records that.
 - **The route ledger.** A test enumerates every route registered on the mux
-  with a method other than `GET`/`HEAD`/`OPTIONS` (from the mux itself, not a
-  hand list) and classifies each as `cookie` (guarded by the middleware),
-  `bearer-only` or `unauthenticated` (with a reason). It fails when a route is
-  unclassified, when a `cookie` route reaches its handler with a sibling
-  `Origin`, and when the set **grows or shrinks** without the ledger changing.
+  with a method other than `GET`/`HEAD`/`OPTIONS`, **method-less patterns
+  included** (from the mux itself, not a hand list), and classifies each as
+  `cookie` (guarded by the check), `bearer-only` or `unauthenticated` (with a
+  reason). It fails when a route is unclassified; when a `cookie` route
+  reaches its handler with a sibling `Origin` or `Sec-Fetch-Site: same-site`;
+  when a **`bearer-only`** route admits a **cookie-only** request with a
+  sibling `Origin` (so a `cookie` route mislabelled `bearer-only` is caught);
+  and when the set **grows or shrinks** without the ledger changing.
 - **Size: L** (one middleware is small; the ledger over every write route,
   and the GoTrue path, are not). It touches every form, so the full browser
   suite is its gate.
@@ -715,8 +759,13 @@ previews do; one owner is the common case.
   (22 base64url characters), stored as SHA-256. It is a right to **knock**,
   not to join. It dies when the meeting ends (`410`), and in any case
   24 hours after the meeting was created.
-- **Knock:** `POST /j/<code>/knock {"name"}` → `{"ticket"}`, a second random
-  128-bit value held in the guest page's memory. The name is trimmed, 1–40
+- **Knock:** `POST /j/<code>/knock {"name", "notice": {"record", "ai"}}` →
+  `{"ticket"}`, a second random 128-bit value held in the guest page's
+  memory. `notice` is the state of the two switches **the page showed the
+  guest**. If it differs from the meeting's current state (the owner turned a
+  switch on after the page loaded and before anyone knocked), the knock is
+  refused `409 {"notice": {current}}` and the page re-shows the notice with
+  the current wording before the guest can knock again. The name is trimmed, 1–40
   characters, control and bidi characters refused; it is shown to the owner
   as text, with "(guest)" after it, never as HTML.
 - **Wait:** `POST /j/<code>/wait {"ticket"}` answers an event stream (read
@@ -738,7 +787,9 @@ previews do; one owner is the common case.
   be trusted to end access. Two backstops: guest tokens live **2 minutes**
   (only to connect), and on every `participant_joined` webhook the plugin
   calls `RemoveParticipant` at once for any identity that is not currently
-  admitted in its own state (revoked, removed, denied, or unknown).
+  admitted in its own state (revoked, removed, denied, or unknown). A
+  webhook can be lost, so a reconcile loop also calls `ListParticipants` for
+  each live meeting every 15 s and removes any identity not admitted.
 
 ### LiveKit tokens
 
@@ -851,7 +902,7 @@ dead once redeemed.
   guest is admitted with **Record** on, stopped at end.
 - **Egress capacity is reserved, not measured.** Egress admits a job only if
   its configured CPU cost fits: `roomCompositeCpuCost = 4`, `trackCpuCost =
-  0.5`, `maxCpuUtilization = 0.8` (`pkg/config/service.go:32-38` in
+  0.5`, `maxCpuUtilization = 0.8` (`pkg/config/service.go:32-39` in
   `livekit/egress`, read 2026-11-20). So one recorded 8-person meeting
   reserves **4 + 8 × 0.5 = 8 CPU** (composite plus one track egress per
   microphone), and an unrecorded one still reserves 4 CPU for the STT track
@@ -1297,9 +1348,9 @@ with the test plan's tests included.
 
 | phase | PR | repository | size |
 |---|---|---|---|
-| **0: spikes** | S1–S6 below; results written into this page | — | M |
-| **1: core** | 1g: **central origin check for cookie-authenticated writes** (R1): the middleware, the GoTrue path, the route ledger, the sibling-origin negative controls, `muster_csrf_refusals_total`. Pre-existing hardening; ship first. **Gates the subdomain's go-live** | muster | L |
-| | 1f: **`__Host-` cookie names** (decision 16): the per-deployment name rule, the boot refusal, all seven literals, expiring the old names, e2e helpers, release note. **Gates the subdomain's go-live** | muster | M |
+| **0: spikes** | S1–S7 below; results written into this page | — | M |
+| **1: core** | 1g: **central origin check for cookie-authenticated writes** (R1): the check in `admit` (`Sec-Fetch-Site` first, on `net/http.CrossOriginProtection`, plus the no-header refusal), the GoTrue path, method-less patterns, the route ledger, the sibling-origin negative controls, `muster_csrf_refusals_total`. Pre-existing hardening; ship first. **Gates the subdomain's go-live** | muster | L |
+| | 1f: **`__Host-` cookie names** (decision 16): the per-deployment name rule (on the resolved secure-cookie setting), the registrable-domain boot refusal, the loopback-http refusal on prefixed deployments, all seven literals, the host-only cookie golden, expiring the old names, e2e helpers, release note. **Gates the subdomain's go-live** | muster | M |
 | | 1a: migration, `app` capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
 | | 1b: hand-off `app` target (with `ref`) and purpose, redeem for `app`, `/apps/{id}` page, frame, CSP and Permissions-Policy, sidebar entry, alive poll, Android "Open in browser" card, **and the CSP, Permissions-Policy and frame-attribute goldens** (the PR that widens the headers carries the tests that pin them) | muster | L |
 | | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
@@ -1352,7 +1403,7 @@ Each answers one **UNVERIFIED** claim above, with a go/no-go.
 | S4 | Kyutai `stt-1b-en_fr` on the GPU host: memory beside `stt-cohere`, 8 concurrent streams, WER on the AMI subset | meets the [STT bar](#stt-evaluation) |
 | S5 | In Chrome, Firefox and Safari: camera, microphone and `getDisplayMedia` inside the sandboxed cross-origin frame with the `allow` and `Permissions-Policy` above; Android WebView `getDisplayMedia` | all three desktop browsers work (Safari's screen share is the likeliest gap); the Android result decides whether phase 7 is worth it |
 | S6 | One live request each: `scaledown/extract` with `provider.options.scaledown.entities`, and `deepseek/deepseek-v4.1-flash-1017` with a strict JSON schema | both answer in the documented shape |
-| S7 | The headers a cookie-authenticated `POST` actually carries from Android's WebView (the muster app), the installed PWA, and Safari with strict privacy settings | each sends `Origin` or `Sec-Fetch-Site: same-origin`, so 1g refuses none of muster's own pages |
+| S7 | The headers a cookie-authenticated `POST` actually carries (`fetch`, htmx and a native form) from Android's WebView (the muster app), the installed PWA, and Safari with strict privacy settings | under 1g's rule each is admitted: `Sec-Fetch-Site: same-origin`, or, where that header is absent, muster's own `Origin`, or a same-origin `Referer`. Any client that falls through to "none of the three" is a no-go for 1g as written |
 
 ## Test plan
 
@@ -1402,7 +1453,7 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   guard: the existing test, extended with a new host).
 - **Alive poll.** `GET /ui/apps/{id}/alive` is `204` for a live plugin and
   `404` after revoke.
-- **Host-only cookies (decision 8's premise).** A golden over every
+- **Host-only cookies (decision 8's premise; lands in PR 1f).** A golden over every
   `Set-Cookie` muster-server emits across the sign-in, step-up, GoTrue,
   known-device and push-device paths: each has no `Domain` attribute and is
   `HttpOnly`. *Red if:* a `Domain` is added to any one of the seven
@@ -1420,9 +1471,18 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
   no `Referer` (what `no-referrer` makes a page load) use the **same** name,
   and the `GET` is signed in. *Red if:* the name is derived from
   `loopbackHTTPPage(r)` (the `GET` goes signed out: the loop the per-request
-  rule would cause). Boot: unprefixed names with a `MUSTER_PLUGIN_ORIGINS`
-  entry under the public host refuses to start; with an entry on another
-  domain it starts (the positive control). Playwright, in Chromium and
+  rule would cause). The table includes the Compose case
+  (`MUSTER_SECURE_COOKIES=1`, `http://localhost` URL → unprefixed), and keys
+  on the resolved `secureCookies` value (red if the rule reads the literal
+  variable). **Boot refusal:** unprefixed names with a plugin origin that is
+  a subdomain of muster's host, and with one that is a **same-site sibling**
+  (`https://meet.example.com` beside `https://app.example.com`), each refuse
+  to start; one on another registrable domain starts (the positive control).
+  *Red if:* the comparison is "under muster's host" (the sibling case starts).
+  **Prefixed over loopback:** on an https deployment, a sign-in `POST` as a
+  loopback plain-http request is answered with the "sign in at
+  `<MUSTER_PUBLIC_URL>`" page and no `Set-Cookie`; the same `POST` over https
+  signs in (the positive control). Playwright, in Chromium and
   WebKit, on the loopback http install (`http://localhost`): sign in, reload,
   open two more pages, still signed in. Playwright: a browser with an old-named session cookie lands on
   `/login`, signs in once and is signed in afterwards; a cookie
@@ -1435,15 +1495,22 @@ Go, in `internal/plugins`, `internal/api` and `internal/ui`:
     `cookie`, `bearer-only` or `unauthenticated` (with a reason). The test
     fails on an unclassified route and when the set grows or shrinks.
   - **Negative control, every `cookie` route:** a valid session cookie with
-    `Origin: https://meet.example.test` (a sibling of the test host), and
-    separately with `Origin: null`, and with no `Origin` and
-    `Sec-Fetch-Site: same-site`, is `403` **before the handler** (a spy handler
-    records no call). Run for every `cookie` route, not a sample: today's
+    `Sec-Fetch-Site: same-site`; with `Sec-Fetch-Site: none`; with no
+    `Sec-Fetch-Site` and `Origin: https://meet.example.test` (a sibling of the
+    test host); with no `Sec-Fetch-Site` and `Origin: null`; and with no header
+    at all, is each `403` **before the handler** (a spy handler records no
+    call). Run for every `cookie` route, not a sample: today's
     unguarded `POST /tasks`, `/tasks/merge`, `/agents/{id}/start` and
     `/chief/provision` are named in it and are red at `5fd6f7632`.
-  - **Positive control, every `cookie` route:** the same request with
-    muster's own `Origin` (or `Sec-Fetch-Site: same-origin`, or a same-origin
-    `Referer`) reaches the handler.
+  - **Positive control, every `cookie` route:** `Sec-Fetch-Site:
+    same-origin` **with `Origin: null`** (muster's own native form under
+    `no-referrer`) reaches the handler; so does no `Sec-Fetch-Site` with
+    muster's own `Origin`, and neither with a same-origin `Referer`. *Red if:*
+    the rule reads `Origin` before `Sec-Fetch-Site` (the form case goes red).
+  - **Bearer-only routes:** each refuses a cookie-only request with a
+    sibling `Origin` (it is not admitted by the cookie at all).
+  - **Method-less patterns** (`/connect/…`, the LLM prefix) are in the
+    ledger and get the `POST` cases.
   - **Bearer requests unaffected:** an `mst_` token with a sibling `Origin`
     reaches the handler; a request with both a cookie and a bearer is judged
     by the credential that admitted it.
@@ -1524,6 +1591,13 @@ redeem, self and tasks) and a fake LiveKit server API:
 - **Session revocation:** a `401` from the fake `/self` deletes the owner's
   sessions and ends their meetings within one poll. *Red if:* the poll's
   handler is a no-op.
+- **Notice at knock (round 2):** a knock whose `notice` matches the current
+  switches gets a ticket; one sent with `{"record": false}` after the owner
+  turned recording on is `409` with the current state, and the guest page
+  re-shows the notice. *Red if:* the knock ignores `notice`.
+- **Reconcile:** with the webhook suppressed, an identity not admitted that
+  appears in the fake `ListParticipants` is removed within one 15 s tick.
+  *Red if:* the loop is removed.
 - **Defaults and toggles:** a new meeting has `record` and `ai` on; either
   can be turned off at any time; turning either back on is refused while a
   guest is **waiting**, while one is **admitted**, and after one has left,
@@ -1733,7 +1807,16 @@ positive control):
 | knock limits | remove the per-meeting or per-address knock cap | a knock-limit case (one each) |
 | rejoin | remove the `participant_joined` check | "removed guest cannot rejoin" and the integration case |
 | consent | check only admitted guests | "defaults and toggles" (waiting case) |
-| media URL | leave the expiry out of the HMAC | "signed media URLs" |
+| media URL | leave the expiry out of the HMAC; leave the path out | "signed media URLs" (one each) |
+| recording URL | mint `recording-url` for another owner's meeting | "signed media URLs" and "ownership" |
+| notice is current | render the notice cached at knock time | "notice is current" |
+| notice at knock | ignore the knock's `notice` | "notice at knock" |
+| ticket in query | accept `?ticket=` | "no ticket in URLs or logs" |
+| boot refusal | compare "under muster's host" instead of registrable domain; drop the refusal | "the name is per deployment" boot cases (one each) |
+| cookie name rule | read the literal `MUSTER_SECURE_COOKIES` instead of the resolved value; prefix over loopback http | "the name is per deployment" (one each) |
+| core CSRF order | read `Origin` before `Sec-Fetch-Site`; admit `Sec-Fetch-Site: none` | "the central origin check" positive form case; negative `none` case |
+| core CSRF ledger | label a `cookie` route `bearer-only`; skip method-less patterns | "route ledger" bearer-only and method-less cases |
+| reconcile | remove the `ListParticipants` loop | "reconcile" |
 | ingest | remove the secret check | "ingest secret" |
 | AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
