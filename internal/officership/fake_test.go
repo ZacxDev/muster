@@ -89,9 +89,11 @@ type fakeGH struct {
 	// CommentPR ("#n body"). branchErr fails every BranchSHA.
 	openedDrafts []string
 	openDraftErr error
-	nextPR       int
-	prComments   []string
-	branchErr    error
+	// openDraftErrFor fails OpenDraftPR of one head branch only.
+	openDraftErrFor map[string]error
+	nextPR          int
+	prComments      []string
+	branchErr       error
 }
 
 type commitInfo struct {
@@ -236,6 +238,9 @@ func (f *fakeGH) OpenDraftPR(_ context.Context, title, head, base, body string) 
 	defer f.mu.Unlock()
 	if f.openDraftErr != nil {
 		return PR{}, f.openDraftErr
+	}
+	if err := f.openDraftErrFor[head]; err != nil {
+		return PR{}, err
 	}
 	if f.nextPR == 0 {
 		f.nextPR = 500

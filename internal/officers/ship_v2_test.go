@@ -231,7 +231,10 @@ func TestADraftOfficerIsOfferedNoMergeReadyTagOrRolloutTool(t *testing.T) {
 		"## Root cause, ## Evidence, ## Test, ## Rollback", v2Infra + " (branches officer/engineering-example-web/<item>-<slug> off origin/trunk)",
 		v2Web + " (branches officer/engineering-example-web/<item>-<slug> off origin/main)",
 		"after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request",
-		"That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does)"} {
+		"That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does)",
+		// 🔴 THE QUEUE'S DROP RULE, pinned whole: completing the item after a
+		// 202 does not drop the queued create (officership's drain).
+		"You may complete your item (done or no_action) once its create is queued: muster still opens it. muster drops a queued create only when its item is gone from HQ (cancelled or removed), its branch is gone, its change or text is refused, or GitHub refuses it for good (such as a branch with no commits ahead of the base); HQ is told."} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the draft officer's kickoff does not say %q:\n%s", want, text)
 		}

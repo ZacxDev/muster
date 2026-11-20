@@ -32,7 +32,7 @@ var navBare = map[string]string{
 // navLedgerNav is every document that draws the nav.
 var navLedgerNav = []string{
 	"PageWith", "ComposePage", "AgentDetailPage", "TaskDetailPage", "TaskNotFoundPage",
-	"AgentTerminalPage", "MirrorViewPage", "NavDocument",
+	"AgentTerminalPage", "MirrorViewPage", "NavDocument", "AppPage",
 }
 
 // TestEveryDocumentIsNavOrNamedBare is the ledger's two claims: the ledger names
@@ -128,6 +128,7 @@ var documentStreams = map[string]int{
 	"TaskNotFoundPage":          0,
 	"AgentTerminalPage":         0,
 	"MirrorViewPage":            0,
+	"AppPage":                   0,
 	"StepUpFormPage":            0,
 	"SendQueueRetryConfirmPage": 0,
 	"SendAgainPage":             0,

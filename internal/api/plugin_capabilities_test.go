@@ -12,8 +12,9 @@ import (
 )
 
 // pluginRouteCapabilities is THE LEDGER of what each /plugin/v1/* route needs
-// (plugins.capabilities, migrations 0102, 0112, 0141, 0167): "messages", "viewer", "draft_checks",
-// "chief_extension", "messages or tasks" (POST /plugin/v1/tasks, decision 11), or "any" for a route every
+// (plugins.capabilities, migrations 0102, 0112, 0141, 0167, 0168): "messages", "viewer", "draft_checks",
+// "chief_extension", "messages or tasks" (POST /plugin/v1/tasks, decision 11), "viewer or app" (the
+// hand-off redeem, meetings PR 1b), "app" (the knock notification, meetings PR 1e), or "any" for a route every
 // live plugin token opens. It is written out here by hand, not read from the
 // registration, so a route moving between capabilities is a diff a person reads.
 var pluginRouteCapabilities = map[string]string{
@@ -27,11 +28,14 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/task-writes/claim":            "messages",
 	"POST /plugin/v1/task-writes/{id}/result":      "messages",
 	"POST /plugin/v1/messages/{id}/owner-answered": "messages",
-	"POST /plugin/v1/handoffs/redeem":              "viewer",
-	"GET /plugin/v1/drafts/checks":                 "draft_checks",
-	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
-	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
-	"PUT /plugin/v1/chief/instructions":            "chief_extension",
+	"POST /plugin/v1/handoffs/redeem":              "viewer or app",
+	// The knock notification and its withdrawal (plugin_notify.go, meetings PR 1e).
+	"POST /plugin/v1/notify":            "app",
+	"DELETE /plugin/v1/notify/{ref}":    "app",
+	"GET /plugin/v1/drafts/checks":      "draft_checks",
+	"POST /plugin/v1/drafts/{id}/check": "draft_checks",
+	"POST /plugin/v1/drafts/{id}/media": "draft_checks",
+	"PUT /plugin/v1/chief/instructions": "chief_extension",
 	// Pairing (plugin_pairing.go): NO plugin token at all — the request
 	// carries none, the poll carries its poll secret.
 	"POST /plugin/v1/pair":             "none",
@@ -98,10 +102,21 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 	_, h, _ := newPluginsDoorServer(t, &countingPlugins{})
 	for _, route := range golden {
 		method, pattern, _ := strings.Cut(route, " ")
-		path := strings.ReplaceAll(pattern, "{id}", "5")
+		path := strings.NewReplacer("{id}", "5", "{ref}", "m-5").Replace(pattern)
 		viewerRefused, viewerCode := capabilityRefused(h, method, path, pgnViewerTok)
 		messagesRefused, messagesCode := capabilityRefused(h, method, path, pgnTok)
 		tasksRefused, tasksCode := capabilityRefused(h, method, path, pgnTasksTok)
+		appRefused, appCode := capabilityRefused(h, method, path, pgnAppTok)
+		switch want := pluginRouteCapabilities[route]; want {
+		case "any", "none", "viewer or app", "app":
+			if appRefused {
+				t.Errorf("%s with an app-only token: refused (%d); want it past the capability check", route, appCode)
+			}
+		default:
+			if !appRefused {
+				t.Errorf("%s with an app-only token: %d; want 403, the route needs %s", route, appCode, want)
+			}
+		}
 		switch want := pluginRouteCapabilities[route]; want {
 		case "any", "none", "messages or tasks":
 			if tasksRefused {
@@ -127,7 +142,11 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			if messagesRefused {
 				t.Errorf("CONTROL %s with a messages token: refused (%d); want it past the capability check", route, messagesCode)
 			}
-		case "viewer":
+		case "app":
+			if !messagesRefused || !viewerRefused {
+				t.Errorf("%s: messages-only %d, viewer-only %d; want both 403, the route needs app", route, messagesCode, viewerCode)
+			}
+		case "viewer", "viewer or app":
 			if !messagesRefused {
 				t.Errorf("%s with a messages-only token: %d; want 403, the route needs viewer", route, messagesCode)
 			}
@@ -248,7 +267,7 @@ func TestATasksTokenIsRefusedOnEveryOtherPluginRoute(t *testing.T) {
 			continue
 		}
 		method, pattern, _ := strings.Cut(route, " ")
-		path := strings.NewReplacer("{id}", "5", "{request_id}", "AAAAAAAAAAAAAAAAAAAAAA").Replace(pattern)
+		path := strings.NewReplacer("{id}", "5", "{ref}", "m-5", "{request_id}", "AAAAAAAAAAAAAAAAAAAAAA").Replace(pattern)
 		isRefused, code := capabilityRefused(h, method, path, pgnTasksTok)
 		switch route {
 		case "POST /plugin/v1/tasks", "GET /plugin/v1/self", "POST /plugin/v1/pair", "GET /plugin/v1/pair/{request_id}":

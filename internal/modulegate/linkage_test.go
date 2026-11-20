@@ -142,6 +142,10 @@ var notLinkedLedger = map[string]string{
 	"e2e/previewfix": "the previews browser spec's fixture (built by e2e/tests/previews.spec.ts): a TLS edge " +
 		"with a self-signed certificate in front of the preview gateway, and a dev app on loopback. A test tool: " +
 		"no shipped binary serves a self-signed edge or a fake dev server.",
+	"e2e/pushsink": "the knock push browser spec's push service (built by e2e/tests/plugin-knock-push.spec.ts): a " +
+		"UnifiedPush-style endpoint over TLS with a certificate from a throwaway CA it mints at start, behind an HTTP " +
+		"CONNECT proxy that the spec's server reaches through HTTPS_PROXY. A test tool: no shipped binary serves a " +
+		"test CA's certificate or proxies push sends.",
 	"e2e/officerfix": "the officer page browser spec's fixture (`go run ./e2e/officerfix`): an officer's " +
 		"pending drafts, outreach batch, refusal, finished items and a sent post, written as the login role with " +
 		"row-level security's scope set to all, so it must never be reachable from a shipped binary; it refuses " +

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -43,27 +44,57 @@ import (
 // item does not end with no pull request and nobody told — when:
 //
 //   - its branch is gone;
-//   - its item is FINISHED in HQ (ItemFinished: completed, cancelled or
-//     gone), which makes the pull request moot. An item that is open,
-//     released, waiting, escalated or claimed again still has its pull
-//     request opened: the work is in the pushed branch, and claims lapse
-//     (an hour's lease, released when its holder is down) while it waits;
+//   - its item is GONE from HQ (ItemGone: listed in no status — cancelled or
+//     removed), which makes the pull request moot. 🔴 An item that is
+//     COMPLETED (done or no_action), open, released, waiting, escalated or
+//     claimed again still has its pull request opened: the work is in the
+//     pushed branch, the officer is told it may complete its item once it is
+//     queued (kickoff.go), and claims lapse (an hour's lease, released when
+//     its holder is down) while it waits;
 //   - its stored title or body no longer passes createTextWhy (the body
 //     contract, credential shapes, the officer's id or an internal detail in a
 //     public repository);
 //   - its item now has its pull request (the per-item limit);
 //   - checkComparison at the branch's CURRENT head refuses it (a push since
-//     the create is checked here like any create's head).
+//     the create is checked here like any create's head);
+//   - GitHub refuses to open it for good (permanentOpenError: 422 only —
+//     e.g. "No commits between" for a branch with nothing ahead of the base).
+//     Asking again would get the same answer, and a row left first would
+//     block every create queued behind it forever. A 422 that says a pull
+//     request ALREADY EXISTS for the branch (prAlreadyExists) is not a
+//     refusal: nothing is lost, so HQ is told nothing — the row is kept and
+//     the next drain's own read finds that pull request and drops it with
+//     no notice (the skip above).
 //
 // A pull request already open from the branch is skipped with no notice
 // (nothing is lost) — read before the create lock and AGAIN once it is held,
 // so a drain racing another drain of the same row finds the other's pull
 // request rather than counting it against the item. A skip whose settle finds
-// the row already settled (another drain decided it) tells HQ nothing. The open cap or the daily limit still full, a read that
-// fails (the branch, the pull requests from it, HQ, the comparison), STOPS the
-// drain: nothing behind jumps the queue, and the next drain tries again. An
-// opened one is re-checked and announced exactly as a create the officer made
-// itself (recheckCreated).
+// the row already settled (another drain decided it) tells HQ nothing.
+//
+// The open cap or the daily limit still full, a read that fails (the branch,
+// the pull requests from it, any page of HQ's item lists, the comparison), an
+// open GitHub may yet accept (any other error: 5xx, 400, 401, 403, 404, 409,
+// 410, 429, the network), or a 422 saying the pull request already exists,
+// STOPS the drain: nothing behind jumps the queue, and the next drain tries
+// again. The open cap and the daily limit are read BEFORE HQ is (ItemGone),
+// so a drain that cannot open anything reads nothing from HQ.
+//
+// ONE ROW DOES NOT STOP THE DRAIN: one whose item HQ's lists do not name
+// while one of them ran past its page bound (ErrItemStateBounded: not known).
+// It is never opened or dropped; it keeps its place and is read again at
+// every drain, HQ is told ONCE (PRQueue.Mark), and the drain goes on to the
+// rows behind it — a row that may wait for good must not hold back the rest.
+//
+// An opened one is re-checked and announced exactly as a create the officer
+// made itself (recheckCreated).
+//
+// NO AGE BOUND: a queued row leaves the queue only by being opened or by one
+// of the skips above, never by age. Every way a row can stay is a wait the
+// next drain re-reads (a full limit, a failed read, a transient GitHub error);
+// a row that can never open (its item gone, its branch gone, a refusal,
+// GitHub refusing it for good) is dropped by the drain itself. An age bound
+// would drop exactly the pushed work the queue exists to open.
 //
 // ⚠ ONE muster PROCESS. The create lock (createSem) is per process, as the
 // draft gate's is: two replicas draining one officer's queue at once could
@@ -81,7 +112,17 @@ type PRQueue interface {
 	List(ctx context.Context, repo string) ([]officers.QueuedPR, error)
 	// Settle settles queued create id, still at head, to state.
 	Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error)
+	// Mark notes on queued create id, still at head, what HQ was told about
+	// why it waits: ok true only the first time (officers.PRQueueStore's
+	// PRQueueMark).
+	Mark(ctx context.Context, id int64, head, note string) (bool, error)
 }
+
+// ErrItemStateBounded is ItemGone's error when HQ's lists do not name the
+// item but one of them still had pages past the read's page bound: whether
+// the item is gone is not known. The drain keeps that row (never opens or
+// drops it), tells HQ once (Mark), and goes on to the rows behind it.
+var ErrItemStateBounded = errors.New("an item list is longer than muster's page bound")
 
 // The rate limits rateLimits enforces, by kind (limitError).
 const (
@@ -199,9 +240,9 @@ func (g *PushGate) queueCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		where = fmt.Sprintf("position %d of %d in the queue", pos, total)
 	}
 	return queued("the pull request from %s is QUEUED, not refused: %s. muster recorded it (%s for %s) and opens it as a draft itself, "+
-		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it; you may "+
-		"complete your item.%s A push to %s since is fine: the drain checks the branch's head when it opens it",
-		head, why, where, sr.Repo, freed, head)
+		"oldest first, as soon as a slot frees — you do not need a human for it: do NOT escalate it and do not ask anyone to open it. %s%s "+
+		"A push to %s since is fine: the drain checks the branch's head when it opens it",
+		head, why, where, sr.Repo, officers.QueuedCreateDropRule, freed, head)
 }
 
 // drainNow drains sr's queue right after a create was queued, on the
@@ -263,14 +304,31 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		g.skipQueued(ctx, sr, q, fmt.Sprintf("a pull request is already open from its branch (#%d)", open[0].Number), nil, false)
 		return false, nil
 	}
-	if g.ItemFinished == nil {
+	if g.ItemGone == nil {
 		return true, errors.New("muster cannot read the item's state in HQ, so the queued pull request is not opened")
 	}
-	finished, why, err := g.ItemFinished(ctx, q.Item)
-	if err != nil {
-		return true, fmt.Errorf("item %d's state in HQ could not be read: %v", q.Item, err)
+	// 🔴 ROOM FIRST: ItemGone is a paged read of the officer's whole item
+	// history, so it runs only for a row that could open NOW. With the open
+	// cap or the daily limit full the drain waits here having read nothing
+	// from HQ (this runs on the create path too, before its 202). The
+	// per-item limit is left to the check under the lock below.
+	if err := g.rateLimits(ctx, sr, q.Item); isLimit(err, limitOpen) || isLimit(err, limitDay) {
+		return true, nil
+	} else if err != nil && !isLimit(err, limitItem) {
+		return true, err
 	}
-	if finished {
+	gone, why, err := g.ItemGone(ctx, q.Item)
+	if errors.Is(err, ErrItemStateBounded) {
+		// Not known, so never opened or dropped — but not a wait for the
+		// rows behind it either: it keeps its place, is read again at every
+		// drain, and the drain goes on to the next row.
+		g.waitAtBound(ctx, sr, q, err)
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("item %d's state in HQ is not known: %v", q.Item, err)
+	}
+	if gone {
 		g.skipQueued(ctx, sr, q, why, nil, true)
 		return false, nil
 	}
@@ -313,6 +371,14 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		return false, nil
 	}
 	pr, err := gh.OpenDraftPR(ctx, q.Title, q.Branch, sr.Base, q.Body)
+	if prAlreadyExists(err) {
+		return true, fmt.Errorf("GitHub says a pull request already exists from its branch, though none was listed open: "+
+			"the row is kept, and the next drain finds that pull request and drops the row with no notice: %v", err)
+	}
+	if permanentOpenError(err) {
+		g.skipQueued(ctx, sr, q, fmt.Sprintf("GitHub refused to open it (%d), and asking again gets the same answer: %v", statusOf(err), err), nil, true)
+		return false, nil
+	}
 	if err != nil {
 		return true, fmt.Errorf("GitHub did not open it: %v", err)
 	}
@@ -332,6 +398,57 @@ func (g *PushGate) drainOne(ctx context.Context, sr officers.ShipRepo, gh GitHub
 		shortSHA(sha), g.now().Sub(q.QueuedAt).Round(time.Minute), q.Item)
 	g.recheckCreated(ctx, sr, gh, pr)
 	return false, nil
+}
+
+// permanentOpenError reports whether err, from OpenDraftPR, is GitHub refusing
+// the create for good: 422 only (validation: no commits between base and
+// head, an invalid head or base). The caller checks prAlreadyExists, also a
+// 422, FIRST. Anything else — 5xx, 400, 401/403 (a token, a permission or a
+// secondary rate limit), 404 (an installation's access), 409, 410, 429, a
+// network error — may pass later, so the drain keeps the row and tries again.
+//
+// ⚠ ASSUMPTION: GitHub documents this endpoint's 422 as "Validation failed, or
+// the endpoint has been spammed", and documents no body that tells the two
+// apart (its secondary rate limits are documented as 403 or 429, both kept
+// here). So a 422 for spamming, if GitHub sends one, is taken as permanent:
+// the row is dropped with a notice carrying GitHub's answer, and the branch
+// is kept, so the create can be asked again.
+func permanentOpenError(err error) bool {
+	return statusOf(err) == http.StatusUnprocessableEntity
+}
+
+// prAlreadyExists reports whether err, from OpenDraftPR, is GitHub's 422 for
+// a head that already has an open pull request ("A pull request already
+// exists for owner:branch."). GitHub gives that case no code of its own (its
+// errors[] entry is code "custom"), so its message is the only signal.
+func prAlreadyExists(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.status == http.StatusUnprocessableEntity && strings.Contains(he.body, "A pull request already exists")
+}
+
+// boundNote is the note a queued row keeps once HQ was told it waits at the
+// page bound (PRQueue.Mark): its presence is what makes the notice once.
+const boundNote = "HQ was told: it waits, its item's state unknown past the page bound"
+
+// waitAtBound logs that q waits at ItemGone's page bound (err) and — the
+// first time for this row and head only (PRQueue.Mark) — tells HQ, so a row
+// that may wait for good is not silent. q stays queued, in its place.
+func (g *PushGate) waitAtBound(ctx context.Context, sr officers.ShipRepo, q officers.QueuedPR, err error) {
+	g.logf("officers: %s: the queued pull request from %s in %s WAITS AT THE PAGE BOUND (kept in its place; the creates behind it go on): %v",
+		g.OfficerID, q.Branch, sr.Repo, err)
+	ok, merr := g.Queue.Mark(ctx, q.ID, q.HeadSHA, boundNote)
+	if merr != nil {
+		g.logf("officers: %s: the queued pull request from %s in %s could not be marked told (%v); HQ is told at a later drain", g.OfficerID, q.Branch, sr.Repo, merr)
+		return
+	}
+	if !ok {
+		return
+	}
+	g.announce(ctx, officers.Notice{HeadSHA: q.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+		"officer %s: the queued draft pull request from %s in %s (item %d) WAITS: muster cannot tell whether its item is still in HQ, "+
+			"because one of the officer's item lists is longer than muster's page bound. muster keeps it in its place and tries it again at every "+
+			"drain, and the creates queued behind it are opened without waiting for it. This notice is sent once.",
+		g.OfficerID, q.Branch, sr.Repo, q.Item)})
 }
 
 // skipQueued settles q skipped, with why, logs it and — notify — tells HQ

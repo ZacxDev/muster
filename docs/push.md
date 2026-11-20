@@ -39,6 +39,7 @@ has its own toggle, and all are on by default:
 | `morning_report` | Your [morning report](features.md#morning-report): once a day at the server's report time, only on a day something happened overnight. Titled `While you were away`, its body counts only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's or a question's text; tagged `morning-report`, so the next day's replaces it. A tap opens that day's report (`/morning/<date>`), where its open questions are answered in place. Sent at most once per day. |
 | `page_updated` | An agent published a new **version** of one of your pages (`page_update`): `Page updated: <title> (v<N>)`, its body `From agent <name>.` or `From session "<name>".`; a tap opens that version in your view of the page (`/pages/<id>/view?v=<N>`). One tag per page (`page-<id>-updated`), so a newer version replaces the older on the device. At most 6 per 10 minutes from one agent or session ([the sender's cap](#an-agent-notifies-you)); the rest are dropped and logged. Its own toggle, apart from `page_published`, so you can mute an iterating agent's revisions and still hear of a new page. |
 | `agent_notify` | One of your agents sent you a notification with `notify_owner` ([below](#an-agent-notifies-you)). |
+| `app` | One of your [app plugins](plugins.md#post-pluginv1notify-a-knock-notification) needs you: someone is waiting to join your meeting (a `knock`). Labelled **An app needs you**. The text is muster's, never the plugin's: titled with the tab label you gave the plugin, its body `Someone is waiting to join your meeting` or `<count> people are waiting to join your meeting`, never a guest's name. Tagged `app-<plugin id>-<ref>`, so a later count replaces the earlier one; a tap opens the app's tab, `/apps/<plugin id>?ref=<ref>`. Payload v2 `type: "app"`. The plugin withdraws it (`DELETE /plugin/v1/notify/<ref>`, a `resolved`, silent on a paired phone). At most one per meeting every 30 s and 30 an hour from one plugin; the rest are refused `429` and logged. Knocks have their own budget of 10 per 10 minutes and never spend the cap of 30 that every other event shares. |
 
 **The task's reference and creator.** A `review`, `agent`, `created` or
 `comment` notification about a task ends its body with the task's external
@@ -151,7 +152,8 @@ push: dropped tag=page-12-ready event=page_published owner=3: no device is subsc
 ```
 
 The reasons: the event is muted, the owner's cap is reached (every drop, not
-only the first), the sender's cap is reached, no device is subscribed, every
+only the first), the sender's cap is reached, an app plugin's knock cap is
+reached, no device is subscribed, every
 device refused or failed it, a team with no operator or manager whose
 notifications are on, and a notification that names no owner. On a server with
 no push at all, every notification is dropped, so that is logged once, for the

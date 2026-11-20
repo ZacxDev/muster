@@ -685,6 +685,15 @@ PUBLIC repositories: %s. Anyone can read them. Never put an internal hostname, a
 		strings.Join(public, ", "), "refs/muster/shepherd/")
 }
 
+// QueuedCreateDropRule is what a draft officer is told about a create the
+// open limit queued, in its charter (draftShipNote) and in the 202 answer
+// itself (officership's queueCreate): THE one statement of when muster drops a
+// queued create, which the drain (officership.drainOne, with the api
+// package's itemGone) implements. 🔴 Completing the item does NOT drop it.
+const QueuedCreateDropRule = "You may complete your item (done or no_action) once its create is queued: muster still opens it. muster drops a queued " +
+	"create only when its item is gone from HQ (cancelled or removed), its branch is gone, its change or text is refused, or GitHub refuses " +
+	"it for good (such as a branch with no commits ahead of the base); HQ is told."
+
 // draftShipNote is shipNote for a draft-stage officer: its repositories, the
 // branch shape, the body contract and the limits — and that a human takes
 // every pull request from there.
@@ -708,7 +717,7 @@ muster attaches the credential itself; you never hold one.
 Every pull request body must start with this exact line:
 %[5]s
 (with your item's number), and must have the sections %[6]s, each heading on a line of its own. Cite evidence by audit id; never quote a credential or any credential-shaped value — muster refuses a diff, title or body that holds one.
-muster reads the comparison of every pull request you open or edit and refuses it (409) when it changes a forbidden path of that repository or a .gitattributes file, removes a PersistentVolumeClaim, PersistentVolume, CloudNativePG or Canary manifest, or carries a credential-shaped value; HQ is told. That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does), so never delete or rename a volume, database or canary by any route. The same check covers pushes: after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request on a hit (HQ is told; you cannot reopen it), so check a fix before you push it. Limits: %[7]d open pull requests per repository, %[8]d new per UTC day, %[9]d per item. A create past the open limit (or behind creates already queued there) is QUEUED, not refused: muster answers 202 {"queued": true, "message": …}, keeps the branch, and opens it as a draft itself, oldest first, as soon as a slot frees — never escalate it and never ask a human to open it. At the limit muster also closes your ONE oldest draft there that has had no activity for a few days (never one marked ready), with a comment, so the queue moves. You may complete your item once it is queued: muster drops a queued branch only when its item is finished in HQ, its branch is gone, or its change or text is refused (HQ is told). You never mark ready, merge, tag or release: a human reviews the draft.`,
+muster reads the comparison of every pull request you open or edit and refuses it (409) when it changes a forbidden path of that repository or a .gitattributes file, removes a PersistentVolumeClaim, PersistentVolume, CloudNativePG or Canary manifest, or carries a credential-shaped value; HQ is told. That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does), so never delete or rename a volume, database or canary by any route. The same check covers pushes: after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request on a hit (HQ is told; you cannot reopen it), so check a fix before you push it. Limits: %[7]d open pull requests per repository, %[8]d new per UTC day, %[9]d per item. A create past the open limit (or behind creates already queued there) is QUEUED, not refused: muster answers 202 {"queued": true, "message": …}, keeps the branch, and opens it as a draft itself, oldest first, as soon as a slot frees — never escalate it and never ask a human to open it. At the limit muster also closes your ONE oldest draft there that has had no activity for a few days (never one marked ready), with a comment, so the queue moves. `+QueuedCreateDropRule+` You never mark ready, merge, tag or release: a human reviews the draft.`,
 		strings.Join(repos, "; "), GitHubConnector, onlyConnector(o), Slug(o.ID), strings.Replace(BodyFirstLine(o.ID, 0), "item 0", "item <n>", 1),
 		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, s.NewPRsPerDay(), MaxPRsPerItem) + publicDraftNote(o) + docsOnlyNote(o) + ciLogsNote(o)
 }

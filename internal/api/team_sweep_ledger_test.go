@@ -40,6 +40,7 @@ var teamSweepClasses = map[string]string{
 	"page_tools.go Server.pageShareAuto":                     "never: pages are personal",
 	"notify_owner.go Server.pageUpdated":                     "never: pages are personal",
 	"notify_owner.go Server.toolNotifyOwner":                 "never: refused for a team owner (no one owner to push)",
+	"plugin_notify.go Server.handlePluginNotify":             "never: a team's plugin token is refused on /plugin/v1/notify (teamPluginRoutes), and an app tab is a person's only",
 	"plugin_drafts.go Server.notifyDraftRefused":             "never withdrawn: information only",
 	"plugin_pairing.go Server.pairRequested":                 "never: pairing requests are personal",
 	"push_task.go Server.flushCreatedTasks":                  "never withdrawn: replaced by its tag",

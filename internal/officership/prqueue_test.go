@@ -3,6 +3,7 @@ package officership
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -48,20 +49,35 @@ func (q memQueue) List(ctx context.Context, repo string) ([]officers.QueuedPR, e
 func (q memQueue) Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error) {
 	return q.st.PRQueueSettle(ctx, q.officer, id, head, state, pr, note)
 }
-
-// hqItems is HQ's view of the items for the drain (PushGate.ItemFinished):
-// an item named in finished is finished with that reason; any other is live
-// (whether or not anyone claims it). err, when set, fails every read.
-type hqItems struct {
-	finished map[int]string
-	err      error
+func (q memQueue) Mark(ctx context.Context, id int64, head, note string) (bool, error) {
+	return q.st.PRQueueMark(ctx, q.officer, id, head, note)
 }
 
-func (h *hqItems) itemFinished(_ context.Context, item int) (bool, string, error) {
+// hqItems is HQ's view of the items for the drain (PushGate.ItemGone): an
+// item named in gone is gone with that reason; any other is still in HQ
+// (whether or not anyone claims it, and whether or not it is completed: the
+// api package's itemGone decides that). err, when set, fails every read;
+// an item in bounded is not known (ErrItemStateBounded). reads counts the
+// reads, per item.
+type hqItems struct {
+	gone    map[int]string
+	bounded map[int]bool
+	err     error
+	reads   map[int]int
+}
+
+func (h *hqItems) itemGone(_ context.Context, item int) (bool, string, error) {
+	if h.reads == nil {
+		h.reads = map[int]int{}
+	}
+	h.reads[item]++
+	if h.bounded[item] {
+		return false, "", fmt.Errorf("%w: item %d is in none of HQ's lists read", ErrItemStateBounded, item)
+	}
 	if h.err != nil {
 		return false, "", h.err
 	}
-	if why, ok := h.finished[item]; ok {
+	if why, ok := h.gone[item]; ok {
 		return true, why, nil
 	}
 	return false, "", nil
@@ -84,9 +100,9 @@ func newQueueRigHQ(t *testing.T) (*draftRig, memQueue, *hqItems) {
 	r := newDraftRig()
 	r.claims[19] = dInstance
 	q := memQueue{st: officers.NewMemPRQueueStore(), officer: dOfficer}
-	hq := &hqItems{finished: map[int]string{}}
+	hq := &hqItems{gone: map[int]string{}}
 	r.g.Queue = q
-	r.g.ItemFinished = hq.itemFinished
+	r.g.ItemGone = hq.itemGone
 	r.g.CreateWait = 50 * time.Millisecond
 	yesterday := dNow.Add(-16 * time.Hour)
 	for item := 1; item <= 4; item++ {
@@ -182,7 +198,9 @@ func TestACappedCreateIsQueuedNotRefused(t *testing.T) {
 		t.Fatalf("a fifth create (four open): err = %v, want queued and NOT a refusal", err)
 	}
 	for _, want := range []string{"QUEUED, not refused", "4 of this officer's pull requests are open in " + dInfra + "; the limit is 4",
-		"do NOT escalate", "position 1 of 1 in the queue", "you may complete your item"} {
+		"do NOT escalate", "position 1 of 1 in the queue",
+		// The 202 says what the charter says (officers' kickoff pins the text).
+		officers.QueuedCreateDropRule} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the queued answer %q does not say %q", err, want)
 		}
@@ -330,10 +348,8 @@ func TestTheDrainSkipsAndTellsHQ(t *testing.T) {
 		paths             []string
 	}{
 		"its branch is gone": {func(r *draftRig, _ memQueue, _ *hqItems) { delete(r.infra.branches, qBranchB) }, qBranchA, qShaA, "its branch is gone", nil},
-		"its item is completed": {func(_ *draftRig, _ memQueue, hq *hqItems) { hq.finished[19] = "item 19 is completed in HQ" }, qBranchA, qShaA,
-			"item 19 is completed in HQ", nil},
 		"its item is cancelled": {func(_ *draftRig, _ memQueue, hq *hqItems) {
-			hq.finished[19] = "item 19 is no longer in HQ (cancelled or removed)"
+			hq.gone[19] = "item 19 is no longer in HQ (cancelled or removed)"
 		}, qBranchA, qShaA, "item 19 is no longer in HQ (cancelled or removed)", nil},
 		// 🔴 A RELEASED (or lapsed, or re-claimed) item still has its pull
 		// request opened: the work is in the pushed branch.
@@ -396,6 +412,185 @@ func TestTheDrainSkipsAndTellsHQ(t *testing.T) {
 	}
 }
 
+// TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits: B (queued
+// first) is opened by GitHub with an error. A permanent refusal — 422 only
+// ("No commits between" for a branch with nothing ahead of its base) — drops
+// B with a notice naming GitHub's answer, and A, behind it, takes the free
+// slot: B can never open, and left first it would block A for good. A
+// transient one (5xx, 400, 401, 403, 404, 409, 410, 429, a network error)
+// keeps both rows queued, tells HQ nothing and opens nothing (no
+// queue-jumping); once GitHub accepts, the next drain opens B.
+func TestAPermanentGitHubRefusalDropsTheRowAndTransientOneWaits(t *testing.T) {
+	noCommits := `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between trunk and ` + qBranchB + `"}]}`
+	for name, c := range map[string]struct {
+		err       error
+		permanent bool
+	}{
+		"422 no commits between": {&httpError{status: 422, body: noCommits, op: "opening a draft pull request"}, true},
+		"400":                    {&httpError{status: 400, body: `{"message":"Problems parsing JSON"}`, op: "opening a draft pull request"}, false},
+		"410":                    {&httpError{status: 410, body: `{"message":"Gone"}`, op: "opening a draft pull request"}, false},
+		"502":                    {&httpError{status: 502, body: "bad gateway", op: "opening a draft pull request"}, false},
+		"500":                    {&httpError{status: 500, body: "", op: "opening a draft pull request"}, false},
+		"429":                    {&httpError{status: 429, body: `{"message":"rate limit"}`, op: "opening a draft pull request"}, false},
+		"403 secondary limit":    {&httpError{status: 403, body: `{"message":"You have exceeded a secondary rate limit"}`, op: "opening a draft pull request"}, false},
+		"401":                    {&httpError{status: 401, body: `{"message":"Bad credentials"}`, op: "opening a draft pull request"}, false},
+		"404":                    {&httpError{status: 404, body: `{"message":"Not Found"}`, op: "opening a draft pull request"}, false},
+		"409":                    {&httpError{status: 409, body: `{"message":"Conflict"}`, op: "opening a draft pull request"}, false},
+		"network":                {errors.New("could not reach GitHub while opening a draft pull request: connection reset"), false},
+	} {
+		r, q, _ := newQueueRigHQ(t)
+		queueBA(t, r)
+		r.notices = nil
+		r.infra.openDraftErrFor = map[string]error{qBranchB: c.err}
+		closeOpen(r, 101)
+		_ = r.g.Sweep(context.Background())
+		n := skipNotices(r)
+		if c.permanent {
+			if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchA {
+				t.Errorf("%s: opened %q, want %s (B dropped, A behind it opened)", name, got, qBranchA)
+			}
+			if got := queuedBranches(t, q); got != "" {
+				t.Errorf("%s: the queue lists %q, want nothing", name, got)
+			}
+			if len(n) != 1 || !strings.Contains(n[0].Summary, "from "+qBranchB+" in "+dInfra+" (item 19)") ||
+				!strings.Contains(n[0].Summary, "GitHub refused to open it ("+itoa(statusOf(c.err))+")") ||
+				!strings.Contains(n[0].Summary, "GitHub answered "+itoa(statusOf(c.err))+" while opening a draft pull request: "+c.err.(*httpError).body) {
+				t.Errorf("%s: the skip notices = %+v, want one for B naming GitHub's refusal", name, n)
+			}
+			continue
+		}
+		if got := strings.Join(r.infra.openedDrafts, ","); got != "" {
+			t.Errorf("%s: opened %q, want nothing (B waits, A does not jump it)", name, got)
+		}
+		if got := queuedBranches(t, q); got != qBranchB+","+qBranchA {
+			t.Errorf("%s: the queue lists %q, want both still queued", name, got)
+		}
+		if len(n) != 0 {
+			t.Errorf("%s: HQ was told of a skip: %+v", name, n)
+		}
+		r.infra.openDraftErrFor = nil
+		_ = r.g.Sweep(context.Background())
+		if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
+			t.Errorf("%s: once GitHub accepts, opened %q, want %s", name, got, qBranchB)
+		}
+	}
+}
+
+// TestA422PullRequestAlreadyExistsKeepsTheRowAndTellsNobody: GitHub answers
+// B's open with 422 "A pull request already exists" (one was opened from B
+// after the drain's own reads found none). That is not a refusal — nothing
+// is lost — so HQ is told nothing, the row is KEPT (first, so A does not
+// jump it) and the drain's error says why. The next drain's own read finds
+// that pull request and drops B's row with no notice.
+func TestA422PullRequestAlreadyExistsKeepsTheRowAndTellsNobody(t *testing.T) {
+	exists := `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for example:` + qBranchB + `."}]}`
+	r, q, _ := newQueueRigHQ(t)
+	queueBA(t, r)
+	r.notices = nil
+	r.infra.openDraftErrFor = map[string]error{qBranchB: &httpError{status: 422, body: exists, op: "opening a draft pull request"}}
+	closeOpen(r, 101)
+	sr := r.g.Ship.Repos[1]
+	err := r.g.drainQueue(context.Background(), sr, r.infra)
+	if err == nil || !strings.Contains(err.Error(), "GitHub says a pull request already exists from its branch, though none was listed open: the row is kept") {
+		t.Errorf("the drain's error = %v, want it to say the pull request already exists and the row is kept", err)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != "" {
+		t.Errorf("opened %q, want nothing (B kept first, A does not jump it)", got)
+	}
+	if got := queuedBranches(t, q); got != qBranchB+","+qBranchA {
+		t.Errorf("the queue lists %q, want both still queued", got)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a skip: %+v", n)
+	}
+	// The pull request GitHub named is open from B (it fills the freed slot).
+	p := PR{Number: 777, State: "open", Draft: true, Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: qBranchB, HeadSHA: qShaB,
+		HeadRepo: dInfra, BaseRef: "trunk", CreatedAt: dNow, UpdatedAt: dNow, Body: goodBody(19)}
+	r.infra.all = append(r.infra.all, p)
+	r.infra.prs[p.Number] = p
+	r.infra.openDraftErrFor = nil
+	if err := r.g.drainQueue(context.Background(), sr, r.infra); err != nil {
+		t.Fatalf("the next drain: %v", err)
+	}
+	if got := queuedBranches(t, q); got != qBranchA {
+		t.Errorf("after the next drain the queue lists %q, want only %s (B's row dropped, its pull request found)", got, qBranchA)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != "" {
+		t.Errorf("the next drain opened %q, want nothing (B has #777; the cap is full again)", got)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a skip: %+v", n)
+	}
+}
+
+// TestARowWaitingAtThePageBoundTellsHQOnceAndHoldsBackNothing: B (queued
+// first, item 19) is not known — HQ's lists do not name it and one ran past
+// the page bound. With a slot free, the drain keeps B in its place and
+// opens A behind it; HQ is told ONCE that B waits at the bound, never told
+// it was dropped. Two later drains with a slot free read B again, keep it,
+// and tell HQ nothing more.
+func TestARowWaitingAtThePageBoundTellsHQOnceAndHoldsBackNothing(t *testing.T) {
+	r, q, hq := newQueueRigHQ(t)
+	hq.bounded = map[int]bool{19: true}
+	queueBA(t, r)
+	r.notices = nil
+	bound := func() []officers.Notice {
+		var out []officers.Notice
+		for _, n := range r.notices {
+			if strings.Contains(n.Summary, "WAITS: muster cannot tell whether its item is still in HQ") {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	closeOpen(r, 101)
+	_ = r.g.Sweep(context.Background())
+	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchA {
+		t.Fatalf("opened %q, want %s (A behind the waiting B)", got, qBranchA)
+	}
+	if got := queuedBranches(t, q); got != qBranchB {
+		t.Fatalf("the queue lists %q, want only %s (kept)", got, qBranchB)
+	}
+	for _, n := range []int{102, 103} {
+		closeOpen(r, n)
+		_ = r.g.Sweep(context.Background())
+	}
+	if got := hq.reads[19]; got != 3 {
+		t.Errorf("B's item was read %d times, want 3 (once per drain with a slot free)", got)
+	}
+	if got := queuedBranches(t, q); got != qBranchB {
+		t.Errorf("after three drains the queue lists %q, want only %s", got, qBranchB)
+	}
+	if n := bound(); len(n) != 1 || !strings.Contains(n[0].Summary, "from "+qBranchB+" in "+dInfra+" (item 19)") || n[0].HeadSHA != qShaB {
+		t.Errorf("the page-bound notices = %+v, want exactly one, for B", n)
+	}
+	if n := skipNotices(r); len(n) != 0 {
+		t.Errorf("HQ was told of a drop: %+v", n)
+	}
+}
+
+// TestADrainAtAFullCapReadsNothingFromHQ: with the open cap full, queueing
+// B and A (each create drains at once, before its 202) and a sweep read no
+// item from HQ: nothing could open, so nothing is read. Control: one slot
+// freed, the next sweep reads B's item once (and opens B; A then meets the
+// full cap again, unread).
+func TestADrainAtAFullCapReadsNothingFromHQ(t *testing.T) {
+	r, _, hq := newQueueRigHQ(t)
+	queueBA(t, r)
+	_ = r.g.Sweep(context.Background())
+	if len(hq.reads) != 0 {
+		t.Fatalf("at a full cap HQ was read: %v, want nothing", hq.reads)
+	}
+	closeOpen(r, 101)
+	_ = r.g.Sweep(context.Background())
+	if hq.reads[19] != 1 || hq.reads[17] != 0 || len(hq.reads) != 1 {
+		t.Errorf("with one slot free HQ was read %v, want item 19 once", hq.reads)
+	}
+	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
+		t.Errorf("opened %q, want %s", got, qBranchB)
+	}
+}
+
 // TestQueuedCreatesOutliveTheGateThatQueuedThem: a create queued through one
 // gate is opened by a NEW gate over the same store (a restarted server reads
 // the durable store; the database store's own survival across a new pool is
@@ -409,7 +604,7 @@ func TestQueuedCreatesOutliveTheGateThatQueuedThem(t *testing.T) {
 	restarted.web, restarted.infra, restarted.claims = r.web, r.infra, r.claims
 	restarted.g.GH, restarted.g.GHFor = r.web, map[string]GitHub{fxRepo: r.web, dInfra: r.infra}
 	restarted.g.Queue = memQueue{st: q.st, officer: dOfficer}
-	restarted.g.ItemFinished = (&hqItems{}).itemFinished
+	restarted.g.ItemGone = (&hqItems{}).itemGone
 	closeOpen(r, 101)
 	_ = restarted.g.Sweep(context.Background())
 	if got := strings.Join(r.infra.openedDrafts, ","); got != qBranchB {
@@ -617,12 +812,12 @@ func TestTwoDrainsOfOneRowOpenOnePullRequestAndTellNoDrop(t *testing.T) {
 			t.Fatal(err)
 		}
 		reached := make(chan struct{}, 1)
-		r.g.ItemFinished = func(c context.Context, item int) (bool, string, error) {
+		r.g.ItemGone = func(c context.Context, item int) (bool, string, error) {
 			select {
 			case reached <- struct{}{}:
 			default:
 			}
-			return hq.itemFinished(c, item)
+			return hq.itemGone(c, item)
 		}
 		done := make(chan error, 1)
 		go func() { _, err := r.g.drainOne(ctx, r.g.Ship.Repos[1], r.infra, row[0]); done <- err }()

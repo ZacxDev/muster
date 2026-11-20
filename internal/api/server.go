@@ -405,10 +405,16 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// appPushLimit is the owner's own budget for the `app` event
+	// (appOwnerBurst, push_routes.go): knocks never spend pushLimit.
+	appPushLimit ownerRateLimit
 	// notifySenders is the per-SENDER cap on the notifications an agent or a
 	// session sends its owner itself — notify_owner and page_update's push
 	// (notify_owner.go), each its own bucket per sender.
 	notifySenders senderRateLimit
+	// appNotifies is the cap on an `app` plugin's knock notifications
+	// (plugin_notify.go): per (plugin, ref) and per plugin.
+	appNotifies appNotifyLimit
 	// pushOffLogged: the "push is not configured" drop has been logged once
 	// (logPushOff). On a server with no push at all every notification is
 	// dropped, so it is said once rather than once per notification.
@@ -751,6 +757,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 	}
 	return &Server{
 		asks:                    askq.New(),
+		appPushLimit:            ownerRateLimit{burst: appOwnerBurst},
 		bus:                     bus,
 		logger:                  logger,
 		auth:                    authCfg,
@@ -1110,7 +1117,10 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
+		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn(),
+		// The app tabs (plugin_app.go): read only while plugins are on and
+		// MUSTER_PLUGIN_ORIGINS is set.
+		Apps: s.appTabs(ctx)}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

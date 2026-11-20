@@ -36,10 +36,12 @@ const (
 	pgnExtTok = "mpl_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	// pgnTasksTok is a live token with tasks alone (0167).
 	pgnTasksTok = "mpl_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
-	pgnSvc      = "plugins-test-service-token-0123456789abcd"
-	pgnRunner   = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
-	pgnAgent    = "plugins-test-agent-own-token-0123456789"
-	pgnMsg      = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
+	// pgnAppTok is a live token with app alone (0168).
+	pgnAppTok = "mpl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	pgnSvc    = "plugins-test-service-token-0123456789abcd"
+	pgnRunner = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	pgnAgent  = "plugins-test-agent-own-token-0123456789"
+	pgnMsg    = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
 )
 
 func (c *countingPlugins) note(ctx context.Context, m string) {
@@ -79,6 +81,9 @@ func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins
 	case pgnTasksTok:
 		return plugins.Plugin{ID: 8, OwnerID: authz.OperatorUserID, Name: "example-filer", Label: "Example filer",
 			Capabilities: []plugins.Capability{plugins.CapTasks}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnAppTok:
+		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "example-app", Label: "Example app",
+			Capabilities: []plugins.Capability{plugins.CapApp}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -270,6 +275,11 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// chief_extension: this fixture's messages token is refused at the
 	// capability check.
 	{"/plugin/v1/chief/instructions", `{"markdown":"x"}`, "", http.StatusForbidden, http.MethodPut},
+	// The knock notification (plugin_notify.go) needs app: this fixture's
+	// messages token is refused at the capability check. The withdrawal's
+	// path is the pattern itself ({ref} is one segment).
+	{"/plugin/v1/notify", `{"kind":"knock","ref":"m-5","count":1}`, "", http.StatusForbidden, ""},
+	{"/plugin/v1/notify/{ref}", "", "", http.StatusForbidden, http.MethodDelete},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.

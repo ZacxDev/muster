@@ -17,6 +17,7 @@ bearer-only DELETE /api/tasks/{id}
 bearer-only DELETE /api/tasks/{id}/comments/{cid}
 bearer-only DELETE /api/tokens/{id}
 bearer-only DELETE /mirror/ask-attachments/{id}
+bearer-only DELETE /plugin/v1/notify/{ref}
 bearer-only PATCH /agent/task/status
 bearer-only PATCH /api/tasks/{id}
 bearer-only PATCH /api/tasks/{id}/status
@@ -61,6 +62,7 @@ bearer-only POST /plugin/v1/drafts/{id}/result
 bearer-only POST /plugin/v1/handoffs/redeem
 bearer-only POST /plugin/v1/messages
 bearer-only POST /plugin/v1/messages/{id}/owner-answered
+bearer-only POST /plugin/v1/notify
 bearer-only POST /plugin/v1/task-writes/claim
 bearer-only POST /plugin/v1/task-writes/{id}/result
 bearer-only POST /plugin/v1/tasks
@@ -250,6 +252,7 @@ cookie POST /transcribe
 cookie POST /ui/chief/fleet/actions/{id}/{verb}
 cookie POST /ui/chief/fleet/bulk
 cookie POST /ui/chief/fleet/chat
+cookie POST /ui/connector-grants/{id}/rerun
 cookie POST /ui/connector-requests/{id}/approve
 cookie POST /ui/connector-requests/{id}/deny
 cookie POST /uploads
