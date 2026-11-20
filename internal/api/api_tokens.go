@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -155,7 +156,7 @@ const apiAgentCreatePattern = "POST /api/agents"
 // agent-create gets on POST /api/agents — a full token included, which is the
 // point: the CLI's ordinary token must not create agents.
 const AgentCreateScopeRefusal = "creating agents needs a token of scope agent-create: mint one at " + accountTokensPath +
-	" (Create agents). No other token reaches this route, so that the CLI's ordinary token cannot create agents"
+	" (" + scopeLabelAgentCreate + "). No other token reaches this route, so that the CLI's ordinary token cannot create agents"
 
 // AgentCreateTokenRefusal is the 403 body an agent-create token gets on any
 // route other than POST /api/agents.
@@ -328,11 +329,11 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if errors.Is(err, apitokens.ErrSessionEnded) {
-		s.renderAccountTokens(w, r, http.StatusUnauthorized, "", "This sign-in has been ended (your password was reset, or the account was disabled and re-enabled). Sign in again to create API tokens.")
+		s.renderAccountTokens(w, r, http.StatusUnauthorized, "", "This sign-in has been ended (your password was reset, or the account was disabled and re-enabled). Sign in again to create access keys.")
 		return
 	}
 	if errors.Is(err, apitokens.ErrUserDisabled) {
-		s.renderAccountTokens(w, r, http.StatusForbidden, "", "This account is disabled, so it cannot create API tokens.")
+		s.renderAccountTokens(w, r, http.StatusForbidden, "", "This account is disabled, so it cannot create access keys.")
 		return
 	}
 	if err != nil {
@@ -367,9 +368,25 @@ func (s *Server) handleAccountTokenRevoke(w http.ResponseWriter, r *http.Request
 const (
 	scopeLabelFull         = "Full access"
 	scopeLabelSummary      = "Bar summary only"
-	scopeLabelAgentCreate  = "Create agents"
-	scopeLabelAccountUsage = "Account usage only"
+	scopeLabelAgentCreate  = "Start agents only"
+	scopeLabelAccountUsage = "Read Claude usage only"
 )
+
+// The access keys page's words (the jargon audit's F080, F091–F094): an
+// "access key", never an "API token", in its top layer; what each scope
+// reaches is in the page's ⓘ, never a route in a label.
+const (
+	AccessKeysTitle    = "Access keys"
+	AccessKeysLinkText = "Access keys (for apps and scripts)"
+	AccessKeysLead     = "An access key lets an app or script act as you. It is shown once."
+)
+
+// accessKeyScopesCode is the access keys page's ⓘ: each scope's label and the
+// exact routes it reaches.
+var accessKeyScopesCode = scopeLabelFull + ": every route you can use\n" +
+	scopeLabelSummary + ": GET " + attentionSummaryPath + "\n" +
+	scopeLabelAgentCreate + ": POST /api/agents\n" +
+	scopeLabelAccountUsage + ": GET " + CCAccountUsagePath
 
 // scopeLabel is how the token list names a stored scope. An agent-create token
 // is never shown as a bar token.
@@ -390,30 +407,32 @@ func scopeLabel(scope string) string {
 func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, code int, minted, problem string) {
 	var list []apitokens.Token
 	if s.ext.APITokens == nil {
-		problem = "This server has no database, so it cannot hold API tokens."
+		problem = "This server has no database, so it cannot hold access keys."
 	} else if l, err := s.ext.APITokens.List(r.Context()); err != nil {
 		s.logger.Printf("api-token: list: %v", err)
-		problem = "The token list could not be read."
+		problem = "Your access keys could not be read."
 	} else {
 		list = l
 	}
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
-<h1 class="text-balance text-base font-semibold text-fg">API tokens</h1>
-<p class="text-sm text-fg2">A token acts as you on muster's machine API and CLI (` + "<code>MUSTER_TOKEN</code>" + `). It is shown once.</p>
+<h1 class="text-balance text-base font-semibold text-fg">` + AccessKeysTitle + `</h1>
+<div class="flex items-center gap-1"><p class="text-sm text-fg2">` + AccessKeysLead + `</p>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "tokens-how", Label: "How apps and scripts use an access key", Heading: "Using an access key",
+			Lead: "muster's command line and machine API read the key from this setting (or an Authorization: Bearer header):", Code: "MUSTER_TOKEN", Inline: true}) + `</div>
 `)
 	b.WriteString(problemNode(problem))
 	if minted != "" {
 		b.WriteString(`<div class="flex flex-col gap-2 rounded-md bg-bg px-3 py-3 ring-1 ring-inset ring-edge" data-testid="minted-token">
 <p class="text-sm font-semibold text-fg">Copy it now — it will not be shown again.</p>
-<input id="minted-token" readonly value="` + html.EscapeString(minted) + `" aria-label="New API token"
+<input id="minted-token" readonly value="` + html.EscapeString(minted) + `" aria-label="New access key"
  class="min-h-[44px] w-full rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge" onclick="this.select()">
 </div>
 `)
 	}
 	b.WriteString(`<form method="POST" action="` + accountTokensPath + `" class="flex flex-col gap-2">
 <label for="token-name" class="text-sm font-medium text-fg">Name</label>
-<input id="token-name" name="name" maxlength="` + strconv.Itoa(apitokens.MaxNameLen) + `" placeholder="laptop CLI"
+<input id="token-name" name="name" maxlength="` + strconv.Itoa(apitokens.MaxNameLen) + `" placeholder="my laptop"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <fieldset class="flex flex-col gap-1" data-testid="token-scope">
 <legend class="text-sm font-medium text-fg">Access</legend>
@@ -422,30 +441,36 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeSummary + `" class="h-5 w-5">
 ` + scopeLabelSummary + ` (can read the Attention summary and nothing else)</label>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeAgentCreate + `" class="h-5 w-5">
-` + scopeLabelAgentCreate + ` (reaches only POST /api/agents, and nothing else)</label>
+` + scopeLabelAgentCreate + `</label>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeAccountUsage + `" class="h-5 w-5">
-` + scopeLabelAccountUsage + ` (can read GET ` + CCAccountUsagePath + `, the utilization of your Claude accounts, and nothing else)</label>
+` + scopeLabelAccountUsage + `</label>
 </fieldset>
-<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create token</button>
+<div class="flex items-center gap-1"><p class="text-xs text-fg2">Each kind of key reaches only what its name says.</p>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "tokens-scopes", Label: "What each kind of access key reaches", Heading: "What each key reaches",
+			Lead: "Exactly what a key of each kind can call, and nothing else:", Code: accessKeyScopesCode, Multiline: true, Inline: true}) + `</div>
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create access key</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="token-list">
 `)
 	if len(list) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No tokens yet.</li>`)
+		b.WriteString(`<li class="text-sm text-fg2">No access keys yet.</li>`)
 	}
+	now := time.Now()
 	for _, t := range list {
 		name := t.Name
 		if name == "" {
 			name = "(unnamed)"
 		}
 		scope := scopeLabel(t.Scope)
+		// Days in words, the reader's clock drawn by the app script
+		// (ui.PlainWhenHTML): never a UTC timestamp (F094).
 		used := "never used"
 		if t.LastUsedAt != nil {
-			used = "last used " + t.LastUsedAt.UTC().Format("2006-01-02 15:04") + " UTC"
+			used = ui.PlainWhenHTML("last used ", *t.LastUsedAt, now)
 		}
 		b.WriteString(`<li class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-token-id="` + strconv.FormatInt(t.ID, 10) + `">
 <span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(name) + `</span>
-<span class="text-xs text-fg2" data-token-scope="` + html.EscapeString(t.Scope) + `">` + scope + ` · created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
+<span class="text-xs text-fg2" data-token-scope="` + html.EscapeString(t.Scope) + `">` + scope + ` · ` + ui.PlainWhenHTML("made ", t.CreatedAt, now) + ` · ` + used + `</span>
 `)
 		if t.Revoked() {
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
@@ -458,5 +483,5 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 	b.WriteString(`</ul>
 <a href="` + accountPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>`)
-	s.writeNavDocument(w, r, code, "API tokens", ui.NavAccount, true, b.String())
+	s.writeNavDocument(w, r, code, AccessKeysTitle, ui.NavAccount, true, b.String())
 }

@@ -141,23 +141,63 @@ func AgentTextRefusal(text string, words []string) string {
 // OutboundTextRefusal is AgentTextRefusal for an officer's OUTBOUND draft
 // (internal/plugins outbound.go): public host names and URLs pass, so a post
 // can link to the project; internal host names, IP addresses, secrets,
-// infrastructure words and the deployment's own names are refused as ever —
-// except INSIDE a link on publicLinks, whose allowlisted prefix is taken out
-// before the screen runs (StripPublicLinks, public_links.go), so
-// `github.com/<owner>/<repo>` may spell a deployment name when the deployment
-// declared that repository public.
+// infrastructure words and the deployment's own names are refused as ever,
+// with two exemptions, both from publicLinks (public_links.go):
+//   - INSIDE a link on publicLinks, whose allowlisted prefix is taken out
+//     before the screen runs (StripPublicLinks), so `github.com/<owner>/<repo>`
+//     may spell a deployment name when the deployment declared that
+//     repository public;
+//   - a STANDALONE occurrence of the <repo> of an entry `host/<owner>/<repo>`
+//     (without case; publicRepoNames) is masked for the scan of that name
+//     only (MaskBareNames), so the post may name the public project bare even
+//     when that name is a deny word. Standalone is an allowlist of prose
+//     neighbours (proseBeside): the name inside any other run (`<repo>-prod`,
+//     `<repo>:5432`, `x.<repo>`, `…/<repo>`) is screened as ever. <owner>
+//     and every other deny word are scanned against the UNMASKED text, and
+//     so are the pattern screens (hosts, IPs, secrets, infrastructure words).
+//
 // 🔴 Only an outbound draft of a plugin bound to an officer is screened by
-// this; every other agent text keeps AgentTextRefusal, with no allowlist.
+// this; every other agent text keeps AgentTextRefusal, with no allowlist and
+// no exempt name.
 func OutboundTextRefusal(text string, words, publicLinks []string) string {
-	return textRefusal(outboundTextDeny, StripPublicLinks(text, publicLinks), words)
+	text = StripPublicLinks(text, publicLinks)
+	if why := patternRefusal(outboundTextDeny, text); why != "" {
+		return why
+	}
+	exempt := publicRepoNames(publicLinks)
+	var names, others []string
+	for _, w := range words {
+		if exempt[strings.ToLower(strings.TrimSpace(w))] {
+			names = append(names, w)
+		} else {
+			others = append(others, w)
+		}
+	}
+	if why := wordRefusal(text, others); why != "" {
+		return why
+	}
+	return wordRefusal(MaskBareNames(text, exempt), names)
 }
 
 func textRefusal(deny []textDeny, text string, words []string) string {
+	if why := patternRefusal(deny, text); why != "" {
+		return why
+	}
+	return wordRefusal(text, words)
+}
+
+// patternRefusal is why text matches one of deny's patterns, or "".
+func patternRefusal(deny []textDeny, text string) string {
 	for _, d := range deny {
 		if d.re.MatchString(text) {
 			return "the text carries " + d.what + "; an agent may not send that to a third party"
 		}
 	}
+	return ""
+}
+
+// wordRefusal is why text carries one of the deployment's own names, or "".
+func wordRefusal(text string, words []string) string {
 	low := strings.ToLower(text)
 	for _, w := range words {
 		if w = strings.ToLower(strings.TrimSpace(w)); w != "" && containsWord(low, w) {

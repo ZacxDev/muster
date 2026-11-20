@@ -1377,14 +1377,21 @@ no scale-down) when it cannot run now:
   is no failure: the item is released and the next pass tries again. Every
   refusal's reason is logged.
 
-**A chat whose account is at its usage limit is answered, not looped.** A
-lane turn that comes back `rate_limited` — a `429` for a turn the limit failed,
-or the `409` of a pane parked on the CLI's usage-limit menu, which is not a
-busy lane — backs off like a failure (the agent gateway fails the account over
-on the first one, when another is usable). The third in a row is answered
-"(The officer can't reply right now: its Claude accounts are at their usage
-limit (resets …). Ask again later.)", quoting the reset the CLI stated; the
-item is then done, and the member's next message runs a turn again. `ccd`
+**A rate-limited chat is answered, not looped.** A lane turn that comes back
+`rate_limited` — a `429` for a turn that was rate-limited, or the `409` of a
+pane parked on the CLI's usage-limit menu, which is not a busy lane — backs
+off like a failure (the agent gateway fails the account over on the first one,
+when another is usable). The third in a row is answered, and what it says
+depends on whether `ccd` marked the failure `usage_limit` (the CLI said a
+usage limit was hit, or its pane shows the usage-limit menu): a usage limit is
+answered "(The officer can't reply right now: its Claude accounts are at their
+usage limit (resets …). Ask again later.)", quoting the reset the CLI stated;
+any other `429` — a transient request rate limit, which the CLI types and
+codes the same — is answered "(The officer is being rate-limited right now.
+Ask again later.)", with no reset. That reply names no wait, because a usage
+limit from a `ccd` older than the `usage_limit` field arrives unmarked and is
+answered with it too. The item is then done, and the
+member's next message runs a turn again. `ccd`
 stops a lane whose paste was refused by that menu once no turn holds it (the
 menu outlives the limit's reset), so the lane's next turn resumes its
 conversation in a fresh CLI.
@@ -1509,7 +1516,7 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `plugin` | the name of one of the owner's live plugins whose `deliver_to` is THIS officer, with `draft_checks` |
 | `venue` | 1 to 64 lower-case letters, digits, `.`, `_` and `-` |
 | `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
-| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
+| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names, and that repository's name may also stand alone (not inside a longer name such as `<repo>-prod`) even when it is a deny word ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
 | `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
 

@@ -79,7 +79,7 @@ func (s *Server) handlePinToggle(w http.ResponseWriter, r *http.Request, pin boo
 		fields = [][2]string{{"kind", "mirror"}, {"host", k.Host}, {"session", k.Session}, {"window", k.Window}}
 		cur = ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: k.Host, Session: k.Session, Window: k.Window}}
 	default:
-		http.Error(w, "kind must be agent or mirror", http.StatusBadRequest)
+		http.Error(w, badSessionKindWords, http.StatusBadRequest)
 		return
 	}
 	switch {

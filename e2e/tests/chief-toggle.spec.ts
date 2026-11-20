@@ -119,7 +119,7 @@ for (const [name, size, phone] of [
       const section = page.locator('[data-testid="chief-settings"]');
       await expect(section).toBeVisible();
       await expect(chiefState(page)).toHaveAttribute('data-state', 'unavailable');
-      await expect(section).toContainText('Not available on this install');
+      await expect(section).toContainText('Not set up on this server yet');
       await expect(section.locator('#chief-toggle'), 'no switch that cannot work').toHaveCount(0);
       await expectNoSidewaysScroll(page);
     });

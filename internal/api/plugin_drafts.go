@@ -873,6 +873,21 @@ func draftExpiryText(d plugins.Draft, now time.Time) string {
 	return "expires in " + strconv.Itoa(int(left/(24*time.Hour))) + "d"
 }
 
+// draftWho is who a draft card says drafted it: an officer's draft by the
+// officer's display name, else "Your officer" (officerWords: never its id or
+// its agent's slug — the jargon audit's U-25); anyone else's by its agent's
+// display name, else its name.
+func draftWho(c plugins.DraftCard) string {
+	if o := c.Draft.Officer; o != nil && *o != "" {
+		w := officerWords(c)
+		return strings.ToUpper(w[:1]) + w[1:]
+	}
+	if c.AgentDisplay != "" {
+		return c.AgentDisplay
+	}
+	return c.Draft.AgentName
+}
+
 // draftKindLabel is a draft card's kind badge: a reply, or an officer's post.
 func draftKindLabel(d plugins.Draft) string {
 	if d.IsOutbound() {
@@ -914,10 +929,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	d, m := c.Draft, c.Message
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
-	who := c.AgentDisplay
-	if who == "" {
-		who = d.AgentName
-	}
+	who := draftWho(c)
 	var b strings.Builder
 	age := ""
 	if !d.CreatedAt.IsZero() {

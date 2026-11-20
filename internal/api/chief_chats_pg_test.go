@@ -491,13 +491,15 @@ func TestASideChatArchivesAndUnarchives(t *testing.T) {
 	}
 }
 
-// TestTheContextChipReadsItsChatsLatestTurn: GET /ui/agents/{name}/chat-context
-// draws the chip from the LATEST usage row of THAT chat — input + cache read +
-// cache write — of the model's window, tinted at 70% and 90%: a newer row of
-// ANOTHER chat does not move it, a newer row of its own does, and a chat with
-// no usage row draws nothing. Each fixture's three token counts are pairwise
-// distinct, so a sum missing a term draws a different count.
-func TestTheContextChipReadsItsChatsLatestTurn(t *testing.T) {
+// TestTheMemoryLineReadsItsChatsLatestTurn: GET /ui/agents/{name}/chat-context
+// draws the ⋯ menu's memory line from the LATEST usage row of THAT chat —
+// input + cache read + cache write — and only past ui.ChiefMemoryShowAbove
+// (350k): a newer row of ANOTHER chat does not move it, a newer row of its own
+// does (down below the threshold: then nothing), and a chat with no usage row
+// draws nothing. Each fixture's three token counts are pairwise distinct, and
+// the side chat's sum is just over the threshold, so a sum missing a term
+// drops it to nothing.
+func TestTheMemoryLineReadsItsChatsLatestTurn(t *testing.T) {
 	f := newChatsFixture(t, "")
 	ctx := asUser(1)
 	primary, err := f.srv.primarySession(ctx, f.chief)
@@ -507,7 +509,7 @@ func TestTheContextChipReadsItsChatsLatestTurn(t *testing.T) {
 	side := f.sideChat(t)
 	cu := chiefusage.NewPG(f.pool)
 	// The turn's TOTALS are three times its last request's fill (a turn with
-	// tool calls sums the conversation once per request): a chip reading the
+	// tool calls sums the conversation once per request): a line reading the
 	// totals would draw a count three times too high (PR #609 round 1 F3).
 	record := func(sess int64, model string, in, read, create int64) {
 		t.Helper()
@@ -517,43 +519,39 @@ func TestTheContextChipReadsItsChatsLatestTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	chip := func(sess int64) string {
+	line := func(sess int64) string {
 		t.Helper()
 		w := f.call(t, http.MethodGet, ui.ChiefContextPath(f.chief.Name, sess), nil, f.operator())
 		if w.Code != http.StatusOK {
-			t.Fatalf("GET chip: %d %s", w.Code, w.Body)
+			t.Fatalf("GET memory line: %d %s", w.Code, w.Body)
 		}
-		return w.Body.String()
+		return strings.TrimSpace(w.Body.String())
 	}
-	if body := strings.TrimSpace(chip(side.ID)); body != "" {
-		t.Fatalf("a chat with no usage draws a chip: %s", body)
+	if body := line(side.ID); body != "" {
+		t.Fatalf("a chat with no usage draws a line: %s", body)
 	}
-	// Primary: 50% of a Claude window (200k): untinted.
-	record(primary.ID, "sonnet", 70_000, 25_000, 5_000) // 100,000
-	// Side: 76% → warn; then a NEWER primary row must not move the side chip.
-	record(side.ID, "opus", 100_000, 50_000, 2_000)      // 152,000
-	record(primary.ID, "sonnet", 150_000, 25_000, 6_000) // 181,000 → 91% danger
-	sideChip, primChip := chip(side.ID), chip(primary.ID)
-	for _, c := range []struct {
-		name, body, count, level string
-	}{
-		{"side", sideChip, "152k/200k", ui.ContextLevelWarn},
-		{"primary", primChip, "181k/200k", ui.ContextLevelDanger},
+	record(primary.ID, "sonnet", 70_000, 25_000, 5_000) // 100,000: nothing
+	if body := line(primary.ID); body != "" {
+		t.Errorf("a chat at 100k draws a line: %s", body)
+	}
+	record(side.ID, "opus", 200_000, 150_000, 2_345)     // 352,345
+	record(primary.ID, "sonnet", 300_000, 55_000, 6_789) // 361,789: newer, another chat
+	for _, c := range []struct{ name, body, want string }{
+		{"side", line(side.ID), "Memory used: 352k"},
+		{"primary", line(primary.ID), "Memory used: 362k"},
 	} {
-		if !regexp.MustCompile(`data-ctx-count=""[^>]*>` + regexp.QuoteMeta(c.count) + `<`).MatchString(c.body) {
-			t.Errorf("%s chip count: want %s in %s", c.name, c.count, c.body)
-		}
-		if !strings.Contains(c.body, `data-level="`+c.level+`"`) {
-			t.Errorf("%s chip level: want %s in %s", c.name, c.level, c.body)
+		if !strings.Contains(c.body, ui.ChiefMemoryAttr+`="`) || !strings.Contains(c.body, ">"+c.want+"<") {
+			t.Errorf("%s: want %q in %s", c.name, c.want, c.body)
 		}
 	}
-	if !strings.Contains(sideChip, "opus") || strings.Contains(sideChip, "sonnet") {
-		t.Errorf("the side chip names the wrong model: %s", sideChip)
+	record(primary.ID, "sonnet", 249_000, 99_000, 1_234) // 349,234: its own newer row, under
+	if body := line(primary.ID); body != "" {
+		t.Errorf("the primary's newest turn is under the threshold, yet it draws: %s", body)
 	}
-	// Another owner's view of the chief's chip: not found.
+	// Another owner's view of the chief's line: not found.
 	w := f.call(t, http.MethodGet, ui.ChiefContextPath(f.chief.Name, 1<<40), nil, f.operator())
 	if w.Code != http.StatusNotFound {
-		t.Errorf("a chip for a chat that is not the chief's answered %d, want 404", w.Code)
+		t.Errorf("a line for a chat that is not the chief's answered %d, want 404", w.Code)
 	}
 }
 
@@ -790,10 +788,10 @@ func TestARequestRouteAnswersInItsSideChatUntilArchived(t *testing.T) {
 	}
 }
 
-// TestTheContextChipOfAnUnknownModelIsUntinted: a turn whose model muster does
+// TestTheMemoryLineOfAnUnknownModelStillShows: a turn whose model muster does
 // not know (a claude-code chief on its CLI's default: chiefTurnModel "") draws
-// the count alone — no window, no tint — however full a 200k window it would be.
-func TestTheContextChipOfAnUnknownModelIsUntinted(t *testing.T) {
+// the line all the same — the threshold is tokens, not a share of a window.
+func TestTheMemoryLineOfAnUnknownModelStillShows(t *testing.T) {
 	f := newChatsFixture(t, agents.KindClaudeCode)
 	ctx := asUser(1)
 	primary, err := f.srv.primarySession(ctx, f.chief)
@@ -804,12 +802,11 @@ func TestTheContextChipOfAnUnknownModelIsUntinted(t *testing.T) {
 		t.Fatalf("a claude-code chief with no model is %q, want unknown", m)
 	}
 	if err := chiefusage.NewPG(f.pool).RecordTurn(ctx, chiefusage.Turn{Chief: f.chief.ID, Trigger: chiefusage.Trigger{Kind: chiefusage.TriggerOwnerChat},
-		Known: true, Tokens: chiefusage.Tokens{Input: 190_000}, ContextTokens: 190_000, SessionID: primary.ID, Model: chiefTurnModel(f.chief, primary)}); err != nil {
+		Known: true, Tokens: chiefusage.Tokens{Input: 371_600}, ContextTokens: 371_600, SessionID: primary.ID, Model: chiefTurnModel(f.chief, primary)}); err != nil {
 		t.Fatal(err)
 	}
 	w := f.call(t, http.MethodGet, ui.ChiefContextPath(f.chief.Name, primary.ID), nil, f.operator())
-	body := w.Body.String()
-	if !regexp.MustCompile(`data-ctx-count=""[^>]*>190k<`).MatchString(body) || strings.Contains(body, "data-level=") || strings.Contains(body, "/200k") {
-		t.Errorf("an unknown model's chip: %s; want 190k alone, untinted", body)
+	if body := w.Body.String(); !strings.Contains(body, ">Memory used: 372k<") {
+		t.Errorf("an unknown model's line: %s; want Memory used: 372k", body)
 	}
 }

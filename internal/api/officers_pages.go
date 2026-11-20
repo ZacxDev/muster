@@ -500,10 +500,7 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 			ref := builtin.OfficerRef{Owner: sc.Owner, Officer: v.ID}
 			n := s.officerNeedsOf(ctx, rd, sc.Owner, v.ID, v.Backend == officers.BackendBuiltin).count()
 			extra[ref] = listExtra{needs: n, unread: unread[ref]}
-			name := v.Name
-			if name == "" {
-				name = v.ID
-			}
+			name := ui.OfficerPlainName(v.Name, v.ID)
 			if sc.Team {
 				name += " (" + sc.Name + ")"
 			}
@@ -568,10 +565,8 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 	b.WriteString(`<ul class="flex flex-col divide-y divide-line" data-officer-list>`)
 	for _, v := range list {
 		status := officerStatus(v)
-		name := v.Name
-		if name == "" {
-			name = v.ID
-		}
+		// An officer with no name by its id in words, never the id (F047).
+		name := ui.OfficerPlainName(v.Name, v.ID)
 		openItems := 0
 		if v.Backend == officers.BackendBuiltin {
 			if items, err := s.officerItems(ctx, sc.Owner, v.ID, 100); err == nil {
@@ -587,7 +582,7 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 <div class="flex flex-wrap items-center gap-2"><a class="min-w-0 flex-1 truncate text-sm font-semibold text-fg underline-offset-2 hover:underline" href="` + officerHref(sc, v.ID, "") + `">` +
 			html.EscapeString(name) + `</a>` + statusChip(status))
 		if v.ReadOnly {
-			b.WriteString(`<span class="text-xs text-muted" data-read-only>read-only</span>`)
+			b.WriteString(`<span class="text-xs text-muted" data-read-only>` + readOnlyBadge(v) + `</span>`)
 		}
 		sheet := officerHeadSheet(v)
 		sheet.ID = "officer-row-" + strconv.FormatInt(sc.Owner, 10) + "-" + strings.NewReplacer(":", "-").Replace(v.ID) + "-info"
@@ -623,37 +618,81 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 // (runtimeOptionsFor: the agent plane, the mirror hub, each host's readiness,
 // what auto picks), never guessed.
 func (s *Server) runtimeAvailability(ctx context.Context, owner int64, id string) string {
-	opts := s.runtimeOptionsFor(ctx, owner, "")
+	return runtimeAvailabilityHTML(id, s.runtimeOptionsFor(ctx, owner, ""), authz.IsAdmin(ctx))
+}
+
+// runtimeAvailabilityHTML is runtimeAvailability's section for opts, as
+// admin (who sees the reasons and the command) or anyone else.
+func runtimeAvailabilityHTML(id string, opts runtimeOptions, admin bool) string {
 	var b strings.Builder
 	b.WriteString(`<section class="` + adminCard + `" id="` + id + `"><h2 class="text-base font-semibold text-fg">Where officers can run here</h2><ul class="flex flex-col gap-2 text-sm">`)
+	// In words (the jargon audit's F051–F055): no "pod", no muster-mirror
+	// flag, no host refusal in the top layer; why muster's own servers or a
+	// computer cannot run one, and the command that adds a computer, are in
+	// an admin's ⓘ.
 	if opts.Pod.Available {
-		b.WriteString(`<li data-runtime="pod" data-available="true"><span class="font-semibold text-fg">Pods:</span> <span class="text-fg2">available — each instance runs in its own locked-down pod.</span></li>`)
+		b.WriteString(`<li data-runtime="pod" data-available="true"><span class="font-semibold text-fg">muster's own servers:</span> <span class="text-fg2">available — each officer runs in its own locked-down space.</span></li>`)
 	} else {
-		b.WriteString(`<li data-runtime="pod" data-available="false"><span class="font-semibold text-fg">Pods:</span> <span class="text-fg2">not available: ` + html.EscapeString(opts.Pod.Reason) + `.</span></li>`)
+		b.WriteString(`<li data-runtime="pod" data-available="false"><div class="flex items-center gap-1"><span><span class="font-semibold text-fg">muster's own servers:</span> <span class="text-fg2">not set up.</span></span>` +
+			ui.InfoSheetHTML(ui.SetupSheet(id+"-pod-why", "Why muster's own servers can't run officers", "What the server says:", opts.Pod.Reason, admin)) + `</div></li>`)
 	}
 	switch {
 	case opts.HostReason != "":
-		b.WriteString(`<li data-runtime="host" data-available="false"><span class="font-semibold text-fg">Your machines:</span> <span class="text-fg2">not available: ` + html.EscapeString(opts.HostReason) + `.</span></li>`)
+		b.WriteString(`<li data-runtime="host" data-available="false"><div class="flex items-center gap-1"><span><span class="font-semibold text-fg">Your computers:</span> <span class="text-fg2">not available on this server.</span></span>` +
+			ui.InfoSheetHTML(ui.SetupSheet(id+"-host-why", "Why your computers can't run officers", "What the server says:", opts.HostReason, admin)) + `</div></li>`)
 	case len(opts.Hosts) == 0:
-		b.WriteString(`<li data-runtime="host" data-available="false"><span class="font-semibold text-fg">Your machines:</span> <span class="text-fg2">none is mirrored. Run muster-mirror with -interactive -agent-spawn on a machine you own, and it appears here.</span></li>`)
+		b.WriteString(`<li data-runtime="host" data-available="false"><div class="flex items-center gap-1"><span><span class="font-semibold text-fg">Your computers:</span> <span class="text-fg2">` + OfficerNoComputers + `</span></span>` +
+			ui.InfoSheetHTML(ui.SetupSheet(id+"-host-add", "How to connect a computer", "Run muster-mirror with these settings on a computer you own, and it appears here:", "muster-mirror -interactive -agent-spawn", admin)) + `</div></li>`)
 	default:
-		b.WriteString(`<li data-runtime="host"><span class="font-semibold text-fg">Your machines:</span><ul class="mt-1 flex flex-col gap-1">`)
-		for _, h := range opts.Hosts {
-			why := "ready: it can start and close Claude Code windows"
+		b.WriteString(`<li data-runtime="host"><span class="font-semibold text-fg">Your computers:</span><ul class="mt-1 flex flex-col gap-1">`)
+		for i, h := range opts.Hosts {
+			why, sheet := "ready to start officers", ""
 			if !h.Qualifies {
-				why = "not ready: " + h.Reason
+				why = hostReasonWords(h.Reason)
+				sheet = ui.InfoSheetHTML(ui.SetupSheet(id+"-host-"+strconv.Itoa(i), "Why "+h.Host+" can't start officers", "What "+h.Host+" reports:", h.Reason, admin))
 			}
-			b.WriteString(`<li class="text-fg2" data-host="` + html.EscapeString(h.Host) + `" data-qualifies="` + strconv.FormatBool(h.Qualifies) + `"><span class="text-fg">` +
-				html.EscapeString(h.Host) + `</span> — ` + html.EscapeString(why) + `</li>`)
+			b.WriteString(`<li class="flex items-center gap-1 text-fg2" data-host="` + html.EscapeString(h.Host) + `" data-qualifies="` + strconv.FormatBool(h.Qualifies) + `"><span><span class="text-fg">` +
+				html.EscapeString(h.Host) + `</span> — ` + html.EscapeString(why) + `</span>` + sheet + `</li>`)
 		}
 		b.WriteString(`</ul></li>`)
 	}
-	b.WriteString(`<li data-runtime="auto"><span class="font-semibold text-fg">A new officer would run:</span> <span class="text-fg2" id="` + id + `-auto">` + html.EscapeString(autoWords(opts)) + `</span></li>`)
+	b.WriteString(`<li data-runtime="auto"><span class="font-semibold text-fg">A new officer would run:</span> <span class="text-fg2" id="` + id + `-auto">` + html.EscapeString(autoPlainWords(opts)) + `</span></li>`)
 	b.WriteString(`</ul></section>`)
 	return b.String()
 }
 
-// autoWords is what "auto" picks now, in words.
+// readOnlyBadge is a read-only officer's badge: "Built-in" for a def in the
+// built-in store that nothing declares, "Set in settings" for one declared in
+// the server's own settings (MUSTER_OFFICERS) — never "read-only".
+func readOnlyBadge(v declaredOfficerView) string {
+	if v.ManagedBy == officers.ManagedByEnv {
+		return "Set in settings"
+	}
+	return "Built-in"
+}
+
+// OfficerNoComputers is what "Where officers can run here" says with no
+// computer connected (F052).
+const OfficerNoComputers = "No computers connected yet."
+
+// hostReasonWords is why a computer cannot start an officer, in words, from
+// its readiness refusal (hostReadyProblem's reasons; the exact one is in the
+// row's ⓘ): never a flag or the muster-mirror's build.
+func hostReasonWords(reason string) string {
+	switch {
+	case strings.Contains(reason, "predates officers"), strings.Contains(reason, "an older build"):
+		return "needs an update to run officers"
+	case strings.HasPrefix(reason, "claude is not found"):
+		return "can't find Claude Code"
+	case strings.Contains(reason, "not logged in"):
+		return "needs Claude Code signed in"
+	case strings.HasPrefix(reason, "repo "):
+		return "can't open that repository"
+	}
+	return "can't start officers"
+}
+
+// autoWords is what "auto" picks now, in words: the wizard's.
 func autoWords(opts runtimeOptions) string {
 	switch opts.Auto.Runtime {
 	case officers.RuntimePod:
@@ -664,6 +703,18 @@ func autoWords(opts runtimeOptions) string {
 	// What auto found is the pod and host lines' own reasons together, so
 	// they are not repeated here.
 	return "nowhere yet: neither a pod nor one of your machines is available here"
+}
+
+// autoPlainWords is what "auto" picks now, as the list's "Where officers can
+// run here" says it: no pod, no window (F055). The wizard keeps autoWords.
+func autoPlainWords(opts runtimeOptions) string {
+	switch opts.Auto.Runtime {
+	case officers.RuntimePod:
+		return "on muster's own servers"
+	case officers.RuntimeHost:
+		return "on " + opts.Auto.Host
+	}
+	return "nowhere yet — connect a computer first"
 }
 
 // --- the form -------------------------------------------------------------------
@@ -1957,10 +2008,7 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 		return
 	}
 	status := officerStatus(v)
-	name := v.Name
-	if name == "" {
-		name = v.ID
-	}
+	name := ui.OfficerPlainName(v.Name, v.ID)
 	writable := sc.Manage && v.ManagedBy == officers.ManagedByDB
 	builtinBackend := v.Backend == officers.BackendBuiltin
 	var b strings.Builder
@@ -2188,7 +2236,7 @@ func (s *Server) officerSchedules(ctx context.Context, sc officerScope, v declar
 	case err != nil:
 		b.WriteString(`<p class="text-sm text-fg2">Its schedules could not be read just now.</p>`)
 	case len(list) == 0:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-schedules-none">None: it works only when it is given work (Run now, a plugin, the CLI).</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-schedules-none">None: it works only when you give it work (Run now) or a plugin sends it something.</p>`)
 	default:
 		b.WriteString(`<ul class="flex flex-col gap-2">`)
 		for _, sch := range list {
