@@ -7,6 +7,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, pagesShareConnectPort, pagesShareMirrorMCPPort, pagesSharePort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { withMCPSession } from '../lib/localmcp';
 
 // SHAREABLE PAGES, INSTANT SHARE (docs/pages.md#sharing, #in-the-chat), every
 // hop real, on a server with a link key (MUSTER_CONNECTOR_ENCRYPTION_KEY),
@@ -119,7 +120,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
       const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
       const r = await fetch(localMCP, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        headers: await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
       last = await r.text();

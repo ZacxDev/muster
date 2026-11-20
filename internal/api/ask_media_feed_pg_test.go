@@ -8,7 +8,7 @@ import (
 )
 
 // THE CARD FEED'S SLOTS CARRY AN ASK'S WHY AND FILES (#768's asks_feed.go,
-// asksCardContextSlot / asksCardMediaSlot; ask_media.go's helpers). An Open
+// asksCardContextRow / asksCardMediaSlot; ask_media.go's helpers). An Open
 // feed card and the ask page — the same card, expanded — each draw the why
 // line, the image thumbnail and the file chip EXACTLY once: wired into the
 // slots, and nowhere else.

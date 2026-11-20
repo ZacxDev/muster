@@ -67,7 +67,8 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 	return "other", "Item"
 }
 
-// asksCardContextSlot is a card's "why it's here" line, "" for none.
+// asksCardContextInner is the words of a card's "why it's here" line
+// (asksCardContextRow), "" for none.
 //
 // An agent's ask that carries a why (ask_media.go: its own `context`, or the
 // fallback muster stored — the session's focus title and the agent's last
@@ -76,7 +77,7 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 // what it already carries: the session's focus title (with its age), else the
 // item's second line (a waiting session's last words), else — for a task to
 // route — why it is in the queue.
-func asksCardContextSlot(it attentionItem, now time.Time) string {
+func asksCardContextInner(it attentionItem, now time.Time) string {
 	var inner string
 	switch w := askCardWhy(it); {
 	case w != (ui.AskWhy{}):
@@ -88,10 +89,20 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 	case it.Kind == attentionKindTask:
 		inner = `<span>` + taskToRouteWhy + `</span>`
 	}
-	// The card's ⓘ: the exact tmux address of the window it names
-	// (attentionPlaceSheetHTML), at the end of this line — the head is the
-	// card's toggle, and a button cannot sit inside it.
-	info := attentionPlaceSheetHTML(it, it.Key)
+	return inner
+}
+
+// asksCardContextRow is a card's "why it's here" line: its words (inner) and
+// the card's ⓘ (info: the exact tmux address of the window it names,
+// attentionPlaceSheetHTML) at the end of it — the head is the card's toggle,
+// and a button cannot sit inside it. "" for neither.
+//
+// With no words the ⓘ is a row of its own: a 44px line holding one icon.
+// The Asks feed's cards and the ask page draw that ⓘ in their footer instead,
+// beside "View in session", when they have one (askFeedCardHTML,
+// handleAskPage; the v0.250.0 phone check,
+// F4: the lone ⓘ's empty line read as stray whitespace).
+func asksCardContextRow(inner, info string) string {
 	switch {
 	case inner == "" && info == "":
 		return ""
@@ -251,8 +262,6 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		// behind the expand.
 		b.WriteString(officerContextHTML(it.Context))
 	}
-	b.WriteString(asksCardContextSlot(it, now))
-	b.WriteString(asksCardMediaSlot(it))
 	// THE FOOTER's links: View in session, the task.
 	var links []string
 	if href := askFeedSessionHref(it); href != "" {
@@ -267,6 +276,16 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		n := strconv.FormatInt(it.taskID, 10)
 		links = append(links, `<a href="`+esc(canonicalTaskPath(it.taskID))+`" class="`+ui.AsksCardLinkClass+`" data-asks-task>Open task #`+n+`</a>`)
 	}
+	// THE CONTEXT LINE and the card's ⓘ (asksCardContextRow). An ⓘ with no
+	// words beside it goes in the footer, after its links, when there is one:
+	// on a line of its own it was one icon in an empty 44px row.
+	inner, info := asksCardContextInner(it, now), attentionPlaceSheetHTML(it, it.Key)
+	if inner == "" && info != "" && len(links) > 0 {
+		links = append(links, info)
+		info = ""
+	}
+	b.WriteString(asksCardContextRow(inner, info))
+	b.WriteString(asksCardMediaSlot(it))
 	// THE CONTROLS.
 	id := strconv.FormatInt(it.AskID, 10)
 	dismissForm := "ask-" + id + "-dismiss"

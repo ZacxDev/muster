@@ -87,8 +87,8 @@ served — the same checks run again whenever the composer asks):
   unknown — and not held by the Claude prompt guard (a dialog or text on the
   screen that the status does not show);
 - no question card (AskUserQuestion) is open for the session;
-- no attention ask raised by the session is open — including one you hid on
-  this device with "Hide until next ask": hidden is not answered;
+- no attention ask raised by the session is open (the view's header counts
+  them in its asks badge, [attention.md](attention.md));
 - the final reply hands control back. This pre-gate is a cheap text check (a
   `?` near the end, an option list beside a choice word, or "want me to",
   "should I", "your call", "let me know"…). It is a heuristic, and it only

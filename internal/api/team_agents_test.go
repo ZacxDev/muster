@@ -535,6 +535,7 @@ var agentReadCallers = map[string]string{
 	"Get focusSessions.Visible":               "visible: whether a focus subject is readable (read)",
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
 	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
+	"Get Server.chatMessageEntries":           "machine: the officer's own instance holding a person's chat, read as the officer's owner and kept only when it is that officer's (officerOf); only its messages are drawn",
 
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
 	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",
@@ -548,7 +549,7 @@ var agentReadCallers = map[string]string{
 	"GetByName Server.handleAgentSend":           "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.handleAgentWS":             "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.activeNotificationRows":    "visible: the panel's link to an active agent (read)",
-	"GetByName Server.askerAsks":                 "visible: an agent's open asks (read)",
+	"GetByName Server.resolveAsker":              "visible: an agent's open asks, counted and filtered (read)",
 	"GetByName Server.leaving":                   "visible: the page home leaves out (read)",
 	"GetByName Server.teamAgentGate":             "visible: the team-agent route gate itself",
 	"GetByName Server.teamChief":                 "visible: /teams/{id}/chief's status (read); its writes run as the team (teamAdminContext)",
