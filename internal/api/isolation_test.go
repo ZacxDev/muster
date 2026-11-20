@@ -2232,10 +2232,10 @@ func sortedRoutes() []string {
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
 	// The knock's withdrawal (plugin_notify.go): {ref} names no stored row. The
-	// tag it withdraws is built from the PRESENTING token's own plugin id, and
-	// the resolved goes to that token's owner, so another owner's token
-	// withdraws only its own plugin's notification — and A's answer is a 202
-	// for a ghost ref too. TestAnotherPluginCannotWithdrawAKnock is its control.
+	// tag it withdraws, and the record of which knocks are out, are the
+	// PRESENTING token's own plugin's, and the resolved goes to that token's
+	// owner, so another owner's token withdraws only its own plugin's
+	// notification — a 204 for A's ref, as for a ghost ref. TestAnotherPluginCannotWithdrawAKnock is its control.
 	"DELETE /plugin/v1/notify/{ref}": "the ref names no row: controlled in TestAnotherPluginCannotWithdrawAKnock",
 	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
 	// with fleet proposals off, so every id answers 404 for A and the ghost

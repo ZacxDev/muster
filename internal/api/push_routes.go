@@ -233,12 +233,21 @@ func (s *Server) handlePushRemove(w http.ResponseWriter, r *http.Request) {
 const (
 	pushOwnerBurst  = 30
 	pushOwnerWindow = 10 * time.Minute
+
+	// appOwnerBurst per pushOwnerWindow is the owner's OWN budget for the `app`
+	// event (an app plugin's knocks, plugin_notify.go), across all their app
+	// plugins. 🔴 KNOCKS NEVER SPEND THE SHARED CAP ABOVE: one plugin knocking
+	// on many refs would otherwise drop every other notification the owner has
+	// for the rest of the window (audit round 1 of #924).
+	appOwnerBurst = 10
 )
 
 // ownerRateLimit is a fixed window per owner.
 type ownerRateLimit struct {
 	mu   sync.Mutex
 	wins map[int64]*ownerWindow
+	// burst is the window's allowance; 0 is pushOwnerBurst.
+	burst int
 }
 
 type ownerWindow struct {
@@ -261,7 +270,11 @@ func (l *ownerRateLimit) allow(owner int64, now time.Time) (ok, first bool) {
 		w = &ownerWindow{start: now}
 		l.wins[owner] = w
 	}
-	if w.count >= pushOwnerBurst {
+	burst := l.burst
+	if burst == 0 {
+		burst = pushOwnerBurst
+	}
+	if w.count >= burst {
 		first = !w.warned
 		w.warned = true
 		return false, first
@@ -286,6 +299,14 @@ func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) str
 		return pushDropMuted
 	}
 	if event == push.EventResolved {
+		return ""
+	}
+	// An app plugin's knocks spend their own budget, never the shared cap.
+	if event == push.EventApp {
+		if ok, _ := s.appPushLimit.allow(owner, s.now()); !ok {
+			metrics.PushSuppressed.WithLabelValues("throttled").Inc()
+			return pushDropAppOwnerCap
+		}
 		return ""
 	}
 	ok, first := s.pushLimit.allow(owner, s.now())
@@ -330,8 +351,9 @@ const (
 	pushDropNoOwner     = "no_owner"     // the notification names no owner
 	pushDropOff         = "push_off"     // neither muster's push nor the router is configured
 	pushDropRouterOnly  = "router_admin_only"
-	pushDropOfficer     = "officer" // an officer's information-only push (officer_push.go)
-	pushDropAppCap      = "app_cap" // an app plugin's knock cap (plugin_notify.go)
+	pushDropOfficer     = "officer"       // an officer's information-only push (officer_push.go)
+	pushDropAppCap      = "app_cap"       // an app plugin's knock cap (plugin_notify.go)
+	pushDropAppOwnerCap = "app_owner_cap" // the owner's own budget for the app event (appOwnerBurst)
 )
 
 // logPushDrop is THE log line of a notification that was not delivered:
@@ -351,6 +373,8 @@ func pushDropSentence(reason string) string {
 		return fmt.Sprintf("the sender's cap of %d notifications per %s is reached", notifySenderBurst, notifySenderWindow)
 	case pushDropOfficer:
 		return "an officer notifies only for a decision: use officer_ask_person to ask your owner something"
+	case pushDropAppOwnerCap:
+		return fmt.Sprintf("the owner's app budget of %d notifications per %s is reached (apart from the cap every other event shares)", appOwnerBurst, pushOwnerWindow)
 	case pushDropAppCap:
 		return fmt.Sprintf("the app's cap of one notification per ref per %s and %d per %s is reached", appNotifyRefWindow, appNotifyPluginBurst, appNotifyPluginWindow)
 	case pushDropNoDevice:

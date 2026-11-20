@@ -405,6 +405,9 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// appPushLimit is the owner's own budget for the `app` event
+	// (appOwnerBurst, push_routes.go): knocks never spend pushLimit.
+	appPushLimit ownerRateLimit
 	// notifySenders is the per-SENDER cap on the notifications an agent or a
 	// session sends its owner itself — notify_owner and page_update's push
 	// (notify_owner.go), each its own bucket per sender.
@@ -754,6 +757,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 	}
 	return &Server{
 		asks:                    askq.New(),
+		appPushLimit:            ownerRateLimit{burst: appOwnerBurst},
 		bus:                     bus,
 		logger:                  logger,
 		auth:                    authCfg,

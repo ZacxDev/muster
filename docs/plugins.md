@@ -222,11 +222,27 @@ No other field is accepted: a body with any other (a guest's `name`, a
   `app-<plugin id>-<ref>` (so a later count replaces the earlier one), and a
   tap opens `/apps/<plugin id>?ref=<ref>`.
 - **The withdrawal.** `DELETE /plugin/v1/notify/<ref>` withdraws it: a
-  `resolved` under the same tag (silent on a paired phone). It is never
-  capped. Call it when the lobby empties or you open the meeting.
+  `resolved` under the same tag (silent on a paired phone), `202`. It is sent
+  only for a knock that went out and is not yet withdrawn, for up to an hour
+  after that ref's last knock; anything else (a ref never knocked about,
+  already withdrawn, or older) answers `204` and sends nothing. Those `204`s
+  are capped at 60 per plugin per hour (`429` with `Retry-After`); the
+  withdrawal of a knock that is out is never refused. Call it when the lobby
+  empties or you open the meeting.
 - **Limits.** One send per `(plugin, ref)` per 30 s, and 30 per plugin in any
   hour. Past either: `429` with `Retry-After` (seconds), and the drop is
   logged like every dropped push. A refused send spends neither cap.
+- **Its own budget.** Knocks never spend your cap of 30 notifications per 10
+  minutes that every other event shares: they have their own, 10 per 10
+  minutes across all your app plugins. A knock past it is still answered
+  `202` (it was queued) and is dropped and logged as `the owner's app
+  budget … is reached`.
+- **Answered by muster's own push.** The `503` and `204` answers are about
+  muster's native push alone (your browsers and paired phones): a server
+  without it answers `503`, and the toggle and device checks read only its
+  settings. For an admin on a server that also runs the permission router,
+  the router is still handed the knock as it is every other notification, but
+  the answer never depends on it.
 - **Answers.** `202` queued; `204` you turned the toggle off or have no
   device (not an error: the plugin keeps its lobby row either way), logged as
   a dropped push; `503` push is not configured on this server.

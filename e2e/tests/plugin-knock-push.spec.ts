@@ -146,9 +146,11 @@ test.beforeAll(async () => {
     MUSTER_PUSH_EXTRA_HOSTS: pushHost,
     MUSTER_PLUGINS: '1',
     MUSTER_PLUGIN_ORIGINS: appOrigin,
-    // The test CA alone: the only TLS this server makes is to the sink.
+    // The test CA replaces the system bundle FILE, so the sink's chain is
+    // verified against it. (Go still reads its default certificate
+    // directories: an empty SSL_CERT_DIR is ignored, so none is set. The only
+    // TLS this server makes is to the sink, so that changes nothing here.)
     SSL_CERT_FILE: caFile,
-    SSL_CERT_DIR: '',
     HTTPS_PROXY: `http://127.0.0.1:${knockPushSinkPort}`,
     https_proxy: `http://127.0.0.1:${knockPushSinkPort}`,
     NO_PROXY: '',

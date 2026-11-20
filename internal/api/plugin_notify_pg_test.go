@@ -373,8 +373,8 @@ func TestAKnockIsCapped(t *testing.T) {
 
 // TestAKnockIsWithdrawn: DELETE /plugin/v1/notify/{ref} sends the existing
 // withdrawal under the knock's own tag — a `resolved` the browser closes it
-// by, and payload v2's silent resolved on the paired phone — and spends no
-// cap; a ref outside the pattern is 400 and sends nothing.
+// by, and payload v2's silent resolved on the paired phone; a ref outside the
+// pattern is 400 and sends nothing.
 func TestAKnockIsWithdrawn(t *testing.T) {
 	f := newKnockFixture(t)
 	if rec := f.knock(f.tok, knockBody("meet-7", 2)); rec.Code != http.StatusAccepted {
@@ -388,27 +388,26 @@ func TestAKnockIsWithdrawn(t *testing.T) {
 	if n := f.pusher.total(); n != 2 {
 		t.Fatalf("the refused withdrawals sent: %d push(es); want the knock's 2", n)
 	}
-	for i := 0; i < 2; i++ { // twice: a withdrawal is never capped
-		if rec := f.withdraw(f.tok, "meet-7"); rec.Code != http.StatusAccepted {
-			t.Fatalf("DELETE /plugin/v1/notify/meet-7: %d %s; want 202", rec.Code, rec.Body.String())
-		}
+	if rec := f.withdraw(f.tok, "meet-7"); rec.Code != http.StatusAccepted {
+		t.Fatalf("DELETE /plugin/v1/notify/meet-7: %d %s; want 202", rec.Code, rec.Body.String())
 	}
 	tag := f.tag("meet-7")
 	phone := f.pusher.to(f.phone)
-	if want := `{"v":2,"type":"resolved","id":"` + tag + `","tag":"` + tag + `"}`; len(phone) != 3 || phone[1] != want || phone[2] != want {
-		t.Errorf("the phone's withdrawals:\n got %v\nwant two of %s", phone[1:], want)
+	if want := `{"v":2,"type":"resolved","id":"` + tag + `","tag":"` + tag + `"}`; len(phone) != 2 || phone[1] != want {
+		t.Errorf("the phone's withdrawal:\n got %v\nwant %s", phone[1:], want)
 	}
 	browser := f.pusher.to(f.browser)
 	var p push.Payload
-	if len(browser) != 3 || json.Unmarshal([]byte(browser[1]), &p) != nil || p.Type != push.TypeResolved || p.Tag != tag || p.Title != "" || p.Body != "" {
+	if len(browser) != 2 || json.Unmarshal([]byte(browser[1]), &p) != nil || p.Type != push.TypeResolved || p.Tag != tag || p.Title != "" || p.Body != "" {
 		t.Errorf("the browser's withdrawal: %v; want a resolved under %s with no text", browser, tag)
 	}
 }
 
 // TestAnotherPluginCannotWithdrawAKnock: the withdrawal's {ref} names no row —
-// its tag is the PRESENTING token's own plugin's — so another owner's app
-// plugin DELETEing the same ref sends A's devices nothing, and A's own plugin
-// is the control that it would have.
+// its tag and its record of what is out are the PRESENTING token's own
+// plugin's — so another owner's app plugin DELETEing the same ref is a 204
+// that sends A's devices nothing, and A's own plugin is the control that it
+// would have.
 func TestAnotherPluginCannotWithdrawAKnock(t *testing.T) {
 	f := newKnockFixture(t)
 	if rec := f.knock(f.tok, knockBody("shared-ref", 1)); rec.Code != http.StatusAccepted {
@@ -420,13 +419,107 @@ func TestAnotherPluginCannotWithdrawAKnock(t *testing.T) {
 	if tokB == "" {
 		t.Fatalf("minting b's app plugin: %d", rec.Code)
 	}
-	if rec := f.withdraw(tokB, "shared-ref"); rec.Code != http.StatusAccepted {
-		t.Fatalf("b's withdrawal: %d; want 202 (its own tag)", rec.Code)
+	if rec := f.withdraw(tokB, "shared-ref"); rec.Code != http.StatusNoContent {
+		t.Fatalf("b's withdrawal: %d; want 204 (b's plugin never knocked about it)", rec.Code)
 	}
 	if n := f.pusher.total(); n != 2 {
 		t.Fatalf("b's withdrawal reached A's devices: %d push(es); want A's knock's 2", n)
 	}
 	if rec := f.withdraw(f.tok, "shared-ref"); rec.Code != http.StatusAccepted || f.pusher.total() != 4 {
 		t.Fatalf("CONTROL: A's own withdrawal: %d, %d push(es); want 202 and one more per device", rec.Code, f.pusher.total())
+	}
+}
+
+// TestKnocksNeverSpendTheSharedCap (audit round 1): knocks have their OWN
+// per-owner budget, so one plugin knocking on 30 refs at once — as many as its
+// hourly cap lets it — cannot starve the owner's other notifications. After
+// the knocks, an agent's notification still reaches the browser; only the
+// first 10 knocks (the app budget) reached the phone, and the rest were
+// logged as dropped.
+func TestKnocksNeverSpendTheSharedCap(t *testing.T) {
+	f := newKnockFixture(t)
+	for i := 0; i < 30; i++ {
+		if rec := f.knock(f.tok, knockBody("many-"+strconv.Itoa(i), 1)); rec.Code != http.StatusAccepted {
+			t.Fatalf("knock %d: %d %s; want 202", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	f.srv.goNotify(f.a, push.EventAgentNotify, RouterNotification{Type: taskNotificationType, Title: "Build finished",
+		Body: "From agent example (dispatched).", Tag: "notify-cap-probe", Data: map[string]string{"url": "/"}}, nil)
+	f.srv.WaitForPushes()
+	got := f.pusher.to(f.browser)
+	if len(got) == 0 || !strings.Contains(got[len(got)-1], `"title":"Build finished"`) {
+		t.Fatalf("after 30 knocks an agent's notification did not reach the owner (the knocks spent the shared cap):\n%s", f.logs.String())
+	}
+	knocks := 0
+	for _, b := range f.pusher.to(f.phone) {
+		if strings.Contains(b, `"type":"app"`) {
+			knocks++
+		}
+	}
+	if knocks != 10 {
+		t.Errorf("the phone received %d knocks; want the app budget's 10", knocks)
+	}
+	if want := "push: dropped tag=" + f.tag("many-10") + " event=app owner=" + strconv.FormatInt(f.a, 10) + ": the owner's app budget"; !strings.Contains(f.logs.String(), want) {
+		t.Errorf("the 11th knock was not logged as dropped by the app budget (%q)", want)
+	}
+}
+
+// TestAGhostWithdrawalSendsNothing (audit round 1): a DELETE for a ref this
+// plugin never knocked about answers 204 and sends nothing.
+func TestAGhostWithdrawalSendsNothing(t *testing.T) {
+	f := newKnockFixture(t)
+	if rec := f.withdraw(f.tok, "never-knocked"); rec.Code != http.StatusNoContent {
+		t.Fatalf("a ghost withdrawal: %d %s; want 204", rec.Code, rec.Body.String())
+	}
+	if n := f.pusher.total(); n != 0 {
+		t.Fatalf("a ghost withdrawal sent %d push(es); want none", n)
+	}
+}
+
+// TestAWithdrawalAfterAKnockSendsExactlyOne (audit round 1): the first DELETE
+// after a knock sends one resolved per device (202); a second is a ghost (204,
+// nothing).
+func TestAWithdrawalAfterAKnockSendsExactlyOne(t *testing.T) {
+	f := newKnockFixture(t)
+	if rec := f.knock(f.tok, knockBody("once", 1)); rec.Code != http.StatusAccepted {
+		t.Fatalf("the knock: %d", rec.Code)
+	}
+	if rec := f.withdraw(f.tok, "once"); rec.Code != http.StatusAccepted {
+		t.Fatalf("the withdrawal: %d; want 202", rec.Code)
+	}
+	if rec := f.withdraw(f.tok, "once"); rec.Code != http.StatusNoContent {
+		t.Fatalf("a second withdrawal: %d; want 204", rec.Code)
+	}
+	tag := f.tag("once")
+	if phone, want := f.pusher.to(f.phone), `{"v":2,"type":"resolved","id":"`+tag+`","tag":"`+tag+`"}`; len(phone) != 2 || phone[1] != want {
+		t.Fatalf("the phone: %v; want the knock then exactly one %s", phone, want)
+	}
+}
+
+// TestAWithdrawalFloodIsCapped (audit round 1): ghost DELETEs are capped at 60
+// per plugin per hour — the 61st is 429 with Retry-After, logged — but a
+// withdrawal of a knock that did go out is never refused.
+func TestAWithdrawalFloodIsCapped(t *testing.T) {
+	f := newKnockFixture(t)
+	for i := 0; i < 60; i++ {
+		if rec := f.withdraw(f.tok, "ghost-"+strconv.Itoa(i)); rec.Code != http.StatusNoContent {
+			t.Fatalf("ghost withdrawal %d: %d; want 204", i+1, rec.Code)
+		}
+	}
+	rec := f.withdraw(f.tok, "ghost-60")
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "3600" {
+		t.Fatalf("the 61st ghost withdrawal: %d Retry-After %q; want 429 and 3600", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if !strings.Contains(f.logs.String(), "plugin notify: refused a withdrawal") {
+		t.Errorf("the capped withdrawal was not logged")
+	}
+	if rec := f.knock(f.tok, knockBody("real", 1)); rec.Code != http.StatusAccepted {
+		t.Fatalf("the knock: %d", rec.Code)
+	}
+	if rec := f.withdraw(f.tok, "real"); rec.Code != http.StatusAccepted || len(f.pusher.to(f.phone)) != 2 {
+		t.Fatalf("CONTROL: a real withdrawal past the ghost cap: %d, phone %d push(es); want 202 and the knock plus its resolved", rec.Code, len(f.pusher.to(f.phone)))
+	}
+	if n := f.pusher.total(); n != 4 {
+		t.Fatalf("%d push(es) in all; want the knock and its withdrawal on each device", n)
 	}
 }
