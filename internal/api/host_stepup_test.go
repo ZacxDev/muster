@@ -437,11 +437,11 @@ func TestAHostDecisionRunsOnceAndOnlyForItsOwner(t *testing.T) {
 	dev := func(uid int64) context.Context {
 		return authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaDevice})
 	}
-	if handled, err := r.s.hostDecisionForAnswer(dev(9), 41, hostDecisionConfirm); !handled || err == nil {
+	if handled, _, err := r.s.hostDecisionForAnswer(dev(9), 41, hostDecisionConfirm); !handled || err == nil {
 		t.Fatalf("another owner's phone: %v %v, want refused", handled, err)
 	}
 	browser := authz.WithPrincipal(context.Background(), authz.Principal{UserID: hostOffOwner, Role: authz.RoleAdmin, Via: authz.ViaSession})
-	if _, err := r.s.hostDecisionForAnswer(browser, 41, hostDecisionConfirm); !errors.Is(err, errHostDecisionNeedsPhone) {
+	if _, _, err := r.s.hostDecisionForAnswer(browser, 41, hostDecisionConfirm); !errors.Is(err, errHostDecisionNeedsPhone) {
 		t.Fatalf("the owner's browser: %v", err)
 	}
 	if _, ok := r.s.hostDecisions.peek(41); !ok {

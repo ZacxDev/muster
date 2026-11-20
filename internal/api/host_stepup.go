@@ -42,9 +42,11 @@ import (
 // of the exact answer. A browser answer, an MCP answer (attention_answer from
 // any machine) and an answer after a restart lost the pending decision are
 // refused, and the card stays open (or is withdrawn). The decision runs
-// once: it is taken out of the pending set before it runs. A card that is no
-// longer open (dismissed, withdrawn, expired) runs nothing: a later Confirm
-// drops its decision and is refused (hostDecisionForAnswer).
+// once: it is taken out of the pending set, and the card is answered (the
+// store's own open-only update, which a dismissal racing it cannot pass), before
+// it runs. A card that is no longer open (dismissed, withdrawn, expired) runs
+// nothing: a later Confirm drops its decision and is refused
+// (hostDecisionForAnswer).
 //
 // 🔴 A REMOTE CALLER IS ALWAYS GATED (mirror_mcp.go, "A remote caller"): a
 // session mirrored to ANOTHER muster, calling this one's admin tools. Its host
@@ -423,54 +425,94 @@ var errHostDecisionClosed = fmt.Errorf("%w: this confirmation was closed, so its
 // hostDecisionForAnswer is answerAskFrom's hook for a confirmation card:
 // handled false for any other ask. For a card: a door that is not the
 // owner's paired phone is refused (the card stays open); an answer that is
-// neither option is refused; "Refuse" runs nothing; "Confirm" runs the
-// decision once, as the session that asked, before the answer is recorded.
-func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer string) (bool, error) {
+// neither option is refused; otherwise the card is answered HERE — rec is the
+// recorded answer, and answerAskFrom records nothing more — and then
+// "Confirm" runs the decision once, as the session that asked, while
+// "Refuse" runs nothing.
+//
+// 🔴 THE CARD IS CLAIMED BEFORE ITS DECISION RUNS. The answer is recorded by
+// the store's update of an OPEN ask only (attention.Store.Answer), and only
+// then does the call run: a dismissal racing the Confirm either lands first
+// (the answer is refused as not open, nothing runs) or is itself refused as
+// not open (the call runs, the card says Confirm). It used to run the call and
+// record the answer after it, so a dismissal in between left the phone a 409
+// for a call that HAD run.
+//
+// A read or a write of the card that fails for any other reason (the database,
+// a timeout) is returned as it is, the decision left pending: the card may
+// well be open, and the owner's next Confirm runs it.
+func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer string) (handled bool, rec attention.Ask, err error) {
 	pending, ok := s.hostDecisions.peek(id)
 	if !ok {
 		if s.ext.Attention == nil {
-			return false, nil
+			return false, rec, nil
 		}
 		a, err := s.ext.Attention.Get(ctx, id)
 		if err != nil || !a.Asker.System || a.Asker.Label != hostDecisionLabel {
-			return false, nil
+			return false, rec, nil
+		}
+		if a.Status != attention.Open {
+			// Closed (and its decision dropped then): a retry of a refused
+			// Confirm says so, never that a restart lost it.
+			return true, rec, errHostDecisionClosed
 		}
 		if _, err := s.cancelAsk(ctx, id); err != nil && !errors.Is(err, attention.ErrNotOpen) {
 			s.logger.Printf("step-up: withdraw lost card %d: %v", id, err)
 		}
-		return true, errHostDecisionLost
+		return true, rec, errHostDecisionLost
 	}
 	// Every check BEFORE the decision is taken: a refused answer leaves it
 	// pending for the owner's phone.
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID != pending.owner {
-		return true, errHostDecisionLost
+		return true, rec, errHostDecisionLost
 	}
 	if p.Via != authz.ViaDevice {
-		return true, errHostDecisionNeedsPhone
+		return true, rec, errHostDecisionNeedsPhone
 	}
 	if answer != hostDecisionConfirm && answer != hostDecisionRefuse {
-		return true, fmt.Errorf("%w: answer %q or %q", attention.ErrInvalid, hostDecisionConfirm, hostDecisionRefuse)
+		return true, rec, fmt.Errorf("%w: answer %q or %q", attention.ErrInvalid, hostDecisionConfirm, hostDecisionRefuse)
+	}
+	if s.ext.Attention == nil {
+		// Never: a card is filed in the attention store.
+		return true, rec, errHostDecisionLost
 	}
 	// 🔴 A CLOSED CARD RUNS NOTHING. Dismissing a card (the Asks dismiss, the
 	// phone's dismiss, a withdrawal) or its expiry closes the ask but cannot
-	// reach this in-memory set, so its decision was still pending and a phone
-	// Confirm signed afterwards RAN it, and only then failed to record the
-	// answer. The card's own state is read here, on every door: a card that
-	// is not open drops its decision and is refused as not open.
-	if s.ext.Attention != nil {
-		if card, err := s.ext.Attention.Get(ctx, id); err != nil || card.Status != attention.Open {
-			s.hostDecisions.take(id)
-			return true, errHostDecisionClosed
-		}
+	// reach this in-memory set, so its decision is still pending. The card's
+	// own state is read here, on every door: a card that is not open (or is
+	// gone) drops its decision and is refused as not open. A read that FAILED
+	// says nothing about the card, so it drops nothing.
+	card, err := s.ext.Attention.Get(ctx, id)
+	switch {
+	case errors.Is(err, attention.ErrNotFound):
+		s.hostDecisions.take(id)
+		return true, rec, errHostDecisionClosed
+	case err != nil:
+		return true, rec, fmt.Errorf("step-up: read card %d: %w", id, err)
+	case card.Status != attention.Open:
+		s.hostDecisions.take(id)
+		return true, rec, errHostDecisionClosed
 	}
 	d, ok := s.hostDecisions.take(id)
 	if !ok {
-		return true, errHostDecisionLost
+		return true, rec, errHostDecisionLost
+	}
+	// The claim: open → answered, or nothing (see above).
+	rec, err = s.ext.Attention.Answer(ctx, id, answer)
+	switch {
+	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
+		// Closed between the read and this write: dropped (taken above).
+		return true, rec, errHostDecisionClosed
+	case err != nil:
+		// Not recorded, for a reason that is not the card's: pending again,
+		// for the owner's next Confirm.
+		s.hostDecisions.put(id, d)
+		return true, rec, fmt.Errorf("step-up: record card %d's answer: %w", id, err)
 	}
 	if answer == hostDecisionRefuse {
 		s.logger.Printf("step-up: card %d refused: %s from %s/%s not run", id, d.tool, d.host, d.caller.asker.MirrorSession)
-		return true, nil
+		return true, rec, nil
 	}
 	out := s.runStepUpTool(s.stepUpPrincipal(ctx, d.owner), d.host, d.caller, d.tool, d.args)
 	outcome := "ran"
@@ -478,7 +520,7 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 		outcome = "ran and was refused: " + mirror.OneLine(out, 200)
 	}
 	s.logger.Printf("step-up: card %d confirmed on the owner's phone: %s from %s/%s %s", id, d.tool, d.host, d.caller.asker.MirrorSession, outcome)
-	return true, nil
+	return true, rec, nil
 }
 
 // stepUpPrincipal is the principal a CONFIRMED owner-authority call runs

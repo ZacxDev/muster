@@ -428,10 +428,12 @@ const askPageScript = `<script>
   }
   // THE ANSWER IS POSTED IN PLACE: on success the page goes where the
   // server's redirect says (the same page, settled, or with its notice), as
-  // the plain form post did; a post that FAILS (a server error, no network)
-  // says so in one line under the form and keeps the page — the typed text
-  // included — so the same tap retries it. Without fetch the form posts as
-  // before.
+  // the plain form post did — a refused answer (closed, invalid) comes back
+  // as that redirect with its notice; a post that FAILS (a server or proxy
+  // error, no network) says so in one line under the form and keeps the page
+  // — the typed text included — so the same tap retries it; a 401 or 403
+  // (signed out, another site's post) loads the page again. Without fetch the
+  // form posts as before.
   var posting = false;
   document.addEventListener('submit', function (e) {
     var f = e.target, b = document.getElementById('ask-input');
@@ -442,11 +444,12 @@ const askPageScript = `<script>
     if (!window.fetch || !window.URLSearchParams || !window.FormData) return;
     e.preventDefault();
     if (posting) return;
-    var data;
-    try { data = new FormData(f, e.submitter || undefined); } catch (err) {
-      data = new FormData(f);
-      if (e.submitter && e.submitter.name) data.append(e.submitter.name, e.submitter.value);
-    }
+    // The tapped button's name=value (an option) rides along: FormData's
+    // submitter argument where the browser takes it, appended by hand where
+    // it is ignored (an older browser drops it without throwing).
+    var sub = e.submitter, data;
+    try { data = new FormData(f, sub || undefined); } catch (err) { data = new FormData(f); }
+    if (sub && sub.name && !data.has(sub.name)) data.append(sub.name, sub.value);
     posting = true;
     errorLine('');
     f.setAttribute('aria-busy', 'true');
@@ -457,6 +460,9 @@ const askPageScript = `<script>
     }
     fetch(f.action, { method: 'POST', body: new URLSearchParams(data), credentials: 'same-origin', headers: { 'Accept': 'text/html' } }).then(function (r) {
       if (r.ok) { window.location.assign(r.url || window.location.href); return; }
+      // Signed out, or refused as another site's post: no retry here can
+      // succeed, so the page is loaded again and its sign-in gate takes over.
+      if (r.status === 401 || r.status === 403) { posting = false; window.location.assign(window.location.href); return; }
       failed(` + "`" + askPostFailedText + "`" + `);
     }, function () {
       failed(` + "`" + askPostOfflineText + "`" + `);
@@ -464,8 +470,13 @@ const askPageScript = `<script>
   });
   document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') { grow(e.target); gate(e.target); } });
   // A box the browser restored (back, a reload) holds text: Answer follows
-  // it, and a collapsed row holding text is shown.
+  // it, and a collapsed row holding text is shown. A page restored from the
+  // back-forward cache mid-post (it navigated away on success) is no longer
+  // posting: its form is usable again.
   window.addEventListener('pageshow', function () {
+    posting = false;
+    var f = document.getElementById('ask-answer');
+    if (f) f.removeAttribute('aria-busy');
     var b = document.getElementById('ask-input');
     if (!b) return;
     if (b.value.trim()) openOther(false);

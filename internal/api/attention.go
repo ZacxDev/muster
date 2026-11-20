@@ -2259,14 +2259,19 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	var a attention.Ask
 	// A host officer machine's confirmation card (host_stepup.go): answered
 	// only from the owner's paired phone, and on "Confirm" the owner-authority
-	// call it holds runs once — before the answer is recorded; any other door
+	// call it holds runs once — after the hook has recorded the answer (its
+	// claim on the open card), so nothing is recorded here; any other door
 	// is refused and the card stays open.
-	if handled, err := s.hostDecisionForAnswer(ctx, id, answer); handled && err != nil {
-		if errors.Is(err, attention.ErrNotOpen) {
-			// A card closed meanwhile: its state, for the refusal's words.
-			a, _ = s.ext.Attention.Get(ctx, id)
+	if handled, rec, err := s.hostDecisionForAnswer(ctx, id, answer); handled {
+		if err != nil {
+			if errors.Is(err, attention.ErrNotOpen) {
+				// A card closed meanwhile: its state, for the refusal's words.
+				a, _ = s.ext.Attention.Get(ctx, id)
+			}
+			return a, err
 		}
-		return a, err
+		s.answerRecorded(ctx, rec)
+		return rec, nil
 	}
 	// A dispatch card whose hold lapsed (hold_lapse.go): nothing is recorded;
 	// the card is withdrawn, the chief told, and the owner reads why.
@@ -2339,19 +2344,23 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 		s.noteProposalToChief(ctx, *note)
 	}
 	if err == nil {
-		s.askSettled(a)
-		if a.Delivery == attention.DeliveryQueued {
-			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
-		}
-	}
-	if err == nil {
-		// An ask raised for a plugin message the chief did not act on
-		// (unrouted.go): the answer settles that message.
-		s.settleAnsweredMessage(ctx, a)
-		// A chief nudge raises a notice, which has no answer (attention_notice.go):
-		// nothing of a nudge's is relayed from here.
+		s.answerRecorded(ctx, a)
 	}
 	return a, err
+}
+
+// answerRecorded settles answer a, just recorded: answerAskFrom's last step on
+// every path that records one (a confirmation card's included).
+func (s *Server) answerRecorded(ctx context.Context, a attention.Ask) {
+	s.askSettled(a)
+	if a.Delivery == attention.DeliveryQueued {
+		s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
+	}
+	// An ask raised for a plugin message the chief did not act on
+	// (unrouted.go): the answer settles that message.
+	s.settleAnsweredMessage(ctx, a)
+	// A chief nudge raises a notice, which has no answer (attention_notice.go):
+	// nothing of a nudge's is relayed from here.
 }
 
 // cancelAsk withdraws an ask and settles it.

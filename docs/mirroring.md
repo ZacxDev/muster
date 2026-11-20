@@ -1813,7 +1813,13 @@ and one tap decides it without opening muster:
 4. muster checks the signature against the key the phone paired with, spends
    the challenge, and runs the decision once (Confirm) or nothing (Refuse).
    A card already dismissed, withdrawn or expired runs nothing: the answer is
-   refused as not open (`not_open`) and the request is dropped.
+   refused as not open (`not_open`) and the request is dropped. The card is
+   answered before its decision runs (an update of an open card only), so a
+   dismissal racing a Confirm either lands first (nothing runs) or is itself
+   refused as not open (the decision runs and the card says Confirm). A
+   Confirm that muster could not read or record for another reason (a
+   database error) runs nothing and leaves the request pending, so the next
+   Confirm runs it.
 
 🔴 **The tap does not weaken the gate.** It is the same signed ask action as
 any other ([design/android.md](design/android.md#the-signed-ask-actions-as-built)):
