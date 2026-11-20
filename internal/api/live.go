@@ -117,7 +117,9 @@ func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) erro
 // socket. A seam or timing held in a package variable was read by a socket
 // one test had left behind while the next test assigned it: a data race
 // (TestAStallCallbackFinishesBeforeTheBeatReturns on CI; the write timeout,
-// reassigned in a test's cleanup, against socketHeartbeat's read), and a hook
+// reassigned in a test's cleanup, against socketHeartbeat's read; the view's
+// close detection, reassigned by a test while another's view socket opened),
+// and a hook
 // or bound applied to a socket that was never the test's. On the context, a
 // setting reaches exactly the sockets and writes made on it.
 type socketSettings struct {
@@ -131,6 +133,10 @@ type socketSettings struct {
 	writeStarts  func() // just before a page write (pageWrite)
 	writeReturns func() // a page write returned, before its outcome is noted
 	stallNoted   func() // a stall was noted (notePageWrite)
+
+	// closeRead replaces the view socket's close detection (viewCloseRead),
+	// read once by handleMirrorViewWS as its socket opens.
+	closeRead func(c *websocket.Conn, ctx context.Context) context.Context
 }
 
 type socketSettingsKey struct{}
@@ -179,6 +185,18 @@ func (s *socketSettings) pingInterval() time.Duration {
 		return terminalPingInterval
 	}
 	return orDefault(s.ping, terminalPingInterval)
+}
+
+// viewCloseRead is the view socket's close detection: c.CloseRead, whose
+// context ends when the page goes, unless s replaces it (closeRead). A test
+// replaces it to hold the window in which the page has gone and the context
+// has not ended yet (streamEndReason) — on its own server's requests, never
+// in a package variable another test's handler reads as its socket opens.
+func (s *socketSettings) viewCloseRead(c *websocket.Conn, ctx context.Context) context.Context {
+	if s == nil || s.closeRead == nil {
+		return c.CloseRead(ctx)
+	}
+	return s.closeRead(c, ctx)
 }
 
 func runSeam(f func()) {

@@ -249,13 +249,12 @@ func TestAPageThatLeftIsTheBrowserLeavingAtTheHandler(t *testing.T) {
 func pageThatLeftIsTheBrowserLeavingAtTheHandler(t *testing.T, beat time.Duration) {
 	for _, c := range []struct{ view, path string }{{openViewMirror, viewSock}, {openViewTerminal, terminalSock}} {
 		t.Run(c.view, func(t *testing.T) {
-			if c.view == openViewMirror {
-				saved := viewCloseRead
-				viewCloseRead = func(_ *websocket.Conn, ctx context.Context) context.Context { return ctx }
-				t.Cleanup(func() { viewCloseRead = saved })
+			set := &socketSettings{every: beat}
+			if c.view == openViewMirror { // on this test's server only
+				set.closeRead = func(_ *websocket.Conn, ctx context.Context) context.Context { return ctx }
 			}
 			m := &streamMirror{fakeMirror: &fakeMirror{online: true, v2: &fakeMirrorV2{}}, chunk: 4 << 10}
-			s, ts, lg := streamServerWith(t, m, &socketSettings{every: beat})
+			s, ts, lg := streamServerWith(t, m, set)
 			before := disconnects(c.view)
 			page := dialPage(t, s, ts, c.path)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
