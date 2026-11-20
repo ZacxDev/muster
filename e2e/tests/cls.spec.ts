@@ -112,7 +112,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
   // An app tab's page (app_page.go), on its own server with the stub app
   // plugin framed (lib/appstub.ts; APP: the plugin minted for the measurement).
-  // Ready once the minted frame is in: the measurement includes the swap.
+  // Measured by that describe's measureApp, not measure(): the read waits for
+  // the stub's page inside the frame (the swap included), and counts the
+  // shifts a phone context flags as recent input; a positive control at each
+  // size shows a shift after the swap reads above the bar.
   'GET /apps/{id}': { where: 'app', url: 'APP', ready: `[data-app-frame][src^="${APP_ENTRY}?muster_code="]` },
 };
 const NOT_A_PAGE: Record<string, string> = {
@@ -1011,6 +1014,51 @@ test.describe("the app tab's page", () => {
     await astub.stop();
   });
 
+  // measureApp is measure() for this page, with the two gaps measure()
+  // leaves here closed:
+  //   - the frame's swap must have LANDED before settle starts: the mint is
+  //     async, so a swap later than settle's quiet window was read before it
+  //     happened (a 2.5 s delayed mint read 0). So: the stub's own page drawn
+  //     inside the frame first, then settle, then the read.
+  //   - 🔴 the reading is total + excluded. Measured (Chromium 153): in a
+  //     context with isMobile, every layout shift in roughly the first 500 ms
+  //     after navigation carries hadRecentInput with no input at all (on
+  //     /tasks as well as here; hasTouch alone does not do it, a desktop
+  //     context does not). The swap lands inside that window, so on the phone
+  //     its shifts were excluded. This measurement gives no input after the
+  //     navigation, so every flagged shift is unprovoked and is counted.
+  //     ⚠ The rest of this file still reads `total` alone: a pre-existing gap
+  //     for every phone measurement, not closed here.
+  async function measureApp(page: Page, url: string, ready: string, route: string): Promise<ClsResult> {
+    const before = astub.entries.length;
+    await page.goto(url);
+    await expect(page.frameLocator('[data-app-frame]').locator('#stub-app'), `${route}: the stub page is drawn in the frame`).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator(ready).first(), `${url} drew its content (${ready})`).toBeVisible();
+    await settle(page);
+    const r = await readCls(page);
+    // The state measured: the frame reached the stub and its code redeemed.
+    await expect.poll(() => astub.entries.length, { message: `${route}: the frame reached the stub` }).toBeGreaterThan(before);
+    expect(astub.entries[astub.entries.length - 1].status, `${route}: the frame's code redeemed`).toBe(200);
+    return r;
+  }
+  // shiftAfterSwap (an init script) inserts a 160px block above the header 50
+  // ms after a frame with a src is inserted: the positive control's shift.
+  const shiftAfterSwap = `(() => {
+    new MutationObserver((ms, o) => {
+      for (const m of ms) for (const n of m.addedNodes) {
+        if (n.tagName === 'IFRAME' && n.getAttribute('src')) {
+          o.disconnect();
+          setTimeout(() => {
+            const x = document.createElement('div');
+            x.style.height = '160px';
+            const h = document.querySelector('[data-app-header]');
+            h.parentElement.insertBefore(x, h);
+          }, 50);
+        }
+      }
+    }).observe(document, { subtree: true, childList: true });
+  })()`;
+
   test(`GET /apps/{id} with its frame loaded shifts less than ${BAR}, at both sizes`, async () => {
     test.setTimeout(120_000);
     const browser = await chromium.launch({ args: appStubArgs(clsAppEdgePort) });
@@ -1036,18 +1084,27 @@ test.describe("the app tab's page", () => {
             astub.tokens.set(id, token);
           }
           const appID = [...astub.tokens.keys()][0];
-          await page.addInitScript(clsInit);
           for (const [route, p] of Object.entries(PAGES)) {
             if (p.where !== 'app') continue;
-            const url = p.url === 'APP' ? `/apps/${appID}` : p.url;
-            const before = astub.entries.length;
-            const r = await measure(page, aorigin + url, p.ready);
-            // The state measured: the frame reached the stub and its code redeemed.
-            await expect.poll(() => astub.entries.length, { message: `${route}: the frame reached the stub` }).toBeGreaterThan(before);
-            expect(astub.entries[astub.entries.length - 1].status, `${route}: the frame's code redeemed`).toBe(200);
-            await expect(page.frameLocator('[data-app-frame]').locator('#stub-app'), `${route}: the stub page is drawn in the frame`).toBeVisible();
-            console.log(`[cls ${vp.name}] ${route} ${r.total}`);
-            if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
+            const url = aorigin + (p.url === 'APP' ? `/apps/${appID}` : p.url);
+            // POSITIVE CONTROL, at this size: a 160px block inserted above the
+            // header 50 ms after the frame is swapped in — no input, inside the
+            // first 500 ms that a phone context flags as recent input — must
+            // read above the bar, or the reading below means nothing.
+            const control = await ctx.newPage();
+            await control.addInitScript(clsInit);
+            await control.addInitScript(shiftAfterSwap);
+            const c = await measureApp(control, url, p.ready!, route);
+            await control.close();
+            console.log(`[cls ${vp.name}] ${route} positive control ${c.total} (+${c.excluded} flagged as recent input)`);
+            expect(c.total + c.excluded, report(`${vp.name} ${route} positive control (an injected shift after the swap)`, c)).toBeGreaterThan(BAR);
+
+            const page2 = await ctx.newPage();
+            await page2.addInitScript(clsInit);
+            const r = await measureApp(page2, url, p.ready!, route);
+            await page2.close();
+            console.log(`[cls ${vp.name}] ${route} ${r.total} (+${r.excluded} flagged as recent input)`);
+            if (r.total + r.excluded >= BAR) bad.push(report(`${vp.name} ${route}`, r) + ` flagged: ${JSON.stringify(r.excludedShifts)}`);
           }
         } finally {
           await ctx.close();

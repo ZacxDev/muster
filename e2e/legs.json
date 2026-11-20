@@ -43,7 +43,7 @@
     "tests/chief-ux.spec.ts": 33.7,
     "tests/claude-code-polish.spec.ts": 40.8,
     "tests/cls-long-transcript.spec.ts": 217.0,
-    "tests/cls.spec.ts": 171.8,
+    "tests/cls.spec.ts": 180.0,
     "tests/composer-autosize.spec.ts": 11.0,
     "tests/composer-menu.spec.ts": 22.5,
     "tests/composer-switcher.spec.ts": 29.5,

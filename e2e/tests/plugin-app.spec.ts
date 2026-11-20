@@ -25,12 +25,12 @@ import { APP_ENTRY, APP_ORIGIN, APP_SANDBOX, APP_ZONE, AppStub, CONTROL_ORIGIN, 
 // in it, or under a header without self, is refused. Those framings are the
 // stub's own test-only pages (control.<zone>), never a muster route.
 //
-// ⚠ "ITS TRACKS ENDED" IS OBSERVED AS ITS DOCUMENT GOING. Measured on
-// Chromium 153: a frame removed from the page fires no `ended` on its tracks
-// (the event is for an end the page did not cause), and the stub's pagehide
-// still reads them `live` — the document that owns them is being destroyed,
-// and they with it. So the revoke case asserts the stub's `pagehide`, then
-// that its heartbeat (which reports every track's state each second) stops.
+// ⚠ "ITS TRACKS ENDED" IS NOT OBSERVED. Measured on Chromium 153: a frame
+// removed from the page fires no `ended` on its tracks (the event is for an
+// end the page did not cause), and the stub's pagehide still reads them
+// `live`. What the revoke case asserts is that the stub's DOCUMENT goes (its
+// `pagehide`, then no heartbeat) — an invariant guard on the unload, not
+// coverage of the tracks themselves.
 //
 // 🔴 ONLY THIS SPEC'S SERVER (and cls.spec's app server) HAS THIS ZONE in
 // MUSTER_PLUGIN_ORIGINS, and afterAll removes the plugins it made (pluginfix
@@ -270,7 +270,7 @@ test('in the Android app (window.musterApp) no frame is drawn, the Open card is,
 });
 
 // Last: it revokes a plugin of its own, so the cases above keep theirs.
-test('revoking the plugin on /plugins in a second tab removes the frame within 35 s, and the stub page goes with its tracks', async ({ browser }) => {
+test('revoking the plugin on /plugins in a second tab removes the frame within 35 s, and the stub page unloads (an invariant guard, not track coverage)', async ({ browser }) => {
   test.setTimeout(120_000);
   const { ctx, page } = await signedInContext(browser, viewports[1].use);
   try {
@@ -303,7 +303,11 @@ test('revoking the plugin on /plugins in a second tab removes the frame within 3
     await expect(page.locator('[data-app-newtab]')).toBeHidden();
     console.log(`[plugin-app] the frame went ${tookMs} ms after the revoke`);
 
-    // The stub's document went: its pagehide, then no heartbeat after it.
+    // 🔴 AN INVARIANT GUARD, NOT TRACK COVERAGE: the stub's document went —
+    // its pagehide arrived, and no heartbeat after it. This pins that removing
+    // the frame unloads the plugin's page; it does NOT observe a track
+    // ending (Chromium fires no `ended` on teardown, and pagehide still reads
+    // them `live`), so no claim about the capture devices rests on it alone.
     await expect
       .poll(() => stub.reportsOf(entry.run).some((r) => r.event === 'pagehide'), { message: 'the stub reported pagehide', timeout: 10_000 })
       .toBe(true);

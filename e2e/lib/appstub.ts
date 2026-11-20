@@ -148,7 +148,8 @@ export class AppStub {
   private edge?: ChildProcess;
   private edgeLog = '';
   private seq = 0;
-  readonly dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-appstub-'));
+  // dir holds the edge's log: made by start(), removed by stop().
+  private dir = '';
 
   constructor(
     readonly musterOrigin: string,
@@ -174,6 +175,7 @@ export class AppStub {
   }
 
   async start(): Promise<void> {
+    this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-appstub-'));
     this.server = http.createServer((req, res) => void this.handle(req, res));
     await new Promise<void>((resolve) => this.server!.listen(this.stubPort, '127.0.0.1', resolve));
     const fixBin = path.join(binDir, 'previewfix');
@@ -199,6 +201,8 @@ export class AppStub {
       await done;
     }
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
+    if (this.dir) fs.rmSync(this.dir, { recursive: true, force: true });
+    this.dir = '';
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
