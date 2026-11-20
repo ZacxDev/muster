@@ -97,6 +97,13 @@ func newChatPG(t *testing.T) *chatPG {
 // clock now; nil is time.Now.
 func newChatPGAt(t *testing.T, now func() time.Time) *chatPG {
 	t.Helper()
+	return newChatPGWithKinds(t, now, stubKinds{pick: "acct-one"})
+}
+
+// newChatPGWithKinds is newChatPGAt with the server's agent kinds — the
+// account pool the chat lanes read — given.
+func newChatPGWithKinds(t *testing.T, now func() time.Time, kinds AgentKinds) *chatPG {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
@@ -131,7 +138,7 @@ func newChatPGAt(t *testing.T, now func() time.Time) *chatPG {
 	chat := &laneChat{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
 	s.UseExtensions(Extensions{Agents: pg, Provisioner: readyProv{name: name}, Gateway: chat,
-		SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}, AgentNamespacePrefix: prefix})
+		SessionLiveness: stubLiveness{}, Kinds: kinds, AgentNamespacePrefix: prefix})
 	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}, InstallSession: discardSession, NoShipResume: true,
 		ChatHeartbeatEvery: time.Hour, ChatReplyRetries: []time.Duration{time.Millisecond}, Now: now})
 	if err != nil {

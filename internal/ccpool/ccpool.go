@@ -513,6 +513,11 @@ type AccountState struct {
 	// set ONLY while it is still cooling down at the pool's clock when States
 	// read it; zero once it has ended. A non-zero value means "not selectable".
 	CoolingUntil time.Time
+	// ResetStated: CoolingUntil is the reset time the account's limit message
+	// stated ([statedReset]), not the configured cooldown after its mark — a
+	// time the account's own limit named, rather than the pool's guess. False
+	// whenever CoolingUntil is zero.
+	ResetStated bool
 	// MaxConcurrentJobs is the per-account job cap ([Limits.MaxConcurrentJobs]),
 	// the same for every account. ZERO IS NO CAP, which is the default.
 	MaxConcurrentJobs int
@@ -536,10 +541,15 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 	out := make(map[string]AccountState, len(names))
 	for _, n := range names {
 		m := marks[n]
+		until, stated := cooldownOf(m, p.limits.Cooldown)
+		if !now.Before(until) {
+			until, stated = time.Time{}, false
+		}
 		out[n] = AccountState{
 			AuthFailed:        authFailedNow(m, tokens[n]),
 			RateLimitedAt:     m.RateLimitedAt,
-			CoolingUntil:      coolingUntil(m, p.limits.Cooldown, now),
+			CoolingUntil:      until,
+			ResetStated:       stated,
 			MaxConcurrentJobs: p.limits.MaxConcurrentJobs,
 		}
 	}
@@ -660,13 +670,83 @@ func statedReset(detail string, at time.Time) (time.Time, bool) {
 // It is computed from the stored mark at every read, not stored itself, so a
 // changed default cooldown applies to marks already written.
 func CooldownUntil(m Mark, cooldown time.Duration) time.Time {
+	until, _ := cooldownOf(m, cooldown)
+	return until
+}
+
+// cooldownOf is [CooldownUntil], and whether that time is the reset m's
+// message stated (true) rather than the mark's time plus cooldown (false).
+func cooldownOf(m Mark, cooldown time.Duration) (time.Time, bool) {
 	if m.RateLimitedAt.IsZero() {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	if reset, ok := statedReset(m.RateLimitedDetail, m.RateLimitedAt); ok {
-		return reset
+		return reset, true
 	}
-	return m.RateLimitedAt.Add(cooldown)
+	return m.RateLimitedAt.Add(cooldown), false
+}
+
+// EarliestReset is the earliest time one of an owner's accounts stops being at
+// its usage limit, read from the pool's own record of them (states, as
+// [Pool.States] answered it, at now): what an officer chat tells the member it
+// waits for (internal/api, internal/officers ChatRateLimitedReplyFor). ok is
+// false when the record names no such time, and the caller keeps what it had.
+//
+// It is the earliest [AccountState.CoolingUntil] that is still after now, and
+// ok, ONLY when:
+//
+//   - every account that is not auth_failed is cooling at now. An account that
+//     is neither is not at its limit by the pool's record — usable now, or
+//     unmarked because the runtime never reported its limit — so the pool is not
+//     exhausted and holds no reset to name. A cooldown already over at now (a
+//     reset in the past) is such an account. An auth_failed account is skipped:
+//     it answers when its token is replaced, never at a reset;
+//   - and that earliest cooldown is a stated reset ([AccountState.ResetStated]).
+//     The configured cooldown after an unreadable message is when the pool
+//     tries the account again, not a reset its limit named, and is not quoted
+//     as one.
+//
+// 🔴 THIS IS THE TIME THE SELECTION AND THE FAILOVER READ. [ChooseFailover]
+// moves an agent onto an account exactly when its cooldown is over (or the
+// usage poller cleared its mark on a live reading, which makes it not cooling
+// here too), so the earliest cooldown is the earliest the officer's turn can
+// land on an account again.
+func EarliestReset(states map[string]AccountState, now time.Time) (time.Time, bool) {
+	var earliest time.Time
+	stated := false
+	for _, st := range states {
+		if st.AuthFailed {
+			continue
+		}
+		if !st.CoolingUntil.After(now) {
+			return time.Time{}, false
+		}
+		if earliest.IsZero() || st.CoolingUntil.Before(earliest) {
+			earliest, stated = st.CoolingUntil, st.ResetStated
+		} else if st.CoolingUntil.Equal(earliest) && st.ResetStated {
+			stated = true
+		}
+	}
+	if earliest.IsZero() || !stated {
+		return time.Time{}, false
+	}
+	return earliest, true
+}
+
+// ResetPhraseAt is t as the CLI states a reset, in UTC and always with its
+// date: "resets Nov 23, 1am (UTC)", "resets Nov 23, 9:45pm (UTC)" — the shape
+// [ResetPhrase] reads. A time between minutes is rounded UP to the next one,
+// so the member is never told an account is back before it is.
+func ResetPhraseAt(t time.Time) string {
+	t = t.UTC()
+	if r := t.Truncate(time.Minute); !r.Equal(t) {
+		t = r.Add(time.Minute)
+	}
+	layout := "Jan 2, 3:04pm"
+	if t.Minute() == 0 {
+		layout = "Jan 2, 3pm"
+	}
+	return "resets " + t.Format(layout) + " (UTC)"
 }
 
 // coolingUntil is CooldownUntil when the cooldown is still running at now, and

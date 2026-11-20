@@ -508,6 +508,23 @@ var ErrChatRateLimited = errors.New("officers: the officer's Claude account is r
 // stated reset); any other rate limit gets ChatRequestRateLimitedReply.
 var ErrChatUsageLimit = errors.New("officers: the officer's Claude account is at its usage limit")
 
+// PoolReset is a chat turn's usage-limit failure (Err, an ErrChatUsageLimit)
+// with the earliest time an account in the officer's own pool stops being at
+// its limit (At, ccpool.EarliestReset): ChatRateLimitedReplyFor quotes At,
+// not the reset the CLI stated for the account the turn last tried. The
+// failover tries the accounts in turn, so that one is often the one that
+// resets LATEST. Err is unchanged for every errors.Is the runner makes.
+type PoolReset struct {
+	At  time.Time
+	Err error
+}
+
+func (e *PoolReset) Error() string {
+	return e.Err.Error() + " (the pool's earliest reset: " + e.At.UTC().Format(time.RFC3339) + ")"
+}
+
+func (e *PoolReset) Unwrap() error { return e.Err }
+
 // ErrChatLaneBusy is the ErrChatLaneUnavailable that is ccd's 409 `busy`
 // (awaiting_approval included): a turn is running in the lane's CLI. A lane
 // is one chat's, so that is usually the chat's OWN earlier turn — one a
@@ -684,14 +701,28 @@ const (
 
 // ChatRateLimitedReplyFor is the reply for a chat that gave up on rate-limited
 // turns (chatRateLimitedAttempts), chosen by err, the last one: a usage limit
-// (ErrChatUsageLimit) says so, with its stated reset; any other rate limit
-// says only that the officer is being rate-limited, and quotes no reset — a
-// transient limit states none, and must not read as the accounts' limit.
+// (ErrChatUsageLimit) says so, with a reset; any other rate limit says only
+// that the officer is being rate-limited, and quotes no reset — a transient
+// limit states none, and must not read as the accounts' limit.
+//
+// The reset of a usage limit is, in order:
+//
+//   - the pool's earliest (a PoolReset in err, at a non-zero time): when the
+//     first account of the officer's pool is back, formatted by
+//     ccpool.ResetPhraseAt, never compared as text;
+//   - else the reset the CLI stated in err (ChatRateLimitedReply), as before
+//     the pool was read — the fallback whenever the pool named no time or
+//     could not be read;
+//   - else none.
 func ChatRateLimitedReplyFor(err error) string {
-	if errors.Is(err, ErrChatUsageLimit) {
-		return ChatRateLimitedReply(err.Error())
+	if !errors.Is(err, ErrChatUsageLimit) {
+		return ChatRequestRateLimitedReply
 	}
-	return ChatRequestRateLimitedReply
+	var pr *PoolReset
+	if errors.As(err, &pr) && !pr.At.IsZero() {
+		return chatUsageLimitReply(ccpool.ResetPhraseAt(pr.At))
+	}
+	return ChatRateLimitedReply(err.Error())
 }
 
 // ChatRequestRateLimitedReply is the reply posted for a chat whose turns keep
@@ -709,8 +740,14 @@ const ChatRequestRateLimitedReply = "(The officer is being rate-limited right no
 // it, when the limit resets (detail is the failure's text, read for
 // "resets …").
 func ChatRateLimitedReply(detail string) string {
+	return chatUsageLimitReply(ccpool.ResetPhrase(detail))
+}
+
+// chatUsageLimitReply is the usage-limit reply quoting reset (a "resets …"
+// phrase), or naming none when reset is "".
+func chatUsageLimitReply(reset string) string {
 	until := ""
-	if reset := ccpool.ResetPhrase(detail); reset != "" {
+	if reset != "" {
 		until = " (" + reset + ")"
 	}
 	return "(The officer can't reply right now: its Claude accounts are at their usage limit" + until + ". Ask again later.)"
