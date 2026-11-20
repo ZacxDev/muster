@@ -529,6 +529,11 @@ export const officerNeedsYouPort = port + 445;
 // blocks above.
 export const pagesDeclutterPort = port + 455;
 export const pagesDeclutterConnectPort = port + 456;
+// The knock push spec (plugin-knock-push.spec.ts): its own server (push and
+// plugins on, a paired test phone) and its push sink's CONNECT proxy
+// (e2e/pushsink), through which that server reaches the sink's TLS endpoint.
+export const knockPushPort = port + 470;
+export const knockPushSinkPort = port + 471;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

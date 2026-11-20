@@ -718,6 +718,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/task-writes/claim",
 		"POST /plugin/v1/task-writes/{id}/result",
 		"POST /plugin/v1/messages/{id}/owner-answered",
+		"POST /plugin/v1/notify",
+		"DELETE /plugin/v1/notify/{ref}",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
@@ -776,7 +778,7 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 	if tok == pPluginToken {
 		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
 			// Every capability, so the probe reaches every plugin route's handler.
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension}}, nil
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension, plugins.CapApp}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

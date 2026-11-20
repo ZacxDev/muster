@@ -409,6 +409,9 @@ type Server struct {
 	// session sends its owner itself — notify_owner and page_update's push
 	// (notify_owner.go), each its own bucket per sender.
 	notifySenders senderRateLimit
+	// appNotifies is the cap on an `app` plugin's knock notifications
+	// (plugin_notify.go): per (plugin, ref) and per plugin.
+	appNotifies appNotifyLimit
 	// pushOffLogged: the "push is not configured" drop has been logged once
 	// (logPushOff). On a server with no push at all every notification is
 	// dropped, so it is said once rather than once per notification.

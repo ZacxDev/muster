@@ -281,13 +281,7 @@ func (l *ownerRateLimit) allow(owner int64, now time.Time) (ok, first bool) {
 // (logPushDrop) and hands the reason to a caller that reports the outcome
 // (notify_owner's result).
 func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) string {
-	muted, err := s.ext.Push.Store().Muted(ctx, owner)
-	if err != nil {
-		// Fail OPEN: preferences are a convenience, and a database blip must not
-		// silence a notification the user did not ask to silence.
-		s.logger.Printf("push: read preferences for owner=%d: %v", owner, err)
-	}
-	if slices.Contains(muted, event) {
+	if s.pushMuted(ctx, owner, event) {
 		metrics.PushSuppressed.WithLabelValues("muted").Inc()
 		return pushDropMuted
 	}
@@ -304,6 +298,19 @@ func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) str
 		return pushDropOwnerCap
 	}
 	return ""
+}
+
+// pushMuted is THE read of whether owner turned event's toggle off (Account →
+// Notifications): pushAllowed's, and a caller that must answer before it
+// queues (plugin_notify.go's 204). push must be served.
+func (s *Server) pushMuted(ctx context.Context, owner int64, event string) bool {
+	muted, err := s.ext.Push.Store().Muted(ctx, owner)
+	if err != nil {
+		// Fail OPEN: preferences are a convenience, and a database blip must not
+		// silence a notification the user did not ask to silence.
+		s.logger.Printf("push: read preferences for owner=%d: %v", owner, err)
+	}
+	return slices.Contains(muted, event)
 }
 
 // The reasons a notification was not delivered, as logPushDrop logs them and
@@ -324,6 +331,7 @@ const (
 	pushDropOff         = "push_off"     // neither muster's push nor the router is configured
 	pushDropRouterOnly  = "router_admin_only"
 	pushDropOfficer     = "officer" // an officer's information-only push (officer_push.go)
+	pushDropAppCap      = "app_cap" // an app plugin's knock cap (plugin_notify.go)
 )
 
 // logPushDrop is THE log line of a notification that was not delivered:
@@ -343,6 +351,8 @@ func pushDropSentence(reason string) string {
 		return fmt.Sprintf("the sender's cap of %d notifications per %s is reached", notifySenderBurst, notifySenderWindow)
 	case pushDropOfficer:
 		return "an officer notifies only for a decision: use officer_ask_person to ask your owner something"
+	case pushDropAppCap:
+		return fmt.Sprintf("the app's cap of one notification per ref per %s and %d per %s is reached", appNotifyRefWindow, appNotifyPluginBurst, appNotifyPluginWindow)
 	case pushDropNoDevice:
 		return "no device is subscribed"
 	case pushDropFailed:

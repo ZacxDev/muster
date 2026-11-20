@@ -160,6 +160,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	// messages OR tasks: the one route a tasks token opens (but /self).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, pluginCapFilesTasks))
+	// An app plugin's knock notification and its withdrawal (plugin_notify.go):
+	// app only, muster's own text.
+	s.registerPluginNotifyRoutes(mux)
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
 	// the writes people and agents queued on this plugin's references.
 	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList, plugins.CapMessages))
@@ -298,6 +301,8 @@ var teamPluginRoutes = map[string]bool{
 	"POST /plugin/v1/task-writes/claim":            false,
 	"POST /plugin/v1/task-writes/{id}/result":      false,
 	"POST /plugin/v1/tasks":                        false,
+	"POST /plugin/v1/notify":                       false,
+	"DELETE /plugin/v1/notify/{ref}":               false,
 }
 
 // TeamPluginRouteRefusal answers a team plugin token anywhere but the

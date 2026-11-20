@@ -275,6 +275,11 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// chief_extension: this fixture's messages token is refused at the
 	// capability check.
 	{"/plugin/v1/chief/instructions", `{"markdown":"x"}`, "", http.StatusForbidden, http.MethodPut},
+	// The knock notification (plugin_notify.go) needs app: this fixture's
+	// messages token is refused at the capability check. The withdrawal's
+	// path is the pattern itself ({ref} is one segment).
+	{"/plugin/v1/notify", `{"kind":"knock","ref":"m-5","count":1}`, "", http.StatusForbidden, ""},
+	{"/plugin/v1/notify/{ref}", "", "", http.StatusForbidden, http.MethodDelete},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
