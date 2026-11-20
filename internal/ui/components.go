@@ -1045,6 +1045,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				pagesLink(feat, activeTab == NavPages, currentTab == NavPages),
 				// The officers (internal/api officers_pages.go): a standalone page.
 				officersLink(feat, activeTab == NavOfficers, currentTab == NavOfficers),
+				// The app tabs (app_page.go): the owner's live app plugins,
+				// after every built-in section link, oldest first.
+				appTabLinks(feat, activeTab, currentTab),
 				// The install button (shown only where the browser offers one) and
 				// the account links. The theme toggle that once sat here is gone —
 				// the UI is dark only (theme.go).

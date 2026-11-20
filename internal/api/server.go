@@ -1109,7 +1109,10 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
+		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn(),
+		// The app tabs (plugin_app.go): read only while plugins are on and
+		// MUSTER_PLUGIN_ORIGINS is set.
+		Apps: s.appTabs(ctx)}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

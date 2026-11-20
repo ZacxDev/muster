@@ -115,6 +115,7 @@ GET /api/tokens
 GET /api/whoami
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
+GET /apps/{id}
 GET /attention
 GET /attention/asker
 GET /attention/asks/{id}
@@ -203,6 +204,7 @@ GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/open-button
 GET /ui/agents/{name}/session-pages
 GET /ui/agents/{name}/task
+GET /ui/apps/{id}/alive
 GET /ui/chief/fleet
 GET /ui/chief/fleet/session
 GET /ui/chief/fleet/stepup

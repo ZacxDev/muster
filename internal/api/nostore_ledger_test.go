@@ -43,6 +43,7 @@ import (
 var noStoreWriters = map[string]string{
 	"writeAuthDocument":   "the bare pages: sign-in, claim, invite, reset, notices",
 	"writeNavDocument":    "every signed-in server-written page: account, tokens, credentials, passkeys, plugins, flows, admin, Asks",
+	"handleAppPage":       "an app tab's page: its frame mints a one-time hand-off at load, so a cached copy is never reused",
 	"formDocument":        "the helper the no-script confirm pages share",
 	"mirrorStepUpPage":    "the Rendered view's no-script step-up confirm, carrying the message",
 	"sendQueueStepUpPage": "the send queue's no-script step-up confirm, carrying the message",
@@ -56,6 +57,7 @@ var noStoreWriters = map[string]string{
 var noStoreLiterals = map[string]string{
 	"noStore":                   "the helper itself",
 	"writeDocumentHeaders":      "the header set of both document writers",
+	"handleAppAlive":            "an app tab's alive poll: whether the plugin is live now",
 	"handleAccountDevicesLive":  "the paired devices, live",
 	"handleDeviceConfig":        "a paired phone's config",
 	"handleDeviceWeb":           "the Android shell's sign-in origins, re-read on every shell open",

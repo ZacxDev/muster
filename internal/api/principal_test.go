@@ -137,6 +137,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins",
 		// A viewer hand-off's mint (plugin_handoffs.go).
 		"POST /plugin-handoffs",
+		// An app tab's page and its alive poll (plugin_app.go).
+		"GET /apps/{id}",
+		"GET /ui/apps/{id}/alive",
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/{id}/tasks",

@@ -67,7 +67,7 @@ A plugin token opens only the routes its **capabilities** allow:
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
 | `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
 | `tasks` | [`POST /plugin/v1/tasks`](#post-pluginv1tasks-one-task-per-upstream-record) only: filing a task and commenting on it by key. Nothing else: a `tasks` token is `403` on every other route but `GET /plugin/v1/self`, and on `POST /plugin/v1/tasks` it may not send `route_to_chief` or `reference` (`400`), which need `messages`. For a plugin that files tasks without bringing messages (migration `0167`). It never [auto-starts](#auto-start) an agent: auto-start needs `messages`. A `comment` lands on the open task carrying `key` among **all** your tasks, whichever plugin or person filed it, as with `messages` |
-| `app` | an [app tab](#app-tab): a tab in your sidebar for the plugin's own page. It opens no route of its own yet: the tab, its page and the hand-off for it are later core work ([design](design/meetings.md#the-core-change-the-app-capability)). Never paired (migration `0168`) |
+| `app` | an [app tab](#app-tab): a tab in your sidebar for the plugin's own page, `/apps/{id}`, which frames the entry URL, and the [hand-off](#viewer-hand-off) redeem for its codes (`POST /plugin/v1/handoffs/redeem`, which takes `viewer` or `app`). Never paired (migration `0168`) |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
@@ -124,9 +124,7 @@ data scope is stored as `none` whatever the form says.
 An `app` plugin has a tab in its owner's sidebar that opens the plugin's own
 page, full width, inside muster
 ([design](design/meetings.md#the-core-change-the-app-capability)). The
-capability is stored now (migration `0168`); drawing the tab and its page is
-later core work, so today an `app` token is minted, listed and revoked, and
-opens no route but `GET /plugin/v1/self`.
+capability is stored by migration `0168`.
 
 You choose it on `/plugins` with the **App tab** box, only while
 `MUSTER_PLUGIN_ORIGINS` is set. It carries:
@@ -150,11 +148,47 @@ Rules the mint enforces:
   `viewer`: its origin widens muster's own pages, so you pick it on
   `/plugins`, never the plugin.
 
-**Do not depend on a cookie in the frame.** The page will show the plugin in a
-cross-origin frame, where a browser treats the plugin's cookies as
-third-party: Safari blocks them and Chrome partitions them at best. Redeem the
-hand-off code at your entry URL and keep the session in the page's memory;
-reloading the frame re-enters through muster's page.
+**The tab.** One sidebar entry per live `app` plugin of yours, after the
+built-in links, oldest first, linking `/apps/<plugin id>`. It is drawn only
+while plugins are on, `MUSTER_PLUGIN_ORIGINS` is set, the token is live, and
+its origin and entry URL still pass the server's **current**
+`MUSTER_PLUGIN_ORIGINS`. Otherwise nothing is drawn.
+
+**The page, `GET /apps/{id}`.** Your own live `app` plugin's page; anything
+else (another owner's, revoked, retired origin, no `app`, unknown) is one
+`404`. A slim header (the menu, the tab label, **New tab**) and below it one
+frame filling the rest of the screen:
+
+```html
+<iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
+        allow="camera <O>; microphone <O>; display-capture <O>; fullscreen <O>; autoplay <O>; clipboard-write <O>"
+        referrerpolicy="no-referrer" src="<entry URL>?muster_code=…&muster_plugin=…">
+```
+
+`<O>` is the entry URL's exact origin, never the origin pattern. The page
+mints a [hand-off](#viewer-hand-off) with target `{"app": {}}` at load (so a
+reload re-mints) and loads the frame with it. This page alone answers with
+`Content-Security-Policy` `frame-src <O>` and
+`Permissions-Policy: microphone=(self "<O>"), camera=(self "<O>"), display-capture=(self "<O>"), fullscreen=(self "<O>"), autoplay=(self "<O>"), clipboard-write=(self "<O>")`
+(`self` is kept: Chromium delegates only what the page holds itself); every
+other response keeps `microphone=(self)` and its own CSP. Opened as
+`/apps/{id}?ref=<ref>`, the mint carries `{"app": {"ref": "<ref>"}}`; a ref
+outside `^[A-Za-z0-9_-]{1,64}$` is dropped. Treat it as a hint.
+
+**Revocation.** While visible, the page polls `GET /ui/apps/{id}/alive`
+every 30 s (`204` live, `404` not). A `404` removes the frame, which ends your
+page and any camera, microphone or screen capture in it, and says "This app
+was removed."
+
+**In the Android app** the page draws no frame: a card says the app opens in
+your browser, and **Open** mints at tap time and opens the URL top level,
+which the app hands to the browser.
+
+**Do not depend on a cookie in the frame.** A browser treats the plugin's
+cookies in muster's frame as third-party: Safari blocks them and Chrome
+partitions them at best. Redeem the hand-off code at your entry URL and keep
+the session in the page's memory; reloading the frame re-enters through
+muster's page.
 
 ### Viewer hand-off
 
@@ -197,10 +231,17 @@ on and `MUSTER_PLUGIN_ORIGINS` is set.
    ```
 
    A code that is unknown, already redeemed, expired, or minted for another
-   plugin (the owner's own or anyone's) is one `404`. A token without `viewer`
-   gets the `403` above. The plugin should then remove the code from the
+   plugin (the owner's own or anyone's) is one `404`. A token with neither
+   `viewer` nor `app` gets the `403` above. The plugin should then remove the code from the
    address bar (a redirect, or `history.replaceState`) and answer with
    `Referrer-Policy: no-referrer`.
+
+An [app tab's](#app-tab) page mints the same way with target `{"app": {}}`
+(or `{"app": {"ref": "<ref>"}}`) for one of the owner's live `app` plugins,
+and its code redeems to that target with purpose `app`. **The purpose is the
+target's:** a mirror target is `view` and needs `viewer`, an app target is
+`app` and needs `app`; a `purpose` in the request is not read, and a body with
+both targets or neither is `400`.
 
 Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
 `rate_limited` and `refused` on the mint, `redeemed` and `not_found` (purpose
