@@ -287,6 +287,34 @@ func (s *Store) EnqueueOnce(ctx context.Context, owner int64, n NewItem, now tim
 	return id, true, nil
 }
 
+// SubjectItem is one item of a subject (SubjectItems): which officer's, and
+// its status.
+type SubjectItem struct {
+	ID      int64
+	Officer string
+	Status  string
+}
+
+// SubjectItems is every item of owner's — any officer's, any status — of kind
+// and subject, oldest first: who has (or had) that subject in their queue.
+func (s *Store) SubjectItems(ctx context.Context, owner int64, kind, subject string) ([]SubjectItem, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, officer, status FROM officer_items
+		WHERE owner_id = $1 AND kind = $2 AND subject_key = $3 ORDER BY id`, owner, kind, subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SubjectItem
+	for rows.Next() {
+		var it SubjectItem
+		if err := rows.Scan(&it.ID, &it.Officer, &it.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // officerTypeKey is THE SQL for the type key of officer $2 of owner $1: its
 // def's type_key — a DB-declared officer's own type (migration 0136, round
 // 0's F5) — or, with no def, the id's part before the colon (0118's rule, the

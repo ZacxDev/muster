@@ -517,10 +517,10 @@ const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
 // read for the bar — so the page costs no extra read on load. It then refreshes
 // on the events and on each open of the drawer (navWaitingEventsTrigger), and —
 // with poll — once a minute: poll is for a page where nothing else would
-// refresh it (no /events stream, no asks block: a Terminal view, a Rendered
-// view whose window has no asks source). A Rendered view WITH its asks block
-// is refreshed by that block's asks:changed, which fires on every queue change
-// and on the block's own minute's tick, so it reads /ui/nav/waiting about once
+// refresh it (no /events stream, no asks badge: a Terminal view, a Rendered
+// view whose window has no asks source). A Rendered view WITH its asks badge
+// is refreshed by that badge's asks:changed (AskerAsksLive), which fires on
+// every queue change and on the badge's own minute's tick, so it reads /ui/nav/waiting about once
 // a minute anyway. Without a switcher, the badge loads its count and polls
 // (navWaitingTrigger).
 func navWaitingSlot(s *Switcher, poll bool) g.Node {

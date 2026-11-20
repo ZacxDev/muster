@@ -143,7 +143,7 @@ func TestAFactsSeparatorTravelsWithTheFactAfterIt(t *testing.T) {
 	if len(facts) != 1 {
 		t.Fatalf("%d facts lines, want 1", len(facts))
 	}
-	if got := wrapText(facts[0]); got != "3 times · you answered 2 · always “continue” · median 11s" {
+	if got := wrapText(facts[0]); got != "3 times · you answered 2 · always “continue” · answered in about 11s" {
 		t.Errorf("facts read %q", got)
 	}
 	checkSeparatorsTravelWithTheNextFact(t, "top facts", facts[0], 4, true)
@@ -284,9 +284,9 @@ func TestAskLogPlaceNeverCutToAStub(t *testing.T) {
 		age             string
 	}{
 		{"session, host and repo", asklog.Ask{ID: 7, Kind: asklog.KindPlainText, Host: "work-laptop", TmuxSession: "ratelimit", Repo: repo,
-			AskedAt: glanceNow.Add(-2 * time.Hour)}, "ratelimit @ work-laptop · " + repo, "ratelimit @ work-laptop", "· " + repo, "· 2h ago"},
+			AskedAt: glanceNow.Add(-2 * time.Hour)}, "ratelimit on work-laptop · " + repo, "ratelimit on work-laptop", "· " + repo, "· 2h ago"},
 		{"host and repo", asklog.Ask{ID: 9, Kind: asklog.KindPlainText, Host: "studio-mac", Repo: "acme/api",
-			AskedAt: glanceNow.Add(-20 * time.Hour)}, "@ studio-mac · acme/api", "@ studio-mac", "· acme/api", "· 20h ago"},
+			AskedAt: glanceNow.Add(-20 * time.Hour)}, "on studio-mac · acme/api", "on studio-mac", "· acme/api", "· 20h ago"},
 		{"agent, no repo", asklog.Ask{ID: 10, Kind: asklog.KindAttention, AgentID: 42,
 			AskedAt: glanceNow.Add(-15 * time.Minute)}, "agent 42", "agent 42", "", "· 15m ago"},
 		{"repo only", asklog.Ask{ID: 11, Kind: asklog.KindAttention, Repo: "acme/api",
@@ -311,22 +311,22 @@ func TestAskLogPlaceNeverCutToAStub(t *testing.T) {
 			}
 			wrapWantClasses(t, "the sub line", sub, "flex", "min-w-0")
 			parts := wrapElems(t, "the sub line", sub)
-			// The session @ host part, when there is one, leads and truncates.
+			// The session-and-computer part, when there is one, leads and truncates.
 			if c.who != "" {
 				if len(parts) == 0 {
 					t.Fatal("the sub line is empty")
 				}
 				if _, ok := wrapAttr(parts[0], "data-asklog-who"); !ok {
-					t.Fatalf("the sub line's first part is not the session @ host part: %q", wrapText(parts[0]))
+					t.Fatalf("the sub line's first part is not the session-and-computer part: %q", wrapText(parts[0]))
 				}
 				if got := wrapText(parts[0]); got != c.who {
-					t.Errorf("the session @ host part reads %q, want %q", got, c.who)
+					t.Errorf("the session-and-computer part reads %q, want %q", got, c.who)
 				}
-				wrapWantClasses(t, "the session @ host part", parts[0], "min-w-0", "truncate")
+				wrapWantClasses(t, "the session-and-computer part", parts[0], "min-w-0", "truncate")
 				parts = parts[1:]
 			}
 			if len(parts) != 1 {
-				t.Fatalf("after the session @ host part, %d parts, want 1 (the tail)", len(parts))
+				t.Fatalf("after the session-and-computer part, %d parts, want 1 (the tail)", len(parts))
 			}
 			tail := parts[0]
 			if _, ok := wrapAttr(tail, "data-asklog-tail"); !ok {

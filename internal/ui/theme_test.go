@@ -22,7 +22,7 @@ import (
 // ---------------------------------------------------------------------------
 // THE PALETTE IS PARSED OUT OF THE SHIPPED STYLESHEET SOURCE, NOT RESTATED.
 //
-// 🔴 Every assertion below reads web/css/input.css itself. A fixture copy of the
+// 🔴 Every palette assertion below reads web/css/tokens.css itself. A fixture copy of the
 // tokens would be a claim about a file nobody serves: the CSS could drift to a
 // failing pair while a fixture kept passing. Parsing the real file means an edit
 // to a token is checked the moment it is made.
@@ -108,10 +108,20 @@ func parseTokens(t *testing.T, block, theme string) themeTokens {
 	return out
 }
 
-// themes returns the dark and light token sets from input.css.
+// readTokensCSS returns web/css/tokens.css, the palette (input.css imports it).
+func readTokensCSS(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "web", "css", "tokens.css"))
+	if err != nil {
+		t.Fatalf("read web/css/tokens.css: %v", err)
+	}
+	return string(b)
+}
+
+// themes returns the dark and light token sets from tokens.css.
 func themes(t *testing.T) (dark, light themeTokens) {
 	t.Helper()
-	css := readInputCSS(t)
+	css := readTokensCSS(t)
 	return parseTokens(t, cssBlock(t, css, ":root, .dark"), "dark"),
 		parseTokens(t, cssBlock(t, css, ":root:not(.dark)"), "light")
 }
@@ -197,7 +207,7 @@ func contrastFailures(theme string, tok themeTokens) []string {
 }
 
 // TestThemeTokensMeetWCAG asserts every designed pair, in both themes, at its
-// AA minimum — against the values input.css actually ships.
+// AA minimum — against the values tokens.css actually ships.
 func TestThemeTokensMeetWCAG(t *testing.T) {
 	// The instrument first. A contrast function that returned a constant would
 	// pass every pair below; these are the two textbook anchors.
@@ -244,8 +254,8 @@ func TestThemeTokensMeetWCAG(t *testing.T) {
 // silently loses its colour.
 func TestThemeTokenSetsMatch(t *testing.T) {
 	dark, light := themes(t)
-	if len(dark) != 36 {
-		t.Errorf("the dark block has %d tokens, want 36 (14 roles + 7 status pairs + the 8-step recency scale)", len(dark))
+	if len(dark) != 44 {
+		t.Errorf("the dark block has %d tokens, want 44 (14 roles + 7 status pairs + the 8-step recency scale + the 8 server colours)", len(dark))
 	}
 	for k := range dark {
 		if _, ok := light[k]; !ok {

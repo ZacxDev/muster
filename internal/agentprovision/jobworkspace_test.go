@@ -420,7 +420,9 @@ func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
 		t.Fatalf("%d execs, want 1", len(d.cmds))
 	}
 	want := []string{"muster-job-worktree", "/data/workspace/widgets", "/data/workspace/.muster-jobs/41", sha,
-		"https://github.com/acme/widgets", "7", "", "", "1", "", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
+		"https://github.com/acme/widgets", "7", "", "", "1", "",
+		// No deadline on the context: the unshallow's whole budget (UnshallowMaxBudget).
+		"600", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 	if got := d.cmds[0][3:]; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("worktree command args = %q\nwant                    %q", got, want)
 	}

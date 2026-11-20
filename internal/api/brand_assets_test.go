@@ -148,12 +148,18 @@ func pageRefs(where, page string) []brandRef {
 		switch {
 		case strings.HasPrefix(tag, "<link") && (a["rel"] == "icon" || a["rel"] == "apple-touch-icon"):
 			out = append(out, brandRef{where + " rel=" + a["rel"], staticFile(a["href"]), a["sizes"]})
-		case strings.HasPrefix(tag, "<img") && hasAttr(tag, "data-brand-mark"):
+		case strings.HasPrefix(tag, "<img") && (hasAttr(tag, "data-brand-mark") || hasAttr(tag, "data-server-mark")):
+			// data-server-mark: the sidebar's server switcher drawing
+			// muster's square mark for a server with no branding.
+			kind := "data-brand-mark"
+			if hasAttr(tag, "data-server-mark") {
+				kind = "data-server-mark"
+			}
 			d := ""
 			if a["width"] != "" || a["height"] != "" {
 				d = a["width"] + "x" + a["height"]
 			}
-			out = append(out, brandRef{where + " <img data-brand-mark>", staticFile(a["src"]), d})
+			out = append(out, brandRef{where + " <img " + kind + ">", staticFile(a["src"]), d})
 		}
 	}
 	return out
@@ -671,12 +677,12 @@ func svgInks(els []xml.StartElement, ground string) (inks []string, probs []stri
 	return inks, probs
 }
 
-// darkTokens reads the dark theme's --mu-bg and --mu-s1 from input.css (the
+// darkTokens reads the dark theme's --mu-bg and --mu-s1 from tokens.css (the
 // header's and the sidebar's grounds, where the app draws the lockup). The
 // dark block comes first in the file, so the first match of each is dark's.
 func darkTokens(t *testing.T) map[string]string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(repoRoot, "web", "css", "input.css"))
+	b, err := os.ReadFile(filepath.Join(repoRoot, "web", "css", "tokens.css"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +690,7 @@ func darkTokens(t *testing.T) map[string]string {
 	for _, name := range []string{"bg", "s1"} {
 		m := regexp.MustCompile(`--mu-` + name + `:\s*(\d+) (\d+) (\d+);`).FindSubmatch(b)
 		if m == nil {
-			t.Fatalf("input.css has no --mu-%s", name)
+			t.Fatalf("tokens.css has no --mu-%s", name)
 		}
 		var c [3]int
 		for i := range c {
@@ -712,7 +718,7 @@ func TestBrandColoursContrastWithTheirGround(t *testing.T) {
 	}
 	tokens := darkTokens(t)
 	if tokens["--mu-bg"] != "#110F1C" {
-		t.Fatalf("control: read --mu-bg as %s from input.css", tokens["--mu-bg"])
+		t.Fatalf("control: read --mu-bg as %s from tokens.css", tokens["--mu-bg"])
 	}
 	pairs := 0
 	for p := range brandLedger {

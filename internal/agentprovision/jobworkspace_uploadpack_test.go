@@ -58,7 +58,7 @@ func TestEveryWorktreeScriptFetchFromAMirrorCarriesItsUploadPack(t *testing.T) {
 	}
 	log := worktreetest.GitShim(t, os.Getenv("PATH"))
 	args := append([]string{"-c", jobOverlayScript, "muster-job-worktree", r.Checkout, filepath.Join(root, ".muster-jobs", "41"),
-		r.Commit, r.Origin, "7", r.Stray, up, "1", r.Default}, JobOverlayRootFiles...)
+		r.Commit, r.Origin, "7", r.Stray, up, "1", r.Default, "60"}, JobOverlayRootFiles...)
 	out, _ := exec.Command("sh", args...).CombinedOutput()
 	if !strings.Contains(string(out), ConfigRefNotOnDefaultBranchMessage) {
 		t.Fatalf("instrument: the script did not reach the default branch's fetch and its refusal: %s", out)
