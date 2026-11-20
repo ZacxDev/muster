@@ -233,6 +233,9 @@ for (const vp of [
       await expect(page.locator('[data-ask-closed]')).toBeVisible();
       // Settled, it is headed by its state, not "… is asking".
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Answered');
+      // …so the badge row names who asked (an open page's heading does).
+      await expect(page.locator('[data-ask-source]')).toHaveText(agentName);
+      await expect(page.locator('[data-ask-source]')).toBeVisible();
       await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: ' + sugB + ' — and post in the channel');
       await expect(page.locator('#app-compose'), 'no answer box on an answered ask').toBeHidden();
       const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string; answer: string };
@@ -241,6 +244,35 @@ for (const vp of [
     });
   });
 }
+
+// AN OVER-LONG ANSWER (a long dictation fills the box from script, past its
+// maxlength) is refused with its own notice, never "Type an answer or pick an
+// option.", and the open page names nobody in its badge row (its heading
+// does). RED before the fix: the notice was the blank answer's.
+test.describe('over-long answer, phone 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('an answer over 8000 characters says so', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page, origin);
+    const id = await ask(question('over-long'));
+    await page.goto(origin + `/attention/asks/${id}`);
+    await expect(page.locator('[data-ask-source]')).toHaveCount(0);
+    const box = page.locator('#ask-input');
+    await box.evaluate((el: HTMLTextAreaElement) => {
+      el.value = 'a'.repeat(8001);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`),
+      page.locator('[data-ask-send]').tap(),
+    ]);
+    await expect(page.getByText('Not recorded: the answer is longer than 8000 characters. Shorten it and send it again.')).toBeVisible();
+    await expect(page.getByText('Type an answer or pick an option.')).toHaveCount(0);
+    const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string };
+    expect(waited.status, 'nothing was recorded').toBe('pending');
+  });
+});
 
 // An ask answered ELSEWHERE while its page is open: the page follows live — it
 // shows the answer, and neither the answer box nor Dismiss stays on screen

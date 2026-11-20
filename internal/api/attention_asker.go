@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -327,6 +328,8 @@ func (s *Server) attentionFormFailed(w http.ResponseWriter, r *http.Request, err
 			code = noticeAskNeedsPhone
 		case errors.Is(err, errHostDecisionLost):
 			code = noticeAskLost
+		case errors.Is(err, attention.ErrAnswerTooLong): // before ErrInvalid, which it wraps
+			code = noticeAskTooLong
 		case errors.Is(err, attention.ErrInvalid):
 			code = noticeAskInvalid
 		}
@@ -348,6 +351,9 @@ const (
 	// (errHostDecisionNeedsPhone, errHostDecisionLost).
 	noticeAskNeedsPhone = "ask-needs-phone"
 	noticeAskLost       = "ask-lost"
+	// noticeAskTooLong: an answer over attention.MaxAnswerRunes (a long
+	// dictation can run past it).
+	noticeAskTooLong = "ask-too-long"
 )
 
 func init() {
@@ -359,6 +365,10 @@ func init() {
 		text string
 		ok   bool
 	}{"Type an answer or pick an option.", false}
+	composerNotices[noticeAskTooLong] = struct {
+		text string
+		ok   bool
+	}{"Not recorded: the answer is longer than " + strconv.Itoa(attention.MaxAnswerRunes) + " characters. Shorten it and send it again.", false}
 	composerNotices[noticeAskFailed] = struct {
 		text string
 		ok   bool

@@ -332,6 +332,10 @@ func TestABusyOrStoppedAgentKeepsTheAnswerQueuedSayingWhy(t *testing.T) {
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued || a.DeliveryDetail != "the agent is not running (stopped)" {
 		t.Fatalf("while the chief is stopped: %q %q", a.Delivery, a.DeliveryDetail)
 	}
+	// Stopped never clears on its own: the item says so, and what to do.
+	if item := answeredItem(f.page(t, "/attention"), id); !strings.Contains(item, " is stopped. Start it again and muster delivers the answer.") || strings.Contains(item, "when it&#39;s back.") {
+		t.Fatalf("the stopped agent's queued item does not say why: %s", item)
+	}
 	if n := len(f.gw.seen()); n != 0 {
 		t.Fatalf("%d turns to a busy or stopped agent", n)
 	}

@@ -2518,8 +2518,13 @@ func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, boo
 	switch a.Delivery {
 	case attention.DeliveryQueued:
 		if a.DeliveryDetail != "" {
-			// Why it waits (the agent stopped, busy, no gateway) is muster's
-			// to retry, not the owner's to act on.
+			// A reason that never clears on its own (the agent stopped, no
+			// agent gateway) is the owner's to act on, so it is said, with
+			// what to do; a transient one (busy, mid-turn, being replaced,
+			// the runtime took nothing) is muster's to retry.
+			if t := deliveryWaitStuckText(a.DeliveryDetail, who); t != "" {
+				return t, false
+			}
 			return "Will reach " + who + " when it's back.", false
 		}
 		return "Queued for " + who + ": delivering it as a new message in its session.", false

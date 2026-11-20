@@ -473,6 +473,7 @@ test.describe('log loading and error, phone 390×844', () => {
     await page.getByRole('tab', { name: 'Log' }).click();
     const line = page.locator('[data-asklog-loading]');
     await expect(line).toHaveText('Loading…');
+    await expect(line).toBeVisible();
     await expect(page.getByRole('link', { name: 'Open the ask log' })).toHaveCount(0);
     release();
     await expect(line).toHaveText("Couldn't load the log. Retry");
@@ -482,6 +483,25 @@ test.describe('log loading and error, phone 390×844', () => {
     await fetched;
     await expect(page.getByTestId('asklog-panel')).toBeVisible();
     await expect(page).toHaveURL(`${origin}/attention?tab=log`);
+  });
+
+  // With scripting off nothing ever fetches the panel, so its "Loading…" is
+  // drawn hidden (only the script reveals it) and the <noscript> link is the
+  // way to the log. RED before: the line was drawn visible, for ever.
+  test('with scripting off the Log tab never says Loading…', async ({ page, browser }) => {
+    await signIn(page, origin);
+    const ctx = await browser.newContext({ storageState: await page.context().storageState(), javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+    try {
+      const off = await ctx.newPage();
+      await off.goto(`${origin}/attention`);
+      const line = off.locator('[data-asklog-loading]');
+      await expect(line).toHaveCount(1);
+      await expect(line).toHaveAttribute('hidden', '');
+      await expect(line).toBeHidden();
+      await expect(off.locator('[data-asklog-lazy] noscript')).toHaveCount(1);
+    } finally {
+      await ctx.close();
+    }
   });
 });
 
