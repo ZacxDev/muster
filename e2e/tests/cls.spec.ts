@@ -111,6 +111,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
 };
 const NOT_A_PAGE: Record<string, string> = {
+  // The morning report is off on every server here (404); its page's layout
+  // shift is measured where it is on, in morning-report.spec.ts.
+  'GET /morning': 'measured in morning-report.spec.ts (the report is off on these servers)',
+  'GET /morning/{date}': 'measured in morning-report.spec.ts (the report is off on these servers)',
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
   'GET /agent/approvals/{id}': 'agent API (JSON)',
   'GET /agent/connectors': 'agent API (JSON)',

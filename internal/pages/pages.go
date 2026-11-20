@@ -114,7 +114,7 @@ type Creator struct {
 	// acts on its HOST's pages (creatorClause), as before.
 	MirrorSession string
 	// MirrorTmuxSession and MirrorWindow are the tmux session name and window
-	// id (@N) the mirrored session ran in when it made the page (0161), as its
+	// id (@N) the mirrored session ran in when it made the page (0162), as its
 	// host listed it: what the window's session view lists its pages by, so
 	// a new session in the same window (a /clear, a restart, a resume) keeps
 	// them. Both "" for an agent's page, a caller with no window, and a page
@@ -131,7 +131,7 @@ func (c Creator) Valid() bool { return (c.AgentID > 0) != (c.MirrorHost != "") }
 // SessionRef names ONE session whose pages are listed (Store.SessionPages): a
 // dispatched agent (AgentID), or a mirrored WINDOW on its host — MirrorHost,
 // the window (MirrorTmuxSession and MirrorWindow: what Creator recorded at
-// create, 0161) and the session keys it runs now (MirrorSessions:
+// create, 0162) and the session keys it runs now (MirrorSessions:
 // Creator.MirrorSession, mirror.Window.MCPCallerKeys). A window's pages are
 // the ones made IN it, whichever Claude session made them (a /clear, a
 // restart, a resume start a new one), and the ones its sessions now made

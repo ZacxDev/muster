@@ -29,6 +29,7 @@ var teamSweepClasses = map[string]string{
 	"succession.go Server.armSuccessionPush":               "never: succession is a person's chief's; refused on team sessions (G4)",
 	"session_route_notify.go Server.notifyChiefRouted":     "never withdrawn: information only, replaced by its tag",
 	"dispatch_hold_tools.go Server.pushSessionDispatch":    "never withdrawn: information only, replaced by its tag",
+	"morning_report.go Server.morningReportFor":            "never withdrawn: information only, replaced by its tag; a person's own report (morning_reports is personal)",
 	"agent_outcome.go Server.pushOutcome":                  "never withdrawn: an outcome is replaced by the next under its tag",
 	"chief_owner_release.go Server.applyGateRelease":       "never withdrawn: information only",
 	"team_dispatch.go Server.pushTeamDispatch":             "never withdrawn: information only, replaced by its tag (a team start; its card is an ask)",

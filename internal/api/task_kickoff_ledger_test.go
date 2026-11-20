@@ -101,6 +101,7 @@ var expectedTaskTextReaders = map[string]string{
 	"refNoticeChange":       "a reference notice's change line: plugins.TaskEvent.Change, which the task event renders fenced",
 	"notifyTaskCommented":   "a push to the owner's phone about a new comment, shown to a person",
 	"flowTaskOptions":       "the /flows \"Post the result on\" picker: titles shown to a person as <option>s; only the id is submitted",
+	"morningTasksChanged":   "the morning report's task titles: stored for, and drawn escaped on, the owner's own page; never sent to an agent",
 }
 
 // expectedKickoffBuilders is every unit that calls a kickoff helper: the

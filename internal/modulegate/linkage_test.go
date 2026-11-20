@@ -103,6 +103,9 @@ var notLinkedLedger = map[string]string{
 	"e2e/askfix": "the ask-log browser spec's fixture (`go run ./e2e/askfix`): it writes and clears " +
 		"an owner's asks for any user id it is given, so it must never be reachable from a shipped " +
 		"binary; it refuses any database not ending in _e2e.",
+	"e2e/morningfix": "the morning report's browser fixture (`go run ./e2e/morningfix`): it writes and " +
+		"clears an owner's morning reports and one ask for any user id it is given, so it must never be " +
+		"reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/asksfeedfix": "the Asks card feed's browser fixture (`go run ./e2e/asksfeedfix`): it writes " +
 		"and clears an owner's asks, a task, a plugin, a draft and a nudge decision for any user id it " +
 		"is given, so it must never be reachable from a shipped binary; it refuses any database not " +
