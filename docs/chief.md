@@ -999,6 +999,12 @@ unlike [replacing the chief](#replacing-the-chief-on-another-kind).
   succeeds. `muster-ops chief-restart` remains the check that the running image
   equals the configured one.
 
+  It asks no phone, from any machine: a machine whose other owner-authority
+  calls are [confirmation cards](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)
+  (one that starts agents for the chief, runs a host officer, or a remote
+  caller) restarts the chief at once too, `force` included
+  ([why](mirroring.md#chief_restart-is-not-gated)).
+
   It is refused while the chief is mid-turn: a plugin message, its kickoff or a
   memo being delivered, or a chat turn running. Retry when the turn ends, or pass
   `force: true` to cut the turn off, which is what the browser's Stop does.
