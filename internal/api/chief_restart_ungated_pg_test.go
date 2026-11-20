@@ -156,3 +156,70 @@ func TestAGatedToolFromTheSameCoveredHostStillFilesAStepUpCard(t *testing.T) {
 		t.Fatalf("agent_destroy from a covered host reached the provisioner: %v", got)
 	}
 }
+
+// TestChiefRestartFromEveryOtherCoveredCallerRunsAtOnce: the gate's two other
+// covered callers — a REMOTE caller (a host mirrored to another muster, which
+// this one cannot see) and a machine with a HOST OFFICER declared on it — each
+// restart the chief at once with no card, through the real /mirror/mcp door,
+// while agent_destroy from the same caller still files one (the control, so
+// each case's red on the earlier tree is the gate's).
+func TestChiefRestartFromEveryOtherCoveredCallerRunsAtOnce(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, f *restartFixture) map[string]string
+	}{
+		{"remote caller", func(t *testing.T, f *restartFixture) map[string]string {
+			remote := mirrorTok('r')
+			f.tokens[remote] = mirror.Token{ID: 9, OwnerID: 1, Host: "far"}
+			prev := mirrorBindWait
+			mirrorBindWait = 0
+			t.Cleanup(func() { mirrorBindWait = prev })
+			return remoteAs(remote, remoteSID)
+		}},
+		{"host officer machine", func(t *testing.T, f *restartFixture) map[string]string {
+			declareHostOfficerOn(t, f.srv, 1, "ws")
+			return mirrorAs(f.ws, focusSID)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRestartFixture(t)
+			t.Cleanup(func() {
+				_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = 1 AND system_asker AND asker_label = 'step-up'`)
+			})
+			hdr := c.setup(t, f)
+			before := stepUpCards(t, f)
+
+			// The control first: this caller IS covered.
+			_, r, body := f.mirrorRPC(t, hdr, mcpToolCall(agentDestroyTool, map[string]any{"id": f.op.ID}))
+			if r == nil || r.Error != nil || !strings.Contains(body, "awaiting_owner_confirmation") {
+				t.Fatalf("CONTROL: agent_destroy from the %s filed no card: %s", c.name, body)
+			}
+			if n := stepUpCards(t, f); n != before+1 {
+				t.Fatalf("CONTROL: agent_destroy from the %s filed %d card(s), want 1", c.name, n-before)
+			}
+			before++
+
+			code, r, body := f.mirrorRPC(t, hdr, mcpToolCall("chief_restart", map[string]any{"force": true}))
+			if code != 200 || r == nil || r.Error != nil {
+				t.Fatalf("chief_restart from the %s: HTTP %d %s", c.name, code, body)
+			}
+			text, isErr := toolText(t, r)
+			if strings.Contains(text, "awaiting_owner_confirmation") {
+				t.Fatalf("chief_restart from the %s asked the owner's phone instead of running: %s", c.name, text)
+			}
+			if isErr {
+				t.Fatalf("chief_restart from the %s: %s", c.name, text)
+			}
+			if n := stepUpCards(t, f); n != before {
+				t.Fatalf("chief_restart from the %s filed %d confirmation card(s)", c.name, n-before)
+			}
+			id := strconv.FormatInt(f.ownChief.ID, 10)
+			if got := strings.Join(f.prov.callList(), " "); got != "stop:"+id+" start:"+id {
+				t.Fatalf("provisioner calls %q, want stop then start of the chief %s only", got, id)
+			}
+			if res := decodeRestart(t, text); !res.Restarted || res.AgentID != f.ownChief.ID {
+				t.Fatalf("result: %s", text)
+			}
+		})
+	}
+}
