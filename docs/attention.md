@@ -1179,9 +1179,11 @@ sessions) add two things. Every other tool's description, and the
   call is refused, it reads the current definition, and it calls again.
 
 A host's `muster-mirror` (`-mcp-tools-refresh`, on by default) also re-reads
-the tool list every minute and sends `notifications/tools/list_changed` to its
-connected Claude Code sessions when the list changes, so they re-read it without
-reconnecting ([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
+the tool list every minute, and at once when it reconnects to muster. It sends
+`notifications/tools/list_changed` to each connected Claude Code session whose
+last list differs, so it re-reads it without reconnecting, and a session
+from before a mirror restart is made to initialize again
+([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
 refreshes the tool LIST. A definition already saved in a conversation is still
 recovered the way described above.
 

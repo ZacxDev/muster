@@ -10,6 +10,7 @@ import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRoute
 import { serverBinary, startServer, Running } from '../lib/server';
 import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { withMCPSession } from '../lib/localmcp';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
 // page_share.go; docs/pages.md):
@@ -159,7 +160,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
       const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
       const r = await fetch(localMCP, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        headers: await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
       last = await r.text();
@@ -441,12 +442,8 @@ test('a 400,000-byte page_update through the host MCP endpoint returns a version
     expect(body.length, 'fixture size').toBe(n);
     return body;
   };
-  const post = (body: string) =>
-    fetch(localMCP, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
-      body,
-    });
+  const headers = await withMCPSession(localMCP, { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX });
+  const post = (body: string) => fetch(localMCP, { method: 'POST', headers, body });
 
   const ok = await post(sized(400_000));
   const okText = await ok.text();
