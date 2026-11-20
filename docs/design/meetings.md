@@ -908,9 +908,14 @@ dead once redeemed.
 - **The public media path is TURN over TLS on 443, and nothing else**
   (decision 17). The deployment reaches the internet through a relay that
   carries **TCP only**; v1 opens **no UDP port** on the public node. So:
-  - one **SNI-passthrough** route on the relay's existing TCP 443:
-    `meet-turn.<muster host>` → LiveKit's built-in TURN/TLS listener on the
-    server host. The relay does not terminate TLS;
+  - one **SNI-passthrough** route on TCP 443 at the public address that
+    serves it: `meet-turn.<muster host>` → LiveKit's built-in TURN/TLS
+    listener on the server host. Nothing terminates TLS on the way. Which
+    public address and listener carries this route is a deployment choice
+    ([operator steps](#deployment)): when measured, the relay itself had no
+    443 listener, public 443 was the ingress controller on a different
+    address, and whether 443 was free on the relay's address was not
+    checked;
   - a **publicly trusted** certificate for `meet-turn.<muster host>`,
     mounted into LiveKit (`turn.cert_file`, `turn.key_file`). Chromium
     validates it: with a self-signed certificate the TURN/TLS connection
@@ -918,13 +923,20 @@ dead once redeemed.
   - LiveKit **always advertises `turns:<turn.domain>:443`**, whatever
     `turn.tls_port` is (measured), which is exactly the port the route
     serves;
-  - **TURN relay allocations stay local to the server host.** A TURN client's
-    relay candidate is on the server host itself, and the SFU reaches it
-    there, so no relay port range is forwarded anywhere. `rtc.node_ip` is the
-    server host's own address, and LiveKit's built-in TURN refuses private
-    peer addresses unless listed, so that address goes in
-    `turn.allow_restricted_peer_cidrs`. `rtc.interfaces` is pinned (the UDP
-    mux otherwise binds every interface separately).
+  - **TURN relay allocations stay local to the server host: UNVERIFIED**
+    (derived, not measured through the relay). The reasoning: a TURN
+    client's relay candidate is allocated on the server host itself, and the
+    SFU reaches it there, so no relay port range needs forwarding. For that,
+    `rtc.node_ip` is the server host's own address, and since LiveKit's
+    built-in TURN refuses private peer addresses unless listed (measured),
+    that address goes in `turn.allow_restricted_peer_cidrs`. S1 measured the
+    opposite layout failing (with `node_ip` a public relay address, the SFU's
+    checks to the relay candidate went out to that address and none came
+    back), which is why the derivation matters. **Deploy step 6's
+    real-network test is what confirms or refutes it**; if it fails, the
+    TURN relay range must be narrowed and forwarded, which is a change to
+    decision 17. `rtc.interfaces` is pinned (the UDP mux otherwise binds
+    every interface separately).
   - Signalling (`wss://meet-rtc.<muster host>`) goes through the ordinary
     HTTPS ingress, as `meet.<muster host>` does.
 - **What that costs.** Every remote participant's media is TCP inside TLS,
@@ -932,9 +944,10 @@ dead once redeemed.
   **123 ms** over the UDP mux (S1, pod to pod), and TCP adds head-of-line
   delay under packet loss. Real-network round trips (a phone on a mobile
   network, a UDP-blocked laptop) are still owed: they need the route live.
-  Direct UDP (`7882/udp` mux) and TCP (`7881/tcp`) stay enabled for clients
-  that can reach the server host directly, and opening UDP publicly is a
-  later decision, not v1.
+  LiveKit's direct UDP mux (`7882/udp`) and TCP (`7881/tcp`) listeners are
+  **not exposed** by any Service or published port in v1, in Kubernetes or
+  Compose, so every client, LAN clients included, connects through
+  TURN/TLS. Exposing them to the LAN, or UDP publicly, is a later decision.
 - **TURN: LiveKit's built-in TURN, not coturn.** It shares LiveKit's
   credentials (no separate TURN secret to rotate) and is one fewer service.
   It worked for TURN/UDP and TURN/TLS in S1.
@@ -957,14 +970,28 @@ dead once redeemed.
   | unrecorded: track egresses only | ≈ 0.2 for nine | ≈ 350 MiB |
 
   The recording is H.264 720p30 at ~3 Mb/s plus AAC: **~1.4 GB per recorded
-  hour**, which sizes the bucket and retention. The real risk is a **burst
-  of starts**: at meeting start the `track_published` webhooks arrive
-  together, and on a 6-CPU Egress node 7 of 8 track starts beside a
-  composite were refused, then all accepted 20 s later. So the deployment
-  sets `cpu_cost.track_cpu_cost` to **0.1** (measured peak 0.07) and keeps
-  `room_composite_cpu_cost` at its default, **and** the plugin retries a
-  refused track start with backoff (1, 2, 4 … 30 s), marking a transcript
-  gap until it succeeds. Track egress stays the STT feed: the Go-SDK
+  hour**, which sizes the bucket and retention. Two refusals were measured
+  on a 6-CPU Egress node (budget 4.8):
+  - **A burst of starts.** At meeting start the `track_published` webhooks
+    arrive together: 7 of 8 track starts beside a composite were refused,
+    then all accepted 20 s later.
+  - **A second recording, permanently.** A second room composite, 46 s
+    later with every hold expired, was **refused**: 4.8 − ~1.3 measured =
+    3.5, below the composite's cost of 4. At default costs a 6-CPU node
+    takes **one recorded meeting at a time**, although two would use about
+    2.8 cores.
+
+  So the deployment sets `cpu_cost.track_cpu_cost` to **0.1** (measured
+  peak 0.07) and `cpu_cost.room_composite_cpu_cost` to **2** (measured
+  composite alone: 1.14 avg, 1.57 peak; not below 2), and the plugin
+  retries a refused track start with backoff (1, 2, 4 … 30 s), marking a
+  transcript gap until it succeeds. **Sizing:** an Egress node needs about
+  `(1.7 × concurrent recordings + 0.1 × concurrent microphones) / 0.8`
+  CPUs, so 6 CPUs carries two recorded 8-person meetings at once. The
+  plugin's `MEETINGS_MAX_RECORDINGS` (default 2) caps concurrent recordings
+  to what the node was sized for; a meeting over the cap, or whose composite
+  start is refused after retries, shows "Recording unavailable" to everyone
+  and is not recorded (the notice changes with it). Track egress stays the STT feed: the Go-SDK
   participant is not needed on cost grounds.
 - **Audio for STT: track Egress to a websocket** (per audio track, raw PCM to
   `ws://muster-meetings:…/stt/ingest/<track>/<token>`), started by the plugin
@@ -1152,8 +1179,9 @@ item as owner, task, due.
 
 - **Price: $0.30 / M in, $1.20 / M out at peak, $0.15 / $0.60 off-peak**
   (OpenRouter's time-of-day pricing, when measured). An earlier revision of
-  this page quoted $0.036 / $0.50: that was the `:batch` variant, which is not
-  used (its latency is untested).
+  this page quoted $0.036 / $0.50: the `:batch` variant is $0.036 in and
+  $0.15 out. It is not used by default because its latency is untested;
+  whether it is acceptable is an [open question](#open-questions).
 - **Schema honoured:** strict JSON schema answered valid JSON 14 of 14 times
   in S6, including against a prompt telling it to break the shape, and a
   hidden required field came back every time, so the schema reaches the
@@ -1295,14 +1323,16 @@ code** (guards and dedupe included), so it measures what ships.
   left beside `stt-cohere`.
 - **Controls:** a silent channel must produce no text; a channel of a known
   read passage must produce WER under 10%; the harness must report a higher
-  WER when fed the wrong channel's reference (it can go red). All three
-  behaved in S4 (silence: 0 words; wrong reference: WER 0.90–1.21).
+  WER when fed the wrong channel's reference (it can go red). **Two of the
+  three ran in S4** and behaved (silence: 0 words; wrong reference: WER
+  0.90–1.21). The known-read-passage control **did not run**; it is owed in
+  phase 3c.
 - **Silent start check** (from S4): the harness, and production telemetry,
   flag a track with speech energy but no words for more than 20 s. Two of
   eight S4 channels showed exactly this and it would otherwise surface only
   as a missing transcript.
 - **Status:** memory and latency met in S4; **the WER run on continuous
-  channels is owed** (phase 3c).
+  channels and the known-read-passage control are owed** (phase 3c).
 
 ## Extras: what is included and why
 
@@ -1472,20 +1502,31 @@ in this order:
    meet-turn.<muster host>`, `turn.tls_port: 5349`, `rtc.node_ip` and
    `turn.allow_restricted_peer_cidrs` as above, `rtc.interfaces` pinned. Roll
    it out; nothing public changes yet.
-3. **Relay route:** on the relay's existing TCP 443, add **one SNI
-   passthrough** route: SNI `meet-turn.<muster host>` → the server host's
-   TURN/TLS port `5349` over the existing private path. TLS is **not**
-   terminated at the relay. Every other SNI on 443 is unchanged. Use the
-   relay's own safe-change sequence (it carries other services).
-4. **DNS:** an A record for `meet-turn.<muster host>` pointing at the relay's
-   public address, **not proxied** by any CDN (a proxy carries neither
-   TURN nor raw TLS passthrough).
-5. **Firewall:** nothing new: 443/tcp is already open; no UDP port and no
-   relay port range is opened.
+3. **The 443 route:** choose the public address and listener that will
+   serve TCP 443 for `meet-turn.<muster host>` (an existing ingress
+   controller's 443 with an SNI-passthrough rule, or a new listener on the
+   relay's address if 443 is free there; check which first, since this was
+   not measured). Add **one SNI passthrough** route there: SNI
+   `meet-turn.<muster host>` → the server host's TURN/TLS port `5349` over
+   the existing private path. TLS is **not** terminated on the way. Every
+   other SNI on that 443 is unchanged. Use that component's own
+   safe-change sequence (it carries other services).
+4. **DNS:** an A record for `meet-turn.<muster host>` pointing at **the
+   address that serves the 443 route**, **not proxied** by any CDN (a proxy
+   carries neither TURN nor raw TLS passthrough).
+5. **Firewall and ledger:** any **new** listener or forward this adds (for
+   example a host-network listener on the relay's address) is internet-open
+   unless the host firewall says otherwise. Record it in the host firewall's
+   ledger of deliberately open ports, and confirm that nothing else was
+   opened: no UDP port, no TURN relay port range, and no direct-media port
+   (`7881`, `7882`). If the route reuses an existing 443 listener, record
+   that instead.
 6. **Verify (the S1 still owed):** a phone on a mobile network (Wi-Fi off)
    and a laptop with UDP egress blocked join one room; each client's
    `getStats()` shows a selected pair of type `relay` over `tls`; pass = both
-   connect and the round-trip p95 is under 300 ms. Record the numbers here.
+   connect and the relay-over-TLS round-trip p95 is under 300 ms. This run
+   also settles the UNVERIFIED local-allocation derivation in the media
+   section. Record the numbers here.
 - LiveKit Egress: a Deployment, sized for the number of concurrent
   recordings. Redis: a single small instance of its own (not muster's, if
   muster has one).
@@ -1508,8 +1549,8 @@ runtime). muster's own file is unchanged. Without a GPU service it runs the
 `utterance` engine against muster's `stt-cohere`. Published on the host:
 HTTPS for `meet.` and `meet-rtc.` through the stack's reverse proxy, and
 TURN/TLS for `meet-turn.` as an SNI passthrough on 443 (the same shape as
-the Kubernetes route above). The UDP mux and TCP media ports are for LAN
-clients only and are not published by default.
+the Kubernetes route above). The UDP mux and TCP media ports are not
+published, so LAN clients also connect through TURN/TLS, as in Kubernetes.
 
 **muster's side:** add exactly `https://meet.<muster host>` to
 `MUSTER_PLUGIN_ORIGINS`, `meetings` to `MUSTER_PLUGIN_TASK_NAMESPACES`, turn on
@@ -1572,7 +1613,7 @@ Each answers one **UNVERIFIED** claim above, with a go/no-go.
 
 | # | question | go if |
 |---|---|---|
-| S1 | Do media and TURN work through the relay, from a phone on a mobile network and from a network that blocks UDP? | both connect; p95 round trip under 300 ms on UDP |
+| S1 | Do media and TURN work through the relay, from a phone on a mobile network and from a network that blocks UDP? | both connect; relay-over-TLS round-trip p95 under 300 ms (decision 17 leaves no public UDP path) |
 | S2 | Does track Egress to a websocket deliver usable PCM (format, rate, gaps) for 30 minutes? | yes, or the Go-SDK participant fallback is chosen |
 | S3 | Egress cost, measured beside its reservation: one 8-person, 1-hour meeting with room composite **and** 8 track egresses (and the same unrecorded, track egresses only); CPU, memory, and whether jobs are refused at the default `cpu_cost`s | the cluster fits one recorded and one unrecorded meeting at once, at default or justified lowered costs; otherwise S2's Go-SDK participant replaces track egress |
 | S4 | Kyutai `stt-1b-en_fr` on the GPU host: memory beside `stt-cohere`, 8 concurrent streams, WER on the AMI subset | meets the [STT bar](#stt-evaluation) |
@@ -1590,9 +1631,9 @@ The design above already carries each change; this table is the index.
 
 | spike | verdict | what changed in this design | still owed |
 |---|---|---|---|
-| S1 media and TURN | works on a LAN for the UDP mux, TCP, TURN/UDP and TURN/TLS; a self-signed TURN certificate fails in Chromium; LiveKit always advertises `turns:…:443` | the public path is TURN/TLS on 443 only, by one SNI-passthrough route, publicly trusted certificate, relay allocations local ([media](#media-livekit-turn-egress), decision 17) | the real-network run (phone on a mobile network, UDP-blocked laptop) once the route is live ([deployment](#deployment), step 6) |
-| S2 track Egress PCM | **confirmed** for 31 min: 1920 B / 10 ms, S16LE stereo 48 kHz, identical channels | URL token (Egress sends no header), no pings, restart failed egresses, timestamp by sample count | mute/unmute and publisher reconnect (needs a browser publisher) |
-| S3 Egress cost | the reservation model was wrong: recorded 8-person ≈ 1.41 cores avg / 1.69 peak / 1.56 GiB; ≈ 0.02 core per track; cost held only 15 s | `track_cpu_cost` 0.1 and a start retry; the Go-SDK fallback dropped as a cost argument | a 1-hour run with real browser publishers and screen share |
+| S1 media and TURN | works on a LAN for the UDP mux, TCP, TURN/UDP and TURN/TLS; a self-signed TURN certificate fails in Chromium; LiveKit always advertises `turns:…:443` | the public path is TURN/TLS on 443 only, by one SNI-passthrough route with a publicly trusted certificate (decision 17); local relay allocations derived, UNVERIFIED ([media](#media-livekit-turn-egress)) | the real-network run (phone on a mobile network, UDP-blocked laptop) once the route is live ([deployment](#deployment), step 6) |
+| S2 track Egress PCM | **confirmed** for 31 min: 1920 B / 10 ms, S16LE stereo 48 kHz, identical channels | URL token (Egress sends no header), no pings, restart failed egresses, timestamp by sample count | mute/unmute and publisher reconnect (needs a browser publisher); Egress logged `audiodecoder … corrupted stream` about every 4 s per track with the test tool's looping sample while bytes kept flowing: re-check with a real browser publisher |
+| S3 Egress cost | the reservation model was wrong: recorded 8-person ≈ 1.41 cores avg / 1.69 peak / 1.56 GiB; ≈ 0.02 core per track; cost held only 15 s | `track_cpu_cost` 0.1, `room_composite_cpu_cost` 2, a start retry, `MEETINGS_MAX_RECORDINGS` and the sizing rule (a second composite was refused at default cost on 6 CPUs); the Go-SDK fallback dropped as a cost argument | a 1-hour run with real browser publishers and screen share; `enable_template_sdk` (the GStreamer compositor) unmeasured |
 | S4 Kyutai STT | memory and latency **confirmed** (3.6 GB at batch 8; p95 0.91 s at 8 streams); `batch_size` is a hard stream cap | runs on the `stt-cohere` GPU host (decision 18), batch 8–16, at-capacity fallback, silent-start check | **WER on continuous AMI headset channels** (phase 3c) |
 | S5 frame media | the first revision's header was **refuted** in Chromium (no video, no screen share); with `self` it works; Firefox passes at the policy gate; Android WebView has no `getDisplayMedia` (documented) | `self` kept on every feature; e2e asserts tracks, not "no error" ([the frame](#the-frame-exactly)) | real Safari on macOS; actual capture in Firefox (headless has no screen source) |
 | S6 Extract and DeepSeek | **confirmed** shapes under `data_collection: deny`; Extract `text` can be a rewrite; DeepSeek is $0.30 / $1.20 per M and served by ~50 providers | map by offset; provider pin; price corrected; a 10-window smoke (0.91 / 0.91 against 1.00 / 1.00) | the full [action-item evaluation](#action-item-evaluation), under the pinned provider |
@@ -1897,6 +1938,12 @@ scripted completions):
   SFU; the plugin starts a track Egress for each, PCM arrives at the ingest,
   the fake engine emits its script, segments are stored and appear on the
   SSE stream with the right speakers.
+- **Two recordings on a 6-CPU Egress:** with Egress limited to 6 CPUs and
+  the deployed costs (`room_composite_cpu_cost` 2, `track_cpu_cost` 0.1),
+  two recorded 8-person meetings started 60 s apart both record. *Red if:*
+  the composite cost is left at its default 4 (the second is refused, as S3
+  measured). A third meeting over `MEETINGS_MAX_RECORDINGS` shows
+  "Recording unavailable" and its notice drops "recorded".
 - **Recording:** with **Record** on, room composite Egress writes an object;
   its size is non-zero and `ffprobe` reads a duration within 10% of the
   meeting's.
@@ -2052,12 +2099,17 @@ positive control):
 | egress restart | ignore `egress_failed` for STT tracks; drop the start retry | "egress restart and start retry" (one each) |
 | STT capacity | drop the `utterance` fallback | "STT at capacity" |
 | extract text | display `text` instead of `input[start:end]` | "ScaleDown adapter" |
+| egress costs | leave `room_composite_cpu_cost` at 4; drop `MEETINGS_MAX_RECORDINGS` | "two recordings on a 6-CPU Egress" (one each) |
 | frame header | drop `self` from `camera` or `display-capture` | `plugin-app.spec.ts` positive (video track, resolved `getDisplayMedia`) and the Permissions-Policy golden |
 | AI switch | ignore it in the worker | "AI off sends nothing" and the e2e defaults case |
 
 ## Open questions
 
-None open. Every question so far has been answered (decisions 6–16).
+1. **DeepSeek `:batch`?** `deepseek/deepseek-v4.1-flash-1017:batch` costs
+   $0.036 / M in and $0.15 / M out, against $0.30 / $1.20 at peak for the
+   default variant (S6). Its latency was not tested, and action items run on
+   10 s windows. Worth measuring it in the action-item evaluation as a third
+   candidate, or keep the default variant only?
 
 ## Decisions
 
@@ -2119,10 +2171,8 @@ design.
     ([design](#core-seam-__host--cookie-names)).
 17. **(operator, after the phase-0 spikes) The public media path is TURN over
     TLS on 443 only,** through one SNI-passthrough route for
-    `meet-turn.<muster host>` on the relay's existing TCP 443, with a
-    publicly trusted certificate. No UDP is opened on the public node in v1.
-    LiveKit advertises `turns:<turn domain>:443`, and TURN relay allocations
-    stay local to the server host ([media](#media-livekit-turn-egress),
+    `meet-turn.<muster host>`, with a publicly trusted certificate. No UDP is
+    opened on the public node in v1 ([media](#media-livekit-turn-egress),
     [operator steps](#deployment)).
 18. **(operator, after the phase-0 spikes) The streaming STT runs on the GPU
     host that already runs `stt-cohere`,** beside it, with an explicit
