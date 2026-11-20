@@ -173,10 +173,12 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /pages/{id}/view': 'measured in pages.spec.ts (the owner\'s own view: its shell)',
   'GET /pages/{id}/preview': 'a redirect to /pages/{id}/view, the view\'s former address (no document of its own)',
   'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the owner\'s view frames',
+  'GET /pages/{id}/versions/{v}/assets/{asset}': 'a file download (an author\'s image or video the owner\'s view hands its frame)',
   'GET /pages/{id}/card': 'a page card fragment the chat\'s live stream fetches and inserts (no document of its own)',
   'GET /pages/{id}/responses/{rid}/raw': 'a file download (one response\'s stored form, an admin\'s raw ⓘ)',
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
+  'GET /s/{token}/assets/{asset}': 'a file download (an author\'s image or video the shell hands its frame)',
 };
 
 const BAR = 0.01;

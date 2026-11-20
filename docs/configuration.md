@@ -712,6 +712,7 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE` | none | no | (`e2emirror`) opencode windows added to a per-window fake. Each line is `session\|@id\|index\|active\|activity\|pane title`; the session is matched from the title by the real matcher. |
 | `MUSTER_MIRROR_E2E_QUERIES` | unset | no | (`e2emirror`) `1`: every attach writes the terminal queries a real tmux sends (Device Attributes, a cursor position report) and turns focus reporting on, so the page's terminal answers them on its own. |
 | `MUSTER_MIRROR_E2E_CLAUDE` | none | no | (`e2emirror`) `<session>=<transcript path>`: plays that session as a Claude Code pane. |
+| `MUSTER_MIRROR_E2E_CLAUDE_CWD` | unset | no | (`e2emirror`) The working directory of every fake Claude Code process (`mirrorhost.MCPProxy.Cwd`: where a session's attachments and page assets are read from); unset, none has one. |
 | `MUSTER_MIRROR_E2E_NO_PROMPT_INDEX` | unset | no | (`e2emirror`) `1`: the host sends no prompt index and no prompt places, as one that predates them (`mirrorhost.Config.NoPromptIndex`). |
 | `MUSTER_MIRROR_E2E_NO_CATALOG` | unset | no | (`e2emirror`) `1`: the host advertises no composer-menu catalog and answers no request, as one that predates it (`mirrorhost.Config.NoCatalog`). |
 | `MUSTER_MIRROR_E2E_NO_SUBAGENTS` | unset | no | (`e2emirror`) `1`: the host advertises no subagent reporting — no subagent summaries on a view's stream, no tail request answered — as one that predates the subagent cards (`mirrorhost.Config.NoSubagents`). |
