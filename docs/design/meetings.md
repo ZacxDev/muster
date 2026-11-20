@@ -34,9 +34,11 @@ agreed.
 - **Transcription is per participant track**, so "who said what" comes from
   the track, not from diarization. The existing `stt-cohere` service **does
   not stream** ([finding](#finding-the-existing-stt-service-does-not-stream)).
-  Recommended: **Kyutai `stt-1b-en_fr`** on its own websocket server on the GPU
-  host for live captions, with an **utterance mode** on the existing service
-  as the zero-new-service fallback. (A post-meeting re-transcription pass
+  Live captions use **NVIDIA Nemotron Speech Streaming 0.6B** (decision 19),
+  served by a small NeMo websocket server on the GPU host, with an
+  **utterance mode** on the existing service as the at-capacity and
+  zero-new-service fallback, and faster-whisper large-v3-turbo as the named
+  fallback model. (A post-meeting re-transcription pass
   was dropped in review: there is no per-track audio to feed it.)
 - **Action items** come from an LLM on OpenRouter over a rolling window of
   the transcript, every 10 s, emitting only items it has not emitted before.
@@ -86,7 +88,8 @@ agreed.
 - **End-to-end encryption.** The SFU, the recorder and the transcriber all
   see the media; that is what makes recording and transcripts possible.
 - **Languages other than English** in v1 (decision 15). The STT choice keeps
-  a path to French (Kyutai) and 14 languages (Cohere) for later.
+  a path to more languages for later (Nemotron has a multilingual streaming
+  variant; Cohere covers 14).
 - **Team-owned meeting tabs** in v1 (decision 14): an `app` plugin is
   person-owned. A team's manager minting one for every member is later work.
 - **Chief or officer involvement.** The chief does not attend, summarise or
@@ -1001,8 +1004,8 @@ dead once redeemed.
   - **Format:** binary frames of **1920 bytes every 10 ms**, interleaved
     **16-bit little-endian stereo at 48 kHz**, the two channels identical
     (the mono track duplicated). No header, no text frames, no timestamps.
-    The ingest takes one channel and resamples (24 kHz for `kyutai`, 16 kHz
-    for `utterance`).
+    The ingest takes one channel and resamples to **16 kHz mono** for both
+    `nemotron` and `utterance`.
   - **No credential is sent** on the upgrade, so the secret is the URL's
     `<token>` ([the route](#the-plugins-http-api)).
   - **The ingest must not ping.** Egress never answers websocket pings and
@@ -1027,59 +1030,96 @@ dead once redeemed.
 
 ### Choosing the streaming STT model
 
-Vendor figures, not measured on our hardware; S4 measures the recommendation.
+**Decision 19 (operator): NVIDIA Nemotron Speech Streaming en 0.6B.** The
+Kyutai model this page recommended before is not used, and its deployment is
+being retired.
 
-| model | streaming | latency | WER | serving | licence |
+**The benchmark the decision rests on.** 99 real dictation recordings,
+streamed live in 80 ms chunks at real time, 8 streams at once, on one 16 GB
+GPU. The reference is the stored transcript from the existing batch STT,
+which is itself imperfect (about 13% WER), so these are **agreement**
+figures, not absolute accuracy:
+
+| model (serving) | WER vs reference, empties included | empty outputs | first word p50 / p95 | final after audio end p50 / p95 | GPU memory |
 |---|---|---|---|---|---|
-| **Kyutai `stt-1b-en_fr`** (recommended) | native (delayed streams), semantic VAD | 0.5 s fixed delay | `stt-2.6b-en`: Open ASR 6.4, AMI 12.17 (no figure published for the 1b) | Rust `moshi-server`, websocket, batches many streams on one GPU (vendor: 64 streams at 3× real time on an L40S) | weights CC-BY-4.0, code MIT/Apache |
-| Kyutai `stt-2.6b-en` | native | 2.5 s delay | as above | same | same |
-| NVIDIA Nemotron Speech Streaming en 0.6B (fallback) | native, cache-aware RNNT | 80–1120 ms chunks | avg 7.07 at 560 ms | NeMo, Riva/NIM (gRPC); no memory figures published | NVIDIA Open Model License |
-| Mistral Voxtral Mini 4B Realtime | native | 0.16–2.4 s | FLEURS 6.73–8.72 (multilingual, not comparable) | vLLM `/v1/realtime`; needs ≥16 GB | Apache-2.0 |
+| **Nemotron Speech Streaming 0.6B**, 560 ms chunks | **19.0%** | **2** | 1.61 / 2.74 s | **0.01 / 0.02 s** | ~6.8 GB (fp32, untuned) |
+| faster-whisper large-v3-turbo via WhisperLive | 20.4% | 3 | 1.79 / 2.86 s | 1.52 / 1.94 s | ~2.5 GB |
+| Kyutai `stt-1b-en_fr` | 31.1% | 8 | 1.58 / 2.93 s | 0.27 / 0.29 s | 3.6 GB |
+
+Kyutai's 8 empties were recordings with clipped or DC-offset microphone audio
+that it read as non-speech, which is the same failure S4 saw as "silent
+starts". Nemotron is the most accurate of the three and finalises almost at
+once when a speaker stops, which is what a live transcript and the 10 s
+action-item window need. faster-whisper turbo is close on accuracy and uses
+less memory, but finalises 1.5–1.9 s after the speaker stops; it is the
+**named fallback model** if Nemotron cannot be made to fit
+([memory](#serving-nemotron)).
+
+The vendor figures this page compared first, for context (not measured on
+our hardware):
+
+| model | streaming | latency | WER (vendor) | serving | licence |
+|---|---|---|---|---|---|
+| **NVIDIA Nemotron Speech Streaming en 0.6B** (chosen) | native, cache-aware FastConformer RNNT | 80–1120 ms chunks | avg 7.07 at 560 ms | NeMo; Riva/NIM (gRPC) | NVIDIA Open Model License |
+| faster-whisper large-v3-turbo + WhisperLive (fallback model) | emulation (re-decodes a rolling buffer) | 1–3 s | — | websocket | MIT |
+| Kyutai `stt-1b-en_fr` (not used) | native (delayed streams) | 0.5 s fixed delay | — | Rust `moshi-server` | CC-BY-4.0 |
+| Mistral Voxtral Mini 4B Realtime | native | 0.16–2.4 s | FLEURS 6.73–8.72 | vLLM `/v1/realtime`; needs ≥16 GB | Apache-2.0 |
 | Parakeet TDT 0.6B v2/v3 | chunked emulation | chunk-dependent | Open ASR 6.05 / 6.34 | NeMo, no bundled server | CC-BY-4.0 |
-| faster-whisper + WhisperLive | emulation (re-decodes a rolling buffer) | 1–3 s | ~7.4 (large-v3) | websocket, default 4 clients | MIT |
-| Moonshine v2 | native | 50–258 ms (on an Apple M3) | 6.65–12.0 | edge-targeted, no server | permissive, English |
 | Cohere Transcribe (existing) | **no** | per utterance | **5.42** | the existing `stt-cohere` | Apache-2.0 |
 
-Sources: [Kyutai repo](https://github.com/kyutai-labs/delayed-streams-modeling),
-[stt-2.6b-en card](https://huggingface.co/kyutai/stt-2.6b-en),
-[Nemotron card](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b),
-[Voxtral Realtime card](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602),
-[Parakeet v3 card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+Sources: [Nemotron card](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b),
 [WhisperLive](https://github.com/collabora/WhisperLive),
-[Moonshine v2](https://arxiv.org/html/2602.12241v1),
-[LiveKit STT plugins](https://docs.livekit.io/agents/models/stt.md).
+[Kyutai repo](https://github.com/kyutai-labs/delayed-streams-modeling),
+[Voxtral Realtime card](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602),
+[Parakeet v3 card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
 
-**Recommendation: Kyutai `stt-1b-en_fr` on `moshi-server`, on the GPU host
-that runs `stt-cohere`** (decision 18). It is the only option that streams
-natively, ships its own websocket server, and batches many concurrent streams
-on one GPU, which is exactly the shape of one stream per participant.
-Measured in spike S4 (`moshi-server` 0.6.4, a 16 GB GPU of the same model as
-the `stt-cohere` host's):
+### Serving Nemotron
 
-- **Memory is set by `batch_size`, preallocated:** the upstream default of
-  64 takes **~9.7–10 GB** whether or not anyone is speaking, which would
-  leave under 1 GB spare beside `stt-cohere` (about 10.9 GB was free beside
-  it when measured). **`batch_size` 8 takes 3.6 GB.** The deployment sets
-  **8–16** explicitly and never inherits 64.
-- **`batch_size` is a hard cap on concurrent streams:** a ninth stream on a
-  batch-8 server was closed at once (websocket 1005, no status), not queued.
-  So the `kyutai` engine has an **at-capacity path**: when a stream is
-  refused, that participant falls back to the `utterance` engine on
-  `stt-cohere`, and the panel shows "Captions delayed" until a slot frees.
-  Size `batch_size` to `room.max_participants` × the concurrent meetings
-  wanted.
-- **Latency: word-emit p95 0.91 s at 8 concurrent streams** (0.89 s at one),
-  GPU under 80% busy; concurrency did not change per-channel WER.
-- **Accuracy is not yet established.** On AMI headset audio stitched from
-  utterances, pooled WER was 24.7% (median 18%); 16.4% without two channels
-  where the model emitted nothing for their first 40–60 s of normal speech
-  (cause not found). That corpus is not the evaluation the bar describes,
-  so the [STT evaluation](#stt-evaluation) on **continuous** headset
-  channels is still owed before the bar is called passed or failed.
-  Nemotron Speech Streaming stays the fallback if it fails.
-Rejected: Whisper emulation (re-decoding costs GPU per stream, and its
-maintainers call the LocalAgreement approach outdated); Voxtral Realtime
-(16 GB is too much beside the existing service; revisit for multilingual).
+Two ways to serve it:
+
+| | **NeMo cache-aware streaming behind a small websocket server** (v1) | Riva / NIM |
+|---|---|---|
+| what it is | a FastAPI websocket server in this repository's `images/stt-nemotron/` (the same shape as `images/stt-cohere/`), calling NeMo's cache-aware streaming step per stream | NVIDIA's packaged streaming ASR server, gRPC, TensorRT engines |
+| memory | fp32 measured at ~6.8 GB; **bf16/fp16 weights and activations** are the first lever (UNVERIFIED how far it falls) | TensorRT fp16, typically smaller (UNVERIFIED for this model) |
+| batching | ours to write: one decode step for all live streams per chunk tick | built in |
+| licence and footprint | the model's licence only; a pinned Python image like `stt-cohere` | NIM for production use falls under NVIDIA's enterprise terms (UNVERIFIED for this deployment), and a large container |
+| protocol | ours (below), shared with the fake and the tests | Riva's gRPC; LiveKit has a Riva STT plugin, but the plugin talks to muster-meetings, not to LiveKit Agents |
+
+**v1 picks the NeMo websocket server.** It keeps the licence to the model's
+own, keeps the image pinned and reviewable like `stt-cohere`, and puts the
+protocol under our control, so the plugin's engine, the fake and the
+evaluation harness all speak one thing. Riva is the path if the NeMo server
+cannot batch enough streams per GPU after the bf16 work. **Measured fit
+beside `stt-cohere` on the 16 GB GPU** (fp32 6.8 GB + `stt-cohere`'s ~6 GB
+would leave little for activations and dictation bursts) is a **phase 3b**
+item: the PR that ships the server records its memory at 1, 4 and 8 streams
+in bf16, and the stream cap below is set from that measurement.
+
+**Input:** 16 kHz mono (the model card's input). The ingest takes one channel
+of Egress's S16LE stereo 48 kHz, downmixes and resamples to 16 kHz, and sends
+it in 80 ms frames; the server runs the model at the **560 ms** chunk size the
+benchmark used.
+
+**Protocol** (`wss://<stt host>/v1/stream`, `Authorization: Bearer <token>`,
+the token in the plugin's own Secret):
+
+- client → server: binary frames, S16LE mono 16 kHz, 80 ms (1280 samples)
+  each; a text frame `{"type": "end"}` when the track ends.
+- server → client: `{"type": "partial", "text", "start_ms", "end_ms"}` as a
+  chunk is decoded, `{"type": "final", "text", "start_ms", "end_ms"}` at each
+  end of utterance and after `end`; times are in the stream's own audio
+  time (sample count), never wall time.
+- **Capacity:** the server takes at most `STT_MAX_STREAMS` streams (set per
+  GPU from the 3b measurement; 8 until then). A connection over the cap is
+  refused **before the upgrade** with `503` and `Retry-After`, never accepted
+  and then closed, so the client can tell "full" from "broken".
+- The server sends no pings it requires answered (the plugin is its only
+  client, and its own read loop detects a dead peer).
+
+**The at-capacity fallback:** when the server answers `503`, or is down,
+that participant falls back to the `utterance` engine on `stt-cohere`, and
+the panel shows "Captions delayed" until a stream slot frees (retried every
+30 s).
 
 ### Three engines, one interface
 
@@ -1089,7 +1129,7 @@ type Engine interface {
     Open(ctx context.Context, track TrackRef) (Stream, error)
 }
 type Stream interface {
-    Write(pcm []float32) error          // mono at the engine's rate: 24 kHz for kyutai, 16 kHz for utterance (one channel of Egress' S16LE stereo 48 kHz, resampled)
+    Write(pcm []int16) error            // 16 kHz mono (one channel of Egress' S16LE stereo 48 kHz, resampled)
     Segments() <-chan Segment           // partial and final, with start/end ms
     Close() error
 }
@@ -1097,7 +1137,7 @@ type Stream interface {
 
 | engine | `MEETINGS_STT_ENGINE` | output | use |
 |---|---|---|---|
-| `kyutai` | `kyutai` + `MEETINGS_STT_URL` (`wss://…`) | word-level, each word emitted once and never revised | live captions (recommended); falls back per participant to `utterance` when the server is at its `batch_size` cap |
+| `nemotron` | `nemotron` + `MEETINGS_STREAM_STT_URL` (`wss://…/v1/stream`) and `MEETINGS_STREAM_STT_TOKEN` | partials per 560 ms chunk, a final at each end of utterance | live captions (decision 19); falls back per participant to `utterance` when the server answers `503` or is down |
 | `utterance` | `utterance` + `MEETINGS_STT_URL`/`MEETINGS_STT_TOKEN` pointed at the existing `stt-cohere` | one final per utterance, after a pause (≤15 s segments, energy-based endpointing) | zero new service; dev; Compose without a second GPU service |
 | `fake` | `fake` | scripted text per participant | tests only; refuses to start unless `MEETINGS_TEST_MODE=1` |
 
@@ -1315,24 +1355,37 @@ code** (guards and dedupe included), so it measures what ships.
   per-track transcription sees. About 1 hour, 4 meetings.
 - **Replay:** each channel streamed in real time to the engine, all channels
   of a meeting at once.
-- **Metrics:** WER per channel (Whisper's English normaliser), finalisation
-  latency (audio time of a word's end to its final segment), p50/p95, GPU
-  memory at 4, 8 and 16 concurrent streams, and whether latency holds at each.
+- **A second leg, the operator's own audio:** the benchmark behind decision
+  19 (99 real dictation recordings, live 80 ms chunks, 8 streams, agreement
+  with the existing batch STT's stored transcripts) is re-run by the same
+  harness against the deployed server. Its corpus is private and is never
+  committed; only its scores are. Bar: agreement WER no worse than the
+  decision's 19.0%, empties no more than 2, final-after-audio-end p95
+  ≤ 0.1 s. Agreement is not accuracy (the reference itself is ~13% WER), so
+  it guards against regressions; AMI is the accuracy leg.
+- **Metrics:** WER per channel (Whisper's English normaliser), first-word
+  and finalisation latency (audio time of a word's end to its final
+  segment), p50/p95, GPU memory at 1, 4 and 8 concurrent streams in bf16, and
+  whether latency holds at each.
 - **Pass bar for live use:** WER ≤ 18% on AMI headset, p95 finalisation
   ≤ 2.5 s, 8 concurrent streams with p95 still ≤ 2.5 s, fits in the GPU memory
   left beside `stt-cohere`.
 - **Controls:** a silent channel must produce no text; a channel of a known
   read passage must produce WER under 10%; the harness must report a higher
-  WER when fed the wrong channel's reference (it can go red). **Two of the
-  three ran in S4** and behaved (silence: 0 words; wrong reference: WER
-  0.90–1.21). The known-read-passage control **did not run**; it is owed in
-  phase 3c.
-- **Silent start check** (from S4): the harness, and production telemetry,
-  flag a track with speech energy but no words for more than 20 s. Two of
-  eight S4 channels showed exactly this and it would otherwise surface only
-  as a missing transcript.
-- **Status:** memory and latency met in S4; **the WER run on continuous
-  channels and the known-read-passage control are owed** (phase 3c).
+  WER when fed the wrong channel's reference (it can go red). Two of the
+  three ran against the earlier candidate in S4 and behaved (silence: 0
+  words; wrong reference: WER 0.90–1.21). **All three are owed against
+  Nemotron**, and the known-read-passage control has **never run** on any
+  model (phase 3d).
+- **Silent start and empty-output check:** the harness, and production
+  telemetry, flag a track with speech energy but no words for more than 20 s,
+  and count empty outputs per leg. Empties were the earlier candidate's main
+  failure (clipped or DC-offset audio read as non-speech), and Nemotron still
+  had 2 of 99; the harness includes clipped and DC-offset fixtures for that
+  reason.
+- **Status:** the dictation benchmark above stands in for S4; **the AMI
+  continuous-channel run, the bf16 memory measurement and all three controls
+  against Nemotron are owed** (phases 3b and 3d).
 
 ## Extras: what is included and why
 
@@ -1461,7 +1514,8 @@ top of the past meeting. Not regenerated automatically.
 | The owner leaves without ending | nothing, at first | the room's 10-minute empty timeout fires `room_finished`; the meeting ends; the link dies |
 | The owner's muster token is revoked | the tab goes; an open page loses its frame within 30 s | the plugin, within 60 s, ends that owner's meetings and deletes their sessions |
 | muster is down | the tab is unreachable | a live call goes on (it needs only the plugin and LiveKit); guests can still knock and the owner, already in, can admit |
-| GPU host also serving dictation | dictation slower | the utterance engine is capped at 4 in flight; `kyutai` runs as its own service |
+| GPU host also serving dictation | dictation slower | the utterance engine is capped at 4 in flight; the Nemotron server is its own service with its own stream cap |
+| Nemotron server full or down | "Captions delayed" for the participants over the cap | `503` before upgrade (or a failed connect) sends that participant to the `utterance` engine, retried every 30 s |
 
 ## Deployment
 
@@ -1530,7 +1584,8 @@ in this order:
 - LiveKit Egress: a Deployment, sized for the number of concurrent
   recordings. Redis: a single small instance of its own (not muster's, if
   muster has one).
-- The streaming STT: `moshi-server` with `batch_size` 8–16 on **the GPU host
+- The streaming STT: the NeMo Nemotron server (`images/stt-nemotron/`), bf16,
+  with `STT_MAX_STREAMS` set from the phase-3b measurement, on **the GPU host
   that runs `stt-cohere`** (decision 18), reachable only from the plugin.
   Where a tenant has no GPU, the `utterance` engine against muster's existing
   STT service is the fallback.
@@ -1544,7 +1599,7 @@ in this order:
 `compose.meetings.yml`, used with muster's file
 (`docker compose -f docker-compose.yml -f compose.meetings.yml --profile meetings up`),
 so its services join muster's project and network: `muster-meetings`,
-`livekit`, `egress`, `redis-meetings`, and optionally `stt-kyutai` (NVIDIA
+`livekit`, `egress`, `redis-meetings`, and optionally `stt-nemotron` (NVIDIA
 runtime). muster's own file is unchanged. Without a GPU service it runs the
 `utterance` engine against muster's `stt-cohere`. Published on the host:
 HTTPS for `meet.` and `meet-rtc.` through the stack's reverse proxy, and
@@ -1564,7 +1619,7 @@ with the test plan's tests included.
 
 | phase | PR | repository | size |
 |---|---|---|---|
-| **0: spikes** | S1–S7: **done** ([results](#phase-0-results)); what they could not measure is carried into 2c, 3c, 4c and 1g's go-live check | — | done |
+| **0: spikes** | S1–S7: **done** ([results](#phase-0-results)); what they could not measure is carried into 2c, 3b, 3d, 4c and 1g's go-live check | — | done |
 | **1: core** | 1g: **central origin check for cookie-authenticated writes** (R1): the check in `admit` (`Sec-Fetch-Site` first, on `net/http.CrossOriginProtection`, plus the no-header refusal), the GoTrue path, method-less patterns, the route ledger, the sibling-origin negative controls, `muster_csrf_refusals_total`. Pre-existing hardening; ship first. **Gates the subdomain's go-live** | muster | L |
 | | 1f: **`__Host-` cookie names** (decision 16): the per-deployment name rule (on the resolved secure-cookie setting), the registrable-domain boot refusal, the loopback-http refusal on prefixed deployments, all seven literals, the host-only cookie golden, expiring the old names, e2e helpers, release note. **Gates the subdomain's go-live** | muster | M |
 | | 1a: migration, `app` capability, `/plugins` form, label/icon validation, pairing refusal, docs in plugins.md and configuration.md | muster | M |
@@ -1577,8 +1632,9 @@ with the test plan's tests included.
 | | 2c: in-tenant Kubernetes manifests (muster's namespace), the Compose fragment for muster's stack, the subdomain/ingress, the TURN/TLS-only LiveKit config, Egress `cpu_cost`s, and the **`meet-turn` route** ([operator steps](#deployment)), then the owed real-network S1 run | muster-meetings + operator | M |
 | | 2d: e2e click path without transcript or recording | muster-meetings | M |
 | **3: transcription** | 3a: track Egress ingest (URL token, no pings, S16LE-stereo-48k parsing, sample-count timestamps, egress restart and start retry), `Engine` interface, `utterance` and `fake` engines, transcript panel for owner and guests, archive view and export | muster-meetings | M |
-| | 3b: `kyutai` engine (`batch_size` 8–16, the at-capacity fallback to `utterance`, the silent-start check), captions | muster-meetings | M |
-| | 3c: `stt-eval` and its run on the `stt-cohere` GPU host, **on continuous AMI headset channels** (the WER result S4 could not give) | muster-meetings | M |
+| | 3b: **`images/stt-nemotron/`** in muster (the NeMo cache-aware websocket server, bf16, batched decode, `STT_MAX_STREAMS`, `503`-before-upgrade, pinned image and CI build like `stt-cohere`) **and its measured fit beside `stt-cohere` on the 16 GB GPU** at 1/4/8 streams | muster | L |
+| | 3c: the `nemotron` engine in the plugin (the protocol, the `503` fallback to `utterance`, the silent-start check), captions | muster-meetings | M |
+| | 3d: `stt-eval` (AMI continuous headset leg, the private dictation leg, all three controls incl. the known-read passage) and its run on the `stt-cohere` GPU host | muster-meetings | M |
 | **4: action items** | 4a: `items-eval`, the corpus, the controls | muster-meetings | L |
 | | 4b: worker, guards, `extract` and `chat_json` adapters, live panel for owner and guests, the per-meeting **AI action items** switch | muster-meetings | M |
 | | 4c: run the evaluation, set the default model, commit the result | muster-meetings | S |
@@ -1604,7 +1660,7 @@ subdomain, 1d (S) and 1e (L, with its push-sink harness) for the 2026-11-20
 decisions, about 11–16 engineer-days of core work beyond 1a–1c. No plugin PR changes size:
 in-tenant hosting simplifies 2c's DNS and certificates, and the review
 fixes (removal backstop, consent check, signed media URLs, ingest secret)
-fit inside 2b, 3a and 5. Dropping 6c removes one S. The plugin's phases 2–5
+fit inside 2b, 3a and 5. Dropping 6c removes one S. Decision 19 (Nemotron) adds one PR: the Nemotron server image (3b, L, in muster, because no packaged websocket server ships with the model), so phase 3 is now M + L + M + M. The plugin's phases 2–5
 can each ship alone: a call with no transcript is already useful.
 
 ### Phase 0 spikes
@@ -1634,7 +1690,7 @@ The design above already carries each change; this table is the index.
 | S1 media and TURN | works on a LAN for the UDP mux, TCP, TURN/UDP and TURN/TLS; a self-signed TURN certificate fails in Chromium; LiveKit always advertises `turns:…:443` | the public path is TURN/TLS on 443 only, by one SNI-passthrough route with a publicly trusted certificate (decision 17); local relay allocations derived, UNVERIFIED ([media](#media-livekit-turn-egress)) | the real-network run (phone on a mobile network, UDP-blocked laptop) once the route is live ([deployment](#deployment), step 6) |
 | S2 track Egress PCM | **confirmed** for 31 min: 1920 B / 10 ms, S16LE stereo 48 kHz, identical channels | URL token (Egress sends no header), no pings, restart failed egresses, timestamp by sample count | mute/unmute and publisher reconnect (needs a browser publisher); Egress logged `audiodecoder … corrupted stream` about every 4 s per track with the test tool's looping sample while bytes kept flowing: re-check with a real browser publisher |
 | S3 Egress cost | the reservation model was wrong: recorded 8-person ≈ 1.41 cores avg / 1.69 peak / 1.56 GiB; ≈ 0.02 core per track; cost held only 15 s | `track_cpu_cost` 0.1, `room_composite_cpu_cost` 2, a start retry, `MEETINGS_MAX_RECORDINGS` and the sizing rule (a second composite was refused at default cost on 6 CPUs); the Go-SDK fallback dropped as a cost argument | a 1-hour run with real browser publishers and screen share; `enable_template_sdk` (the GStreamer compositor) unmeasured |
-| S4 Kyutai STT | memory and latency **confirmed** (3.6 GB at batch 8; p95 0.91 s at 8 streams); `batch_size` is a hard stream cap | runs on the `stt-cohere` GPU host (decision 18), batch 8–16, at-capacity fallback, silent-start check | **WER on continuous AMI headset channels** (phase 3c) |
+| S4 streaming STT | **superseded** by the dictation benchmark behind decision 19 (99 recordings, 8 live streams): Nemotron 19.0% agreement WER, 2 empties, final after audio end p95 0.02 s; faster-whisper turbo 20.4%; Kyutai 31.1% with 8 empties. S4's own Kyutai figures (3.6 GB at batch 8, hard stream cap) no longer apply | Nemotron on a NeMo websocket server on the `stt-cohere` GPU host (decisions 18, 19), stream cap with `503`, `utterance` fallback, faster-whisper turbo as the fallback model | bf16 memory fit beside `stt-cohere` (3b); AMI continuous-channel WER and the three controls (3d) |
 | S5 frame media | the first revision's header was **refuted** in Chromium (no video, no screen share); with `self` it works; Firefox passes at the policy gate; Android WebView has no `getDisplayMedia` (documented) | `self` kept on every feature; e2e asserts tracks, not "no error" ([the frame](#the-frame-exactly)) | real Safari on macOS; actual capture in Firefox (headless has no screen source) |
 | S6 Extract and DeepSeek | **confirmed** shapes under `data_collection: deny`; Extract `text` can be a rewrite; DeepSeek is $0.30 / $1.20 per M and served by ~50 providers | map by offset; provider pin; price corrected; a 10-window smoke (0.91 / 0.91 against 1.00 / 1.00) | the full [action-item evaluation](#action-item-evaluation), under the pinned provider |
 | S7 cookie `POST` headers | **confirmed** on the three desktop engines: `Sec-Fetch-Site: same-origin` everywhere, native form `Origin: null`; a sibling `POST` carries the cookie | none needed: 1g's order already matches | the Android WebView, the installed PWA, Safari with tracking protections (a 1g go-live check) |
@@ -1873,7 +1929,8 @@ redeem, self and tasks) and a fake LiveKit server API:
   dies at its timeout, as S2's did at 40 s).
 - **Real bytes:** a recorded fixture of Egress' own frames (1920 B, S16LE
   stereo 48 kHz, identical channels) parses to the expected mono samples and
-  resamples to 24 kHz and 16 kHz with the expected lengths. A fixture whose
+  resamples to 16 kHz with the expected length, sent as 80 ms (1280-sample)
+  frames. A fixture whose
   channels differ is still read from the first channel only.
 - **Timestamps by sample count:** a fixture delivered with a 7 s stall and
   then a burst yields segment times equal to the same fixture delivered
@@ -1882,10 +1939,20 @@ redeem, self and tasks) and a fake LiveKit server API:
   track starts a new track egress and stores a gap marker that clears when
   audio flows; a refused start is retried with backoff until accepted. *Red
   if:* either handler is a no-op.
-- **STT at capacity:** a fake `moshi-server` that closes the ninth stream
-  with 1005 sends that participant to the `utterance` engine and shows
-  "Captions delayed"; the first eight stay on `kyutai`. *Red if:* the
-  fallback is removed (the ninth participant gets no transcript).
+- **STT at capacity:** a fake Nemotron server that answers the ninth
+  upgrade `503` sends that participant to the `utterance` engine and shows
+  "Captions delayed"; the first eight stay on `nemotron`; when a slot frees
+  the participant returns within one 30 s retry. *Red if:* the fallback is
+  removed (the ninth participant gets no transcript).
+- **The Nemotron protocol:** against a fake server speaking the protocol,
+  partials and finals become segments with sample-count times; an `end` text
+  frame is sent when the track ends and the final after it is stored. *Red
+  if:* times come from arrival.
+- **The Nemotron server itself** (in muster's `images/stt-nemotron/`, like
+  `stt-cohere`'s `test_app.py`): a missing or wrong bearer is `401`; the
+  `STT_MAX_STREAMS + 1`th upgrade is `503` with `Retry-After` and is never
+  upgraded; frames of the wrong size are refused; a constant-signal stream
+  yields no text.
 - **Silent start:** a track with speech energy and no words for 20 s raises
   the flag; a silent track does not (the positive and negative cases).
 - **No ticket in URLs or logs:** every route that takes a ticket refuses it
@@ -2098,6 +2165,8 @@ positive control):
 | ingest time | timestamp by arrival | "timestamps by sample count" |
 | egress restart | ignore `egress_failed` for STT tracks; drop the start retry | "egress restart and start retry" (one each) |
 | STT capacity | drop the `utterance` fallback | "STT at capacity" |
+| STT server cap | accept the upgrade over `STT_MAX_STREAMS` and close it later | "the Nemotron server itself" |
+| STT protocol time | timestamp segments by arrival | "the Nemotron protocol" |
 | extract text | display `text` instead of `input[start:end]` | "ScaleDown adapter" |
 | egress costs | leave `room_composite_cpu_cost` at 4; drop `MEETINGS_MAX_RECORDINGS` | "two recordings on a 6-CPU Egress" (one each) |
 | frame header | drop `self` from `camera` or `display-capture` | `plugin-app.spec.ts` positive (video track, resolved `getDisplayMedia`) and the Permissions-Policy golden |
@@ -2113,7 +2182,7 @@ positive control):
 
 ## Decisions
 
-Decisions 1–5 are from the operator's brief. Decisions 17–18 followed the
+Decisions 1–5 are from the operator's brief. Decisions 17–19 followed the
 phase-0 spikes. Decisions 6–16 are the operator's answers
 to the open questions, given **2026-11-20**. All are binding on this
 design.
@@ -2175,5 +2244,9 @@ design.
     opened on the public node in v1 ([media](#media-livekit-turn-egress),
     [operator steps](#deployment)).
 18. **(operator, after the phase-0 spikes) The streaming STT runs on the GPU
-    host that already runs `stt-cohere`,** beside it, with an explicit
-    `batch_size` of 8–16 ([choice](#choosing-the-streaming-stt-model)).
+    host that already runs `stt-cohere`,** beside it
+    ([choice](#choosing-the-streaming-stt-model)).
+19. **(operator) The streaming STT model is NVIDIA Nemotron Speech Streaming
+    en 0.6B,** not Kyutai; the Kyutai deployment is being retired. Chosen on
+    the dictation benchmark in [choosing the model](#choosing-the-streaming-stt-model).
+    faster-whisper large-v3-turbo is the named fallback model.
