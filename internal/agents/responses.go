@@ -390,8 +390,10 @@ func IsClientTimeout(err error) bool {
 // failure.go). A body that is not that JSON leaves Type empty, which every
 // consumer treats as "untyped", never as a failure kind. That is what makes it
 // safe to branch on: internal/agentgateway marks a Claude account rate-limited
-// only when Type is exactly "rate_limited", so a 429 from some other runtime or
-// a proxy is not mistaken for one.
+// only when Type is exactly "rate_limited" AND it is the account's usage limit
+// (ccpool.AccountFailure: UsageLimit, or the limit menu's 409), so neither a
+// 429 from some other runtime or a proxy nor a transient one from ccd is
+// mistaken for one.
 type RuntimeError struct {
 	Status         int
 	Type           string

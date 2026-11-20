@@ -165,7 +165,7 @@ func TestAJobOnAWorkerOnTheLLMProxyIsNotFailedOver(t *testing.T) {
 		fo := &fakeFailover{ags: ags, targets: map[string]string{"acct-one": "acct-two"}}
 		s, _ := noAccountServer(t, Extensions{AccountFailover: fo, Jobs: newMemJobs()}, routed)
 		s.failoverJob(context.Background(), jobs.Job{ID: 1}, a,
-			jobs.Outcome{Status: jobs.StatusFailed, Reason: ccpool.FailureRateLimited, Error: "provider 429"})
+			jobs.Outcome{Status: jobs.StatusFailed, Reason: ccpool.FailureRateLimited, Error: "provider 429", AccountFailure: ccpool.FailureRateLimited})
 		want := map[bool]string{true: "acct-one:rate_limited", false: ""}[c.moved]
 		if got := strings.Join(fo.calls, ","); got != want {
 			t.Errorf("%s: the account failover was called with %q, want %q", c.name, got, want)

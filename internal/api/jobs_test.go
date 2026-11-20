@@ -727,7 +727,9 @@ func TestARateLimitedTurnFailsTheJobWithThatReason(t *testing.T) {
 	} {
 		t.Run(tc.typ, func(t *testing.T) {
 			f := newJobFixture(t, testServiceToken)
-			f.gw.err = &agents.RuntimeError{Status: 429, Type: tc.typ, Message: tc.msg}
+			// UsageLimit: the account's limit, so the job fails at once (a transient
+			// 429 is retried first: TestATransient429JobIsRetriedOnTheSameAccount).
+			f.gw.err = &agents.RuntimeError{Status: 429, Type: tc.typ, Message: tc.msg, UsageLimit: tc.typ == "rate_limited"}
 			out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
 			if out["status"] != jobs.StatusFailed || out["reason"] != tc.typ || out["error"] != tc.msg {
 				t.Fatalf("job = %v/%v/%q, want failed/%s/%q", out["status"], out["reason"], out["error"], tc.typ, tc.msg)

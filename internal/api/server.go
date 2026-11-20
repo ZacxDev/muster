@@ -283,6 +283,9 @@ type Server struct {
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
+	// jobRateLimitBackoff is the first wait before a job's turn is sent again
+	// after a transient 429 (zero: JobRateLimitBackoff; jobs.go runJobTurn).
+	jobRateLimitBackoff time.Duration
 	// unroutedNow is the unrouted-message sweep's clock (nil: time.Now;
 	// unrouted.go).
 	unroutedNow func() time.Time

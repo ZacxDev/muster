@@ -46,7 +46,8 @@ func ccAgent() agents.Agent {
 // ccd's own wire shape (cmd/ccd/failure.go). The messages are what the marks
 // must carry.
 const (
-	ccdRateLimited = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your limit · resets 5pm"}}`
+	// A 429 ccd marked usage_limit: the account's usage limit.
+	ccdRateLimited = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your limit · resets 5pm","usage_limit":true}}`
 	ccdAuthFailed  = `{"error":{"type":"auth_failed","code":"authentication_failed","upstream_status":401,"message":"OAuth access token is invalid"}}`
 	ccdBusy        = `{"error":{"type":"busy","code":"busy","upstream_status":0,"message":"a turn is in progress"}}`
 	// ccd's answer for an edge/CDN challenge page (cmd/ccd failure.go

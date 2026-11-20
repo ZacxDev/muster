@@ -24,6 +24,10 @@ func TestOnlyAUsageLimitIsMarkedUsageLimit(t *testing.T) {
 		{apiError{Code: "rate_limit", Message: "Claude usage limit reached. Your limit will reset at 3pm (America/Los_Angeles)."}, true},
 		{apiError{Status: 429, Message: "You've hit your session limit · resets 9:45pm (UTC)"}, true},
 		{apiError{Code: "rate_limit", Status: 429, Message: "API Error: Request rate limited"}, false},
+		// "limit reached" without a usage window's name is a transient limit.
+		{apiError{Code: "rate_limit", Status: 429, Message: "API Error: Rate limit reached for requests per minute"}, false},
+		{apiError{Status: 429, Message: "Rate limit reached"}, false},
+		{apiError{Code: "rate_limit", Message: "5-hour limit reached ∙ resets 3pm"}, true},
 		{apiError{Status: 429, Message: "API Error: 429 too many requests"}, false},
 		{apiError{Code: "rate_limit"}, false},
 		// Not rate_limited at all: never marked, whatever the text says.

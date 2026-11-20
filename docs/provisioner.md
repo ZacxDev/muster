@@ -241,8 +241,8 @@ those agents with a build that still has the kind before upgrading.
   - On Kubernetes it requires both `MUSTER_AGENT_NETPOL_FROM_*` variables.
 
   **The account pool.** Each new agent is assigned an account: first excluding
-  accounts marked `auth_failed`, then any account still cooling down after a
-  `rate_limited` (until the reset time the CLI stated, else
+  accounts marked `auth_failed`, then any account still cooling down after
+  hitting its usage limit (a transient 429 marks nothing; until the reset time the CLI stated, else
   `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN`, default `1h`) ranked last — but still
   chosen when it is all there is — then the least recently rate-limited, then
   the one with the fewest live agents. A pin at dispatch overrides this. An agent

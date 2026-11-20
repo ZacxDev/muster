@@ -529,9 +529,13 @@ choice sees the jobs the ones before it placed, so six submitted at once to two
 idle workers are spread over both rather than sent to one until its limit
 refuses them.
 
-**The cooldown.** After a turn on an account answers `rate_limited`, the
-account rests: no pool job is placed on any worker while it uses that account,
-until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
+**The cooldown.** After a turn on an account hits the account's **usage
+limit**, the account rests. A usage limit is a `rate_limited` that ccd marks
+`usage_limit` (the CLI said a limit was hit, or its pane shows the usage-limit
+menu), or ccd's `409 rate_limited` for that menu. Any other `rate_limited`, a
+transient request rate limit, marks nothing: the account does not rest, and
+the turn fails like any other. While it rests, no pool job is placed on any
+worker while it uses that account, until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
 9am (UTC)`), or, when the message states none muster can read (no zone, for
 one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
 is usable again at exactly that time — or sooner, when the account's **live
@@ -589,8 +593,9 @@ later, and one worker still runs its jobs one at a time.
 
 A worker is not stuck on an exhausted account, and a pool is not refused for
 one while another account is usable. When a turn on any `claude-code` agent —
-a pool worker, a named agent, an officer instance, the chief — fails
-`rate_limited` or `auth_failed`, muster marks the account as above and then,
+a pool worker, a named agent, an officer instance, the chief — fails on its
+account's usage limit ([The cooldown](#worker-pools)) or `auth_failed`, muster
+marks the account as above and then,
 unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to another of its
 owner's accounts**:
 
@@ -606,6 +611,17 @@ owner's accounts**:
   which **restarts its pod**: the running CLI session and every job lane's CLI
   restart; the volume (checkout, transcripts, settings), namespace and identity
   are kept. The cost is one cold start of the pod.
+- **A transient rate limit moves nothing.** A `rate_limited` that is not the
+  usage limit (a 429 ccd did not mark `usage_limit`) neither marks the account
+  nor moves the agent. A job's turn is sent again on the same account up to 2
+  times, 30 seconds and then 60 seconds later (within the job's `timeout_s`);
+  if the last one is rate-limited too, the job fails `rate_limited` on its
+  account. A chat or officer turn is retried there with its own backoff, as
+  before. A `claude-code` image from before the `usage_limit` mark sends none,
+  so its usage-limit 429 is read the same way: the account is marked when a
+  turn meets the CLI's usage-limit menu (the `409`). A job's retry is sent in
+  the same session, so it meets the menu if the CLI raised it there; the job
+  then fails over as for any usage limit.
 - **Pinned agents stay.** An agent whose account was named explicitly when it
   was created — a dispatch's or `POST /api/chief/replace`'s `cc_account`, an
   officer's `cc_account` — is not moved, unless it opted in: the `cc_failover`
@@ -894,7 +910,7 @@ kept — the job keeps its status and `error` says
 
 | `reason` | |
 |---|---|
-| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`), when the [account failover](#account-failover) could not move the agent (every other account cooling or failed, a pinned agent, or the failover off) or the job already failed once on that account. Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
+| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`): a transient `rate_limited` (one that is not the account's usage limit: it moves nothing, and the job ends so only after its two same-account retries), or a failure the [account failover](#account-failover) could not move the agent off (every other account cooling or failed, a pinned agent, or the failover off) or the job already failed once on that account. Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |

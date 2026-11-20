@@ -298,9 +298,13 @@ func chatTurnRateLimited(err error) bool {
 // 🔴 NOT THE CODE: the CLI codes a transient "Request rate limited" 429
 // `rate_limit` exactly like a usage limit, so a code check would tell the
 // member the accounts are at their limit for a passing throttle.
+//
+// The rule is ccpool.AccountFailure's — the same one the account pool marks
+// and the failover moves on — so the member is told "at their usage limit"
+// exactly when the account was marked.
 func chatTurnUsageLimit(err error) bool {
 	var rt *agents.RuntimeError
-	return errors.As(err, &rt) && (rt.UsageLimit || rt.Status == http.StatusConflict)
+	return errors.As(err, &rt) && ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status) == ccpool.FailureRateLimited
 }
 
 // officerChatTurnContext is the context a chat turn on agent a's session sess
