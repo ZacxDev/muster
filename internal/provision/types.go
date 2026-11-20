@@ -995,6 +995,18 @@ type Instance struct {
 	// it was given, which is the difference between a useful message and a
 	// mysteriously slow agent.
 	RestartReason string
+	// AppReported, AppReason and AppExitCode are the instance's APPLICATION
+	// container alone (Kubernetes: the "agent" container, never a sidecar,
+	// a key holder or the init container): its waiting reason now, and the
+	// exit code it last terminated with (0: none). Reason above is ANY
+	// container's, so a crash-looping sidecar reads the same there as a
+	// crash-looping agent; these tell them apart (the officer auto-restart
+	// restarts only for the agent's own failure). AppReported false: the
+	// driver runs one process per instance and reports none of them, and
+	// Reason is that process's.
+	AppReported bool
+	AppReason   string
+	AppExitCode int32
 	// Image is the image reference the running instance's application
 	// container was started from, as the backend reports it (for Kubernetes,
 	// the newest pod's spec image of its one application container), or ""

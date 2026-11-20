@@ -106,3 +106,36 @@ func TestAnInstanceInErrorIsNotLimitRestarted(t *testing.T) {
 		t.Fatalf("control: stops = %v, want [1]", r.fleet.stops)
 	}
 }
+
+// TestTheLimitRestartAndTheAutoRestartNeverBothFire is the seam with the
+// bounded auto-restart (autorestart.go), BOTH enabled: an instance in error
+// whose pane also reads stale-parked is restarted ONCE, by the auto-restart
+// (one stop, one start); an up instance not in error that is stale-parked is
+// stopped once, by the limit restart, and the auto-restart plans nothing for
+// it. Over several passes neither instance is stopped twice in one pass.
+func TestTheLimitRestartAndTheAutoRestartNeverBothFire(t *testing.T) {
+	r, _ := newRestartRig(t, 2, restartAfter, 3)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.hq.AddItem(relID, "release.evaluate", "svc:v2")
+	r.check(t) // both instances up
+	r.errorOut(1, officers.ErrorKickoffStuck)
+	r.check(t) // instance 1 seen entering error
+	r.clk.Advance(restartAfter)
+	r.fleet.limitParked = map[int]string{1: staleWhy, 2: staleWhy}
+	stopsBefore := len(r.fleet.stops)
+	res := r.check(t)
+	stops := r.fleet.stops[stopsBefore:]
+	if len(res.Decision.Restart) != 1 || res.Decision.Restart[0].N != 1 {
+		t.Fatalf("auto-restart plan %+v, want instance 1 (in error) only", res.Decision.Restart)
+	}
+	slices.Sort(stops)
+	if !slices.Equal(stops, []int{1, 2}) {
+		t.Fatalf("stops this pass %v, want each instance stopped exactly once: 1 by the auto-restart, 2 by the limit restart", stops)
+	}
+	if strings.Count(r.logs.String(), "stopped instance 1 to restart it") != 0 {
+		t.Fatalf("the limit restart also acted on the instance in error:\n%s", r.logs.String())
+	}
+	if strings.Count(r.logs.String(), "stopped instance 2 to restart it") != 1 {
+		t.Fatalf("the limit restart did not stop instance 2 once:\n%s", r.logs.String())
+	}
+}

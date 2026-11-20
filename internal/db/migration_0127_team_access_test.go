@@ -28,7 +28,8 @@ var ownedAfter0127 = []string{
 	"morning_reports",                    // 0161
 	"page_assets", "page_version_assets", // 0164
 	"host_jobs", "host_job_runs", // 0166
-	"officer_pr_queue", // 0169
+	"officer_pr_queue",      // 0169
+	"officer_auto_restarts", // 0170
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

@@ -19,19 +19,7 @@ import (
 // goNotify does not.
 func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 	tag := "officer-cap-hold-" + o.ID + "-" + string(h.Item)
-	s.capHoldsMu.Lock()
-	if h.Ended {
-		delete(s.capHolds[o.Owner], tag)
-	} else {
-		if s.capHolds == nil {
-			s.capHolds = map[int64]map[string]bool{}
-		}
-		if s.capHolds[o.Owner] == nil {
-			s.capHolds[o.Owner] = map[string]bool{}
-		}
-		s.capHolds[o.Owner][tag] = true
-	}
-	s.capHoldsMu.Unlock()
+	s.noteOfficerHold(o.Owner, tag, !h.Ended)
 	if h.Ended {
 		s.goNotify(o.Owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
 		return

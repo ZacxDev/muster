@@ -36,17 +36,20 @@ type fakeFleet struct {
 	// reprompts records instance numbers re-prompted; reprompt holds the text.
 	reprompts []int
 	reprompt  []string
-	pending   map[int]bool // a prompt is owed and not yet delivered
-	busy      map[int]bool // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
-	errored   map[int]bool // the instance is in error (holds its slot)
-	down      map[int]string // why a down instance is down (InstanceState.Down)
+	pending   map[int]bool                // a prompt is owed and not yet delivered
+	busy      map[int]bool                // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
+	errored   map[int]bool                // the instance is in error (holds its slot)
+	class     map[int]officers.ErrorClass // why an errored instance is in error
+	errText   map[int]string              // its recorded error (InstanceState.ErrorText)
+	down      map[int]string              // why a down instance is down (InstanceState.Down)
 	// limitParked: the instance's pane is on a stale usage-limit menu
-	// (InstanceState.LimitParked); a Stop ends it, as the real fleet's does.
+	// (InstanceState.LimitParked); a Stop or Start ends it, as the real fleet's does.
 	limitParked map[int]string
 }
 
 func newFleet() *fakeFleet {
-	return &fakeFleet{up: map[int]bool{}, exists: map[int]bool{}, pending: map[int]bool{}, errored: map[int]bool{}, busy: map[int]bool{}}
+	return &fakeFleet{up: map[int]bool{}, exists: map[int]bool{}, pending: map[int]bool{}, errored: map[int]bool{}, busy: map[int]bool{},
+		class: map[int]officers.ErrorClass{}, errText: map[int]string{}}
 }
 
 func (f *fakeFleet) Reprompt(_ context.Context, o officers.Officer, n int, text string) error {
@@ -72,7 +75,8 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 	var out []officers.InstanceState
 	for n := 1; n <= o.Slots(); n++ {
 		out = append(out, officers.InstanceState{N: n, Name: officers.InstanceName(o.ID, n), Exists: f.exists[n], Up: f.up[n] || f.errored[n],
-			Error: f.errored[n], PromptPending: f.pending[n], Down: f.down[n], LimitParked: f.limitParked[n]})
+			Error: f.errored[n], ErrorClass: f.class[n], ErrorText: f.errText[n], PromptPending: f.pending[n], Down: f.down[n],
+			LimitParked: f.limitParked[n]})
 	}
 	return out, nil
 }
@@ -82,6 +86,7 @@ func (f *fakeFleet) Start(_ context.Context, o officers.Officer, n int, kickoff 
 	defer f.mu.Unlock()
 	f.up[n], f.exists[n] = true, true
 	delete(f.limitParked, n)
+	f.errored[n] = false // a start brings it out of error (provisioning)
 	f.starts = append(f.starts, n)
 	f.kickoff = append(f.kickoff, kickoff)
 	return nil
@@ -92,6 +97,7 @@ func (f *fakeFleet) Stop(_ context.Context, o officers.Officer, n int) error {
 	defer f.mu.Unlock()
 	f.up[n] = false
 	delete(f.limitParked, n)
+	f.errored[n] = false // a stopped agent reads stopped, not error
 	f.stops = append(f.stops, n)
 	return nil
 }

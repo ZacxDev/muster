@@ -234,8 +234,9 @@ func (s *Server) openTeamReviews(ctx context.Context, team int64) ([]withdrawal,
 	return out, nil
 }
 
-// openTeamCapHolds is team's officers' cap-hold notices this process showed
-// and has not ended (officerCapHoldNotice records them).
+// openTeamCapHolds is team's officers' hold notices this process showed and
+// has not ended (officerCapHoldNotice and officerAutoRestartNotice record
+// them).
 func (s *Server) openTeamCapHolds(_ context.Context, team int64) ([]withdrawal, error) {
 	s.capHoldsMu.Lock()
 	defer s.capHoldsMu.Unlock()

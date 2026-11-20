@@ -1464,6 +1464,15 @@ func (d *Driver) instanceFrom(dep *appsv1.Deployment, pods []corev1.Pod) provisi
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
 			inst.Reason = cs.State.Waiting.Reason
 		}
+		if cs.Name == containerName {
+			inst.AppReported = true
+			if cs.State.Waiting != nil {
+				inst.AppReason = cs.State.Waiting.Reason
+			}
+			if t := cs.LastTerminationState.Terminated; t != nil {
+				inst.AppExitCode = t.ExitCode
+			}
+		}
 		// 🔴 LastTerminationState, NOT State. This is the field that says WHY a
 		// container that is running RIGHT NOW last died. An out-of-memory kill
 		// is invisible everywhere else once the kubelet restarts it: the pod
