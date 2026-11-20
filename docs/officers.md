@@ -2146,7 +2146,7 @@ refused. muster:
 1. checks its comparison as for any create (a hit is the usual 409, never
    queued);
 2. reads the branch's head;
-3. records the create in its queue (`officer_pr_queue`, migration 0168: the
+3. records the create in its queue (`officer_pr_queue`, migration 0169: the
    branch, that head, the title, the body and the item);
 4. answers **`202`** `{"queued": true, "message": …}`.
 

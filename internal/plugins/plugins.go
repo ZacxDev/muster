@@ -123,6 +123,11 @@ type Plugin struct {
 	// to (migration 0104); nil on every other token.
 	Origin   *string `json:"origin,omitempty"`
 	EntryURL *string `json:"entryUrl,omitempty"`
+	// AppLabel and AppIcon are an `app` token's tab label and icon key
+	// (AppIcons), the owner's choice at mint (migration 0166); nil on every
+	// other token.
+	AppLabel *string `json:"appLabel,omitempty"`
+	AppIcon  *string `json:"appIcon,omitempty"`
 	// DeliverTo binds the plugin to a builtin officer (migration 0121):
 	// "officer:<id>" — its messages become items in that officer's queue
 	// instead of chief turns, and the officer's outbound drafts are its
@@ -172,6 +177,12 @@ const (
 	// may not route a notice to the chief (route_to_chief) nor upsert a task
 	// reference, both messages powers (internal/api plugin_tasks.go).
 	CapTasks Capability = "tasks"
+	// CapApp is a plugin with a tab in its owner's sidebar that opens its page
+	// full width (docs/design/meetings.md, migration 0168). It carries an
+	// origin and entry URL as CapViewer does (the same columns, the same
+	// ValidViewerLink rule), plus the owner's tab label and icon (app.go).
+	// Chosen on /plugins only (never paired), fixed at mint.
+	CapApp Capability = "app"
 )
 
 // Has reports whether p's token carries c.

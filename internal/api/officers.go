@@ -329,7 +329,7 @@ type OfficersConfig struct {
 	// this process's memory, which a restart forgets.
 	PublicBranches officers.PublicBranchStore
 	// PRQueue keeps draft officers' creates the open cap held back, until the
-	// draft sweep opens them (officers.PGPRQueueStore, migration 0168); nil
+	// draft sweep opens them (officers.PGPRQueueStore, migration 0169); nil
 	// keeps them in this process's memory, which a restart forgets.
 	PRQueue officers.PRQueueStore
 	// ConnectorBlocks keeps which items each officer instance held while a

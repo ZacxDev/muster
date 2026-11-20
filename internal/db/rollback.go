@@ -433,12 +433,12 @@ const teamPagesMigrationVersion = 165
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const hostJobsMigrationVersion = 166
 
-// officerPRQueueMigrationVersion is 0168: officer_pr_queue (a draft officer's
+// officerPRQueueMigrationVersion is 0169: officer_pr_queue (a draft officer's
 // creates the open cap held back, internal/officers pr_queue.go), owned and
 // under row-level security in officer_pr_loops' share class; same treatment
 // again. Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerPRQueueMigrationVersion = 168
+const officerPRQueueMigrationVersion = 169
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

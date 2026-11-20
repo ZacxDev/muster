@@ -338,7 +338,13 @@ as **payload v2**:
   with its step-up key and sent as a signed action
   ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
   A chip dropped to fit, or left out as secret-shaped, takes its button with
-  it. The app as shipped does not draw them yet.
+  it. The app draws the options and Dismiss as buttons (above).
+- A **step-up confirmation card** is such an ask: its options are **Confirm**
+  and **Refuse**, so its notification's buttons decide it with one tap, signed
+  with the phone's step-up key, whose prompt shows the card's text
+  ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)). A
+  browser's notification of it has no buttons that decide anything: a tap
+  opens muster.
 - A [notice](attention.md#notices) (a live chief nudge) is an `attention` push
   with **no** `ask` and **no** `actions`: its title names where the session is
   (`<where> may be waiting on you`, [attention.md](attention.md#how-a-window-is-named)), its body the session's

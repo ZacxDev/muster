@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -204,6 +205,7 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 		return s.ext.Gateway.Chat(tctx, a, sess.SessionKey, text, nil)
 	}()
 	cerr, unsent := chatTurnError(err)
+	cerr = l.withPoolReset(octx, a, cerr)
 	if unsent {
 		return "", cerr
 	}
@@ -261,6 +263,51 @@ func chatTurnError(err error) (error, bool) {
 		return fmt.Errorf("%w: %w%s", limitErr, err, rateLimitDetail(err)), false
 	}
 	return err, false
+}
+
+// withPoolReset is cerr, a chat turn's error (chatTurnError), carrying the
+// earliest time an account in the instance's pool stops being at its limit
+// (officers.PoolReset, ccpool.EarliestReset) when cerr is a usage limit — so
+// the member is told when the officer can answer again, not when the account
+// the turn last tried resets, which the failover makes the latest more often
+// than not.
+//
+// 🔴 THE POOL IS a's OWNER'S, read as the failover reads it: ccfailover moves
+// an agent among ccpool.Pool's accounts of agents.Agent.OwnerID
+// (FailoverTarget), and ClaudeAccountStates is that pool's States for the same
+// owner. No other owner's accounts are read.
+//
+// 🔴 ONLY FOR AN INSTANCE THE FAILOVER MAY MOVE. The pool's earliest reset is
+// when the officer answers again only if its instance can land on that
+// account: ccfailover.Eligible (a claude-code instance on a named account)
+// and the failover's own Allowed (on, and not pinned by the officer's
+// cc_account without cc_failover). Any other instance stays on its account,
+// so the CLI's reset for that account is the truth and is kept.
+//
+// It never fails the turn and never drops the reply: no kinds, no failover, a
+// read error or a pool naming no time leaves cerr as it was, and
+// ChatRateLimitedReplyFor falls back to the CLI's stated reset.
+func (l officerChatLanes) withPoolReset(ctx context.Context, a agents.Agent, cerr error) error {
+	s := l.s
+	if cerr == nil || !errors.Is(cerr, officers.ErrChatUsageLimit) || s.ext.Kinds == nil {
+		return cerr
+	}
+	if s.ext.AccountFailover == nil || !ccfailover.Eligible(a) {
+		return cerr
+	}
+	if ok, _ := s.ext.AccountFailover.Allowed(a); !ok {
+		return cerr
+	}
+	states, err := s.ext.Kinds.ClaudeAccountStates(ctx, a.OwnerID)
+	if err != nil {
+		s.logger.Printf("officers: chat on %s: read the Claude account pool for its earliest reset (quoting the CLI's): %v", a.Name, err)
+		return cerr
+	}
+	at, ok := ccpool.EarliestReset(states, s.now())
+	if !ok {
+		return cerr
+	}
+	return &officers.PoolReset{At: at, Err: cerr}
 }
 
 // rateLimitDetail is the runtime's own message of a typed failure, as

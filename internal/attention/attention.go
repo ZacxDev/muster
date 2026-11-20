@@ -751,9 +751,12 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		return Ask{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// The per-owner cap, counted under the caller's principal: row-level
-	// security makes it this owner's count. Serialised per owner by an
-	// advisory lock so two concurrent asks cannot both pass at the cap.
+	// The per-owner cap: the open asks owned by muster.uid, the owner the
+	// INSERT below writes (the column's default). Not every ask row-level
+	// security lets the caller read: attention_asks is team-shared (0127),
+	// so a member also reads each of their teams' asks, which are not theirs.
+	// Serialised per owner by an advisory lock so two concurrent asks cannot
+	// both pass at the cap.
 	//
 	// 🔴 QUESTIONS ONLY, BOTH SIDES OF THE CAP (migration 0071): a notice is
 	// neither counted (kind = 'ask') nor refused at it, so a burst of notices
@@ -767,7 +770,8 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 			return Ask{}, err
 		}
 		var open int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE status = 'open' AND expires_at > now() AND kind = 'ask'`).Scan(&open); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+			AND status = 'open' AND expires_at > now() AND kind = 'ask'`).Scan(&open); err != nil {
 			return Ask{}, err
 		}
 		if open >= MaxOpenPerOwner {

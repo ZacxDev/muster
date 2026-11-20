@@ -12,7 +12,7 @@ import (
 )
 
 // A draft officer's pull-request queue (pr_queue.go): one contract, asserted
-// on the memory store and on officer_pr_queue (migration 0168) with a
+// on the memory store and on officer_pr_queue (migration 0169) with a
 // database — where the queue also survives a new store on its own pool (a
 // restarted server, or the other replica).
 //

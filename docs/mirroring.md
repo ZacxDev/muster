@@ -1682,7 +1682,8 @@ the owner-authority tools (`attention_answer`, `connector_request_decide`,
 machine that **starts agents for the chief**, each of them is a **confirmation
 card on your paired phone**, whichever of your sessions the call names, and
 nothing runs until you answer Confirm there (a signed action; a browser answer
-is refused). It is the same gate a machine running a
+is refused) — [one tap on its notification](#confirming-a-card-from-its-notification)
+does it. It is the same gate a machine running a
 [host officer](design/officers-on-hosts.md) has. A call counts as coming from
 such a machine when:
 
@@ -1734,6 +1735,43 @@ is never gated ([its own section](#chief_restart-is-not-gated)).
   `connector_requests_list`, `plugin_drafts_list`, `plugin_messages_list`,
   `plugin_requests_list`, `plugin_outbound_batch_get`) answer your own
   sessions at once.
+
+#### Confirming a card from its notification
+
+A card is an [ask](attention.md) whose two options are **Confirm** and
+**Refuse**, so on the paired phone its notification carries both as buttons,
+and one tap decides it without opening muster:
+
+1. Tap **Confirm** (or **Refuse**) on the notification. A locked phone asks
+   for the unlock first.
+2. The phone asks muster for a one-time challenge for that answer on that
+   card. muster's answer carries the **card's own text** (`confirms`: the
+   machine, the session, what it asks to do and its exact arguments, and why
+   it needs you), read from the pending decision itself, so what the phone
+   shows is what a Confirm runs.
+3. The phone's step-up prompt names the answer ("Confirm this request?" or
+   "Refuse this request?") and shows that text; your fingerprint (or PIN, for
+   a key that takes one) signs the challenge with the phone's step-up key.
+   Cancelling the prompt sends nothing and leaves the card open.
+4. muster checks the signature against the key the phone paired with, spends
+   the challenge, and runs the decision once (Confirm) or nothing (Refuse).
+
+🔴 **The tap does not weaken the gate.** It is the same signed ask action as
+any other ([design/android.md](design/android.md#the-signed-ask-actions-as-built)):
+the challenge lives two minutes, is single use, and is bound to the card's id
+and the sha256 of the exact answer. A signature by any other key is refused
+(`bad_signature`), a phone paired read-only gets no challenge
+(`no_stepup_key`), and an answer from your signed-in browser or from a
+machine's door (`attention_answer`) is refused, the card left open. A
+**browser** notification's buttons cannot decide a card either: the web
+worker (`web/static/sw.js`) answers nothing, and a tap on its notification only
+opens muster. The `confirms` text is display, never authority: muster still
+decides only by the signature.
+
+⚠ The prompt shows at most the first 1,000 characters of the card. A held
+start's card (`dispatch_approve`) can be longer than that: refuse it from the
+notification, or open the card, when the prompt does not show all of what it
+starts.
 
 What it costs: on such a machine your own sessions' other owner-authority
 calls are cards too. Deciding in muster's web UI (Attention, Connectors, the
