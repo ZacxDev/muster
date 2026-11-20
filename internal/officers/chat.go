@@ -697,7 +697,11 @@ func ChatRateLimitedReplyFor(err error) string {
 // ChatRequestRateLimitedReply is the reply posted for a chat whose turns keep
 // coming back rate-limited by something other than the accounts' usage limit
 // (a rate_limited without ErrChatUsageLimit: a transient 429).
-const ChatRequestRateLimitedReply = "(The officer is being rate-limited right now. Ask again in a few minutes.)"
+//
+// ⚠ IT NAMES NO WAIT. A ccd from before the usage_limit field sends a typed
+// usage limit unmarked, so a weekly limit can reach this reply too; "ask
+// again later" is true of both, "in a few minutes" would not be.
+const ChatRequestRateLimitedReply = "(The officer is being rate-limited right now. Ask again later.)"
 
 // ChatRateLimitedReply is the reply posted for a chat whose turns keep coming
 // back at the account's usage limit (ErrChatUsageLimit,

@@ -40,7 +40,7 @@ func TestATransientRateLimitIsNotToldTheAccountsAreAtTheirLimit(t *testing.T) {
 	if st := r.hq.Item(id).Status; st != "done" {
 		t.Fatalf("after %d passes the rate-limited chat's item is %s with %d replies; want it answered and done (log:\n%s)", ran, st, len(r.officerReplies("c-42")), r.logs)
 	}
-	want := "(The officer is being rate-limited right now. Ask again in a few minutes.)"
+	want := "(The officer is being rate-limited right now. Ask again later.)"
 	replies := r.officerReplies("c-42")
 	if len(replies) != 1 || replies[0].Text != want || replies[0].InReplyTo != seq {
 		t.Fatalf("replies %+v; want one, %q, in reply to %d (a transient 429 is not the accounts' usage limit)", replies, want, seq)
@@ -63,9 +63,9 @@ func TestTheRateLimitedReplyFollowsTheUsageLimitMark(t *testing.T) {
 		{"usage limit", fmt.Errorf("%w: %w: %s", officers.ErrChatRateLimited, officers.ErrChatUsageLimit, text),
 			"(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"},
 		{"unmarked rate limit", fmt.Errorf("%w: %s", officers.ErrChatRateLimited, text),
-			"(The officer is being rate-limited right now. Ask again in a few minutes.)"},
+			"(The officer is being rate-limited right now. Ask again later.)"},
 		{"unmarked, parked (409)", fmt.Errorf("%w: %w (nothing was typed): %s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, text),
-			"(The officer is being rate-limited right now. Ask again in a few minutes.)"},
+			"(The officer is being rate-limited right now. Ask again later.)"},
 	} {
 		if got := officers.ChatRateLimitedReplyFor(c.err); got != c.want {
 			t.Errorf("%s: ChatRateLimitedReplyFor(%v) = %q; want %q", c.name, c.err, got, c.want)

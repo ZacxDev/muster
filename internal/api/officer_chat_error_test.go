@@ -71,7 +71,7 @@ func TestAPlain429IsNotTheAccountsUsageLimit(t *testing.T) {
 	const (
 		usage    = "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"
 		usageNoR = "(The officer can't reply right now: its Claude accounts are at their usage limit. Ask again later.)"
-		plain    = "(The officer is being rate-limited right now. Ask again in a few minutes.)"
+		plain    = "(The officer is being rate-limited right now. Ask again later.)"
 	)
 	limit := "You've hit your weekly limit · resets Nov 23, 1am (UTC)"
 	for _, c := range []struct {

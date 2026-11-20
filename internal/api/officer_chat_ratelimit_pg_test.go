@@ -94,7 +94,7 @@ func TestATransient429ChatLaneIsNotToldItsAccountsAreAtTheirLimit(t *testing.T) 
 	if st := c.hq.Item(id).Status; st != "done" {
 		t.Fatalf("after 20 passes the rate-limited chat's item is %s (%d lane turns); want it answered and done", st, len(c.chat.sent()))
 	}
-	want := "(The officer is being rate-limited right now. Ask again in a few minutes.)"
+	want := "(The officer is being rate-limited right now. Ask again later.)"
 	msgs := c.hq.ChatMessages("c-43")
 	if len(msgs) != 2 || msgs[1].Role != "officer" || msgs[1].InReplyTo != seq || msgs[1].Text != want {
 		t.Fatalf("chat after the bound: %+v; want the member's turn and one officer reply %q to %d", msgs, want, seq)

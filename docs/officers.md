@@ -1307,7 +1307,9 @@ answered "(The officer can't reply right now: its Claude accounts are at their
 usage limit (resets …). Ask again later.)", quoting the reset the CLI stated;
 any other `429` — a transient request rate limit, which the CLI types and
 codes the same — is answered "(The officer is being rate-limited right now.
-Ask again in a few minutes.)", with no reset. The item is then done, and the
+Ask again later.)", with no reset. That reply names no wait, because a usage
+limit from a `ccd` older than the `usage_limit` field arrives unmarked and is
+answered with it too. The item is then done, and the
 member's next message runs a turn again. `ccd`
 stops a lane whose paste was refused by that menu once no turn holds it (the
 menu outlives the limit's reset), so the lane's next turn resumes its
