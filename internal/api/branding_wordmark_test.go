@@ -204,12 +204,27 @@ func TestTheBrandingFormHasTheWordmarkCheckbox(t *testing.T) {
 	}
 }
 
+// inSwitcher reports whether n is inside the sidebar's server switcher, whose
+// logo is the switcher's button (named by its aria-label, its own alt
+// always empty; internal/ui server_switcher.go), not a brand mark with a name.
+func inSwitcher(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if id, _ := bAttr(p, "id"); id == "server-switcher" {
+			return true
+		}
+	}
+	return false
+}
+
 // brandParts is the page's [data-brand-logo] images' alt texts and its
-// [data-brand-name] elements' texts.
+// [data-brand-name] elements' texts, outside the server switcher.
 func brandParts(t *testing.T, page string) (alts, names []string) {
 	t.Helper()
 	doc := bDoc(t, page)
 	for _, n := range bElems(doc, bHasAttr("data-brand-logo")) {
+		if inSwitcher(n) {
+			continue
+		}
 		alt, ok := bAttr(n, "alt")
 		if n.Data != "img" || !ok {
 			t.Fatalf("a [data-brand-logo] that is <%s> with alt present=%v", n.Data, ok)
@@ -222,8 +237,10 @@ func brandParts(t *testing.T, page string) (alts, names []string) {
 	return alts, names
 }
 
-// TestAWordmarkLogoIsDrawnAloneOnEveryBrandSurface: on the shell (header and
-// sidebar: two marks) and the anonymous sign-in page. A logo with the name
+// TestAWordmarkLogoIsDrawnAloneOnEveryBrandSurface: on the shell (the header;
+// the sidebar's logo is the server switcher's button, checked apart: always
+// alone, alt="", the button named for the server) and the anonymous sign-in
+// page. A logo with the name
 // beside it: each logo alt="" and each name drawn. The same logo marked as
 // showing the name: each logo's alt is the name and no name element is drawn
 // at all — while GET /api/instance still names it. The flag with the logo
@@ -236,7 +253,7 @@ func TestAWordmarkLogoIsDrawnAloneOnEveryBrandSurface(t *testing.T) {
 		"the shell":        func() string { return get(h, "/tasks", cookie, true).Body.String() },
 		"the sign-in page": func() string { return get(h, "/login", nil, true).Body.String() },
 	}
-	marks := map[string]int{"the shell": 2, "the sign-in page": 1}
+	marks := map[string]int{"the shell": 1, "the sign-in page": 1}
 	expect := func(when string, logoAlt *string, nameDrawn bool) {
 		t.Helper()
 		for label, page := range surfaces {
@@ -265,6 +282,31 @@ func TestAWordmarkLogoIsDrawnAloneOnEveryBrandSurface(t *testing.T) {
 					t.Errorf("%s, %s: a name element says %q", when, label, n)
 				}
 			}
+		}
+		// The sidebar: the switcher's button, named for the server, with
+		// the logo alone (alt="") while one is set, and no name element.
+		doc := bDoc(t, surfaces["the shell"]())
+		toggles := bElems(doc, func(n *html.Node) bool { id, _ := bAttr(n, "id"); return id == "server-switcher-toggle" })
+		if len(toggles) != 1 {
+			t.Fatalf("%s: %d switcher buttons", when, len(toggles))
+		}
+		if l, _ := bAttr(toggles[0], "aria-label"); l != "Switch server, current: "+name {
+			t.Errorf("%s: the switcher's button is named %q", when, l)
+		}
+		var logos []string
+		for _, n := range bElems(toggles[0], bHasAttr("data-brand-logo")) {
+			alt, _ := bAttr(n, "alt")
+			logos = append(logos, alt)
+		}
+		want := 0
+		if logoAlt != nil {
+			want = 1
+		}
+		if len(logos) != want || (want == 1 && logos[0] != "") {
+			t.Errorf("%s: the switcher draws logos with alts %q, want %d with alt=\"\"", when, logos, want)
+		}
+		if n := len(bElems(toggles[0], bHasAttr("data-brand-name"))); n != 0 {
+			t.Errorf("%s: the switcher draws %d name elements", when, n)
 		}
 	}
 	empty, named := "", name

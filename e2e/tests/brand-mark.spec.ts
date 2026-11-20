@@ -71,8 +71,15 @@ test('the app shell draws the lockup in the header, and every manifest icon reso
   expect(box!.height).toBeCloseTo(28, 0);
   expect(box!.width).toBeGreaterThan(125);
   expect(box!.width).toBeLessThan(140);
-  // The sidebar draws the same image.
-  await expect(page.locator('#sidebar img[data-brand-mark]')).toHaveCount(1);
+  // The sidebar does not: its server switcher draws muster's compact square
+  // mark (favicon.svg) in a logo slot, 28 × 28, loaded.
+  await expect(page.locator('#sidebar img[data-brand-mark]')).toHaveCount(0);
+  const sq = page.locator('#server-switcher-toggle img[data-server-mark]');
+  await expect(sq).toBeVisible();
+  expect(await sq.evaluate((i) => (i as HTMLImageElement).complete && (i as HTMLImageElement).naturalWidth > 0)).toBe(true);
+  const sqBox = (await sq.boundingBox())!;
+  expect(sqBox.width).toBeCloseTo(28, 0);
+  expect(sqBox.height).toBeCloseTo(28, 0);
 
   await expectServed(page, await page.locator('link[rel="icon"][type="image/svg+xml"]').getAttribute('href'),
     'image/svg+xml', 'the SVG favicon');
@@ -80,8 +87,7 @@ test('the app shell draws the lockup in the header, and every manifest icon reso
   // At a phone's width the header crops the same image to its mark, 28 px
   // tall and 38 px wide (the left 100 of the lockup's 350 units), so the home
   // link stays clear of the update pill's top-right corner (update.spec.ts,
-  // "dragging moves the pill"). The sidebar, which has the room, keeps the
-  // whole lockup.
+  // "dragging moves the pill").
   await page.setViewportSize({ width: 390, height: 844 });
   const phone = await page.locator(header).boundingBox();
   expect(phone!.height).toBeCloseTo(28, 0);
@@ -90,8 +96,6 @@ test('the app shell draws the lockup in the header, and every manifest icon reso
   // The link around the cropped mark is still a 44 px touch target (layout.spec.ts).
   const link = await page.locator('header a[aria-label="muster home"]').boundingBox();
   expect(link!.width, 'a 44px target').toBeGreaterThanOrEqual(44);
-  const side = await page.locator('#sidebar img[data-brand-mark]').boundingBox();
-  expect(side!.width, 'the sidebar keeps the whole lockup').toBeGreaterThan(125);
 
   const manifest = await (await page.request.get('/manifest.webmanifest')).json();
   const icons: { src: string; type: string; sizes: string; purpose: string }[] = manifest.icons;

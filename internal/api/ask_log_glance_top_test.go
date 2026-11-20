@@ -29,8 +29,8 @@ func TestATopQuestionShowsWhatWasAsked(t *testing.T) {
 		t.Fatalf("%d repeated questions drawn, want 2:\n%s", len(rows), html)
 	}
 	for i, c := range []struct{ norm, text, facts string }{
-		{"ship the release now", "Ship the RELEASE now?", "5 times · you answered 3 · usually “yes” · median 31s"},
-		{"keep going", "Keep going?", "2 times · always “continue” · median 7m 10s"},
+		{"ship the release now", "Ship the RELEASE now?", "5 times · you answered 3 · usually “yes” · answered in about 31s"},
+		{"keep going", "Keep going?", "2 times · always “continue” · answered in about 7m 10s"},
 	} {
 		text := regexp.MustCompile(`data-asklog-top-question>([^<]*)<`).FindStringSubmatch(rows[i])
 		if text == nil || text[1] != c.text {

@@ -233,7 +233,8 @@ type Hub struct {
 	// (outcomes.go).
 	outcomesNotify func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)
 	// statusNotify is called with a host's owner whenever any of its agent
-	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
+	// windows' status changes (SetStatusNotify): the ask log's turn-end hook,
+	// and the episode push's owner-acted check (internal/api MirrorStatusChanged).
 	statusNotify func(owner int64)
 	now          func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.

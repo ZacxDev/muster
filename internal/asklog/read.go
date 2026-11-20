@@ -192,6 +192,12 @@ type Summary struct {
 	// (Postgres percentile_cont: linear between the two nearest rows). Zero
 	// when Answered is 0.
 	MedianAnswer, P90Answer time.Duration
+	// P90Within is the DISCRETE 90th percentile (Postgres percentile_disc):
+	// the shortest answer time at least 9 in 10 answered rows took no longer
+	// than — one row's own time, so "9 in 10 answered within P90Within" is
+	// true for every n, where P90Answer (interpolated) is not. Zero when
+	// Answered is 0.
+	P90Within time.Duration
 	// Top is the normal forms (question_norm) asked at least twice, most often
 	// first. Only rows whose text is still held have one.
 	Top []TopQuestion
@@ -266,14 +272,15 @@ func (p *PG) Summarize(ctx context.Context, f Filter, top int) (Summary, error) 
 		return Summary{}, fmt.Errorf("asklog: summarize counts: %w", err)
 	}
 
-	var med, p90 float64
+	var med, p90, p90d float64
 	if err := p.pool.QueryRow(ctx, `SELECT count(*),
 			coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM answered_at - asked_at)), 0),
-			coalesce(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM answered_at - asked_at)), 0)
-		FROM asks WHERE answered_at IS NOT NULL AND `+cond, args...).Scan(&s.Answered, &med, &p90); err != nil {
+			coalesce(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM answered_at - asked_at)), 0),
+			coalesce(percentile_disc(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM answered_at - asked_at)), 0)
+		FROM asks WHERE answered_at IS NOT NULL AND `+cond, args...).Scan(&s.Answered, &med, &p90, &p90d); err != nil {
 		return Summary{}, fmt.Errorf("asklog: summarize latency: %w", err)
 	}
-	s.MedianAnswer, s.P90Answer = seconds(med), seconds(p90)
+	s.MedianAnswer, s.P90Answer, s.P90Within = seconds(med), seconds(p90), seconds(p90d)
 
 	targs := append(append([]any{}, args...), top)
 	trows, err := p.pool.Query(ctx, `WITH f AS (SELECT * FROM asks WHERE question_norm <> '' AND `+cond+`),
