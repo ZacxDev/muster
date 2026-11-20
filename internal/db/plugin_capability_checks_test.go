@@ -164,8 +164,21 @@ func TestPluginCapabilityChecksMatchGo(t *testing.T) {
 	// A live row holding the newest capability: an older body re-applied by
 	// RLSOn that re-adds a narrower CHECK fails on it, as well as narrowing.
 	newest := string(plugins.KnownCapabilities[len(plugins.KnownCapabilities)-1])
-	if _, err := pool.Exec(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities)
-		VALUES (1, 'example-newest', 'Example', 'hash-newest', 'none', ARRAY[$1]::text[])`, newest); err != nil {
+	// The row carries what its capability's other CHECKs ask for: an origin
+	// and entry URL for viewer or app (plugins_viewer_link), a tab for app
+	// (plugins_app_tab, 0168), so re-applying a narrower form of THOSE fails
+	// on it too (0104's viewer-only plugins_viewer_link did).
+	var origin, entry, appLabel, appIcon *string
+	if newest == "viewer" || newest == "app" {
+		o, e := "https://*.apps.example.net", "https://m.apps.example.net/enter"
+		origin, entry = &o, &e
+	}
+	if newest == "app" {
+		l, i := "Example", "video"
+		appLabel, appIcon = &l, &i
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities, origin, entry_url, app_label, app_icon)
+		VALUES (1, 'example-newest', 'Example', 'hash-newest', 'none', ARRAY[$1]::text[], $2, $3, $4, $5)`, newest, origin, entry, appLabel, appIcon); err != nil {
 		t.Fatalf("a plugin with %s: %v", newest, err)
 	}
 	// db.RLSOff then db.RLSOn (a real rollback mode, and what api tests do to a
