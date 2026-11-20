@@ -406,12 +406,13 @@ for (const vp of [
       await expect(strip).toHaveCount(1);
       await expect(strip).toHaveAttribute('data-chief-chat-kind', 'primary');
 
-      // The header: the one list icon, no ＋ / clock / target; the context
-      // row under the title; no chat bar over the transcript.
+      // The header: the one list icon, no ＋ / clock / target; no token chip
+      // (its memory slot is in the ⋯ menu); no chat bar over the transcript.
       await expect(page.locator('header #chat-index-open')).toBeVisible();
       await expect(page.locator('header').getByRole('button', { name: 'New chat session' })).toHaveCount(0);
       await expect(page.locator('header label[aria-label="Chat history"], header #focus-history-open')).toHaveCount(0);
-      await expect(page.locator('header [data-chief-context-row] #chief-context')).toHaveCount(1);
+      await expect(page.locator('header [data-chief-context-row]')).toHaveCount(0);
+      await expect(page.locator('header #agent-actions #chief-context')).toHaveCount(1);
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
 
