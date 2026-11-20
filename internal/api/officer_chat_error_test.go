@@ -26,7 +26,7 @@ func TestAChatTurnsRateLimitIsNotABusyLane(t *testing.T) {
 		unsent, unavailable, broken, rlm bool
 	}{
 		{"409 rate_limited (limit menu)", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited", Code: "rate_limit", Message: limit}, true, true, false, true},
-		{"429 rate_limited (typed turn)", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", Message: limit}, false, false, false, true},
+		{"429 rate_limited (typed turn)", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", Message: limit, UsageLimit: true}, false, false, false, true},
 		{"409 busy", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy"}, true, true, false, false},
 		{"503 capacity", &agents.RuntimeError{Status: http.StatusServiceUnavailable, Type: agents.FailureCapacity}, true, true, false, false},
 		{"401 unauthorized", &agents.RuntimeError{Status: http.StatusUnauthorized, Type: "unauthorized"}, true, false, true, false},
@@ -47,12 +47,59 @@ func TestAChatTurnsRateLimitIsNotABusyLane(t *testing.T) {
 	// The reset the runtime's message states reaches the runner's error text
 	// (what ChatRateLimitedReply quotes), even when the body snippet is empty.
 	for _, status := range []int{http.StatusConflict, http.StatusTooManyRequests} {
-		got, _ := chatTurnError(&agents.RuntimeError{Status: status, Type: "rate_limited", Code: "rate_limit", Message: limit})
-		if want := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"; officers.ChatRateLimitedReply(got.Error()) != want {
+		got, _ := chatTurnError(&agents.RuntimeError{Status: status, Type: "rate_limited", Code: "rate_limit", Message: limit, UsageLimit: true})
+		if want := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"; officers.ChatRateLimitedReplyFor(got) != want {
 			t.Fatalf("%d rate_limited: the runner reads %q; want the reply %q", status, got.Error(), want)
 		}
 	}
 	if got, unsent := chatTurnError(nil); got != nil || unsent {
 		t.Fatalf("chatTurnError(nil) = %v, %v; want nil, false", got, unsent)
+	}
+}
+
+// TestAPlain429IsNotTheAccountsUsageLimit: a typed rate_limited is the
+// account's usage limit (officers.ErrChatUsageLimit) only when the runtime says
+// so — ccd's usage_limit — or it is the 409 only the usage-limit menu answers;
+// a 429 without usage_limit is rate-limited and nothing more, WHATEVER its code
+// or text says (the CLI codes a transient "Request rate limited" rate_limit
+// too). Through the runner's reply (ChatRateLimitedReplyFor) the member is
+// told the accounts are at their limit only in the first case.
+//
+// RED before the fix: every typed rate_limited was answered "at their usage
+// limit".
+func TestAPlain429IsNotTheAccountsUsageLimit(t *testing.T) {
+	const (
+		usage    = "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"
+		usageNoR = "(The officer can't reply right now: its Claude accounts are at their usage limit. Ask again later.)"
+		plain    = "(The officer is being rate-limited right now. Ask again in a few minutes.)"
+	)
+	limit := "You've hit your weekly limit · resets Nov 23, 1am (UTC)"
+	for _, c := range []struct {
+		name   string
+		err    *agents.RuntimeError
+		usage  bool
+		unsent bool
+		reply  string
+	}{
+		{"429 usage_limit", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", UpstreamStatus: 429, Message: limit, UsageLimit: true}, true, false, usage},
+		{"429 transient, CLI-coded", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", UpstreamStatus: 429, Message: "API Error: Request rate limited"}, false, false, plain},
+		{"429 transient, status only", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", UpstreamStatus: 429, Message: "too many requests"}, false, false, plain},
+		// Not the code, not the text: unmarked, even this one is not a usage limit.
+		{"429 unmarked, limit text", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", Message: limit}, false, false, plain},
+		{"409 limit menu", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited", Code: "rate_limit", Message: "the CLI's pane shows its usage-limit menu", UsageLimit: true}, true, true, usageNoR},
+		{"409 limit menu, a ccd before usage_limit", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited", Code: "rate_limit", Message: limit}, true, true, usage},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, unsent := chatTurnError(c.err)
+			if !errors.Is(got, officers.ErrChatRateLimited) || unsent != c.unsent {
+				t.Fatalf("chatTurnError(%+v) = %v (unsent %v); want rate-limited, unsent %v", c.err, got, unsent, c.unsent)
+			}
+			if errors.Is(got, officers.ErrChatUsageLimit) != c.usage {
+				t.Fatalf("chatTurnError(%+v) = %v; want usage limit %v", c.err, got, c.usage)
+			}
+			if r := officers.ChatRateLimitedReplyFor(got); r != c.reply {
+				t.Fatalf("the member is answered %q; want %q", r, c.reply)
+			}
+		})
 	}
 }

@@ -40,6 +40,12 @@ type Failure struct {
 	Code     string `json:"code,omitempty"`            // the runtime's own error code, when there is one
 	Upstream int    `json:"upstream_status,omitempty"` // the API's HTTP status, when known
 	Message  string `json:"message"`
+	// UsageLimit marks a rate_limited failure that is the model account's
+	// usage limit (the CLI said so, or its pane shows the usage-limit menu),
+	// as opposed to any other 429 — a transient request rate limit — which
+	// carries the same type and, from the CLI, the same code. Absent (false)
+	// on every other failure.
+	UsageLimit bool `json:"usage_limit,omitempty"`
 }
 
 func (f *Failure) Error() string { return f.Type + ": " + f.Message }

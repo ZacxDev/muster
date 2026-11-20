@@ -1296,14 +1296,19 @@ no scale-down) when it cannot run now:
   is no failure: the item is released and the next pass tries again. Every
   refusal's reason is logged.
 
-**A chat whose account is at its usage limit is answered, not looped.** A
-lane turn that comes back `rate_limited` — a `429` for a turn the limit failed,
-or the `409` of a pane parked on the CLI's usage-limit menu, which is not a
-busy lane — backs off like a failure (the agent gateway fails the account over
-on the first one, when another is usable). The third in a row is answered
-"(The officer can't reply right now: its Claude accounts are at their usage
-limit (resets …). Ask again later.)", quoting the reset the CLI stated; the
-item is then done, and the member's next message runs a turn again. `ccd`
+**A rate-limited chat is answered, not looped.** A lane turn that comes back
+`rate_limited` — a `429` for a turn that was rate-limited, or the `409` of a
+pane parked on the CLI's usage-limit menu, which is not a busy lane — backs
+off like a failure (the agent gateway fails the account over on the first one,
+when another is usable). The third in a row is answered, and what it says
+depends on whether `ccd` marked the failure `usage_limit` (the CLI said a
+usage limit was hit, or its pane shows the usage-limit menu): a usage limit is
+answered "(The officer can't reply right now: its Claude accounts are at their
+usage limit (resets …). Ask again later.)", quoting the reset the CLI stated;
+any other `429` — a transient request rate limit, which the CLI types and
+codes the same — is answered "(The officer is being rate-limited right now.
+Ask again in a few minutes.)", with no reset. The item is then done, and the
+member's next message runs a turn again. `ccd`
 stops a lane whose paste was refused by that menu once no turn holds it (the
 menu outlives the limit's reset), so the lane's next turn resumes its
 conversation in a fresh CLI.
