@@ -165,6 +165,11 @@ func NormalizePairCode(code string) string {
 
 func pairCodeHash(code string) string { return HashToken(NormalizePairCode(code)) }
 
+// PairableCapabilities is what a pairing request may name — pinned by
+// internal/db TestPluginCapabilityChecksMatchGo to the
+// plugin_pair_requests_capabilities_check list.
+var PairableCapabilities = []Capability{CapMessages, CapDraftChecks, CapTasks}
+
 // validate checks a pairing request's fields (everything but the owner).
 func (in *PairIn) validate() error {
 	if in.DataScope == "" {
@@ -185,7 +190,7 @@ func (in *PairIn) validate() error {
 		return invalid("capabilities must include messages or tasks")
 	}
 	for _, c := range in.Capabilities {
-		if c != CapMessages && c != CapDraftChecks && c != CapTasks {
+		if !slices.Contains(PairableCapabilities, c) {
 			return invalid("a paired plugin may have messages, draft_checks and tasks only")
 		}
 	}

@@ -847,3 +847,39 @@ func TestAnAutostartedAgentIsToldMusterStartedIt(t *testing.T) {
 		t.Fatalf("the forward did not fold in before the rules:\n%s", after.PendingNote)
 	}
 }
+
+// TestATasksOnlyPluginNeverAutostarts (0166, plugins.AutostartAllowed):
+// auto-start needs messages. SetAutostart refuses a tasks-only plugin
+// (ErrInvalid, nothing stored); a row that says on anyway — written straight
+// to the table, as no muster path can — is inert: the plugin's new task starts
+// no agent and records no reservation. The control: a messages plugin opted in
+// the same way starts exactly one.
+func TestATasksOnlyPluginNeverAutostarts(t *testing.T) {
+	a := newAutostartFixture(t)
+	tok, p, err := a.plugins.CreatePlugin(a.asOwner, plugins.NewPlugin{Name: "example-filer", Label: "Example filer", DataScope: "none",
+		Capabilities: []plugins.Capability{plugins.CapTasks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.plugins.SetAutostart(a.asOwner, p.ID, a.target(), autoRepo, 3); !errors.Is(err, plugins.ErrInvalid) {
+		t.Fatalf("SetAutostart on a tasks-only plugin: %v; want ErrInvalid", err)
+	}
+	if cfg, err := a.plugins.AutostartOf(a.asOwner, p.ID); err != nil || cfg.On {
+		t.Fatalf("after the refused SetAutostart: %+v %v; want off", cfg, err)
+	}
+	if _, err := a.pool.Exec(authz.System(context.Background()), `UPDATE plugins SET autostart_target = $2, autostart_repo = $3,
+		autostart_daily_cap = 3, autostart_at = now() WHERE id = $1`, p.ID, a.target(), autoRepo); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := a.plugins.AutostartOf(a.asOwner, p.ID); err != nil || !cfg.On {
+		t.Fatalf("control: the row written straight reads %+v %v; want on", cfg, err)
+	}
+	id := a.file(t, tok, "Filed by a tasks plugin", "count the curlews")
+	if on := a.agentsOn(t, id); len(on) != 0 || a.reservations(t, id) != 0 {
+		t.Fatalf("a tasks-only plugin with auto-start on started %d agent(s), %d reservation(s); want none", len(on), a.reservations(t, id))
+	}
+	mtok, _ := a.optedIn(t, "example-starter", 3)
+	if on := a.agentsOn(t, a.file(t, mtok, "Filed by a messages plugin", "count the godwits")); len(on) != 1 {
+		t.Fatalf("CONTROL: a messages plugin opted in started %d agent(s); want 1", len(on))
+	}
+}

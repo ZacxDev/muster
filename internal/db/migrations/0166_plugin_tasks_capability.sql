@@ -13,6 +13,12 @@
 --       messages or tasks (draft_checks still only beside messages: the
 --       application's rule, internal/plugins validCapabilities).
 --
+-- 🔴 A LATER CAPABILITY MIGRATION MUST LIST EVERY CAPABILITY, NOT JUST ITS OWN:
+-- it replaces these CHECKs whole, so a list missing 'tasks' silently refuses
+-- every tasks token. internal/db TestPluginCapabilityChecksMatchGo pins the
+-- live CHECKs to internal/plugins KnownCapabilities and PairableCapabilities,
+-- and each migration's ROLLBACK list to the previous migration's.
+--
 -- Must apply after 0165 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
 -- another migration takes 0166 first. Idempotent. No table is created, so no
 -- db/rollback.go re-application constant.

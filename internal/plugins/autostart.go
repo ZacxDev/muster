@@ -50,6 +50,23 @@ const AutostartWindow = 24 * time.Hour
 // attention.MaxTimeout, well inside it.
 const AutostartStopWindow = 30 * 24 * time.Hour
 
+// AutostartAllowed is THE ONE PREDICATE of whether a plugin with caps may
+// auto-start agents at all: it needs CapMessages. A plugin without it (a
+// `tasks`-only one, 0166) files tasks and never starts an agent on one, so
+// auto-start is not offered on its card (internal/api pluginAutostartHTML),
+// refused by SetAutostart, and skipped by the start path
+// (autostartPluginTask) even if a row says on. No path removes messages from
+// a live plugin (setCapabilityTx never toggles it), so a stored setting can
+// only become inert through this predicate, never through a capability change.
+func AutostartAllowed(caps []Capability) bool {
+	for _, c := range caps {
+		if c == CapMessages {
+			return true
+		}
+	}
+	return false
+}
+
 // ErrAutostartDoor: a write to a plugin's auto-start from anything but its
 // owner's signed-in browser (a plugin token, an agent, a personal API token).
 var ErrAutostartDoor = errors.New("plugins: only the owner, signed in, can change a plugin's auto-start")
@@ -81,7 +98,8 @@ func autostartWriter(ctx context.Context) (int64, error) {
 // ctx's principal — which must be its owner's signed-in browser
 // (ErrAutostartDoor otherwise). ErrNotFound for a plugin that is not live, not
 // the principal's, or a TEAM's (auto-start is a person's). ErrInvalid for a
-// target, repository or cap the 0154 CHECKs would refuse. Setting it again
+// target, repository or cap the 0154 CHECKs would refuse, and for a plugin
+// AutostartAllowed refuses (no messages). Setting it again
 // replaces the target, repository and cap and restarts Since.
 //
 // Audited plugin.autostart.on {target, repo, daily_cap}.
@@ -99,7 +117,19 @@ func (s *PGStore) SetAutostart(ctx context.Context, pluginID int64, target, repo
 	}
 	var a Autostart
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `UPDATE plugins p SET autostart_target = $2, autostart_repo = $3, autostart_daily_cap = $4,
+		var caps []Capability
+		err := tx.QueryRow(ctx, `SELECT capabilities FROM plugins WHERE id = $1 AND `+ownedByPrincipal+` AND revoked_at IS NULL FOR UPDATE`,
+			pluginID).Scan(&caps)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !AutostartAllowed(caps) {
+			return invalid("auto-start needs the messages capability: this plugin only files tasks")
+		}
+		err = tx.QueryRow(ctx, `UPDATE plugins p SET autostart_target = $2, autostart_repo = $3, autostart_daily_cap = $4,
 				autostart_at = now()
 			  FROM users u
 			 WHERE p.id = $1 AND p.`+ownedByPrincipal+` AND p.revoked_at IS NULL AND u.id = p.owner_id AND u.kind <> 'team'

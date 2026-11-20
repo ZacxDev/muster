@@ -33,8 +33,9 @@ func (s *Server) pluginTasks() pluginTasksStore {
 // plugins, keeping its token. Gated as draft-checks is — a signed-in session
 // and a same-origin form (requireOperatorWrite, and admit's central origin
 // check), no fresh sign-in: filing a task reaches no outside party and starts
-// nothing (a plugin's task is not dispatched until its owner does, auto-start
-// needs messages). Another owner's plugin, a revoked one or none is 404, as
+// nothing — a plugin's task is not dispatched until its owner does, and
+// auto-start needs messages (plugins.AutostartAllowed, checked by
+// SetAutostart and by the start path, autostartPluginTask). Another owner's plugin, a revoked one or none is 404, as
 // revoke's. Audited plugin.capability.changed (setCapabilityTx).
 func (s *Server) handlePluginTasksToggle(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
