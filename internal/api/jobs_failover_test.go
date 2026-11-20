@@ -136,6 +136,12 @@ type accountGateway struct {
 	ags     *failoverAgents
 	limited map[string]bool
 	failure string
+	// status is the failed turn's (0: 429) and transient that ccd did NOT mark
+	// it usage_limit; zero values are ccd's usage-limit 429.
+	status    int
+	transient bool
+	// message is the failure's text ("": a usage limit's).
+	message string
 	reply   string
 	mu      sync.Mutex
 	onAcct  []string
@@ -148,7 +154,16 @@ func (g *accountGateway) Chat(ctx context.Context, a agents.Agent, key, msg stri
 	route, _ := agents.TurnRouteFrom(ctx)
 	_ = route
 	if g.limited[a.CCAccount] {
-		return "", &agents.RuntimeError{Status: 429, Type: g.failure, Message: "You've hit your limit · resets 11pm (UTC)"}
+		status := g.status
+		if status == 0 {
+			status = 429
+		}
+		msg := g.message
+		if msg == "" {
+			msg = "You've hit your limit · resets 11pm (UTC)"
+		}
+		return "", &agents.RuntimeError{Status: status, Type: g.failure, Message: msg,
+			UsageLimit: g.failure == "rate_limited" && !g.transient}
 	}
 	return g.reply, nil
 }
@@ -385,3 +400,57 @@ func TestAnOfficersPinIsReadFromItsConfiguration(t *testing.T) {
 }
 
 var _ = errors.New
+
+// 🔴 A TRANSIENT 429 DOES NOT MOVE THE WORKER. north answers rate_limited and
+// south is free, but the 429 is not marked usage_limit: the job runner must not
+// fail the worker over (failoverJob keys on jobs.Outcome.AccountFailure, never
+// on the reason), so the job fails rate_limited on north after one turn, as
+// any failed turn does, with no failover asked for and none recorded. The same
+// for a usage limit from a ccd before the mark (the CLI's text, no field):
+// ccpool.AccountFailure reads no text. The limit menu's 409 and a marked 429
+// do move it, as before.
+func TestOnlyAUsageLimitFailsAJobsWorkerOver(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		status    int
+		transient bool
+		message   string
+		moved     bool
+	}{
+		{"a transient 429", 429, true, "API Error: Request rate limited", false},
+		{"a 429 from a ccd before usage_limit", 429, true, "You've hit your session limit · resets 6am (UTC)", false},
+		{"a 429 marked usage_limit", 429, false, "You've hit your weekly limit · resets Dec 1, 2am (UTC)", true},
+		{"the limit menu's 409, unmarked", 409, true, "the CLI's pane shows its usage-limit menu", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newFailoverRig(t, map[string]string{"north": "south"}, map[string]bool{"north": true}, "rate_limited")
+			r.gw.status, r.gw.transient, r.gw.message = c.status, c.transient, c.message
+			out := r.await(t, r.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+			r.fo.mu.Lock()
+			calls := strings.Join(r.fo.calls, ",")
+			r.fo.mu.Unlock()
+			if c.moved {
+				if out["status"] != jobs.StatusSucceeded || out["cc_account"] != "south" || calls != "north:rate_limited" {
+					t.Fatalf("job = %v/%v on %v, failover calls %q; want succeeded on south after north:rate_limited",
+						out["status"], out["reason"], out["cc_account"], calls)
+				}
+				return
+			}
+			if calls != "" {
+				t.Fatalf("failover calls = %q, want none for a 429 that is not the usage limit", calls)
+			}
+			if out["status"] != jobs.StatusFailed || out["reason"] != "rate_limited" || out["cc_account"] != "north" {
+				t.Fatalf("job = %v/%v on %v, want failed/rate_limited on north", out["status"], out["reason"], out["cc_account"])
+			}
+			if _, ok := out["account_failovers"]; ok {
+				t.Fatalf("a job that was not re-queued carries account_failovers: %v", out["account_failovers"])
+			}
+			if got := strings.Join(r.gw.turns(), ","); got != "north" {
+				t.Fatalf("turns ran on %q, want north", got)
+			}
+			if got := r.ags.current().CCAccount; got != "north" {
+				t.Fatalf("the worker is on %q, want north (not moved)", got)
+			}
+		})
+	}
+}

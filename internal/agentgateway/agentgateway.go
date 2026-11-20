@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -113,8 +114,9 @@ type Config struct {
 	// claude-code) gets a COPY of this client with that Timeout; the transport is
 	// shared. The gateway kind uses this client exactly as given.
 	Client *http.Client
-	// Accounts records a claude-code agent's typed `rate_limited` / `auth_failed`
-	// failures against the Claude account it runs on. Optional: nil means no
+	// Accounts records a claude-code agent's typed `auth_failed` failures, and
+	// its `rate_limited` ones that are the account's usage limit
+	// (ccpool.AccountFailure), against the Claude account it runs on. Optional: nil means no
 	// claude-code kind is enabled, and nothing is marked.
 	Accounts AccountMarker
 	// Secrets reads an agent's credentials (agents.Store satisfies it) at the
@@ -184,8 +186,9 @@ type Gateway struct {
 	noAccount func(context.Context, agents.Agent) bool
 }
 
-// AccountFailover is what the gateway tells after a typed `rate_limited` /
-// `auth_failed` was marked against a claude-code agent's account
+// AccountFailover is what the gateway tells after a usage limit (a
+// `rate_limited` ccpool.AccountFailure reads as one) or an `auth_failed` was
+// marked against a claude-code agent's account
 // (internal/ccfailover.Service). It may move the agent to another account and
 // restart its pod; the gateway does not wait for the new pod, and the failed
 // turn's error is returned unchanged.
@@ -373,8 +376,9 @@ func (g *Gateway) clientFor(kind string) *http.Client {
 }
 
 // noteFailure marks a claude-code agent's Claude account when ccd answered a
-// typed `rate_limited` or `auth_failed`, and returns err (annotated only if the
-// mark itself could not be written).
+// typed `auth_failed`, or a `rate_limited` that is the account's usage limit
+// (ccpool.AccountFailure), and returns err (annotated only if the mark itself
+// could not be written).
 //
 // 🔴 ONLY THE TYPED FAILURE MARKS, NEVER A STATUS CODE. A 429 from a proxy, or a
 // 502 from anything that is not ccd, carries no `error.type` and marks nothing:
@@ -398,13 +402,17 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if !errors.As(err, &rt) {
 		return err
 	}
-	if rt.Type != "rate_limited" && rt.Type != "auth_failed" {
+	// 🔴 NOT EVERY rate_limited: only the account's usage limit marks it and
+	// fails the agent over (ccpool.AccountFailure, the one place that decides).
+	// A transient 429 marks nothing; the caller retries on the same account.
+	failure := ccpool.AccountFailure(rt.Type, rt.UsageLimit, rt.Status)
+	if failure == "" {
 		return err
 	}
 	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
 	defer cancel()
-	if merr := g.accounts.MarkFailure(mctx, t.owner, t.account, rt.Type, rt.Message); merr != nil {
-		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, rt.Type, t.account, merr)
+	if merr := g.accounts.MarkFailure(mctx, t.owner, t.account, failure, rt.Message); merr != nil {
+		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, failure, t.account, merr)
 	}
 	// After the mark, so the failover's choice already sees this account as
 	// cooling (or auth-failed). On its own detached budget: a rebind re-applies
@@ -415,7 +423,7 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if f != nil && t.agentID > 0 {
 		fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), failoverTimeout)
 		defer fcancel()
-		f.NoteAccountFailure(fctx, t.agentID, t.account, rt.Type, rt.Message)
+		f.NoteAccountFailure(fctx, t.agentID, t.account, failure, rt.Message)
 	}
 	return err
 }

@@ -1,7 +1,13 @@
 // Package ccfailover is per-agent Claude ACCOUNT FAILOVER: when a turn on a
-// claude-code agent fails `rate_limited` or `auth_failed`, the agent is REBOUND
-// to another of its owner's Claude accounts that is usable, instead of staying
-// on the exhausted one until its limit resets.
+// claude-code agent fails on its account's usage limit or `auth_failed`, the
+// agent is REBOUND to another of its owner's Claude accounts that is usable,
+// instead of staying on the exhausted one until its limit resets.
+//
+// 🔴 A TRANSIENT 429 IS NOT A USAGE LIMIT AND MOVES NOTHING. ccd types both
+// `rate_limited`; which one a failure is, is decided once, by
+// ccpool.AccountFailure, and every caller passes ITS answer as `failure` (the
+// gateway, the job runner). A caller that passed the runtime's raw type would
+// fail agents over on a passing throttle.
 //
 // # Why
 //
@@ -16,7 +22,8 @@
 // account (ccpool.Pool.MarkFailure), for every turn shape — a chat, a kickoff,
 // an officer re-prompt, a job. AccountFailed:
 //
-//  1. ignores every failure but rate_limited and auth_failed;
+//  1. ignores every failure but rate_limited (the usage limit, as
+//     ccpool.AccountFailure reads it) and auth_failed;
 //  2. does nothing when failover is off (MUSTER_AGENT_CC_FAILOVER=off), or the
 //     agent is PINNED (its account was named at creation — a dispatch pin, the
 //     chief's, an officer's `cc_account`) and has not opted in (cc_failover);
@@ -297,7 +304,8 @@ func (s *Service) Allowed(ag agents.Agent) (bool, string) {
 }
 
 // AccountFailed is the failover's entry point: a turn on agentID, running on
-// account, failed with failure (ccd's typed error) and detail (its message).
+// account, failed with failure (ccpool.AccountFailure of ccd's typed error, so
+// rate_limited only for a usage limit) and detail (its message).
 // It never returns an error: what it could not do is in Result.Why and the log.
 func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) Result {
 	return s.accountFailed(ctx, agentID, account, failure, detail, false)

@@ -114,7 +114,8 @@ keeps its namespace, volume and Claude account across stops and starts.
 
 ### Account failover
 
-When a turn of an instance fails `rate_limited` or `auth_failed`, muster moves
+When a turn of an instance fails on its account's usage limit or `auth_failed`
+(a transient 429 is neither, and moves nothing), muster moves
 the instance to another of the owner's Claude accounts that is usable, exactly
 as for any `claude-code` agent ([jobs: account
 failover](jobs.md#account-failover)) — unless the officer pins `cc_account`
