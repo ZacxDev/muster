@@ -347,6 +347,13 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// chatHTMLEvery is how often, at most, this server's chat streams render
+	// a reply's html (chat_stream.go); zero = chatStreamHTMLEvery. A test sets
+	// it before its socket opens.
+	chatHTMLEvery time.Duration
+	// buildVersion is the build this server reports (Server.version); empty =
+	// BuildVersion. A test sets it instead of reassigning BuildVersion.
+	buildVersion string
 	// turnRoleChecked, test-only (nil in production): called when a member's
 	// turn on a team agent has passed turnActingContext's first role read, so
 	// a test can change the membership between that read and the send.
@@ -1091,7 +1098,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser: p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
+		SnapUser: p.UserID, SnapBuild: s.version(), Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -1242,7 +1249,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	uptime := s.now().Sub(s.startedAt).Seconds()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"version": BuildVersion,
+		"version": s.version(),
 		"uptime":  uptime,
 	})
 }
