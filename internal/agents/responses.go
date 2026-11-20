@@ -386,7 +386,7 @@ func IsClientTimeout(err error) bool {
 // type ADDS is the runtime's own typed failure, when the body carries one.
 //
 // ⚠ Type IS FILLED ONLY FROM THE WIRE SHAPE ccd SPEAKS —
-// `{"error":{"type":…,"code":…,"upstream_status":…,"message":…}}` (cmd/ccd's
+// `{"error":{"type":…,"code":…,"upstream_status":…,"message":…,"usage_limit":…}}` (cmd/ccd's
 // failure.go). A body that is not that JSON leaves Type empty, which every
 // consumer treats as "untyped", never as a failure kind. That is what makes it
 // safe to branch on: internal/agentgateway marks a Claude account rate-limited
@@ -398,7 +398,12 @@ type RuntimeError struct {
 	Code           string
 	UpstreamStatus int
 	Message        string
-	snippet        string
+	// UsageLimit: a rate_limited failure the runtime says is the model
+	// account's usage limit, not a transient request rate limit (ccd's
+	// `usage_limit`, cmd/ccd classifyAPIError). False when the body does not
+	// say so — including from a runtime that predates the field.
+	UsageLimit bool
+	snippet    string
 }
 
 func (e *RuntimeError) Error() string {
@@ -413,6 +418,7 @@ func newRuntimeError(status int, body []byte, snippet string) *RuntimeError {
 			Code           string `json:"code"`
 			UpstreamStatus int    `json:"upstream_status"`
 			Message        string `json:"message"`
+			UsageLimit     bool   `json:"usage_limit"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &typed) == nil {
@@ -420,6 +426,7 @@ func newRuntimeError(status int, body []byte, snippet string) *RuntimeError {
 		e.Code = typed.Error.Code
 		e.UpstreamStatus = typed.Error.UpstreamStatus
 		e.Message = typed.Error.Message
+		e.UsageLimit = typed.Error.UsageLimit
 	}
 	return e
 }

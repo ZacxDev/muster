@@ -42,9 +42,9 @@ func TestARateLimitedChatLaneIsAnsweredThroughTheWakeLoop(t *testing.T) {
 	c.chat.reply = func() (string, error) {
 		calls++
 		if calls == 1 {
-			return "", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", Message: limit}
+			return "", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", Message: limit, UsageLimit: true}
 		}
-		return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited", Code: "rate_limit", Message: limit}
+		return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited", Code: "rate_limit", Message: limit, UsageLimit: true}
 	}
 	for i := 0; i < 20 && c.hq.Item(id).Status != "done"; i++ {
 		c.pass(t)
@@ -68,5 +68,38 @@ func TestARateLimitedChatLaneIsAnsweredThroughTheWakeLoop(t *testing.T) {
 	}
 	if n := len(c.chat.sent()); n != sent {
 		t.Fatalf("passes after the chat was answered sent the lane %d more turns; want none", n-sent)
+	}
+}
+
+// TestATransient429ChatLaneIsNotToldItsAccountsAreAtTheirLimit is the same
+// seam for a 429 that is NOT a usage limit: three typed turns refused with
+// ccd's rate_limited, the CLI's code, its "Request rate limited" text and no
+// usage_limit. The member is answered within the same bound, with the
+// rate-limited reply — not that the accounts are at their usage limit.
+//
+// RED before the fix: the reply was "(The officer can't reply right now: its
+// Claude accounts are at their usage limit. Ask again later.)".
+func TestATransient429ChatLaneIsNotToldItsAccountsAreAtTheirLimit(t *testing.T) {
+	clk := &stepClock{t: time.Now()}
+	c := newChatPGAt(t, clk.now)
+	c.hq.AddChat(offB, "c-43", "triage")
+	seq, id := c.hq.MemberSays("c-43", "member3", "Member Three", "Did the backup run?")
+	c.chat.reply = func() (string, error) {
+		return "", &agents.RuntimeError{Status: http.StatusTooManyRequests, Type: "rate_limited", Code: "rate_limit", UpstreamStatus: 429, Message: "API Error: Request rate limited"}
+	}
+	for i := 0; i < 20 && c.hq.Item(id).Status != "done"; i++ {
+		c.pass(t)
+		clk.add(time.Minute)
+	}
+	if st := c.hq.Item(id).Status; st != "done" {
+		t.Fatalf("after 20 passes the rate-limited chat's item is %s (%d lane turns); want it answered and done", st, len(c.chat.sent()))
+	}
+	want := "(The officer is being rate-limited right now. Ask again later.)"
+	msgs := c.hq.ChatMessages("c-43")
+	if len(msgs) != 2 || msgs[1].Role != "officer" || msgs[1].InReplyTo != seq || msgs[1].Text != want {
+		t.Fatalf("chat after the bound: %+v; want the member's turn and one officer reply %q to %d", msgs, want, seq)
+	}
+	if n := len(c.chat.sent()); n != 3 {
+		t.Fatalf("%d lane turns; want 3 (the bound)", n)
 	}
 }

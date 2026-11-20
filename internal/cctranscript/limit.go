@@ -82,6 +82,13 @@ func (r Record) text() string {
 	return strings.Join(parts, "\n")
 }
 
+// IsLimitText reports whether msg — the CLI's own text for a failed turn —
+// says an account usage limit was hit (limitText). It is how ccd tells a
+// usage limit from any other 429 (cmd/ccd classifyAPIError): the CLI gives a
+// transient "API Error: Request rate limited" the same error code
+// (rate_limit) as a usage limit, so the code alone cannot tell them apart.
+func IsLimitText(msg string) bool { return limitText.MatchString(msg) }
+
 // limitText is a usage-limit message: "You've hit your session limit · …",
 // "You've hit your weekly limit · …" (the CLI's words now), and the earlier
 // CLI's "Claude usage limit reached. …" and "5-hour limit reached ∙ …".

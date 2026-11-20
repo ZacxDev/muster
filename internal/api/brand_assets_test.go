@@ -148,12 +148,18 @@ func pageRefs(where, page string) []brandRef {
 		switch {
 		case strings.HasPrefix(tag, "<link") && (a["rel"] == "icon" || a["rel"] == "apple-touch-icon"):
 			out = append(out, brandRef{where + " rel=" + a["rel"], staticFile(a["href"]), a["sizes"]})
-		case strings.HasPrefix(tag, "<img") && hasAttr(tag, "data-brand-mark"):
+		case strings.HasPrefix(tag, "<img") && (hasAttr(tag, "data-brand-mark") || hasAttr(tag, "data-server-mark")):
+			// data-server-mark: the sidebar's server switcher drawing
+			// muster's square mark for a server with no branding.
+			kind := "data-brand-mark"
+			if hasAttr(tag, "data-server-mark") {
+				kind = "data-server-mark"
+			}
 			d := ""
 			if a["width"] != "" || a["height"] != "" {
 				d = a["width"] + "x" + a["height"]
 			}
-			out = append(out, brandRef{where + " <img data-brand-mark>", staticFile(a["src"]), d})
+			out = append(out, brandRef{where + " <img " + kind + ">", staticFile(a["src"]), d})
 		}
 	}
 	return out

@@ -237,7 +237,14 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	switch {
 	case (it.Kind == attentionKindSession || it.Kind == attentionKindQuestion) && it.openCode == nil:
 		line := strings.TrimSpace(it.Text)
-		cls := ui.AsksCardQuestionClass + " font-mono text-sm"
+		// 🔴 A QUESTION IS A SENTENCE, NOT CODE: it reads in the card's own
+		// face (the jargon audit, U-03 — in monospace it read as terminal
+		// output). Only a session waiting on a TOOL CALL ("Bash: npm
+		// publish") keeps the code face, since that line is a command.
+		cls := ui.AsksCardQuestionClass
+		if it.Kind == attentionKindSession && it.tool != "" && it.tool != claudeCodeQuestionTool {
+			cls += " font-mono text-sm"
+		}
 		if it.Text == sessionWaitingText {
 			cls = ui.AsksCardQuestionClass + " text-fg2"
 		}
