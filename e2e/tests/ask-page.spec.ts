@@ -104,6 +104,12 @@ async function ask(question: string): Promise<number> {
   return (JSON.parse(text) as { id: number }).id;
 }
 
+// askFree is an ask with no options: its answer box is the only way to answer.
+async function askFree(question: string): Promise<number> {
+  const text = await mcpCall('attention_ask', { question });
+  return (JSON.parse(text) as { id: number }).id;
+}
+
 // posts records every POST the page makes.
 function posts(page: Page): string[] {
   const seen: string[] = [];
@@ -184,6 +190,16 @@ for (const vp of [
       await page.locator('#app-main').evaluate((e) => e.scrollTo(0, e.scrollHeight));
       expect((await page.locator('#app-compose').boundingBox())!.y).toBeCloseTo(compose.y, 0);
 
+      // With options, the free-text row is collapsed behind "Other answer…";
+      // opening it puts the caret in the box.
+      const other = page.locator('[data-ask-other]');
+      await expect(box, 'beside options the box is collapsed').toBeHidden();
+      await expect(other).toHaveText('Other answer…');
+      await other.tap();
+      await expect(box).toBeVisible();
+      await expect(box).toBeFocused();
+      await expect(other).toBeHidden();
+
       // Answer is DISABLED while the box is blank (a blank answer used to
       // round-trip to a server notice); a chip's fill enables it.
       const send = page.locator('[data-ask-send]');
@@ -239,7 +255,9 @@ test.describe('over-long answer, phone 390×844', () => {
     test.setTimeout(90_000);
     hold = undefined;
     await signIn(page, origin);
-    const id = await ask(question('over-long'));
+    // No options, so the answer box is open (beside options it is folded
+    // behind Other answer…).
+    const id = await askFree(question('over-long'));
     await page.goto(origin + `/attention/asks/${id}`);
     await expect(page.locator('[data-ask-source]')).toHaveCount(0);
     const box = page.locator('#ask-input');
@@ -311,5 +329,205 @@ test.describe('desktop 1280×800', () => {
     // The queue page itself is unchanged: the ask is no longer open there.
     await page.goto(origin + '/attention');
     await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+  });
+});
+
+// AN ANSWER THAT FAILS TO POST (the asks audit, #12): a server error or no
+// network is said in one line under the answer form; the page, the question
+// and the typed text stay, and the same tap sends it once the server is back.
+// An option's failed post is said the same way. RED before: the form was a
+// plain post, so a 500 replaced the whole page with the server's error.
+//
+// "OTHER ANSWER…" (the asks audit, #14): an ask with options draws its
+// free-text row collapsed; one without options draws it open.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`failed posts, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('an answer that fails to post says so under the form, keeps the text, and the same tap retries it', async ({ page }) => {
+      test.setTimeout(90_000);
+      hold = undefined;
+      await signIn(page, origin);
+      const q = `Which branch should the importer ship from? (${vp.name})`;
+      const id = await askFree(q);
+      let mode: 'error' | 'offline' | 'through' = 'error';
+      let tries = 0;
+      await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+        tries++;
+        if (mode === 'error') return r.fulfill({ status: 500, contentType: 'text/plain', body: 'internal error' });
+        if (mode === 'offline') return r.abort('internetdisconnected');
+        return r.continue();
+      });
+      await page.goto(origin + `/attention/asks/${id}`);
+      const box = page.locator('#ask-input'), send = page.locator('#ask-send'), err = page.locator('#ask-error');
+      await expect(page.locator('[data-ask-other]'), 'no options: the box is open').toHaveCount(0);
+      await expect(box).toBeVisible();
+      await expect(err).toBeHidden();
+      await box.fill('Cut it from main');
+      await send.click();
+      await expect(err).toBeVisible();
+      await expect(err).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
+      await expect(err).toHaveAttribute('role', 'alert');
+      expect(tries, 'the answer was posted once').toBe(1);
+      await expect(page).toHaveURL(origin + `/attention/asks/${id}`);
+      await expect(page.locator('[data-ask-question]'), 'the page is still the question').toHaveText(q);
+      await expect(box, 'the typed text is kept').toHaveValue('Cut it from main');
+      await expect(send).toBeEnabled();
+      // Under the form: below the box, inside the pinned answer area.
+      const eb = (await err.boundingBox())!, bb = (await box.boundingBox())!;
+      expect(eb.y, 'the error line is under the answer form').toBeGreaterThanOrEqual(bb.y + bb.height - 1);
+
+      mode = 'offline';
+      await send.click();
+      await expect(err).toHaveText("Your answer wasn't sent: muster couldn't be reached. Check your connection and try again.");
+      await expect(box).toHaveValue('Cut it from main');
+
+      // The server is back: the same tap answers.
+      mode = 'through';
+      await Promise.all([answered(page, id), send.click()]);
+      await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: Cut it from main');
+      await expect(err).toHaveCount(0);
+      expect(tries).toBe(3);
+    });
+
+    test('an option that fails to post says so too; the options keep the box behind Other answer…', async ({ page }) => {
+      test.setTimeout(90_000);
+      hold = undefined;
+      await signIn(page, origin);
+      const id = await ask(question('failed option ' + vp.name));
+      let fail = true;
+      await page.route(`**/attention/asks/${id}/answer`, (r) => (fail ? r.fulfill({ status: 502, body: 'bad gateway' }) : r.continue()));
+      await page.goto(origin + `/attention/asks/${id}`);
+      const other = page.locator('[data-ask-other]'), box = page.locator('#ask-input');
+      await expect(box).toBeHidden();
+      await expect(other).toBeVisible();
+      await expect(other).toHaveAttribute('aria-expanded', 'false');
+      expect((await other.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      await page.getByRole('button', { name: 'wait until Monday', exact: true }).click();
+      await expect(page.locator('#ask-error')).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
+      await expect(page.locator('[data-ask-option]')).toHaveCount(2);
+      // Other answer… opens the box, focused; typed text answers.
+      await other.click();
+      await expect(box).toBeVisible();
+      await expect(box).toBeFocused();
+      await expect(page.locator('#ask-answer')).toBeVisible();
+      fail = false;
+      await box.fill('Monday, after the backup');
+      await Promise.all([answered(page, id), page.locator('#ask-send').click()]);
+      await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: Monday, after the backup');
+    });
+  });
+}
+
+// THE IN-PLACE POST'S EDGES (the follow-up audit), at a phone:
+//   - signed out (the session cookie gone) the answer route refuses the post
+//     (401/403); no retry on this page can succeed, so the page is loaded
+//     again and the sign-in gate takes over — never "couldn't record it. Try
+//     again." for ever. A 403 (another site's post) does the same.
+//   - a browser whose FormData ignores its submitter argument still posts the
+//     tapped option (it is appended by hand).
+//   - a page shown again mid-post (pageshow: the back-forward cache) is no
+//     longer busy: the same tap posts again.
+// RED before: the 401 drew the inline error; the option was dropped (the
+// fallback sat in a catch that never runs) and the answer was refused as
+// blank; a restored page stayed busy and ignored every tap.
+test.describe('in-place post edges, phone 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('signed out, the post loads the page again and its sign-in gate takes over', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page, origin);
+    const id = await askFree(`Signed out mid-answer? ${stamp}`);
+    await page.goto(origin + `/attention/asks/${id}`);
+    await page.locator('#ask-input').fill('Ship it');
+    await page.context().clearCookies({ name: 'muster_session' });
+    // Whether the inline error was ever drawn, kept across the navigation
+    // (the page that drew it is gone by the time this test looks).
+    await page.evaluate(() => {
+      const el = document.getElementById('ask-error')!;
+      new MutationObserver(() => {
+        if (!el.hidden) sessionStorage.setItem('ask-error-shown', el.textContent || '');
+      }).observe(el, { attributes: true, childList: true, characterData: true, subtree: true });
+    });
+    const refused = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`);
+    const reloaded = page.waitForRequest((r) => r.method() === 'GET' && r.isNavigationRequest() && new URL(r.url()).pathname === `/attention/asks/${id}`);
+    await page.locator('#ask-send').click();
+    const res = await refused;
+    expect([401, 403], `the signed-out post was refused (${res.status()})`).toContain(res.status());
+    await reloaded;
+    await page.waitForURL((u) => u.pathname.startsWith('/login'));
+    await expect(page.locator('#ask-error')).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem('ask-error-shown')), 'the refused post drew no inline error').toBeNull();
+    const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string };
+    expect(waited.status, 'nothing was recorded').toBe('pending');
+  });
+
+  test('a 403 loads the page again instead of drawing the inline error', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page, origin);
+    const id = await askFree(`Refused as cross-site? ${stamp}`);
+    await page.route(`**/attention/asks/${id}/answer`, (r) => r.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"forbidden"}' }));
+    await page.goto(origin + `/attention/asks/${id}`);
+    await page.locator('#ask-input').fill('Ship it');
+    const reloaded = page.waitForRequest((r) => r.method() === 'GET' && r.isNavigationRequest() && new URL(r.url()).pathname === `/attention/asks/${id}`);
+    await page.locator('#ask-send').click();
+    await reloaded;
+    await page.waitForLoadState('load');
+    await expect(page.locator('#ask-error')).toBeHidden();
+  });
+
+  test('an option is posted where FormData ignores its submitter', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await page.addInitScript(() => {
+      const F = window.FormData;
+      // An older browser: the submitter argument is ignored, never thrown on.
+      const Old = function (this: unknown, f?: HTMLFormElement) {
+        return new F(f);
+      } as unknown as typeof FormData;
+      Old.prototype = F.prototype;
+      window.FormData = Old;
+    });
+    await signIn(page, origin);
+    const id = await ask(question('old FormData'));
+    await page.goto(origin + `/attention/asks/${id}`);
+    let body = '';
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`) body = r.postData() ?? '';
+    });
+    await Promise.all([answered(page, id), page.getByRole('button', { name: 'wait until Monday', exact: true }).click()]);
+    expect(new URLSearchParams(body).get('option'), 'the tapped option was posted').toBe('wait until Monday');
+    await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: wait until Monday');
+  });
+
+  test('a page shown again mid-post is usable: the same tap posts again', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page, origin);
+    const id = await askFree(`Restored mid-post? ${stamp}`);
+    let tries = 0;
+    let through = false;
+    await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+      tries++;
+      if (!through) return; // held: never answered, as a page left mid-post
+      return r.continue();
+    });
+    await page.goto(origin + `/attention/asks/${id}`);
+    const form = page.locator('#ask-answer');
+    await page.locator('#ask-input').fill('Ship it');
+    await page.locator('#ask-send').click();
+    await expect(form).toHaveAttribute('aria-busy', 'true');
+    await expect.poll(() => tries).toBe(1);
+    // What the back-forward cache does to a page it shows again.
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await expect(form).not.toHaveAttribute('aria-busy', 'true');
+    through = true;
+    await Promise.all([answered(page, id), page.locator('#ask-send').click()]);
+    expect(tries, 'the restored page posted again').toBe(2);
+    await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: Ship it');
   });
 });

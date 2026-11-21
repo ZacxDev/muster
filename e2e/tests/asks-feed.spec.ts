@@ -196,6 +196,38 @@ for (const vp of [
       await expect(page).toHaveURL(new RegExp(`/agents/${agent}(\\?|$)`));
     });
 
+    // NOTHING MORE TO SHOW, NO CHEVRON (the asks audit, #15): a card whose
+    // question fits its clamp and that has no more region draws no chevron,
+    // and a tap or Enter does not "expand" it to the same thing; a card whose
+    // question the clamp cuts keeps both, and expanding shows the cut line.
+    // RED before: every card drew the chevron and toggled.
+    test('a card with nothing more to show draws no chevron and does not expand', async ({ page }) => {
+      await openFeed(page);
+      const short = page.locator(`#ask-${ids.rotate}`), long = page.locator(`#ask-${ids.deploy}`);
+      await expect(short).toHaveAttribute('data-asks-nomore', '');
+      await expect(short.locator('.asks-chevron')).toBeHidden();
+      const toggle = short.locator('[data-asks-toggle]');
+      await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+      await expect(toggle).not.toHaveAttribute('aria-expanded', /.*/);
+      await short.locator('[data-attention-text]').click();
+      // aria-disabled: Playwright would wait for it to be enabled; a tap
+      // still lands on it, so it is forced.
+      await toggle.click({ force: true });
+      await expect(short).toHaveAttribute('data-expanded', 'false');
+      await short.focus();
+      await page.keyboard.press('Enter');
+      await expect(short).toHaveAttribute('data-expanded', 'false');
+      // Control: the cut question's card keeps its chevron and expands to
+      // its last line.
+      await expect(long).not.toHaveAttribute('data-asks-nomore', /.*/);
+      await expect(long.locator('.asks-chevron')).toBeVisible();
+      const q = long.locator('[data-attention-text]');
+      const clamped = (await q.boundingBox())!.height;
+      await long.locator('[data-asks-toggle]').click();
+      await expect(long).toHaveAttribute('data-expanded', 'true');
+      await expect.poll(async () => (await q.boundingBox())!.height, { message: 'the cut line is shown' }).toBeGreaterThan(clamped + 8);
+    });
+
     test('tapping an option answers it: the card leaves and the next card takes focus', async ({ page }) => {
       await openFeed(page);
       const n0 = await openN(page);

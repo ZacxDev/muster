@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestAStepUpCardsPageOffersNoBrowserAnswer(t *testing.T) {
 		t.Errorf("the heading %q, want %q", got, "Post to X?")
 	}
 	for _, want := range []string{
-		`<p class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-ask-stepup-phone>Confirm this on your phone.</p>`,
+		`<p class="break-words text-base text-fg2" data-ask-stepup-phone>Confirm this on your phone.</p>`,
 		`data-ask-dismiss>Dismiss without answering</button>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -143,8 +144,7 @@ func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
 		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
 		`<button type="submit" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" data-ask-dismiss>Dismiss without answering</button>`,
 		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
-		`if (!b || e.target.id !== 'ask-answer' || !e.submitter || e.submitter.id !== 'ask-send' || b.value.trim()) return;
-    e.preventDefault();`,
+		`if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim()) { e.preventDefault(); b.focus(); return; }`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the options page lacks %s:\n%s", want, body)
@@ -312,5 +312,87 @@ func TestASettledAskPageNamesWhoAsked(t *testing.T) {
 	n.Kind, n.Status = attention.KindNotice, attention.Cancelled
 	if body := askPageBody(t, s, n, askPagePath(n.ID)); !strings.Contains(body, `data-ask-source>Worker Seven</span> sent a notice · `) {
 		t.Errorf("a dismissed notice's page does not name who sent it:\n%s", body)
+	}
+}
+
+// TestAStepUpCardOnTheFeedOffersNoAnswer: the feed's card for a step-up card
+// draws what its page draws — no Confirm/Refuse, no answer box, no mic — and
+// one plain status line (no fill, no border: nothing to tap) in their place,
+// ended by Dismiss. The same line on the page is plain too. RED before: the
+// feed drew Confirm and Refuse and the answer box, and the page drew the line
+// in a bordered pill.
+func TestAStepUpCardOnTheFeedOffersNoAnswer(t *testing.T) {
+	a := stepUpFixtureAsk(t, "Big news.")
+	a.Owner, a.CreatedAt = 1, time.Now()
+	card := askFeedCardHTML(askItem(a), time.Now())
+	want := `<div class="flex min-w-0 items-center gap-2" data-asks-stepup-row><div class="min-w-0 flex-1"><p class="break-words text-sm text-fg2" data-ask-stepup-phone>Confirm this on your phone.</p></div>` +
+		askDismissButton("ask-"+strconv.FormatInt(a.ID, 10)+"-dismiss", "Dismiss without answering") + `</div>`
+	if !strings.Contains(card, want) {
+		t.Errorf("the feed's step-up card lacks its status row %s:\n%s", want, card)
+	}
+	for _, never := range []string{"data-attention-option", ">Confirm</button>", ">Refuse</button>", "<textarea", "data-attention-answer", "data-asks-send", "dictate"} {
+		if strings.Contains(card, never) {
+			t.Errorf("the feed's step-up card still draws %q:\n%s", never, card)
+		}
+	}
+	// Control: an ordinary ask with the same options still draws them.
+	plain := attention.Ask{ID: 77, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Ship?",
+		Options: []string{hostDecisionConfirm, hostDecisionRefuse}, Status: attention.Open, CreatedAt: time.Now()}
+	if c := askFeedCardHTML(askItem(plain), time.Now()); !strings.Contains(c, ">Confirm</button>") || strings.Contains(c, "data-ask-stepup-phone") {
+		t.Errorf("an ordinary ask's card lost its options:\n%s", c)
+	}
+	for _, line := range []string{askStepUpPhoneHTML("text-sm"), askStepUpPhoneHTML("text-base")} {
+		for _, pill := range []string{"ring-", "rounded", "bg-", "font-semibold"} {
+			if strings.Contains(line, pill) {
+				t.Errorf("the step-up line is drawn like a control (%s): %s", pill, line)
+			}
+		}
+	}
+}
+
+// TestAnAskWithOptionsCollapsesItsFreeTextRow: on the ask page, an ask with
+// options draws its free-text row hidden behind a quiet "Other answer…"
+// control (the options are the answer; the form stays in the document, since
+// they submit it); an ask without options draws the row open and no such
+// control. RED before: the row was always open.
+func TestAnAskWithOptionsCollapsesItsFreeTextRow(t *testing.T) {
+	now := time.Now()
+	opts := attention.Ask{ID: 41, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Squash or merge?",
+		Options: []string{"Squash", "Merge"}, Status: attention.Open, CreatedAt: now}
+	free := opts
+	free.ID, free.Options = 42, nil
+	s := whereServer(t, opts, free)
+	other := `<button type="button" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" aria-controls="ask-answer" aria-expanded="false" data-ask-other>Other answer…</button>`
+	body := askPageBody(t, s, opts, askPagePath(opts.ID))
+	for _, want := range []string{other, `class="flex items-end gap-2" data-attention-answer hidden>`, `form="ask-answer" name="option" value="Squash"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the options page lacks %s:\n%s", want, body)
+		}
+	}
+	body = askPageBody(t, s, free, askPagePath(free.ID))
+	if strings.Contains(body, "data-ask-other>") || !strings.Contains(body, `class="flex items-end gap-2" data-attention-answer>`) {
+		t.Errorf("the free-text page collapsed its only way to answer:\n%s", body)
+	}
+}
+
+// TestTheAskPagePostsItsAnswerInPlace: the ask page's answer form is posted in
+// place, so a failed post is said in one line under the form (#ask-error, an
+// alert) instead of replacing the page, and the typed text stays. Its words
+// are pinned whole. The behaviour is the e2e spec's (ask-page.spec: "an
+// answer that fails to post").
+func TestTheAskPagePostsItsAnswerInPlace(t *testing.T) {
+	a := attention.Ask{ID: 51, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Which branch?",
+		Status: attention.Open, CreatedAt: time.Now()}
+	s := whereServer(t, a)
+	body := askPageBody(t, s, a, askPagePath(a.ID))
+	for _, want := range []string{
+		`</form>
+<p id="ask-error" role="alert" class="px-1 pt-2 text-sm text-st-error-fg" hidden data-ask-error></p>`,
+		"failed(`Your answer wasn't sent: muster couldn't record it. Try again.`);",
+		"failed(`Your answer wasn't sent: muster couldn't be reached. Check your connection and try again.`);",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the ask page lacks %s", want)
+		}
 	}
 }

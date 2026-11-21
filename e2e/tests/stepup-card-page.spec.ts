@@ -105,3 +105,45 @@ test.describe('phone 390×844', () => {
     await testInfo.attach('stepup-card-phone-details.png', { path: opened, contentType: 'image/png' });
   });
 });
+
+// THE FEED MATCHES THE PAGE (the asks audit): a step-up card on the Asks feed
+// draws no Confirm/Refuse, no answer box and no mic — only the paired phone
+// answers it — and says "Confirm this on your phone." as a plain status line,
+// on the feed and on the page alike: no border, no fill, nothing that reads
+// as tappable. RED before: the feed drew Confirm, Refuse and the box, and the
+// page drew the line in a bordered pill.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the feed, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('a step-up card on the feed has no answer controls, and its phone line is plain text', async ({ page }) => {
+      const id = fix('card', '1');
+      await signIn(page, origin);
+      await page.goto(`${origin}/attention`);
+      const card = page.locator(`#ask-${id}`);
+      await expect(card).toBeVisible();
+      await expect(card.locator('[data-attention-option]')).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Refuse', exact: true })).toHaveCount(0);
+      await expect(card.locator('textarea, [data-asks-send], button[data-dictate]')).toHaveCount(0);
+      const line = card.locator('[data-ask-stepup-phone]');
+      await expect(line).toHaveText('Confirm this on your phone.');
+      await expect(card.getByRole('button', { name: 'Dismiss without answering' }), 'Dismiss stays').toBeVisible();
+      const plain = (el: Element) => {
+        const st = getComputedStyle(el);
+        return { tag: el.tagName, border: st.borderTopWidth, shadow: st.boxShadow, bg: st.backgroundColor, weight: st.fontWeight };
+      };
+      for (const where of [line, null]) {
+        if (where === null) {
+          await page.goto(`${origin}/attention/asks/${id}`);
+        }
+        const l = where ?? page.locator('[data-ask-stepup-phone]');
+        await expect(l).toHaveText('Confirm this on your phone.');
+        const st = await l.evaluate(plain);
+        expect(st, 'a status line, not a control').toEqual({ tag: 'P', border: '0px', shadow: 'none', bg: 'rgba(0, 0, 0, 0)', weight: '400' });
+      }
+    });
+  });
+}
