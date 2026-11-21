@@ -84,9 +84,16 @@ const asksSearchIcons = `<svg class="h-4 w-4 transition-opacity group-[.htmx-req
 // redirect to the one ask an id names, and a full navigation keeps that out of
 // the history. Typing is the field's own debounced htmx request (the file's
 // header), whose results replace the region AsksSearchRegionHTML draws.
+//
+// 🔴 hx-history="false": each address update makes htmx save the WHOLE page's
+// HTML — every ask's question and answer on it — to localStorage first (its
+// history cache), so without this every pause in typing would write the
+// owner's asks into the browser's storage. Its presence anywhere in the
+// document turns that off; Back to a typed address asks the server instead
+// (HX-History-Restore-Request, which lists rather than redirects).
 func AsksSearchFormHTML(action, q string) string {
 	esc := html.EscapeString
-	return `<form role="search" method="get" action="` + esc(action) + `" hx-boost="false" class="` + AsksSearchFormClass + `" data-asks-search>` +
+	return `<form role="search" method="get" action="` + esc(action) + `" hx-boost="false" hx-history="false" class="` + AsksSearchFormClass + `" data-asks-search>` +
 		`<label for="asks-search-q" class="sr-only">Search asks by id or text</label>` +
 		`<span id="asks-search-busy" class="` + AsksSearchIconClass + `" aria-hidden="true" data-asks-search-busy>` + asksSearchIcons + `</span>` +
 		`<input type="search" id="asks-search-q" name="q" value="` + esc(q) + `" placeholder="` + AsksSearchPlaceholder + `" maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" class="` + AsksSearchInputClass + `"` +
@@ -100,21 +107,14 @@ func AsksSearchRegionHTML(results string) string {
 	return `<div id="` + AsksSearchRegionID + `" class="` + AsksSearchRegionClass + `" data-asks-search-region>` + results + `</div>`
 }
 
-// asksSearchJS is the box's two pieces of glue, delegated on the document.
-//
-//   - ENTER STANDS THE LIVE SEARCH DOWN. The form's submit navigates (and an
-//     id that finds one thing redirects to it); a live request still pending
-//     or in flight could otherwise land after the submit began and
-//     replaceState the page's address to ?q=<the id> — and Back from the ask
-//     would come back to that address, which redirects to the ask again.
-//     So a submit aborts the request in flight, refuses any later one until
-//     the page is shown again (pageshow: Back from the bfcache), and takes
-//     ?q= off the entry it leaves (one the typing already set, the same way).
-//   - htmx's HISTORY SNAPSHOT keeps the field's text. htmx saves the page's
-//     HTML when a boosted link leaves it, and Back restores that HTML: the
-//     results a live search drew are in it, but what was TYPED is the field's
-//     value property, not its attribute, so without this Back would draw those
-//     results under a box holding whatever the page was first loaded with.
+// asksSearchJS makes ENTER STAND THE LIVE SEARCH DOWN. The form's submit
+// navigates (and an id that finds one thing redirects to it); a live request
+// still pending or in flight could otherwise land after the submit began and
+// replaceState the page's address to ?q=<the id> — and Back from the ask
+// would come back to that address, which redirects to the ask again. So a
+// submit aborts the request in flight, refuses any later one until the page is
+// shown again (pageshow: Back from the bfcache), and takes ?q= off the entry
+// it leaves (one the typing already set, the same way).
 var asksSearchJS = `(function () {
   if (window.__asksSearchInit) return;
   window.__asksSearchInit = true;
@@ -140,10 +140,6 @@ var asksSearchJS = `(function () {
     if (submitted && e.target === field()) e.preventDefault();
   });
   window.addEventListener('pageshow', function () { submitted = false; });
-  document.addEventListener('htmx:beforeHistorySave', function () {
-    var f = field();
-    if (f) f.setAttribute('value', f.value);
-  });
 })();
 `
 

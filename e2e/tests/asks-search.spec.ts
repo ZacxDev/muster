@@ -188,6 +188,9 @@ for (const vp of [
       expect(await box(page).evaluate((e: HTMLInputElement) => [e.value, e.selectionStart])).toEqual([words, words.length]);
       expect(live.length, `requests while typing ${words.length} keys: ${live.join(' ')}`).toBeGreaterThanOrEqual(1);
       expect(live.length, `requests while typing ${words.length} keys: ${live.join(' ')}`).toBeLessThanOrEqual(3);
+      // The address moved, and htmx saved no copy of the page (the owner's
+      // asks) into the browser's storage on the way.
+      expect(await page.evaluate(() => localStorage.getItem('htmx-history-cache'))).toBeNull();
       await noSideways(page);
 
       // An id is LISTED, never jumped to (typing 12 on the way to 123 must

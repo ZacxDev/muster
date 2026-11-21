@@ -481,6 +481,11 @@ func TestTheSearchBoxSearchesAsYouType(t *testing.T) {
 	if strings.Contains(form, "<button") || strings.Contains(form, `type="submit"`) || strings.Contains(form, "data-asks-search-submit") {
 		t.Errorf("the box still has a button:\n%s", form)
 	}
+	// Typing updates the address; htmx would first save the whole page (the
+	// owner's asks) to localStorage, but for this.
+	if !strings.HasPrefix(form, `<form role="search" method="get" action="/attention" hx-boost="false" hx-history="false" `) {
+		t.Errorf("the box does not keep the page out of htmx's history cache:\n%.200s", form)
+	}
 	input := htmlRegion(form, `<input type="search"`, `>`)
 	for _, want := range []string{
 		` hx-get="/attention" `,
