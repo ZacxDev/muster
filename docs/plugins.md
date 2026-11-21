@@ -1375,10 +1375,16 @@ one approval covers it) — that the plugin can claim from `not_before`:
 | 2 | 5 minutes |
 | 3 | 15 minutes |
 | 4 | 30 minutes |
-| 5 and later | 60 minutes |
+| 5 | 60 minutes |
+| 6 | none: it stops retrying on its own |
 
-…until the first draft's expiry (7 days after it was written): a backoff that
-would end past it files nothing, and the chain ends with that failure.
+**At most 6 automatic attempts** (the first and five retries): after the
+sixth fails the draft stops retrying on its own, so it never hammers a
+venue's security check for days, and you are pushed once, with the plugin's
+last word. A manual retry (below) is still open and starts a fresh budget of
+6. Retries also stop at the first draft's expiry (7 days after it was
+written): a backoff that would end past it files nothing, and the chain ends
+with that failure.
 
 - 🔴 **At most once still holds.** The failed attempt is settled `failed` as
   before and its claim is never cleared; nothing is offered twice. An attempt
@@ -1390,10 +1396,10 @@ would end past it files nothing, and the chain ends with that failure.
   attempt: *Retrying on its own · attempt N*, *next try in …*, and *Last try:
   the plugin said: …*. **Stop retrying** on it withdraws that attempt (as
   Withdraw does: it goes back to the officer).
-- **Two pushes, never one per attempt:** one when attempt 3 fails and the
+- **Few pushes, never one per attempt:** one when attempt 3 fails and the
   draft keeps retrying (carrying the plugin's last word, e.g. *"X wants a
   security check"*: something you may want to clear), and one when a retrying
-  draft ends unsent at its expiry.
+  draft stops — it expired unsent, or it used up its 6 automatic attempts.
 - **The officer's item settles once**, with the chain's outcome: done when an
   attempt is posted; a single `draft.refused` follow-up (for the last attempt)
   when the chain ends unsent — a permanent failure, an unknown outcome, a
@@ -1403,9 +1409,16 @@ would end past it files nothing, and the chain ends with that failure.
   [`plugin_draft_retry`](#deciding-a-draft-from-your-own-session)) files the
   next attempt at once. It is refused for an unknown outcome (no
   `nothing_sent`: it may have been posted), a sent, rejected, pending or
-  expired draft, and while an attempt is still on its way. A draft whose
-  chain had already ended goes again with its item already settled; a second
-  failure then files a second `draft.refused` follow-up.
+  expired draft, and while an attempt is still on its way.
+- 🔴 **Never after the officer took it up.** A draft whose retries ended
+  went back to its officer (a `draft.refused` follow-up). Once the officer
+  has taken that up — claimed or finished the follow-up, or filed a new
+  draft for it or for the draft's item (your Re-file included) — the old
+  draft is **not** retried: the new draft and the retry would both be
+  posted. *Retry now* is then not offered and `can_retry` is `false`. A
+  retry made before that finishes the still-open follow-up in the same
+  transaction, so the officer is never asked to redraft what the retry
+  sends.
 - Each attempt's filing is audited `plugin.draft.retry_scheduled` (`retry_of`,
   `after_draft`, `attempt`, `not_before`, `via`: `auto`, `browser` or `mcp
   from <host>/<session>`).
@@ -2932,7 +2945,7 @@ with three tools no dispatched agent (the chief included) is offered:
 |---|---|
 | `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Also `retries`: your approved outbound drafts that are not out yet, one entry per draft (its latest attempt) — `id`, `retry_of` (the first attempt's id), `attempt`, `state` (`waiting`: retrying on its own from `not_before`; `sending`: the plugin collected it; `failed_nothing_sent`: it failed and its plugin said nothing was sent), `not_before`, `last_detail` (the plugin's last word), `can_retry`, `expires_at`, `venue`, `target`, `officer`, `body`. Read-only. |
 | `plugin_draft_decide {id, decision, body_sha256, reason?}` | `decision` is `approve` (it is **queued**, not yet sent: the plugin's next claim collects it and tries to send it; a refusal [comes back](#when-the-plugin-refuses-a-reply)) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), an approval of a draft its plugin has [not checked yet](#check-a-reply-before-it-can-be-approved) or refused, a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). `reason` goes with a `reject` only (an approval naming one is refused): the card's reason, with the same bound and the same effect. |
-| `plugin_draft_retry {id}` | Your [manual retry](#retries-approve-once) of an outbound draft (any attempt's id): files its next attempt, claimable at once, and answers `{id, retry_of, attempt, status, not_before, retried_via, retried_from}`. It re-sends exactly what you approved, so it needs no new approval and no step-up confirmation (from the retry contract derived from the operator's 2026-11-21 ask to approve once and have it retry on its own, with a manual retry via MCP). Refused unless the draft's latest attempt failed with `nothing_sent: true` and it has not expired; so also for a reply draft and while an attempt is still on its way. Audited `plugin.draft.retry_scheduled` with `via: mcp from <host>/<session>`. |
+| `plugin_draft_retry {id}` | Your [manual retry](#retries-approve-once) of an outbound draft (any attempt's id): files its next attempt, claimable at once, and answers `{id, retry_of, attempt, status, not_before, retried_via, retried_from}`. It re-sends exactly what you approved, so it needs no new approval and no step-up confirmation (from the retry contract derived from the operator's ask to approve once and have it retry on its own, with a manual retry via MCP). Refused unless the draft's latest attempt failed with `nothing_sent: true` and it has not expired; so also for a reply draft and while an attempt is still on its way. Audited `plugin.draft.retry_scheduled` with `via: mcp from <host>/<session>`. |
 
 Every decision's `plugin.draft.*` audit row records where it was made
 (`decided_via`): `browser` for the card, `mcp from <host>/<session>` for

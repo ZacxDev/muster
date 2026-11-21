@@ -175,7 +175,11 @@ type Draft struct {
 	Attempt         int        `json:"attempt,omitempty"`
 	NotBefore       *time.Time `json:"notBefore,omitempty"`
 	RetryLastDetail string     `json:"retryLastDetail,omitempty"`
-	NothingSent     bool       `json:"nothingSent,omitempty"`
+	// AutoFrom is the attempt the chain's current AUTOMATIC retry budget
+	// began at: 1, or the attempt an owner's manual retry filed
+	// (MaxAutoAttempts).
+	AutoFrom    int  `json:"autoFrom,omitempty"`
+	NothingSent bool `json:"nothingSent,omitempty"`
 	// Retry is what the store DECIDED about a retry in the transaction that
 	// recorded this draft's failed result (FinishDraft), like Refusal: never
 	// stored, never read back. internal/api acts on it.
@@ -188,6 +192,10 @@ type RetryDecision struct {
 	// Next is the successor it filed (approved, claimable from its
 	// NotBefore), nil for none.
 	Next *Draft
+	// Exhausted: the result asked for a retry, but the chain already made
+	// MaxAutoAttempts automatic attempts in its current budget, so it stops
+	// retrying on its own here (a manual retry may still start a new budget).
+	Exhausted bool
 	// EndedAtExpiry: the result asked for a retry (nothing_sent + transient)
 	// but the next attempt's backoff would run past the chain's expiry, so
 	// the chain ended unsent here.
@@ -387,6 +395,12 @@ type DraftCard struct {
 	// set by the reader for display only; "" draws a generic "your officer",
 	// NEVER the officer's id (the top layer carries no ids).
 	OfficerDisplay string
+	// RetryOpen: a manual retry of this card's chain is open — set by the
+	// reader for display only (internal/api withRetryOpen), after the one
+	// rule of whether its officer has taken up the hand-back. false (the
+	// zero value) hides Retry now and can_retry: a reader that forgot to
+	// ask offers nothing; plugins.PGStore.RetryDraft decides either way.
+	RetryOpen bool
 	// Person is, for an outreach draft (a follow, a like, a DM), what the
 	// officer's record of the person says of them — the plugin's words, so
 	// UNTRUSTED — set by the reader for display only (internal/api
@@ -582,7 +596,7 @@ const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
 	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
-	retry_of, attempt, not_before, retry_last_detail, nothing_sent`
+	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
@@ -590,7 +604,7 @@ func draftDest(d *Draft, st *string) []any {
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
 		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
-		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent}
+		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
@@ -1501,8 +1515,13 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 			// when the plugin asserted nothing was sent AND the cause is
 			// transient, and only a result within its lease — a late one's
 			// draft was already given up on as unconfirmed.
+			// At most MaxAutoAttempts automatic attempts per budget.
 			if d.IsOutbound() && r.NothingSent && r.Transient && !late && cur.Status == DraftApproved {
-				d.Retry, _ = s.fileRetryTx(ctx, tx, d, RetryBackoff(d.Attempt), retryAuto)
+				if n := d.autoAttempts(); n >= MaxAutoAttempts {
+					d.Retry = RetryDecision{Exhausted: true}
+				} else {
+					d.Retry, _ = s.fileRetryTx(ctx, tx, d, RetryBackoff(n), false, retryAuto)
+				}
 			}
 			return nil
 		}

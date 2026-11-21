@@ -21,6 +21,10 @@
 --       (the backoff); NULL on every other draft.
 --   plugin_reply_drafts.retry_last_detail   the detail of the attempt a
 --       successor follows: what the owner reads as "last: …".
+--   plugin_reply_drafts.auto_from      the attempt the chain's current
+--       AUTOMATIC retry budget began at: 1, or the attempt an owner's manual
+--       retry filed. Automatic retries stop after plugins.MaxAutoAttempts
+--       attempts counted from it.
 --
 -- 🔴 A SUCCESSOR IS CHECKED HERE TOO (plugin_reply_drafts_retry_successor,
 -- BEFORE INSERT when retry_of is set), whatever the application did: it must
@@ -56,7 +60,7 @@
 --   ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_retry_shape;
 --   ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_result_flags;
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS retry_of, DROP COLUMN IF EXISTS attempt,
---       DROP COLUMN IF EXISTS not_before, DROP COLUMN IF EXISTS nothing_sent,
+--       DROP COLUMN IF EXISTS not_before, DROP COLUMN IF EXISTS nothing_sent, DROP COLUMN IF EXISTS auto_from,
 --       DROP COLUMN IF EXISTS retry_last_detail;
 --   DELETE FROM schema_migrations WHERE version = 174;
 
@@ -67,6 +71,7 @@ ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS retry_of BIGINT;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS not_before TIMESTAMPTZ;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS retry_last_detail TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS auto_from INTEGER NOT NULL DEFAULT 1;
 
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_retry_of_fkey;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_retry_of_fkey
@@ -80,6 +85,7 @@ ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_retry_
     AND (retry_of IS NULL) = (attempt = 1)
     AND (retry_of IS NULL OR (message_id IS NULL AND retry_of <> id))
     AND (not_before IS NULL OR retry_of IS NOT NULL)
+    AND auto_from BETWEEN 1 AND attempt
     AND octet_length(retry_last_detail) <= 4096);
 
 -- The result's assertion: nothing_sent only on a failed send.

@@ -35,16 +35,19 @@ func TestARetryingDraftsCardSaysSoAndAFailedOneOffersRetry(t *testing.T) {
 
 	failed := base(704)
 	failed.Status, failed.NothingSent, failed.Detail = plugins.DraftFailed, true, "logged in as another account"
-	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed}, now); !strings.Contains(html, "/plugins/drafts/704/retry") ||
+	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed, RetryOpen: true}, now); !strings.Contains(html, "/plugins/drafts/704/retry") ||
 		!strings.Contains(html, "nothing was sent") {
 		t.Errorf("a nothing-sent failure's card offers no Retry now:\n%s", html)
 	}
-	failed.NothingSent = false
 	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed}, now); strings.Contains(html, "/retry") {
+		t.Error("a card whose reader did not open the retry (its officer took it up, or nobody asked) offers Retry now")
+	}
+	failed.NothingSent = false
+	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed, RetryOpen: true}, now); strings.Contains(html, "/retry") {
 		t.Error("an unknown outcome's card offers Retry now")
 	}
 	failed.NothingSent, failed.ExpiresAt = true, now.Add(-time.Second)
-	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed}, now); strings.Contains(html, "/retry") {
+	if html := draftCardHTMLAt(plugins.DraftCard{Draft: failed, RetryOpen: true}, now); strings.Contains(html, "/retry") {
 		t.Error("an expired draft's card offers Retry now")
 	}
 }

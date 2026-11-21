@@ -199,8 +199,13 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 					s.logger.Printf("plugins: plugin %d draft %d: its retry could not be filed, so it ends failed: %s", p.ID, d.ID, d.Retry.Err)
 				}
 				s.draftRefused(r.Context(), p, d, true, parseRetryAt(in.RetryAt))
-				if d.Retry.EndedAtExpiry {
-					s.notifyRetryChainEnded(messagesOwner(p), p.Label, d)
+				switch {
+				case d.Retry.EndedAtExpiry:
+					s.notifyRetryChainEnded(messagesOwner(p), p.Label, d, retryEndedExpired)
+				case d.Retry.Exhausted:
+					// plugins.MaxAutoAttempts automatic attempts failed: it
+					// stops retrying on its own, and the owner is told why.
+					s.notifyRetryChainEnded(messagesOwner(p), p.Label, d, retryEndedExhausted)
 				}
 			}
 		}
@@ -922,13 +927,19 @@ func draftNextTryText(d plugins.Draft, now time.Time) string {
 	return "next try in " + strconv.Itoa(int(left/time.Hour)) + "h"
 }
 
-// draftRetryable reports whether the card offers Retry now: an outbound
-// draft that failed with nothing sent and has not expired. The store decides
-// (plugins.PGStore.RetryDraft): it still refuses while a later attempt is out
-// — the case of an earlier attempt's card opened by its id, which the lists
-// never show (a chain is one card, its latest attempt).
-func draftRetryable(d plugins.Draft, now time.Time) bool {
+// draftRetryBase is the draft's own half of "a manual retry is open": an
+// outbound draft that failed with nothing sent and has not expired.
+func draftRetryBase(d plugins.Draft, now time.Time) bool {
 	return d.IsOutbound() && d.Status == plugins.DraftFailed && d.NothingSent && d.ExpiresAt.After(now)
+}
+
+// draftRetryable reports whether card c offers Retry now: draftRetryBase and
+// its officer has not taken up the chain's hand-back (c.RetryOpen, set by
+// withRetryOpen). The store decides (plugins.PGStore.RetryDraft): it still
+// refuses while a later attempt is out — an earlier attempt's card opened by
+// its id, which the lists never show (a chain is one card, its latest).
+func draftRetryable(c plugins.DraftCard, now time.Time) bool {
+	return draftRetryBase(c.Draft, now) && c.RetryOpen
 }
 
 // draftWho is who a draft card says drafted it: an officer's draft by the
@@ -1068,7 +1079,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 `)
 		}
 	case plugins.DraftFailed:
-		if draftRetryable(d, now) {
+		if draftRetryable(c, now) {
 			// The owner's manual retry (plugin_draft_retry.go): the plugin
 			// said nothing was sent, so the approved bytes may go again.
 			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/retry" class="flex flex-wrap items-center gap-2">` + p.backField() +

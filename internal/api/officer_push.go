@@ -64,7 +64,8 @@ const (
 	// retrying on its own (draftRetryScheduled): once per chain.
 	officerPushDraftRetrying officerPush = "draft_retrying"
 	// officerPushDraftRetryEnded: an officer's retrying draft ended unsent
-	// at its expiry (notifyRetryChainEnded): once per chain.
+	// at its expiry, or stopped retrying on its own after
+	// plugins.MaxAutoAttempts (notifyRetryChainEnded): once per budget.
 	officerPushDraftRetryEnded officerPush = "draft_retry_ended"
 	// officerPushBudget: the officer's daily budget was reached
 	// (officerBudgetNotice): it is held for the day unless the operator
@@ -114,9 +115,10 @@ var officerPushes = map[officerPush]bool{
 	officerPushConnectorRequest: true,  // approve or deny the access
 	officerPushDraftRefused:     false, // it went back to the officer, which handles it
 	// The owner approved it and it is still not out: one push at the third
-	// failure, one at the end, never per attempt (from the retry
-	// contract derived from the operator's 2026-11-21 ask to approve once and have it retry on its own, with a manual retry via MCP): clear what blocks the
-	// plugin, or stop or retry it on its card.
+	// failure, one at the end, never per attempt (from the retry contract
+	// derived from the operator's ask to approve once and have it retry on
+	// its own, with a manual retry via MCP): clear what blocks the plugin,
+	// or stop or retry it on its card.
 	officerPushDraftRetrying:    true,
 	officerPushDraftRetryEnded:  true,
 	officerPushBudget:           true,  // raise the cap for today, or lift the hold (the officer's page)

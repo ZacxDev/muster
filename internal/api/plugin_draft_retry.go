@@ -37,7 +37,7 @@ import (
 //     session, or the Retry button on the Asks card (POST
 //     /plugins/drafts/{id}/retry). It relays the owner's word and re-sends
 //     exactly the bytes they already approved: no new approval and no step-up
-//     (from the retry contract derived from the operator's 2026-11-21 ask
+//     (from the retry contract derived from the operator's ask
 //     to approve once and have it retry on its own, with a manual retry via
 //     MCP).
 // ---------------------------------------------------------------------------
@@ -72,10 +72,16 @@ func (s *Server) draftRetryScheduled(p plugins.Plugin, d plugins.Draft) {
 	}, nil)
 }
 
+// The reasons a retry chain stopped, as its push says them.
+const (
+	retryEndedExpired   = "and stopped: it expired unsent."
+	retryEndedExhausted = "and stopped retrying on its own. Retry it on its card when what blocks it is cleared."
+)
+
 // notifyRetryChainEnded pushes owner once: retry chain d (its last attempt)
 // ended unsent at its expiry — the sweep expired its live attempt, or a
 // result asked for a retry the expiry left no room for.
-func (s *Server) notifyRetryChainEnded(owner int64, label string, d plugins.Draft) {
+func (s *Server) notifyRetryChainEnded(owner int64, label string, d plugins.Draft, why string) {
 	if !s.officerPushSends(officerPushDraftRetryEnded, owner, draftTag(d.ChainRoot())) {
 		return
 	}
@@ -85,7 +91,7 @@ func (s *Server) notifyRetryChainEnded(owner int64, label string, d plugins.Draf
 	}
 	s.goNotify(owner, push.EventPlugin, RouterNotification{
 		Type: "plugin", ID: strconv.FormatInt(d.ID, 10), Title: DraftRetryEndedPushTitle,
-		Body: draftRetryPushBody(label, "tried it "+timesText(d.Attempt)+" and stopped: it expired unsent.", last),
+		Body: draftRetryPushBody(label, "tried it "+timesText(d.Attempt)+" "+why, last),
 		Tag:  draftTag(d.ChainRoot()), Data: map[string]string{"url": draftLink(d.ID)},
 	}, nil)
 }
@@ -115,7 +121,7 @@ func draftRetryPushBody(label, what, detail string) string {
 // expired a chain's live attempt d.
 func (s *Server) retryEndedBySweep(_ context.Context, d plugins.Draft) {
 	s.logger.Printf("plugins: retry chain %d ended unsent at its expiry (attempt %d, draft %d)", d.ChainRoot(), d.Attempt, d.ID)
-	s.notifyRetryChainEnded(d.OwnerID, "", d)
+	s.notifyRetryChainEnded(d.OwnerID, "", d, retryEndedExpired)
 }
 
 // retryAs is THE OWNER'S MANUAL RETRY of draft id's chain, for both doors:
@@ -124,13 +130,21 @@ func (s *Server) retryEndedBySweep(_ context.Context, d plugins.Draft) {
 // never acting on its own work), then plugins.PGStore.RetryDraft; a retry
 // wakes waiting claims.
 func (s *Server) retryAs(ctx context.Context, id int64, via plugins.DraftDecisionSource) (plugins.Draft, *draftRefusal) {
-	if cur, err := s.ext.Plugins.Draft(ctx, id); err == nil {
-		// A retry re-sends what a manager already approved: the team
-		// rules for a rejection apply (the team itself, or a member below
-		// manager, may not), not the approver's own-request rule.
-		if msg := draftDeciderRefusal(authz.MustFrom(ctx), cur, false); msg != "" {
-			return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
-		}
+	// 🔴 FAILS CLOSED: a draft that cannot be read is not retried — never
+	// passed on to the store without the decider's check.
+	cur, err := s.ext.Plugins.Draft(ctx, id)
+	switch {
+	case errors.Is(err, plugins.ErrNotFound):
+		return plugins.Draft{}, &draftRefusal{http.StatusNotFound, "No such draft.", asksTabDrafts}
+	case err != nil:
+		s.logger.Printf("plugins: draft %d retry (via %s): read it: %v", id, via, err)
+		return plugins.Draft{}, &draftRefusal{http.StatusInternalServerError, "The retry could not be recorded.", asksTabDrafts}
+	}
+	// A retry re-sends what a manager already approved: the team rules for
+	// a rejection apply (the team itself, or a member below manager, may
+	// not), not the approver's own-request rule.
+	if msg := draftDeciderRefusal(authz.MustFrom(ctx), cur, false); msg != "" {
+		return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
 	}
 	if msg := officerDeciderRefusal(ctx); msg != "" {
 		return plugins.Draft{}, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
@@ -260,7 +274,8 @@ const (
 
 // retryViewOf is card c as a retries entry, ok false for a draft that is
 // neither a live successor nor a failed, unexpired, nothing-sent attempt.
-func retryViewOf(d plugins.Draft, now time.Time) (pluginDraftRetryView, bool) {
+func retryViewOf(c plugins.DraftCard, now time.Time) (pluginDraftRetryView, bool) {
+	d := c.Draft
 	if !d.IsOutbound() {
 		return pluginDraftRetryView{}, false
 	}
@@ -275,7 +290,7 @@ func retryViewOf(d plugins.Draft, now time.Time) (pluginDraftRetryView, bool) {
 	case d.Retrying():
 		v.State, v.LastDetail = retryStateWaiting, d.RetryLastDetail
 	case d.Status == plugins.DraftFailed && d.NothingSent && d.ExpiresAt.After(now):
-		v.State, v.LastDetail, v.CanRetry = retryStateFailed, d.Detail, true
+		v.State, v.LastDetail, v.CanRetry = retryStateFailed, d.Detail, draftRetryable(c, now)
 	default:
 		return pluginDraftRetryView{}, false
 	}

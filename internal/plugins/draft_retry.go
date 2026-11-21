@@ -53,8 +53,27 @@ import (
 // the chain's latest attempt failed with nothing_sent and the chain has not
 // expired.
 
-// RetryBackoff is how long after attempt n failed its successor may be
-// claimed: 1 minute, 5, 15, 30, then every 60.
+// MaxAutoAttempts caps the AUTOMATIC attempts of one budget of a chain: the
+// first and five retries after it (1, 5, 15, 30 and 60 minutes). After the
+// sixth fails the chain stops retrying on its own (RetryDecision.Exhausted)
+// — hourly attempts against a venue's security wall for days would risk the
+// account — and the owner is told. A manual retry (RetryDraft) starts a new
+// budget of MaxAutoAttempts from the attempt it files (Draft.AutoFrom).
+const MaxAutoAttempts = 6
+
+// autoAttempts is how many attempts d's current automatic budget has made,
+// d included.
+func (d Draft) autoAttempts() int {
+	from := d.AutoFrom
+	if from < 1 {
+		from = 1
+	}
+	return d.Attempt - from + 1
+}
+
+// RetryBackoff is how long after the n-th attempt of a budget failed its
+// successor may be claimed: 1 minute, 5, 15, 30, then 60 (FinishDraft files
+// none after the MaxAutoAttempts-th).
 func RetryBackoff(attempt int) time.Duration {
 	switch attempt {
 	case 1:
@@ -98,14 +117,22 @@ const (
 	RetryUnknown     = "unknown_outcome"
 	RetryNotFailed   = "not_failed"
 	RetryUnbound     = "binding"
+	RetryRedrafted   = "redrafted"
 )
+
+// ErrRedrafted is OfficerLink.RetryTakeOverTx's refusal: the chain's officer
+// has taken up its hand-back (RetryDraft).
+var ErrRedrafted = errors.New("plugins: the officer has taken up this draft's hand-back")
 
 // fileRetryTx files failed draft's successor inside tx, claimable after
 // `after`, audited with via. It runs under a SAVEPOINT: a database refusal
 // rolls back the successor alone (Err), never the failure the caller is
 // recording. EndedAtExpiry when the backoff would end at or past the chain's
 // expiry.
-func (s *PGStore) fileRetryTx(ctx context.Context, tx pgx.Tx, failed Draft, after time.Duration, via string) (RetryDecision, error) {
+//
+// manual: the owner's retry, which starts a new automatic budget at the
+// attempt it files (auto_from); an automatic one keeps its predecessor's.
+func (s *PGStore) fileRetryTx(ctx context.Context, tx pgx.Tx, failed Draft, after time.Duration, manual bool, via string) (RetryDecision, error) {
 	switch {
 	case failed.AgentID == nil:
 		// 0016's owner trigger requires the writer's agent row.
@@ -121,14 +148,15 @@ func (s *PGStore) fileRetryTx(ctx context.Context, tx pgx.Tx, failed Draft, afte
 		INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, status, expires_at, decided_at, approved_at,
 		                                 check_state, checked_at, plugin_id, venue, target_kind, target_ref, media_refs, media, officer,
 		                                 officer_item_id, approved_body_sha256, approved_media_sha256, because_ref, contact_id, outreach_reason,
-		                                 retry_of, attempt, not_before, retry_last_detail)
+		                                 retry_of, attempt, not_before, retry_last_detail, auto_from)
 		SELECT f.owner_id, NULL, f.agent_id, f.agent_name, f.body, 'approved', f.expires_at, f.decided_at, f.approved_at,
 		       f.check_state, f.checked_at, f.plugin_id, f.venue, f.target_kind, f.target_ref, f.media_refs, f.media, f.officer,
 		       f.officer_item_id, f.approved_body_sha256, f.approved_media_sha256, f.because_ref, f.contact_id, f.outreach_reason,
-		       coalesce(f.retry_of, f.id), f.attempt + 1, now() + make_interval(secs => $2), f.detail
+		       coalesce(f.retry_of, f.id), f.attempt + 1, now() + make_interval(secs => $2), f.detail,
+		       CASE WHEN $3 THEN f.attempt + 1 ELSE f.auto_from END
 		  FROM plugin_reply_drafts f
 		 WHERE f.id = $1 AND f.status = 'failed' AND f.nothing_sent AND now() + make_interval(secs => $2) < f.expires_at
-		RETURNING `+draftCols, failed.ID, after.Seconds()))
+		RETURNING `+draftCols, failed.ID, after.Seconds(), manual))
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = sp.Rollback(ctx)
 		return RetryDecision{EndedAtExpiry: true}, nil
@@ -138,7 +166,8 @@ func (s *PGStore) fileRetryTx(ctx context.Context, tx pgx.Tx, failed Draft, afte
 	}
 	if err == nil {
 		err = audit(ctx, sp, "plugin.draft.retry_scheduled", DraftObject(next.ID), map[string]any{
-			"retry_of": next.ChainRoot(), "after_draft": failed.ID, "attempt": next.Attempt, "not_before": next.NotBefore, "via": via})
+			"retry_of": next.ChainRoot(), "after_draft": failed.ID, "attempt": next.Attempt, "not_before": next.NotBefore, "via": via,
+			"auto_from": next.AutoFrom})
 	}
 	if err == nil {
 		err = sp.Commit(ctx)
@@ -223,7 +252,20 @@ func (s *PGStore) RetryDraft(ctx context.Context, id int64, via DraftDecisionSou
 		case !last.BindingHolds():
 			return RetryRefusal{RetryUnbound, BindingBrokenDetail}
 		}
-		dec, cause := s.fileRetryTx(ctx, tx, last, 0, via.String())
+		// 🔴 A CHAIN HANDED BACK TO ITS OFFICER IS NOT RETRIED ONCE THE
+		// OFFICER HAS TAKEN IT UP (OfficerLink.RetryTakeOverTx: its
+		// draft.refused follow-up is claimed or finished, or a newer draft
+		// was filed for its item): the officer may have redrafted it, and
+		// a retry would post it twice. Otherwise the open follow-up is
+		// closed here, in this transaction, so it cannot be redrafted after.
+		if s.officers != nil && last.Officer != nil {
+			if err := s.officers.RetryTakeOverTx(ctx, tx, last); errors.Is(err, ErrRedrafted) {
+				return RetryRefusal{RetryRedrafted, "it went back to its officer, which has taken it up (it may have written a new draft): retrying it could post it twice"}
+			} else if err != nil {
+				return err
+			}
+		}
+		dec, cause := s.fileRetryTx(ctx, tx, last, 0, true, via.String())
 		var pg *pgconn.PgError
 		switch {
 		case dec.EndedAtExpiry:

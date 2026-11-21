@@ -3,8 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -29,15 +27,12 @@ const retryPost = "A post that goes out once."
 // retryEP is user 1's push device in these tests.
 var retryEP = ep("retry-owner")
 
-// withRetryPushes gives w's server a push service and user 1 a device.
-func (w *outboundWorld) withRetryPushes() *payloadPusher {
-	w.t.Helper()
-	store, pusher := &memPush{}, &payloadPusher{}
-	claim(w.t, store, 1, retryEP)
-	ext := w.srv.ext
-	ext.Push = push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
-	w.srv.UseExtensions(ext)
-	return pusher
+// newRetryPushWorld is newOutboundWorld with pushes recorded (its pusher),
+// configured before the officer fleet starts (outboundFixture.pushes).
+func newRetryPushWorld(t *testing.T) (*outboundWorld, *payloadPusher) {
+	t.Helper()
+	w := newOutboundWorldWith(t, true, outboundFixture{pushes: true})
+	return w, w.pusher
 }
 
 // pushesTitled is every push user 1's device got titled title.
@@ -252,8 +247,7 @@ func TestNoRetryWithoutBothFlags(t *testing.T) {
 // ends with that failure (the old path for the officer) and the owner is
 // pushed once that it ended unsent.
 func TestNoRetryPastTheChainsExpiry(t *testing.T) {
-	w := newOutboundWorld(t, true)
-	p := w.withRetryPushes()
+	w, p := newRetryPushWorld(t)
 	item, id := w.approvedForItem("expiry:1")
 	w.claimed(id)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `SET session_replication_role = replica; UPDATE plugin_reply_drafts SET expires_at = now() + interval '30 seconds' WHERE id = `+strconv.FormatInt(id, 10))
@@ -280,8 +274,7 @@ func TestNoRetryPastTheChainsExpiry(t *testing.T) {
 // end, with ONE draft.refused follow-up (the last attempt's); the chain is
 // one card on the Asks page throughout.
 func TestARetryChainSettlesItsItemOnceAndPushesTwice(t *testing.T) {
-	w := newOutboundWorld(t, true)
-	p := w.withRetryPushes()
+	w, p := newRetryPushWorld(t)
 	item, root := w.approvedForItem("chain:1")
 	cur := root
 	for _, step := range []struct {
@@ -432,3 +425,212 @@ func TestAManualRetryIsAllowedOnlyAfterNothingWasSent(t *testing.T) {
 
 // asRetryRefusal is errors.As for a RetryRefusal.
 func asRetryRefusal(err error, rr *plugins.RetryRefusal) bool { return errors.As(err, rr) }
+
+// permFail is a result asserting nothing was sent, for a cause that does not
+// clear by itself: the chain ends and goes back to the officer.
+const permFail = `{"ok":false,"nothing_sent":true,"detail":"logged in as another account; nothing sent"}`
+
+// retryOpen is what the Asks card and plugin_drafts_list say of draft id:
+// whether Retry now is offered (withRetryOpen + draftRetryable) and the
+// retries entry's can_retry.
+func (w *outboundWorld) retryOpen(id int64) (card, canRetry bool) {
+	w.t.Helper()
+	c, err := w.ps.DraftCard(w.ctx, id)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	cards := []plugins.DraftCard{c}
+	w.srv.withRetryOpen(w.ctx, cards)
+	v, _ := retryViewOf(cards[0], time.Now())
+	return draftRetryable(cards[0], time.Now()), v.CanRetry
+}
+
+// TestAManualRetryIsRefusedOnceTheOfficerTookTheDraftBack (🔴 a double
+// post): a draft whose chain ended went back to its officer as a
+// draft.refused follow-up. Once the officer has TAKEN IT UP — claimed the
+// follow-up, or filed a new draft for it — the old draft is not retried by
+// hand (the store refuses, the card offers no Retry now, can_retry is
+// false): the new draft and the retry would both be posted. CONTROL: while
+// the follow-up is untouched the retry is allowed, and it finishes the
+// follow-up in its own transaction, so the officer can no longer redraft it.
+func TestAManualRetryIsRefusedOnceTheOfficerTookTheDraftBack(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	via := plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}
+	ended := func(subject string) (int64, int64) {
+		t.Helper()
+		_, id := w.approvedForItem(subject)
+		w.claimed(id)
+		if code, out := w.postResult(id, permFail); code != http.StatusOK || out["status"] != "failed" {
+			t.Fatalf("result: %d %v", code, out)
+		}
+		follow, _, ok := w.refusedItemOf(id)
+		if !ok {
+			t.Fatal("the ended draft has no draft.refused follow-up")
+		}
+		return id, follow
+	}
+	claimFollow := func(follow int64) {
+		t.Helper()
+		if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolClaim, `{"item_id":"`+strconv.FormatInt(follow, 10)+`"}`); isToolErr(out) {
+			t.Fatalf("the officer claims its follow-up: %s", out)
+		}
+	}
+	refused := func(id int64, why string) {
+		t.Helper()
+		_, err := w.ps.RetryDraft(w.ctx, id, via)
+		var rr plugins.RetryRefusal
+		if !errors.As(err, &rr) || rr.Code != plugins.RetryRedrafted {
+			t.Fatalf("%s: retry of draft %d: %v; want refused %s", why, id, err, plugins.RetryRedrafted)
+		}
+		if card, can := w.retryOpen(id); card || can {
+			t.Fatalf("%s: Retry now offered %v, can_retry %v; want neither", why, card, can)
+		}
+		if rec := w.do("POST", "/plugins/drafts/"+strconv.FormatInt(id, 10)+"/retry", "", w.operatorForm); rec.Code != http.StatusConflict {
+			t.Fatalf("%s: the card's Retry: %d; want 409", why, rec.Code)
+		}
+		if len(w.successors(id)) != 0 {
+			t.Fatalf("%s: a successor was filed", why)
+		}
+	}
+
+	// The officer redrafted: claimed its follow-up and filed a new draft for it.
+	redrafted, follow := ended("takeback:redraft")
+	claimFollow(follow)
+	if nid, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"example.forum","target":{"kind":"post"},"body":"A better post.","item_id":"` +
+		strconv.FormatInt(follow, 10) + `"}`); nid == 0 {
+		t.Fatalf("the officer's redraft: %s", out)
+	}
+	refused(redrafted, "a redraft exists")
+
+	// The officer has claimed its follow-up, no new draft yet.
+	claimedOnly, follow2 := ended("takeback:claimed")
+	claimFollow(follow2)
+	refused(claimedOnly, "the follow-up is claimed")
+
+	// A newer draft names the follow-up while it is still open (any path that
+	// files one without claiming it first): refused by the draft half of
+	// the rule alone.
+	named, follow4 := ended("takeback:named")
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO plugin_reply_drafts (owner_id, agent_id, agent_name, body, status, expires_at, check_state, checked_at,
+		plugin_id, venue, target_kind, officer, officer_item_id)
+		SELECT owner_id, agent_id, agent_name, 'A redraft filed for the follow-up.', 'pending', expires_at, 'sendable', now(), plugin_id, venue, target_kind,
+		       officer, `+strconv.FormatInt(follow4, 10)+` FROM plugin_reply_drafts WHERE id = `+strconv.FormatInt(named, 10))
+	if st, _, _, _ := w.itemRow(follow4); st != officers.StatusOpen {
+		t.Fatalf("fixture: the named follow-up is %s; want still open", st)
+	}
+	refused(named, "a newer draft names the open follow-up")
+
+	// CONTROL: the follow-up is untouched.
+	open, follow3 := ended("takeback:open")
+	if card, can := w.retryOpen(open); !card || !can {
+		t.Fatalf("control: an untouched hand-back: Retry now %v, can_retry %v; want both", card, can)
+	}
+	if rec := w.do("POST", "/plugins/drafts/"+strconv.FormatInt(open, 10)+"/retry", "", w.operatorForm); rec.Code != http.StatusSeeOther {
+		t.Fatalf("control: the card's Retry: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(w.successors(open)) != 1 {
+		t.Fatal("control: the retry filed no successor")
+	}
+	if st, oc, summary, _ := w.itemRow(follow3); st != officers.StatusDone || oc != "no_action" || !strings.Contains(summary, "owner retried") {
+		t.Fatalf("the follow-up after the retry: %s/%s %q; want finished, naming the retry", st, oc, summary)
+	}
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolClaim, `{"item_id":"`+strconv.FormatInt(follow3, 10)+`"}`); !isToolErr(out) {
+		t.Fatalf("the officer claimed the follow-up after the retry: %s; want refused (it is finished)", out)
+	}
+}
+
+// TestAutomaticRetriesStopAfterSixAttempts: a chain makes at most
+// plugins.MaxAutoAttempts automatic attempts; after the sixth fails no
+// successor is filed, the chain goes back to the officer, and the owner is
+// pushed once that it stopped retrying, with the last detail. A manual retry
+// is still allowed and starts a fresh budget: its own transient failure is
+// retried on its own again, after the first backoff.
+func TestAutomaticRetriesStopAfterSixAttempts(t *testing.T) {
+	w, p := newRetryPushWorld(t)
+	_, root := w.approvedForItem("cap:1")
+	cur := root
+	for attempt := 1; attempt <= plugins.MaxAutoAttempts; attempt++ {
+		if attempt > 1 {
+			w.due(cur)
+		}
+		w.claimed(cur)
+		body := strings.Replace(transientFail, "No current window", "X wants a security check "+strconv.Itoa(attempt), 1)
+		if code, out := w.postResult(cur, body); code != http.StatusOK || out["status"] != "failed" {
+			t.Fatalf("attempt %d: %d %v", attempt, code, out)
+		}
+		succ := w.successors(root)
+		if attempt < plugins.MaxAutoAttempts {
+			if len(succ) != attempt {
+				t.Fatalf("after attempt %d: %d successors, want %d", attempt, len(succ), attempt)
+			}
+			cur = succ[len(succ)-1].ID
+			continue
+		}
+		if len(succ) != plugins.MaxAutoAttempts-1 {
+			t.Fatalf("after the %dth attempt: %d successors, want %d (no more)", attempt, len(succ), plugins.MaxAutoAttempts-1)
+		}
+	}
+	ended := w.pushesTitled(p, DraftRetryEndedPushTitle)
+	if len(ended) != 1 || !strings.Contains(ended[0].Body, "stopped retrying") || !strings.Contains(ended[0].Body, "security check 6") {
+		t.Fatalf("the stop push: %+v; want one saying it stopped retrying, with the last detail", ended)
+	}
+	if _, _, ok := w.refusedItemOf(cur); !ok {
+		t.Fatal("the stopped chain did not go back to its officer")
+	}
+	// The owner's retry: allowed, a fresh budget.
+	next, err := w.ps.RetryDraft(w.ctx, cur, plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser})
+	if err != nil || next.Attempt != plugins.MaxAutoAttempts+1 || next.AutoFrom != next.Attempt {
+		t.Fatalf("the manual retry after the cap: %+v (%v); want attempt %d starting a new budget", next, err, plugins.MaxAutoAttempts+1)
+	}
+	w.claimed(next.ID)
+	before := time.Now()
+	if code, out := w.postResult(next.ID, transientFail); code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("the manual attempt's result: %d %v", code, out)
+	}
+	succ := w.successors(root)
+	again := succ[len(succ)-1]
+	if again.Attempt != plugins.MaxAutoAttempts+2 || again.AutoFrom != next.Attempt {
+		t.Fatalf("after the manual attempt failed: %+v; want an automatic attempt %d in its budget", again, plugins.MaxAutoAttempts+2)
+	}
+	if wait := again.NotBefore.Sub(before); wait < 50*time.Second || wait > 70*time.Second {
+		t.Fatalf("the fresh budget's first backoff: %v; want 1m", wait)
+	}
+}
+
+// TestALateSettlementOfARetriedFailureFilesNoFollowUp: the owner's retry can
+// land between a failure's commit and its settlement (outboundSettled runs
+// after the result's transaction). With the chain's next attempt already
+// live, that settlement files NO draft.refused follow-up and leaves the item
+// waiting: the chain is not over. CONTROL: the same settlement with no live
+// attempt files the follow-up.
+func TestALateSettlementOfARetriedFailureFilesNoFollowUp(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	// CONTROL: no live attempt.
+	_, id2 := w.approvedForItem("late-settle:2")
+	w.claimed(id2)
+	d2, _, err := w.ps.FinishDraft(w.ctx, w.plugin.ID, id2, plugins.DraftResult{Detail: "wrong account; nothing sent", NothingSent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.outboundSettled(w.ctx, 1, d2, settledByPlugin, nil)
+	if _, _, ok := w.refusedItemOf(id2); !ok {
+		t.Fatal("control: the settlement with no live attempt filed no follow-up")
+	}
+	item, id := w.approvedForItem("late-settle:1")
+	w.claimed(id)
+	// Record the failure in the store only: its settlement has not run yet.
+	d, _, err := w.ps.FinishDraft(w.ctx, w.plugin.ID, id, plugins.DraftResult{Detail: "wrong account; nothing sent", NothingSent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ps.RetryDraft(w.ctx, id, plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}); err != nil {
+		t.Fatalf("the owner's retry: %v", err)
+	}
+	w.srv.outboundSettled(w.ctx, 1, d, settledByPlugin, nil)
+	if _, _, ok := w.refusedItemOf(id); ok {
+		t.Fatal("the late settlement filed a draft.refused follow-up while the retry is live")
+	}
+	if st, _, _, _ := w.itemRow(item); st != officers.StatusWaiting {
+		t.Fatalf("the item after the late settlement: %s; want still waiting on the retry", st)
+	}
+}

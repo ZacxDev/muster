@@ -205,13 +205,14 @@ func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string 
 		s.logger.Printf("plugins: %s from %s/%s: %v", pluginDraftsListTool, c.asker.MirrorHost, c.asker.MirrorSession, err)
 		return toolErr("the reply drafts could not be read")
 	}
+	s.withRetryOpen(ctx, cards)
 	out := []pluginDraftView{}
 	retries := []pluginDraftRetryView{}
 	total := 0
 	now := time.Now()
 	for _, cd := range cards {
 		d, m := cd.Draft, cd.Message
-		if v, ok := retryViewOf(d, now); ok {
+		if v, ok := retryViewOf(cd, now); ok {
 			retries = append(retries, v)
 		}
 		if d.Status != plugins.DraftPending {

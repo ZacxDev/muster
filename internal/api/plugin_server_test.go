@@ -277,6 +277,7 @@ var thePluginOwnerReadSites = []string{
 	"internal/api Server.handlePluginDraftResult#1",
 	"internal/api Server.handlePluginDraftResult#2",
 	"internal/api Server.handlePluginDraftResult#3",
+	"internal/api Server.handlePluginDraftResult#4",
 	"internal/api Server.handlePluginTaskWriteResult#1",
 	"internal/api Server.handlePluginTaskWritesClaim#1",
 	"internal/api Server.notifyDraftRefused#1",

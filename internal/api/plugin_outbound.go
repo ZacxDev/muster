@@ -701,6 +701,20 @@ func (s *Server) withdrawEscalation(ctx context.Context, d int64, asks []builtin
 	}
 }
 
+// RetryTakeOverTx implements plugins.OfficerLink (builtin.RetryTakeOverTx),
+// its refusal as plugins.ErrRedrafted.
+func (l officerPluginLink) RetryTakeOverTx(ctx context.Context, tx pgx.Tx, d plugins.Draft) error {
+	var item int64
+	if d.OfficerItemID != nil {
+		item = *d.OfficerItemID
+	}
+	err := l.store.RetryTakeOverTx(ctx, tx, d.OwnerID, d.ChainRoot(), item, d.ID, l.clock())
+	if errors.Is(err, builtin.ErrRedrafted) {
+		return plugins.ErrRedrafted
+	}
+	return err
+}
+
 // DraftEndedTx implements plugins.OfficerLink: outbound draft d ended unsent
 // by muster's own hand (how), inside the transaction that ended it.
 func (l officerPluginLink) DraftEndedTx(ctx context.Context, tx pgx.Tx, d plugins.Draft, how plugins.OutboundEnd) error {
@@ -771,6 +785,35 @@ func (s *Server) officerDisplayName(owner int64, id string) string {
 		return strings.TrimSpace(st.row.TypeName)
 	}
 	return ""
+}
+
+// withRetryOpen sets each card's RetryOpen: true for a failed outbound
+// draft that sent nothing, unexpired (draftRetryBase), whose officer has not
+// taken up its chain's hand-back — builtin.RetryRedrafted, THE rule
+// plugins.PGStore.RetryDraft enforces under its locks (RetryTakeOverTx).
+// Fails closed: a read error leaves it false.
+func (s *Server) withRetryOpen(ctx context.Context, cards []plugins.DraftCard) {
+	now := time.Now()
+	for i := range cards {
+		d := cards[i].Draft
+		if !draftRetryBase(d, now) {
+			continue
+		}
+		if s.officerStore == nil || d.Officer == nil {
+			cards[i].RetryOpen = true // no officer: nothing was handed back
+			continue
+		}
+		var item int64
+		if d.OfficerItemID != nil {
+			item = *d.OfficerItemID
+		}
+		taken, err := s.officerStore.RetryRedraftedNow(ctx, d.OwnerID, d.ChainRoot(), item)
+		if err != nil {
+			s.logger.Printf("plugins: draft %d: whether its officer took up its hand-back: %v", d.ID, err)
+			continue
+		}
+		cards[i].RetryOpen = !taken
+	}
 }
 
 // withDraftOfficerNames sets each officer card's OfficerDisplay
