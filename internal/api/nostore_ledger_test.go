@@ -58,6 +58,8 @@ var noStoreLiterals = map[string]string{
 	"noStore":                   "the helper itself",
 	"writeDocumentHeaders":      "the header set of both document writers",
 	"handleAppAlive":            "an app tab's alive poll: whether the plugin is live now",
+	"handleAccountApps":         "Account → Apps: whether each server app may act for you now",
+	"renderAdminApps":           "/admin/apps: a server app's token shown once, and the live-grant counts",
 	"handleAccountDevicesLive":  "the paired devices, live",
 	"handleDeviceConfig":        "a paired phone's config",
 	"handleDeviceWeb":           "the Android shell's sign-in origins, re-read on every shell open",

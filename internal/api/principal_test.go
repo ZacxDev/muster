@@ -262,6 +262,14 @@ var routeVias = map[authz.Via][]string{
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",
 		"GET /admin/teams",
+		// Server-installed apps (admin_apps.go, account_apps.go, core PR 1h.2).
+		"GET /admin/apps",
+		"POST /admin/apps",
+		"POST /admin/apps/{id}/rotate",
+		"POST /admin/apps/{id}/uninstall",
+		"GET /account/apps",
+		"POST /account/apps/{id}/hide",
+		"POST /account/apps/{id}/show",
 		"GET /admin/users",
 		"POST /admin/teams",
 		"POST /admin/teams/{id}/members",

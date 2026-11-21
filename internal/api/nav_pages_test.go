@@ -32,6 +32,7 @@ var apiNavWriters = []string{
 	"handleFeaturesPage",           // /account/features
 	"renderFeatureOff",             // a route whose feature is off, as a page (always signed in)
 	"handleAccountTeams",           // /account/teams (your teams, each one's notify switch)
+	"handleAccountApps",            // /account/apps (the server's apps, Hide and Show)
 	"renderAccountTokens",          // /account/tokens
 	"renderCredentials",            // /account/credentials
 	"renderAccountPasskeys",        // /account/passkeys
@@ -406,6 +407,7 @@ var apiNavSecret = map[string]bool{
 	"handleMorningReport":          false, // the owner's own questions, done and stuck lines, usage; no secret
 	"renderTeamPage":               false, // members, roles and activity; no secret shown or taken
 	"handleAccountTeams":           false, // your teams, roles and notify switches; no secret shown or taken
+	"handleAccountApps":            false, // the server's apps and your own state under each; no secret shown or taken
 	"renderTeamOfficers":           false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
 	"renderTeamChief":              false, // the team chief's status and account name; no secret shown or taken
 	"renderTeamConnectors":         false, // agent names, connector names, repositories; the App's token is never shown or taken

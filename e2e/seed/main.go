@@ -58,6 +58,14 @@ var accountsReset = []string{
 	// Plugins (0015): a member's plugin cascades to its messages, drafts and
 	// routing rules (0107).
 	`DELETE FROM plugins WHERE owner_id <> 1`,
+	// Server-installed apps (0172): owned by no one, so `owner_id <> 1` does
+	// not match them; deleting the row cascades to its grants, its task
+	// ledger and its codes (server_plugin_id is ON DELETE CASCADE). A
+	// person's codes are also deleted by their owner, first: plugin_handoffs'
+	// owner_id references users with NO cascade, so any code row left over
+	// refuses the person's delete below.
+	`DELETE FROM plugin_handoffs WHERE owner_id <> 1`,
+	`DELETE FROM plugins WHERE scope = 'server'`,
 	// The chief's telemetry (0107): owned rows naming no plugin, so they do not
 	// cascade, and a member's would block the member's delete.
 	`DELETE FROM chief_turn_usage WHERE owner_id <> 1`,

@@ -49,6 +49,7 @@ var stepUpChannels = map[string]stepUpChannel{
 	"plugin_pairing.go:decidePairForm":                    {how: "form", proof: "TestThePluginsPagePairingApproveConfirmsInPlace"},
 	"team_admin.go:handleAgentRotateCredentials":          {how: "form", proof: "TestTheAgentPageOffersRotateCredentialsToThoseWhoMayRotate"},
 	"team_connectors.go:decideTeamConnector":              {how: "form", proof: "TestTheTeamConnectorsPageConfirmsInPlace"},
+	"admin_apps.go:adminAppStale":                         {how: "form", proof: "TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn"},
 	"team_connectors.go:handleTeamStandingRevoke":         {how: "form", proof: "TestTheTeamConnectorsPageConfirmsInPlace"},
 	"team_hosts_page.go:teamHostsFresh":                   {how: "form", proof: "TestTheTeamHostsPageConfirmsInPlace"},
 	"team_plugins_page.go:teamPluginsFresh":               {how: "form", proof: "TestTheTeamPluginsPageConfirmsInPlace"},

@@ -454,6 +454,11 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	if s.accountTeams() != nil {
 		passkeysLink += `<a href="` + accountTeamsPath + `" id="account-teams-link" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Teams (your role, and each team's notifications)</a>`
 	}
+	// Account → Apps (server-installed apps, account_apps.go): what each app
+	// installed for everyone may do, and Hide / Show.
+	if s.adminAppsServed() {
+		passkeysLink += `<a href="` + accountAppsPath + `" id="account-apps-link" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Apps (what each app installed for everyone may do, and hiding one)</a>`
+	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
 		note := ResetDoneNote

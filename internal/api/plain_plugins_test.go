@@ -162,3 +162,7 @@ func TestADraftCardNamesItsOfficer(t *testing.T) {
 		}
 	}
 }
+
+// VisibleServerApps: this fake has no server apps (every page's app tabs read
+// it since core PR 1h.2).
+func (listedPlugins) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }

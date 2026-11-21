@@ -47,6 +47,12 @@ type Store interface {
 	InstallServerApp(ctx context.Context, in ServerAppIn, by users.Actor) (string, Plugin, error)
 	RotateServerApp(ctx context.Context, id int64, by users.Actor) (string, Plugin, error)
 	UninstallServerApp(ctx context.Context, id int64, by users.Actor) (Plugin, error)
+	// ServerApps is every live server app with its live-grant count (an
+	// admin's list); VisibleServerApps the ones ctx's person gets a tab for;
+	// AccountServerApps every one with that person's own state.
+	ServerApps(ctx context.Context, origins []OriginPattern, now time.Time) ([]ServerAppInfo, error)
+	VisibleServerApps(ctx context.Context) ([]Plugin, error)
+	AccountServerApps(ctx context.Context, origins []OriginPattern, now time.Time) ([]AccountServerApp, error)
 	// SetServerAppHidden hides or shows a server app for the principal, a person.
 	SetServerAppHidden(ctx context.Context, id int64, hidden bool, now time.Time) (bool, error)
 	// List is the principal's plugins, newest first.

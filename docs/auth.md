@@ -270,7 +270,9 @@ gone.
   link, delete a user's passkeys. The last admin cannot be demoted.
 - **From the command line:** `muster-server user disable|enable <id>` does the
   same as the admin page. A running server notices within 10 seconds for open
-  streams and within 30 seconds for new requests.
+  streams and within 30 seconds for new requests. `muster-server app
+  install|rotate|uninstall|list` is the counterpart of `/admin/apps` for the
+  server-installed apps ([plugins.md](plugins.md#server-apps)).
 - **Data is per user.** Every user-data row has an `owner_id`, enforced by
   Postgres row-level security (see [schema.md](schema.md)). Each user has their
   own tasks, agents and tokens, and on Kubernetes their own chief (the Compose
