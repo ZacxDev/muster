@@ -64,8 +64,8 @@ var kitPaths = map[string]string{
 }
 
 // TestTheKitIsServedWithTheContractHeaders: each file, with no session, is
-// 200 with its type, nosniff, CORP cross-origin, Vary: Origin, an ETag that is
-// the hash of the body; unversioned is no-cache, ?v=<etag> is immutable, a
+// 200 with its type, nosniff, CORP cross-origin, an ETag that is the hash of
+// the body; unversioned is no-cache, ?v=<etag> is immutable, a
 // stale v is no-cache again, and If-None-Match answers 304.
 func TestTheKitIsServedWithTheContractHeaders(t *testing.T) {
 	_, h, _, _ := themeServer(t)
@@ -79,8 +79,8 @@ func TestTheKitIsServedWithTheContractHeaders(t *testing.T) {
 		if hd.Get("ETag") != `"`+etag+`"` {
 			t.Errorf("%s: ETag %s, want the body's hash %q", path, hd.Get("ETag"), etag)
 		}
-		if hd.Get("X-Content-Type-Options") != "nosniff" || hd.Get("Cross-Origin-Resource-Policy") != "cross-origin" || hd.Get("Vary") != "Origin" {
-			t.Errorf("%s: nosniff=%q CORP=%q Vary=%q", path, hd.Get("X-Content-Type-Options"), hd.Get("Cross-Origin-Resource-Policy"), hd.Get("Vary"))
+		if hd.Get("X-Content-Type-Options") != "nosniff" || hd.Get("Cross-Origin-Resource-Policy") != "cross-origin" {
+			t.Errorf("%s: nosniff=%q CORP=%q", path, hd.Get("X-Content-Type-Options"), hd.Get("Cross-Origin-Resource-Policy"))
 		}
 		if hd.Get("Cache-Control") != "no-cache" {
 			t.Errorf("%s unversioned: Cache-Control %q, want no-cache", path, hd.Get("Cache-Control"))
@@ -131,39 +131,24 @@ func TestTheKitETagAndBodyMoveWithTheTheme(t *testing.T) {
 	}
 }
 
-// TestTheKitCORSIsTheirsAlone: an https origin under MUSTER_PLUGIN_ORIGINS is
-// echoed; muster's own origin, another site, http, a port, a path, the
-// wildcard's own zone and a look-alike suffix are not. With no
-// MUSTER_PLUGIN_ORIGINS nobody is.
-func TestTheKitCORSIsTheirsAlone(t *testing.T) {
+// TestTheKitSendsNoCORSToAnyone: the kit needs no CORS (kit.js carries the
+// sprite), so no origin is granted a read — a plugin origin under
+// MUSTER_PLUGIN_ORIGINS, another site, or muster's own — and nothing varies by
+// Origin. (A plugin's icons do not depend on being in MUSTER_PLUGIN_ORIGINS:
+// internal/uikit TestKitJSCarriesTheSprite, and the parity e2e loads kit.js on
+// a page of another origin and draws an icon.)
+func TestTheKitSendsNoCORSToAnyone(t *testing.T) {
 	_, h, _, _ := themeServer(t)
-	for origin, allowed := range map[string]bool{
-		"https://meet.example.org":             true,
-		"https://a.plugins.example.test":       true,
-		"https://b.c.plugins.example.test":     true,
-		"https://plugins.example.test":         false, // the zone itself
-		"https://evilplugins.example.test":     false,
-		"https://meet.example.org.attacker.io": false,
-		"http://meet.example.org":              false,
-		"https://meet.example.org:8443":        false,
-		"https://meet.example.org/x":           false,
-		"https://other.example.net":            false,
-		"http://example.com":                   false, // muster's own (httptest's host)
-		"null":                                 false,
-	} {
+	for _, origin := range []string{"https://meet.example.org", "https://a.plugins.example.test", "https://other.example.net", "http://example.com", "null", ""} {
 		for path := range kitPaths {
-			got := kitGet(h, path, map[string]string{"Origin": origin}).Header().Get("Access-Control-Allow-Origin")
-			if allowed && got != origin {
-				t.Errorf("%s from %s: ACAO %q, want the origin echoed", path, origin, got)
+			hd := kitGet(h, path, map[string]string{"Origin": origin}).Header()
+			if got := hd.Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("%s from %q: Access-Control-Allow-Origin %q, want none", path, origin, got)
 			}
-			if !allowed && got != "" {
-				t.Errorf("%s from %s: ACAO %q, want none", path, origin, got)
+			if got := hd.Get("Vary"); strings.Contains(got, "Origin") {
+				t.Errorf("%s from %q: Vary %q; nothing varies by Origin", path, origin, got)
 			}
 		}
-	}
-	_, h2, _, _ := brandingServer(t) // no MUSTER_PLUGIN_ORIGINS
-	if got := kitGet(h2, uikit.IconsPath, map[string]string{"Origin": "https://meet.example.org"}).Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("with no plugin origins: ACAO %q, want none", got)
 	}
 }
 
@@ -263,12 +248,25 @@ func TestANonCompliantAccentIsRefusedAtSave(t *testing.T) {
 		t.Fatalf("a refused theme was written (%d writes)", mem.writeCount())
 	}
 	rec = putTheme(h, who{cookie: cookie, htmx: true}, "brass", "#3a2f6b")
-	if got := rec.Header().Get("HX-Redirect"); got != "/account?theme_error=theme_contrast#theme" {
-		t.Errorf("htmx refusal redirect = %q", got)
+	const redirect = "/account?theme_error=theme_contrast&theme_try_preset=brass&theme_try_accent=%233a2f6b#theme"
+	if got := rec.Header().Get("HX-Redirect"); got != redirect {
+		t.Errorf("htmx refusal redirect = %q, want %q", got, redirect)
 	}
-	page := get(h, "/account?theme_error=theme_contrast", cookie, true).Body.String()
+	page := get(h, strings.TrimSuffix(redirect, "#theme"), cookie, true).Body.String()
 	if !strings.Contains(page, html.EscapeString(themeErrorText["theme_contrast"])) {
 		t.Error("the Account page does not say why the theme was refused")
+	}
+	// It names the failing pairs, recomputed from the tried values.
+	if !strings.Contains(page, `data-testid="theme-failures"`) || !strings.Contains(page, "accent #3A2F6B on bg") {
+		t.Error("the Account page does not name the failing pairs of the refused theme")
+	}
+	// Tried values that do not parse, or do not fail, draw no list and none of
+	// the query's text.
+	for _, q := range []string{"theme_try_accent=%3Cb%3Ezzq", "theme_try_preset=zzq", "theme_try_accent=%237fd0ff"} {
+		p := get(h, "/account?theme_error=theme_contrast&"+q, cookie, true).Body.String()
+		if strings.Contains(p, `data-testid="theme-failures"`) || strings.Contains(p, "zzq") {
+			t.Errorf("?%s: a failure list, or the query's text, was drawn", q)
+		}
 	}
 	// An unknown code draws the generic sentence, never the query's text.
 	if page := get(h, "/account?theme_error=%3Cb%3Ezzq%3C/b%3E", cookie, true).Body.String(); !strings.Contains(page, "The theme could not be saved.") || strings.Contains(page, "zzq") {
@@ -306,14 +304,6 @@ func TestOnlyAnAdminSavesATheme(t *testing.T) {
 	}
 	if mem.callCount() != 0 || mem.writeCount() != 0 {
 		t.Errorf("a refused caller reached the store (%d calls)", mem.callCount())
-	}
-	req := httptest.NewRequest(http.MethodGet, ThemePreviewPath+"?preset=harbor", nil)
-	req.AddCookie(cookie)
-	req.Header.Set(testMemberHeader, "2")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("a member's preview: %d, want 403", rec.Code)
 	}
 	if rec := putTheme(h, who{cookie: cookie}, "harbor", ""); rec.Code != http.StatusOK || mem.writeCount() != 1 {
 		t.Errorf("control: the admin: %d, writes %d", rec.Code, mem.writeCount())
@@ -367,15 +357,27 @@ func TestASavedThemeReachesTheInstanceDocumentAndThePages(t *testing.T) {
 }
 
 // TestTheAdminsAccountPageHasTheThemeSectionAndALivePreview: the section and
-// its form are an admin's only; the preview endpoint draws the chosen accent
-// and, for an unreadable one, names the failing pairs.
+// its form are an admin's only; each preset option carries its resolved
+// accent, label and focus channels for the browser preview (harbor's, pinned
+// here as literals), and the preview script derives a typed accent with
+// theme.Derive's own factors. There is no server preview route any more.
 func TestTheAdminsAccountPageHasTheThemeSectionAndALivePreview(t *testing.T) {
 	_, h, _, cookie := themeServer(t)
 	admin := get(h, "/account", cookie, true).Body.String()
-	for _, want := range []string{`data-testid="theme"`, `hx-put="` + ThemePath + `"`, `hx-get="` + ThemePreviewPath + `"`, `data-testid="theme-preview"`, `<option value="verdigris"`} {
+	for _, want := range []string{
+		`data-testid="theme"`, `hx-put="` + ThemePath + `"`, `data-testid="theme-preview"`,
+		`<option value="harbor" data-accent="110 176 245" data-on-accent="14 23 32" data-focus="154 200 248">`,
+		"var DARKEN = 0.87, LIGHTEN = 0.3;",
+	} {
 		if !strings.Contains(admin, want) {
 			t.Errorf("the admin's Account page lacks %s", want)
 		}
+	}
+	if strings.Contains(admin, "/api/instance/theme/preview") {
+		t.Error("the page still points at a server preview")
+	}
+	if rec := get(h, "/api/instance/theme/preview?preset=harbor", cookie, false); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api/instance/theme/preview: %d, want it gone", rec.Code)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/account", nil)
 	req.AddCookie(cookie)
@@ -386,21 +388,5 @@ func TestTheAdminsAccountPageHasTheThemeSectionAndALivePreview(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `data-testid="theme"`) {
 		t.Errorf("a member's Account page (%d) has the theme section", rec.Code)
-	}
-	prev := func(q string) string {
-		req := httptest.NewRequest(http.MethodGet, ThemePreviewPath+"?"+q, nil)
-		req.AddCookie(cookie)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("preview %s: %d", q, rec.Code)
-		}
-		return rec.Body.String()
-	}
-	if p := prev("preset=brass&accent=%237fd0ff"); !strings.Contains(p, `data-theme-ok="true"`) || !strings.Contains(p, "--mu-accent: 127 208 255;") {
-		t.Errorf("a readable accent's preview: %s", p)
-	}
-	if p := prev("preset=brass&accent=%233a2f6b"); !strings.Contains(p, `data-theme-ok="false"`) || !strings.Contains(p, "accent #3A2F6B on bg") {
-		t.Errorf("an unreadable accent's preview does not name the failing pair: %s", p)
 	}
 }

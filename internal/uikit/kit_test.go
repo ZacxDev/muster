@@ -1,6 +1,7 @@
 package uikit
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"os"
 	"path/filepath"
@@ -14,13 +15,14 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE CONTRACT LEDGER (docs/ui-kit.md). v1 is additive only, so each list is
-// a promise: the kit must carry every entry (TestKitCSSCarriesTheContract,
-// TestIconsSVGCarriesTheContract, TestKitJSCarriesTheContract), the list's
-// SIZE is pinned (deleting a promise from the ledger fails too), and the
-// ledger equals what the contract document lists, both ways
-// (TestTheLedgerIsTheContract). Adding to v1: add it here, to the doc and to
-// the kit, and raise the pinned count.
+// THE CONTRACT LEDGER (docs/ui-kit.md). Each list is what the kit promises:
+// the kit must carry every entry (TestKitCSSCarriesTheContract,
+// TestIconsSVGCarriesTheContract, TestKitJSCarriesTheContract), the ledger
+// equals what the contract document lists, both ways
+// (TestTheLedgerIsTheContract), and — v1 being additive only — nothing in the
+// frozen v1 baseline (testdata/v1-baseline.txt) may leave the ledger
+// (TestNothingInV1WasRemoved). Adding to v1: add it to the ledger, the doc
+// and the kit; the baseline is not touched.
 // ---------------------------------------------------------------------------
 
 var ledgerTokens = func() []string {
@@ -30,8 +32,6 @@ var ledgerTokens = func() []string {
 	}
 	return out
 }()
-
-const ledgerTokenCount = 40
 
 var ledgerClasses = []string{
 	"mu-root", "mu-icon", "mu-visually-hidden",
@@ -49,8 +49,6 @@ var ledgerClasses = []string{
 	"mu-tooltip",
 }
 
-const ledgerClassCount = 65
-
 var ledgerIcons = []string{
 	"mic", "mic-off", "camera", "camera-off", "screen-share", "screen-share-stop", "leave", "phone",
 	"people", "chat", "transcript", "captions", "settings", "more", "more-vertical", "copy", "link", "share",
@@ -60,29 +58,50 @@ var ledgerIcons = []string{
 	"chevron-up", "chevron-down", "chevron-left", "chevron-right", "external",
 }
 
-const ledgerIconCount = 45
-
 var ledgerJS = []string{"version", "ready", "icon", "tooltip", "toggle", "trapFocus", "openSheet", "closeSheet", "toast", "scan"}
 
 var ledgerAttrs = []string{"data-mu-toggle", "data-mu-tooltip", "data-mu-menu", "data-mu-sheet", "data-mu-close"}
 
-func TestTheLedgerSizesArePinned(t *testing.T) {
-	for name, c := range map[string][2]int{
-		"tokens":  {len(ledgerTokens), ledgerTokenCount},
-		"classes": {len(ledgerClasses), ledgerClassCount},
-		"icons":   {len(ledgerIcons), ledgerIconCount},
-		"js":      {len(ledgerJS), 10},
-		"attrs":   {len(ledgerAttrs), 5},
-	} {
-		if c[0] != c[1] {
-			t.Errorf("the %s ledger has %d entries, pinned at %d: v1 is additive only — a shrink breaks a plugin, a growth must raise the pin", name, c[0], c[1])
+// ledgerEntries is the ledger as "<kind> <name>" lines, the baseline's form.
+func ledgerEntries() map[string]bool {
+	out := map[string]bool{}
+	for kind, l := range map[string][]string{"token": ledgerTokens, "class": ledgerClasses, "icon": ledgerIcons, "js": ledgerJS, "attr": ledgerAttrs} {
+		for _, e := range l {
+			out[kind+" "+e] = true
 		}
 	}
-	for name, l := range map[string][]string{"tokens": ledgerTokens, "classes": ledgerClasses, "icons": ledgerIcons} {
+	return out
+}
+
+// TestNothingInV1WasRemoved: every token, class, icon, kit.js member and
+// attribute the kit shipped as v1 is still in the ledger (and so, by the
+// tests above, still in the kit and the doc). An addition needs no edit here;
+// a removal or a rename fails, which is the v1 promise.
+func TestNothingInV1WasRemoved(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "v1-baseline.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := ledgerEntries()
+	n := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		n++
+		if !now[line] {
+			t.Errorf("%q was in v1 and is gone: v1 is additive only (a breaking change is /ui-kit/v2/)", line)
+		}
+	}
+	if n < 150 {
+		t.Fatalf("read only %d baseline entries; the file is not the v1 baseline", n)
+	}
+	for _, l := range [][]string{ledgerTokens, ledgerClasses, ledgerIcons} {
 		seen := map[string]bool{}
 		for _, e := range l {
 			if seen[e] {
-				t.Errorf("the %s ledger lists %q twice", name, e)
+				t.Errorf("the ledger lists %q twice", e)
 			}
 			seen[e] = true
 		}
@@ -382,6 +401,35 @@ func TestKitJSCarriesTheContract(t *testing.T) {
 	// 🔴 A toast's message is text, never HTML.
 	if strings.Contains(js, "innerHTML") || strings.Contains(js, "insertAdjacentHTML") {
 		t.Error("kit.js writes HTML from a string; the contract says messages are drawn as text")
+	}
+}
+
+// TestKitJSCarriesTheSprite: the served kit.js holds the whole icon sprite —
+// every ledger id, as the very sprite icons.svg serves — and makes no request
+// for it, so a plugin on any origin draws the icons with no CORS. A control
+// first: the source file itself names no icon (the sprite is put in when
+// served), so finding the ids in the source would prove nothing.
+func TestKitJSCarriesTheSprite(t *testing.T) {
+	if strings.Contains(kitJSSource, "mu-mic-off") || strings.Count(kitJSSource, spritePlaceholder) != 1 {
+		t.Fatal("control: kit.js's source should carry the placeholder once and no icon")
+	}
+	js := string(KitJS().Body)
+	lit, err := json.Marshal(string(IconsSVG()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(js, "var SPRITE = "+string(lit)+";") {
+		t.Error("kit.js does not carry icons.svg's sprite as its SPRITE")
+	}
+	for _, n := range ledgerIcons {
+		if !strings.Contains(js, `id=\"mu-`+n+`\"`) {
+			t.Errorf("kit.js's sprite has no mu-%s", n)
+		}
+	}
+	for _, req := range []string{"fetch(", "XMLHttpRequest", "icons.svg"} {
+		if strings.Contains(js, req) {
+			t.Errorf("kit.js still reaches for the sprite (%q)", req)
+		}
 	}
 }
 

@@ -5,8 +5,6 @@
   if (window.MusterKit) { return; }
 
   var VERSION = '1.0.0';
-  var script = document.currentScript;
-  var base = script && script.src ? new URL('.', script.src).href : '';
 
   function onReady(fn) {
     if (document.readyState === 'loading') {
@@ -17,27 +15,23 @@
   }
 
   // --- the icon sprite ----------------------------------------------------
-  // A browser will not draw <use href> from another origin, so the sprite is
-  // read (CORS, no credentials) and put in this page once.
+  // A browser will not draw <use href> from another origin, so the sprite
+  // travels INSIDE this script (internal/uikit fills SPRITE from icons.go when
+  // it serves kit.js) and is put in the page once. No request, no CORS: any
+  // page that can load this script draws the icons.
+  var SPRITE = __MU_SPRITE__;
   var ready = new Promise(function (resolve) {
-    if (!base || !window.fetch) { resolve(); return; }
-    fetch(base + 'icons.svg', { mode: 'cors', credentials: 'omit' })
-      .then(function (r) { return r.ok ? r.text() : ''; })
-      .then(function (text) {
-        if (!text) { resolve(); return; }
-        var doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-        var svg = doc.documentElement;
-        if (!svg || svg.nodeName.toLowerCase() !== 'svg') { resolve(); return; }
-        // Definitions only: nothing that runs.
-        Array.prototype.forEach.call(svg.querySelectorAll('script, foreignObject'), function (n) { n.remove(); });
-        onReady(function () {
+    onReady(function () {
+      if (!document.querySelector('svg[data-mu-sprite]')) {
+        var svg = new DOMParser().parseFromString(SPRITE, 'image/svg+xml').documentElement;
+        if (svg && svg.nodeName.toLowerCase() === 'svg') {
           var node = document.importNode(svg, true);
           node.setAttribute('data-mu-sprite', '');
           document.body.insertBefore(node, document.body.firstChild);
-          resolve();
-        });
-      })
-      .catch(function () { resolve(); });
+        }
+      }
+      resolve();
+    });
   });
 
   var SVGNS = 'http://www.w3.org/2000/svg';

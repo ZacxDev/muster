@@ -97,7 +97,6 @@ var noStoreLiterals = map[string]string{
 	"handleMirrorSuggest":       "a window's suggested replies",
 	"handleReviewCount":         "the review count",
 	"handleShare":               "the share target",
-	"handleThemePreview":        "the theme preview, drawn for the form's current values",
 	"handleTranscribe":          "a dictation's transcript",
 	"handleUpload":              "an upload's answer",
 	"handleUploadLink":          "an upload's signed link",

@@ -52,7 +52,6 @@ GET /api/flows/jobs/{id}	csp1	pp2
 GET /api/host-jobs	csp1	pp2
 GET /api/host-jobs/{name}/runs	csp1	pp2
 GET /api/instance	csp1	pp2
-GET /api/instance/theme/preview	csp1	pp2
 GET /api/jobs/{id}	csp1	pp2
 GET /api/officers/declared	csp1	pp2
 GET /api/officers/declared/{officer}	csp1	pp2

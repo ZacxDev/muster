@@ -94,7 +94,6 @@ GET /api/flows/jobs/{id}
 GET /api/host-jobs
 GET /api/host-jobs/{name}/runs
 GET /api/instance
-GET /api/instance/theme/preview
 GET /api/jobs/{id}
 GET /api/officers/declared
 GET /api/officers/declared/{officer}

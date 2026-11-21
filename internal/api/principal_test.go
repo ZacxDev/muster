@@ -358,9 +358,8 @@ var routeVias = map[authz.Via][]string{
 		"PUT /api/instance/branding",
 		"DELETE /api/instance/branding/logo",
 		"DELETE /api/instance/branding/app-icon",
-		// The server's theme (theme.go): requireAdminRole, like the branding.
+		// The server's theme's save (theme.go): requireAdminRole, like the branding.
 		"PUT /api/instance/theme",
-		"GET /api/instance/theme/preview",
 		"POST /admin/users/{id}/enable",
 		"POST /admin/users/{id}/reset-link",
 		"POST /admin/users/{id}/role",

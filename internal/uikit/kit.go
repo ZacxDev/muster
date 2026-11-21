@@ -13,6 +13,8 @@ package uikit
 
 import (
 	_ "embed"
+	"encoding/json"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/theme"
 	"github.com/ZacxDev/muster/web"
@@ -32,7 +34,25 @@ const (
 )
 
 //go:embed kit.js
-var kitJS []byte
+var kitJSSource string
+
+// spritePlaceholder is where kit.js carries the icon sprite, as a JavaScript
+// string literal (kitJS fills it).
+const spritePlaceholder = "__MU_SPRITE__"
+
+// kitJS is kit.js as served: the source with the sprite (IconsSVG) put in
+// place of spritePlaceholder, so a plugin's page gets the icons with the
+// script — no second request, and no CORS.
+var kitJS = func() []byte {
+	if strings.Count(kitJSSource, spritePlaceholder) != 1 {
+		panic("uikit: kit.js must name " + spritePlaceholder + " exactly once")
+	}
+	lit, err := json.Marshal(string(IconsSVG()))
+	if err != nil {
+		panic(err)
+	}
+	return []byte(strings.Replace(kitJSSource, spritePlaceholder, string(lit), 1))
+}()
 
 // File is one kit response: its bytes, Content-Type and ETag (theme.ETag over
 // the bytes, so anything that changes the body changes it).

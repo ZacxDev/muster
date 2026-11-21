@@ -274,9 +274,8 @@ var isolationClasses = map[string]routeClass{
 	"PUT /api/instance/branding":             classAdminOnly,
 	"DELETE /api/instance/branding/logo":     classAdminOnly,
 	"DELETE /api/instance/branding/app-icon": classAdminOnly,
-	// The server's theme (theme.go, requireAdminRole).
-	"PUT /api/instance/theme":         classAdminOnly,
-	"GET /api/instance/theme/preview": classAdminOnly,
+	// The server's theme's save (theme.go, requireAdminRole).
+	"PUT /api/instance/theme": classAdminOnly,
 
 	// Server-installed apps (admin_apps.go): an admin's page; the rotate and
 	// uninstall name a server app by id, which no person owns.

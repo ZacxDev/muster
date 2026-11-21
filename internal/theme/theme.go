@@ -240,8 +240,16 @@ var (
 // A "white if it reads better" branch could never be taken by a theme that
 // passes Validate — a mutation test showed it dead — so it is not written.
 func Derive(accent RGB) (onAccent, focus RGB) {
-	return mix(accent, black, 0.87), mix(accent, white, 0.3)
+	return mix(accent, black, OnAccentDarken), mix(accent, white, FocusLighten)
 }
+
+// The derivation's two factors: how far the label moves toward black, and
+// the focus ring toward white. Exported because the Account page's preview
+// derives in the browser with these same numbers (internal/api theme.go).
+const (
+	OnAccentDarken = 0.87
+	FocusLighten   = 0.3
+)
 
 // Choice is what an admin saves: a preset, and optionally an accent of their
 // own ("#rrggbb", lower case; "" for the preset's own). The zero value is the

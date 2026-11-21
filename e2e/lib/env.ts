@@ -570,6 +570,10 @@ export const asksSearchPort = port + 485;
 // password-mode server (+486: clear of the blocks above), so no other server
 // caches the theme it saves.
 export const instanceThemePort = port + 486;
+// tests/ui-kit-parity.spec.ts: muster's own components against the UI kit's —
+// its own password-mode server (+487: clear of the blocks above), with a logo
+// set so the branding section's secondary button is drawn.
+export const uiKitParityPort = port + 487;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

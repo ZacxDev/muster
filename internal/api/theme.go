@@ -6,12 +6,12 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
-	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/theme"
 	"github.com/ZacxDev/muster/internal/uikit"
 )
@@ -31,17 +31,16 @@ import (
 //
 // 🔴 THE KIT IS PUBLIC AND HOLDS NOTHING PER-USER. /ui-kit/v1/* is served
 // with no session, reads no cookie and sets none: its bytes are a function of
-// the build and the server's theme. Drawing it (a <link>, a <script>) needs no
-// CORS; READING it from script does, and that is granted only to an https
-// origin under MUSTER_PLUGIN_ORIGINS (kitCORSOrigin) — the read kit.js makes
-// of icons.svg.
+// the build and the server's theme. Any page may draw it (a <link>, a
+// <script>), which needs no CORS, and nothing in the kit needs READING from
+// script: kit.js carries the icon sprite inside itself (internal/uikit). So no
+// CORS header is sent, to anyone.
 // ---------------------------------------------------------------------------
 
 // The routes.
 const (
-	ThemePath        = "/api/instance/theme"
-	ThemePreviewPath = "/api/instance/theme/preview"
-	themeAccountID   = "theme"
+	ThemePath      = "/api/instance/theme"
+	themeAccountID = "theme"
 )
 
 // kitVersioned is the cache of a kit URL whose v is the current ETag: those
@@ -54,7 +53,6 @@ const (
 
 func (s *Server) registerThemeRoutes(mux Mux) {
 	mux.HandleFunc("PUT "+ThemePath, s.requireAdminRole(s.handleThemePut))
-	mux.HandleFunc("GET "+ThemePreviewPath, s.requireAdminRole(s.handleThemePreview))
 	mux.HandleFunc("GET "+uikit.KitCSSPath, s.handleKitCSS)
 	mux.HandleFunc("GET "+uikit.ThemeCSSPath, s.handleKitThemeCSS)
 	mux.HandleFunc("GET "+uikit.IconsPath, s.handleKitIcons)
@@ -138,10 +136,6 @@ func (s *Server) serveKitFile(w http.ResponseWriter, r *http.Request, f uikit.Fi
 	h.Set("Content-Type", f.ContentType)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cross-Origin-Resource-Policy", "cross-origin")
-	h.Add("Vary", "Origin")
-	if o := kitCORSOrigin(s.ext.PluginOrigins, r.Header.Get("Origin")); o != "" {
-		h.Set("Access-Control-Allow-Origin", o)
-	}
 	if strings.HasPrefix(f.ContentType, "image/svg+xml") {
 		// Opened directly, the sprite runs nothing and loads nothing.
 		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
@@ -158,32 +152,6 @@ func (s *Server) serveKitFile(w http.ResponseWriter, r *http.Request, f uikit.Fi
 		return
 	}
 	_, _ = w.Write(f.Body)
-}
-
-// kitCORSOrigin is the Access-Control-Allow-Origin for a request's Origin:
-// the origin itself when it is exactly `https://<host>` — no other scheme, no
-// port, path, query or user — and the host is under one of patterns, else "".
-// With no MUSTER_PLUGIN_ORIGINS nothing is allowed.
-//
-// The spelling check is ONE comparison: an Origin is serialised as
-// scheme://host[:port], so anything but `https://` + the parsed host (which
-// still carries a port) is refused by it; the port is refused separately,
-// since MUSTER_PLUGIN_ORIGINS names no port.
-func kitCORSOrigin(patterns []plugins.OriginPattern, origin string) string {
-	if origin == "" || len(patterns) == 0 {
-		return ""
-	}
-	u, err := url.Parse(origin)
-	if err != nil || origin != "https://"+u.Host {
-		return ""
-	}
-	if u.Port() != "" {
-		return ""
-	}
-	if !plugins.AnyMatchesHost(patterns, u.Host) {
-		return ""
-	}
-	return origin
 }
 
 // --- the instance document's theme --------------------------------------------
@@ -233,7 +201,15 @@ func (s *Server) handleThemePut(w http.ResponseWriter, r *http.Request) {
 	}
 	var ce *branding.ThemeContrastError
 	if errors.As(err, &ce) {
-		s.themeRefuse(w, r, http.StatusBadRequest, branding.ErrThemeContrast.Code, branding.ErrThemeContrast.Msg, ce.Failures)
+		if r.Header.Get("HX-Request") == "true" {
+			// Back to the page with what was tried, so it can say WHICH pairs
+			// fail: the page re-runs the check on the tried values itself
+			// (themeTriedFailures) and draws only what that computes.
+			w.Header().Set("HX-Redirect", accountPath+"?theme_error="+url.QueryEscape(branding.ErrThemeContrast.Code)+
+				"&"+themeTryPreset+"="+url.QueryEscape(c.Preset)+"&"+themeTryAccent+"="+url.QueryEscape(c.Accent)+"#"+themeAccountID)
+		}
+		body := map[string]any{"error": branding.ErrThemeContrast.Msg, "code": branding.ErrThemeContrast.Code, "failures": ce.Failures}
+		s.writeJSON(w, http.StatusBadRequest, body)
 		return
 	}
 	var refusal *branding.Error
@@ -273,27 +249,55 @@ func (s *Server) themeRefuse(w http.ResponseWriter, r *http.Request, status int,
 var themeErrorText = map[string]string{
 	branding.ErrThemePreset.Code:   "There is no such preset.",
 	branding.ErrThemeAccent.Code:   "Write the accent colour as #RRGGBB.",
-	branding.ErrThemeContrast.Code: "Those colours are too hard to read against muster's surfaces, so the theme was not saved. The preview lists what fails.",
+	branding.ErrThemeContrast.Code: "Those colours are too hard to read against muster's surfaces, so the theme was not saved.",
 }
 
-// --- the Account page's section and its preview --------------------------------
+// The query parameters a contrast refusal sends the page back with: the
+// preset and accent that were tried. ⚠ DISPLAY-ONLY INPUT: the page parses them
+// as a preset name and a hex colour, re-runs the contrast check on them, and
+// draws only the failures that computes (pair names and hex values muster
+// writes itself) — never the query's own text.
+const (
+	themeTryPreset = "theme_try_preset"
+	themeTryAccent = "theme_try_accent"
+)
+
+// themeTriedFailures is the failing pairs of the theme a refusal redirect
+// names, or nil when the values do not parse or do not fail.
+func themeTriedFailures(q url.Values) []string {
+	_, err := theme.Choice{Preset: q.Get(themeTryPreset), Accent: q.Get(themeTryAccent)}.Validate()
+	var ce *theme.ContrastError
+	if errors.As(err, &ce) {
+		return ce.Failures
+	}
+	return nil
+}
+
+// --- the Account page's section ------------------------------------------------
 
 // ThemeSectionHeading is the Account page section's heading.
 const ThemeSectionHeading = "Theme"
 
 // accountThemeSection is the Account page's Theme section: an admin's only,
 // and only with a store to keep it in (like the branding section).
+//
+// The preview is drawn IN THE BROWSER (themePreviewScript): it sets the
+// accent's three custom properties on the preview's container, from the
+// preset's resolved values (each <option> carries them, computed here) or
+// from the typed accent through theme.Derive's own factors. It does not judge
+// contrast: the save does (branding.CheckTheme), and a refusal comes back to
+// this section naming the failing pairs.
 func (s *Server) accountThemeSection(r *http.Request) string {
 	if s.ext.Branding == nil || !authz.IsAdmin(r.Context()) {
 		return ""
 	}
 	c, _ := s.serverTheme(r.Context())
+	q := r.URL.Query()
 	var sb strings.Builder
 	sb.WriteString(`<section id="` + themeAccountID + `" data-testid="theme" class="mu-card">
 <h2 class="mu-card__title">` + ThemeSectionHeading + `</h2>
 <p class="mu-card__body">The colours everyone sees on this server, and in the apps installed on it. Every theme is checked for contrast before it is saved.</p>
 `)
-	q := r.URL.Query()
 	if q.Get("theme") == "saved" {
 		sb.WriteString(`<p role="status" class="mu-card__body">Theme saved.</p>`)
 	}
@@ -303,16 +307,31 @@ func (s *Server) accountThemeSection(r *http.Request) string {
 			msg = "The theme could not be saved."
 		}
 		sb.WriteString(problemNode(msg))
+		if code == branding.ErrThemeContrast.Code {
+			if fails := themeTriedFailures(q); len(fails) > 0 {
+				sb.WriteString(`<ul class="mu-help" data-testid="theme-failures">`)
+				for _, f := range fails {
+					sb.WriteString(`<li>` + html.EscapeString(strings.TrimPrefix(f, "theme: ")) + `</li>`)
+				}
+				sb.WriteString(`</ul>`)
+			}
+		}
 	}
 	sb.WriteString(`<form id="theme-form" hx-put="` + ThemePath + `" class="mu-field">
 <label for="theme-preset" class="mu-label">Preset</label>
 <select id="theme-preset" name="preset" class="mu-select">`)
 	for _, p := range theme.Presets {
+		tok, err := theme.Choice{Preset: p.Name}.Resolve()
+		if err != nil {
+			continue
+		}
 		sel := ""
 		if p.Name == c.Preset {
 			sel = " selected"
 		}
-		sb.WriteString(`<option value="` + p.Name + `"` + sel + `>` + html.EscapeString(p.Label) + `</option>`)
+		sb.WriteString(`<option value="` + p.Name + `"` + sel + ` data-accent="` + tok["accent"].Channels() +
+			`" data-on-accent="` + tok["on-accent"].Channels() + `" data-focus="` + tok["focus"].Channels() + `">` +
+			html.EscapeString(p.Label) + `</option>`)
 	}
 	accent := ""
 	if c.Accent != "" {
@@ -321,55 +340,52 @@ func (s *Server) accountThemeSection(r *http.Request) string {
 	sb.WriteString(`</select>
 <label for="theme-accent" class="mu-label">Accent colour (optional, #RRGGBB; empty uses the preset's)</label>
 <input id="theme-accent" name="accent" type="text" maxlength="7" autocomplete="off" spellcheck="false" placeholder="#RRGGBB" value="` + html.EscapeString(accent) + `" class="mu-input">
-<p class="mu-help">The preview below shows the theme as you change it, and anything that would be hard to read.</p>
-<div id="theme-preview-slot" hx-get="` + ThemePreviewPath + `" hx-include="#theme-form" hx-trigger="input from:#theme-form delay:250ms, change from:#theme-form" hx-target="this" hx-swap="innerHTML">` +
-		themePreviewHTML(c) + `</div>
-<button type="submit" id="theme-save" class="mu-btn mu-btn--primary mu-btn--block">Save theme</button>
-</form>
-</section>`)
-	return sb.String()
-}
-
-func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(themePreviewHTML(themeChoiceFrom(r))))
-}
-
-// themePreviewHTML is the live preview of c: a few kit components drawn with
-// c's tokens set on their container, and either "passes" or each failing pair.
-// Computed here, by the same Validate the save runs, so the preview and the
-// save cannot disagree.
-func themePreviewHTML(c theme.Choice) string {
-	tok, err := c.Resolve()
-	if err != nil {
-		msg := "Choose a preset, and write the accent as #RRGGBB."
-		return `<div id="theme-preview" data-testid="theme-preview" data-theme-ok="false" class="mu-card mu-card--raised"><p class="mu-error">` + msg + `</p></div>`
-	}
-	var vars strings.Builder
-	for _, n := range []string{"accent", "on-accent", "focus"} {
-		vars.WriteString("--mu-" + n + ": " + tok[n].Channels() + "; ")
-	}
-	fails := theme.Failures("theme", tok)
-	ok := len(fails) == 0
-	var sb strings.Builder
-	sb.WriteString(`<div id="theme-preview" data-testid="theme-preview" data-theme-ok="` + map[bool]string{true: "true", false: "false"}[ok] + `" data-accent="` + tok["accent"].Hex() + `" class="mu-card mu-card--raised" style="` + vars.String() + `">
+<p class="mu-help">The preview below shows the theme as you change it. Saving checks it for contrast.</p>
+<div id="theme-preview" data-testid="theme-preview" class="mu-card mu-card--raised">
 <div class="mu-toolbar" role="toolbar" aria-label="Preview">
 <button type="button" class="mu-btn mu-btn--primary" tabindex="-1">Primary</button>
 <button type="button" class="mu-btn mu-btn--secondary" tabindex="-1">Secondary</button>
 <button type="button" class="mu-icon-btn mu-toggle" aria-pressed="true" aria-label="A pressed toggle" tabindex="-1"><svg class="mu-icon" aria-hidden="true"><use href="` + uikit.IconsPath + `#mu-mic"/></svg></button>
 <span class="mu-chip mu-chip--running">Running</span>
 </div>
-`)
-	if ok {
-		sb.WriteString(`<p class="mu-help" data-theme-verdict>Every pair in the contrast table passes.</p>`)
-	} else {
-		sb.WriteString(`<p class="mu-error" data-theme-verdict>This theme cannot be saved: these are too hard to read.</p><ul class="mu-help">`)
-		for _, f := range fails {
-			sb.WriteString(`<li>` + html.EscapeString(strings.TrimPrefix(f, "theme: ")) + `</li>`)
-		}
-		sb.WriteString(`</ul>`)
-	}
-	sb.WriteString(`</div>`)
+</div>
+<button type="submit" id="theme-save" class="mu-btn mu-btn--primary mu-btn--block">Save theme</button>
+</form>
+<script>` + themePreviewScript + `</script>
+</section>`)
 	return sb.String()
 }
+
+// themePreviewScript draws the preview in the browser. The derivation of a
+// typed accent's label and focus colours uses theme.OnAccentDarken and
+// theme.FocusLighten — the factors theme.Derive uses — written in from Go, so
+// the preview and the server cannot derive differently.
+var themePreviewScript = `(function () {
+  var form = document.getElementById('theme-form');
+  var pv = document.getElementById('theme-preview');
+  if (!form || !pv) { return; }
+  var sel = form.querySelector('#theme-preset');
+  var acc = form.querySelector('#theme-accent');
+  var DARKEN = ` + strconv.FormatFloat(theme.OnAccentDarken, 'f', -1, 64) + `, LIGHTEN = ` + strconv.FormatFloat(theme.FocusLighten, 'f', -1, 64) + `;
+  function chans(s) { return s.split(' ').map(Number); }
+  function mix(c, t, k) { return c.map(function (v, i) { return Math.round(v + (t[i] - v) * k); }); }
+  function hex(c) { return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('').toUpperCase(); }
+  function apply() {
+    var o = sel.options[sel.selectedIndex];
+    var a = chans(o.getAttribute('data-accent')), on = chans(o.getAttribute('data-on-accent')), fo = chans(o.getAttribute('data-focus'));
+    var m = /^#([0-9a-f]{6})$/i.exec(acc.value.trim());
+    if (m) {
+      var n = parseInt(m[1], 16);
+      a = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      on = mix(a, [0, 0, 0], DARKEN);
+      fo = mix(a, [255, 255, 255], LIGHTEN);
+    }
+    pv.style.setProperty('--mu-accent', a.join(' '));
+    pv.style.setProperty('--mu-on-accent', on.join(' '));
+    pv.style.setProperty('--mu-focus', fo.join(' '));
+    pv.setAttribute('data-accent', hex(a));
+  }
+  sel.addEventListener('change', apply);
+  acc.addEventListener('input', apply);
+  apply();
+})();`

@@ -9,9 +9,9 @@ import { dsn, instanceThemePort, repoRoot, versionA } from '../lib/env';
 // real browser against a real muster-server, at a phone's size and a desktop's.
 //
 // The admin (password mode: the operator) picks an accent on Account → Theme.
-// The live preview draws it before anything is saved; an unreadable accent is
-// shown failing in the preview and refused at save with the reason on the
-// page; a readable one is saved, and muster's OWN pages then draw it — the
+// The live preview (drawn in the browser) shows it before anything is saved;
+// an unreadable accent is refused at save, and the page names the failing
+// pairs; a readable one is saved, and muster's OWN pages then draw it — the
 // theme stylesheet is linked, the root's --mu-accent is the new channels, and
 // a real accent-filled control (the Account page's Sign out button) paints in
 // it. Back to the default preset, no theme stylesheet is linked and the
@@ -79,19 +79,22 @@ for (const [name, viewport] of [
       await expect(section).toBeVisible();
       const preview = section.locator('[data-testid="theme-preview"]');
 
-      // An unreadable accent: the live preview says so before any save…
+      // The preview is drawn in the browser, before any save: an unreadable
+      // accent shows as it is…
       await page.fill('#theme-accent', '#3A2F6B');
-      await expect(preview).toHaveAttribute('data-theme-ok', 'false');
-      await expect(preview.getByText('accent #3A2F6B on bg', { exact: false })).toBeVisible();
-      // …and the save is refused, with the reason on the page, nothing changed.
-      await saveTheme(page, 'brass', '#3A2F6B', '/account?theme_error=theme_contrast#theme');
+      await expect(preview).toHaveAttribute('data-accent', '#3A2F6B');
+      await expect(preview.locator('.mu-btn--primary')).toHaveCSS('background-color', 'rgb(58, 47, 107)');
+      // …and the save refuses it, naming the failing pairs on the page, with
+      // nothing changed.
+      await saveTheme(page, 'brass', '#3A2F6B',
+        '/account?theme_error=theme_contrast&theme_try_preset=brass&theme_try_accent=%233A2F6B#theme');
       await expect(section.getByText('too hard to read')).toBeVisible();
+      await expect(section.locator('[data-testid="theme-failures"]').getByText('accent #3A2F6B on bg', { exact: false })).toBeVisible();
       await expect(page.locator('link[data-theme-css]')).toHaveCount(0);
 
       // A readable accent: the preview draws it live, unsaved.
       await page.fill('#theme-accent', ACCENT);
       await expect(preview).toHaveAttribute('data-accent', ACCENT);
-      await expect(preview).toHaveAttribute('data-theme-ok', 'true');
       await expect(preview.locator('.mu-btn--primary')).toHaveCSS('background-color', ACCENT_RGB);
       // The page itself has not changed yet.
       await expect(signOut(page)).toHaveCSS('background-color', BRASS_RGB);
