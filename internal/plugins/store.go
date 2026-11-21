@@ -301,6 +301,17 @@ type NewPlugin struct {
 const ViewerOnlyDataScope = "none"
 
 func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
+	// Fork 9 (a personal app plugin at a live server app's entry URL is
+	// refused), read BEFORE the transaction begins. 🔴 It is an authz.System
+	// read on ITS OWN pool connection (the person's connection cannot see a
+	// server row), and taking a second connection while this transaction
+	// holds the app cap's advisory lock starved the pool: with concurrent
+	// mints holding every connection and waiting on the lock, its holder
+	// waited for a connection until the statement timeout (CI, a 4-connection
+	// pool; TestConcurrentAppMintsStopAtFive). Nothing is held while it runs.
+	if err := s.serverAppMintRefusal(ctx, in.Capabilities, in.EntryURL); err != nil {
+		return "", Plugin{}, err
+	}
 	// READ COMMITTED, explicitly: the app cap's count (appMintChecks) relies on
 	// it, whatever the server's default_transaction_isolation says.
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -352,10 +363,6 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 		}
 		owner, _ := authz.From(ctx)
 		if err := s.appMintChecks(ctx, tx, owner.Team); err != nil {
-			return "", Plugin{}, err
-		}
-		// Fork 9: not into a plugin a server app already offers everyone.
-		if err := s.serverAppMintRefusal(ctx, caps, in.EntryURL); err != nil {
 			return "", Plugin{}, err
 		}
 		tabLabel, tabIcon = &appLabel, &in.AppIcon

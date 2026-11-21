@@ -655,7 +655,9 @@ func (l ServerTaskLedger) Record(ctx context.Context, tx pgx.Tx, id int64) error
 	return nil
 }
 
-// serverAppMintRefusal is fork 9's mint rule for a personal `app` plugin: an
+// serverAppMintRefusal is fork 9's mint rule (CreatePlugin calls it before its
+// transaction: it takes a pool connection of its own, which must never be
+// taken while a transaction holds a lock others queue on) for a personal `app` plugin: an
 // entry URL a live server app already has is refused, so one person does not
 // get two tabs into one plugin under two identities. nil when allowed.
 func (s *PGStore) serverAppMintRefusal(ctx context.Context, caps []Capability, entry string) error {
