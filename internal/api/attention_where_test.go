@@ -172,7 +172,7 @@ func TestAMirroredSessionsAskNamesTheWindowRunningItNow(t *testing.T) {
 // h1); askPagePlace its badge row's where, before the age.
 var (
 	askPageHeading = regexp.MustCompile(`<h1 class="[^"]*">([^<]*) is asking</h1>`)
-	askPagePlace   = regexp.MustCompile(`data-asks-badge="question">Question</span><p class="[^"]*">([^<]*)<time`)
+	askPagePlace   = regexp.MustCompile(`data-asks-badge="question">Question</span><span class="[^"]*"><span class="[^"]*" data-ask-place>([^<]*)</span>`)
 )
 
 // askPageWho is what an ask's own page says asks, and where, by ask: the
@@ -182,8 +182,8 @@ var (
 // place. (The badge row named who again until the asks audit: "mango asks ·
 // on ws", truncated on a phone.)
 var askPageWho = map[int64][2]string{
-	91: {"mango", "on ws · "},
-	92: {"build", "on ws · "},
+	91: {"mango", "on ws"},
+	92: {"build", "on ws"},
 	93: {"pear:2 @ ws (not shown in any mirrored window now)", ""},
 	94: {"Worker Seven", ""},
 }
@@ -207,7 +207,11 @@ func TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget(t *testing.
 		s.renderAskPage(rec, r, a)
 		body := rec.Body.String()
 		m, pl := askPageHeading.FindStringSubmatch(body), askPagePlace.FindStringSubmatch(body)
-		if m == nil || pl == nil {
+		if pl == nil {
+			// No place to say: the head's lines are the age alone.
+			pl = []string{"", ""}
+		}
+		if m == nil {
 			t.Fatalf("ask %d: no heading or badge row on the page:\n%s", a.ID, body)
 		}
 		if got, want := [2]string{html.UnescapeString(m[1]), html.UnescapeString(pl[1])}, askPageWho[a.ID]; got != want {

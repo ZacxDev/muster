@@ -143,6 +143,62 @@ An ask's own page, `/attention/asks/<id>` (where its notification lands), is
 the same card, always expanded, with the answer box pinned to the bottom of the
 screen.
 
+### Ids on the cards
+
+Agents name asks by id ("I asked in ask 859"), so every card shows its id,
+small and muted at the end of its top row, **always labelled**: asks and
+plugin drafts are numbered apart, so a bare number could be either.
+
+| Card | Shows |
+|---|---|
+| An ask or notice on **Open**, on **Answered**, and its own page's header | **Ask #859** |
+| A draft on **Drafts** | **Draft #484** |
+| An agent's question on **Log** | **Ask #859** (the muster ask it records; a question asked in chat or with a picker has no muster ask, so no id) |
+| A step-up card for a draft | **Ask #…** like any ask, and its title ends **· Draft #484** ([what a card shows](mirroring.md#what-a-card-shows)) |
+| A search result | its **Ask #** or **Draft #** |
+
+Tap it (or focus it and press <kbd>Enter</kbd>) to copy the label —
+`Ask #859`, `Draft #484` — to the clipboard; it says **Copied** for a moment,
+and a screen reader hears *Copied Ask #859* (a polite live region). It is a
+real button named *Copy Ask #859*, keeps that name while it says Copied, and
+never expands its card. Without JavaScript it is plain text.
+
+### Searching your asks
+
+The box on the page heading's row searches your asks — open, answered,
+dismissed, expired, notices too — and your plugin drafts. The
+search is the page's own query, `/attention?q=…`, so a search is a link and
+**Back** leaves it; an empty box is the page as before.
+
+- **An id** — `859`, `#859`, `ask 859`, `Ask #859` (what the copy button
+  copies), `draft 484`, `Draft #484` — is looked up **by id only**, never as
+  text. A bare number is either kind's: the ask with that id and the draft
+  with that id. `draft 484` finds the draft **and every step-up card that
+  confirms it**. When an id finds exactly one thing, the page goes straight
+  to it: the ask's page, or the draft's card on the Drafts tab.
+- **An id finds anything you can already open** there: an ask whose page
+  opens for you (your own — the ask page opens no one else's, a team's
+  included), and any draft the Drafts tab shows you, a team's draft you read
+  as its member included. Another owner's id finds nothing, exactly as an id
+  that does not exist.
+- **Anything else is text**: a case-insensitive piece of the question, the
+  why-it's-here line, an option, the answer, who asked (the session's or
+  agent's name as stored with the ask), a step-up card's title, why and post,
+  and a draft's text. `%`, `_` and `\` are themselves, not wildcards. The
+  results are listed newest first — at most 50 asks and 50 drafts, the count
+  saying when there are more — each linking to its ask's page (a draft: its
+  card). Nothing found is one line, *No asks match "…"*, with **Clear**.
+- **Text is searched in every ask, whatever its age.** An ask keeps its
+  text for as long as you can open it, so an old ask is found by its words
+  as well as by its id. (The separate [ask log](asks.md) forgets its own
+  copy of question and answer text after `MUSTER_ASK_LOG_TEXT_TTL`; that
+  does not limit this search.)
+- **Text searches your own, and only your own.** A team's asks and drafts
+  you can read as its member are not in your text results: the search names
+  you as the owner in its query, not only through row-level security. A
+  question a session put to your chief is never in any result (its ask page
+  is not found either).
+
 ### The Nudges tab
 
 With [stall nudges](chief-nudges.md) on (`MUSTER_CHIEF_NUDGES=1`), the page

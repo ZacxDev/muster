@@ -23,7 +23,8 @@ func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 	page := f.page(t, "/attention")
 	for _, want := range []string{
 		`<section class="flex flex-col gap-3" data-testid="attention-page">`,
-		`>Asks</h1>` + ui.AsksOpenCountHTML(2) + `</div>`, // the ask and the fixture's waiting window
+		// The ask and the fixture's waiting window; the search box ends the row.
+		`>Asks</h1>` + ui.AsksOpenCountHTML(2) + ui.AsksSearchFormHTML("/attention", "") + `</div>`,
 		`<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">`,
 		`<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>`,
 		`<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>`,

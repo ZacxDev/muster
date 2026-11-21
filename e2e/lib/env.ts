@@ -562,6 +562,10 @@ export const serverAppBrowserPort = port + 481;
 export const serverAppGotruePort = Number(process.env.MUSTER_E2E_SERVERAPP_GOTRUE_PORT ?? port + 482);
 export const serverAppStubPort = port + 483;
 export const serverAppEdgePort = port + 484;
+// tests/asks-search.spec.ts: the Asks page's search box and the ids on its
+// cards — its own server (plugins and task routing on, for the fixture's
+// draft and task). +485: clear of the blocks above.
+export const asksSearchPort = port + 485;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

@@ -235,6 +235,10 @@ func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 	// one: the tag it writes from here is the card feed's, and internal/api's
 	// TestTheAsksPageLinksTheFeedScript pins that the page really writes it.
 	docs["asks page (internal/api)"] = AsksFeedScriptHTML()
+	// The id chips' script (ask_id.go) is written by the Asks page and the ask
+	// page, both internal/api's documents; internal/api's
+	// TestEveryAskCardShowsItsLabelledId pins that each writes it, once.
+	docs["asks and ask pages' id chips (internal/api)"] = IDCopyScriptHTML()
 	for _, doc := range docs {
 		for _, m := range staticScriptTag.FindAllStringSubmatch(doc, -1) {
 			linked[m[1]] = true // ?v= is checked by expandStaticScripts / internal/api checkVersioned

@@ -18,12 +18,12 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // REPLY DRAFTS, THE OWNER'S AND THE PLUGIN'S HALVES (internal/plugins/drafts.go
@@ -896,22 +896,28 @@ func draftKindLabel(d plugins.Draft) string {
 	return "Reply draft"
 }
 
-// draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass, fixed),
-// its head the kind badge, WHO drafted it (the agent's display name:
-// DraftCard.AgentDisplay, the one naming rule, set by readDraftViews) and how
-// long ago; its facts as pills (the plugin, the state, a relative expiry); the
-// message it answers as a quote marked untrusted; the reply in
-// normal text; then ONE primary action (Approve and send) on its own row,
-// with Reject (and its reason box) under it (ui.AsksDecisionClass).
+// draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass,
+// fixed). Its head (ui.AsksHeadHTML) is WHO drafted it (draftWho: the
+// officer's words, else the agent's display name — DraftCard.AgentDisplay,
+// set by readDraftViews — else its name) and how long ago, with its id chip;
+// no kind badge, since the preview's own head says where it goes and what it
+// is. Then its facts as pills (its state, a relative expiry); what it answers
+// (draftAnswersHTML: the outside party's message quoted in its own box,
+// labelled untrusted, never mistaken for the draft — or the line saying
+// muster holds no such message); the draft itself as the post it becomes
+// (stepUpPostHTML over draftPostCard: the venue's logo, what it does there,
+// the text as paragraphs, its media); any medium not yet uploaded; the
+// plugin's last word; the Details fold (draftDetailsHTML: target, because-of,
+// each medium's facts, the plugin's reference); the owner's reason; then ONE
+// primary action (Approve and send) with Reject and its reason box under it
+// (ui.AsksDecisionClass).
 //
-// 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The draft is
-// drawn through flows.VisibleEscape line by line (visibleLines) — printable
-// ASCII as itself, a line break as one, everything else spelled out — so
-// nothing invisible or look-alike rides along unseen (its length in characters
-// is on data-runes, no longer a pill). It is in the page's normal text now (it was
-// monospace, broken anywhere: "minu/te"), wrapping at words. The message it
-// answers is the OUTSIDE party's text: drawn escaped, in its own box, labelled
-// untrusted, and never mistaken for the draft.
+// 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The text
+// is drawn whole, never cut to an excerpt, as the post reads (an em dash a
+// dash, an emoji an emoji): every hidden code point a visible flag naming it
+// (stepUpHiddenHTML) and every word with look-alike letters marked
+// (stepUpMarkedHTML), with a note under the preview when it holds either.
+// Its length in characters is on data-runes.
 func draftCardHTML(c plugins.DraftCard) string {
 	return draftCardHTMLAt(c, time.Now())
 }
@@ -927,7 +933,7 @@ func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
 // and bindings wherever it is drawn — a place only adds its return field.
 func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	esc := html.EscapeString
-	d, m := c.Draft, c.Message
+	d := c.Draft
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
 	who := draftWho(c)
@@ -936,13 +942,14 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	if !d.CreatedAt.IsZero() {
 		age = `<time datetime="` + d.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.CreatedAt))) + `</time>`
 	}
+	// THE OPEN CARD'S HEAD (ui.AsksHeadHTML): who drafted it and how long
+	// ago, its id chip. No kind badge: the preview's own head says where it
+	// goes and what it is ("X · New post", "<inbox> · Reply to a message").
 	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", draftKindLabel(d)),
-		`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+esc(flows.VisibleEscape(who))+`</span>`, age) + `
+` + ui.AsksHeadHTML(ui.AsksHead{Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+stepUpHiddenHTML(who)+`</span>`, age), Chip: ui.DraftIDChipHTML(d.ID)}) + `
 `)
 	pills := []string{
-		`<span class="` + ui.AsksPillClass + `" data-draft-plugin>` + esc(c.PluginLabel) + `</span>`,
 		`<span class="` + ui.AsksPillClass + ` whitespace-normal" data-draft-state>` + esc(draftStatusText(d)) + `</span>`,
 	}
 	if exp := draftExpiryText(d, now); exp != "" {
@@ -950,37 +957,31 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	}
 	b.WriteString(`<div class="` + ui.AsksPillsClass + `" data-draft-pills>` + strings.Join(pills, "") + `</div>
 `)
-	if d.IsOutbound() {
-		// An officer's outbound draft (plugin_outbound.go): its venue and
-		// target, and every medium, in place of the message it answers.
-		b.WriteString(outboundCardHTML(c))
-	} else {
-		b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-original>
-<span class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg2"><span class="break-all font-semibold">From ` + esc(m.Sender) + `</span><span class="` + ui.AsksPillClass + `" data-draft-untrusted>untrusted</span></span>
+	b.WriteString(draftAnswersHTML(c))
+	// 🔴 WHAT IS APPROVED IS WHAT IS SEEN: the draft's WHOLE text, drawn as
+	// the step-up card draws it (stepUpPostHTML over draftPostCard: the
+	// venue's logo, the post as paragraphs, its media), every hidden code
+	// point a visible flag and every look-alike word marked
+	// (stepUp{Hidden,Marked}HTML), never cut to an excerpt.
+	b.WriteString(`<div class="flex min-w-0 flex-col gap-2" data-draft-text data-runes="` + runes + `">
+` + stepUpPostHTML(draftPostCard(c), false) + `</div>
 `)
-		if m.Subject != "" {
-			b.WriteString(`<span class="break-words text-xs text-fg2">` + esc(m.Subject) + `</span>
+	for _, ref := range d.MediaRefs {
+		if _, ok := d.MediaFor(ref); !ok {
+			b.WriteString(`<p class="break-all text-xs text-fg2" data-draft-medium data-ref="` + esc(ref) + `">` + stepUpHiddenHTML(ref) + ` · <span class="font-semibold" data-draft-medium-missing>not uploaded yet</span></p>
 `)
 		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-draft-original-body>` + esc(m.Body) + `</p>
-</div>
-`)
-	}
-	b.WriteString(`<div class="rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>` + esc(visibleLines(d.Body)) + `</p>
-</div>
-`)
-	if d.ExternalRef != "" {
-		b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-ref>reference ` + esc(flows.VisibleEscape(d.ExternalRef)) + `</span>
-`)
 	}
 	if d.Detail != "" {
-		b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-detail>the plugin said: ` + esc(flows.VisibleEscape(d.Detail)) + `</span>
+		// The plugin's own word on it (why it refused or failed): read
+		// without opening Details.
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-detail>The plugin said: ` + stepUpHiddenHTML(d.Detail) + `</span>
 `)
 	}
+	b.WriteString(stepUpDetailsHTML(draftDetailsHTML(c)))
 	if d.DecisionReason != nil {
 		// The owner's own words with a rejection (0123), on the card's history.
-		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + esc(flows.VisibleEscape(*d.DecisionReason)) + `</span>
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + stepUpHiddenHTML(*d.DecisionReason) + `</span>
 `)
 	}
 	if d.Status == plugins.DraftPending && c.EarlierUnconfirmed {
@@ -1024,21 +1025,91 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	return b.String()
 }
 
-// visibleLines is v drawn through flows.VisibleEscape LINE BY LINE: each
-// line break is drawn as one (the box is whitespace-pre-wrap), and everything
-// else — a tab, a carriage return, a bidi control, any non-ASCII letter — is
-// spelled out exactly as VisibleEscape spells it. Split back on "\n" and
-// unescaped line by line it is v again (the mapping stays one-to-one: a
-// literal backslash-n in v is drawn \\n). The step-up card's preview does NOT
-// draw a draft's text this way: it draws it as the post reads (an em dash a
-// dash, an emoji an emoji; stepUpParagraphsHTML), and instead marks each word
-// with look-alike letters and says so under the preview (stepUpLookalike).
-func visibleLines(v string) string {
-	lines := strings.Split(v, "\n")
-	for i, l := range lines {
-		lines[i] = flows.VisibleEscape(l)
+// draftAnswersHTML is WHAT draft card c ANSWERS, "" for nothing: the outside
+// party's message, quoted and marked untrusted (draftQuoteHTML) — a reply
+// draft's message, an outbound reply's (or a because-of draft's) target — or,
+// when muster holds no message with that reference, the one line telling the
+// owner to check the target before approving. THE one rule for it: the Drafts
+// tab's card and an officer chat's confirm card both draw it from here.
+func draftAnswersHTML(c plugins.DraftCard) string {
+	d, m := c.Draft, c.Message
+	switch {
+	case !d.IsOutbound():
+		return draftQuoteHTML(m.Sender, m.Subject, m.Body, ` data-draft-original`)
+	case d.Target().Kind == plugins.TargetReply || d.BecauseRef != nil:
+		if r := c.ReplyTo; r != nil {
+			return draftQuoteHTML(r.Sender, "", r.Body, ` data-draft-reply-to`)
+		}
+		return `<p class="text-xs text-fg2" data-draft-reply-to-missing>` + draftReplyToMissing + `</p>
+`
 	}
-	return strings.Join(lines, "\n")
+	return ""
+}
+
+// draftReplyToMissing is what a reply draft's card says when muster received
+// no message with its target's reference.
+const draftReplyToMissing = "muster received no reply with this reference: check the target before you approve."
+
+// draftQuoteHTML is the message a draft answers, from the OUTSIDE party:
+// sender, an optional subject and its body (askTextHTML: real line breaks,
+// hidden code points flagged), in its own quote box, labelled untrusted and
+// never mistaken for the draft. attrs are the box's own data attributes.
+func draftQuoteHTML(sender, subject, body, attrs string) string {
+	var b strings.Builder
+	b.WriteString(`<div class="` + ui.AsksQuoteClass + `"` + attrs + `>
+<span class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg2"><span class="break-all font-semibold" data-draft-quote-from>From ` + stepUpHiddenHTML(sender) + `</span><span class="` + ui.AsksPillClass + `" data-draft-untrusted>untrusted</span></span>
+`)
+	if subject != "" {
+		b.WriteString(`<span class="break-words text-xs text-fg2">` + stepUpHiddenHTML(subject) + `</span>
+`)
+	}
+	b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-draft-quote-body>` + askTextHTML(body) + `</p>
+</div>
+`)
+	return b.String()
+}
+
+// draftDetailsHTML is a draft card's Details fold (stepUpDetailsHTML): what
+// the preview does not say — the post it replies to or the reason it was
+// drafted, each medium's file name, type, size and SHA-256, the plugin's
+// reference and its last word. "" for none.
+func draftDetailsHTML(c plugins.DraftCard) string {
+	esc := html.EscapeString
+	d := c.Draft
+	var lines []string
+	// A target, a because-of and a reference are the outside party's text:
+	// hidden code points flagged and look-alike words marked
+	// (stepUpMarkedHTML), as the preview's own handle is.
+	line := func(attr, label, v string) {
+		lines = append(lines, `<li class="break-all text-xs text-fg2"`+attr+`>`+label+stepUpMarkedHTML(v)+`</li>`)
+	}
+	if d.IsOutbound() {
+		t := d.Target()
+		switch t.Kind {
+		case plugins.TargetReply, plugins.TargetLike:
+			line(` data-draft-target`, "Target: ", t.Ref)
+		case plugins.TargetDM, plugins.TargetFollow:
+			line(` data-draft-target`, "To: ", t.Handle)
+		}
+		if d.BecauseRef != nil {
+			line(` data-draft-because`, "Because of: ", *d.BecauseRef)
+		}
+	}
+	for _, ref := range d.MediaRefs {
+		m, ok := d.MediaFor(ref)
+		if !ok {
+			continue
+		}
+		lines = append(lines, `<li class="`+ui.StepUpDetailsFactClass+`" data-draft-medium data-ref="`+esc(ref)+`" data-sha256="`+esc(m.SHA256)+`" data-content-type="`+esc(m.ContentType)+`">`+
+			`<span data-draft-medium-name>`+stepUpHiddenHTML(ref)+`</span> · <span data-draft-medium-facts>`+esc(m.ContentType)+` · `+esc(uploads.HumanSize(m.Size))+` · sha256 `+esc(m.SHA256)+`</span></li>`)
+	}
+	if d.ExternalRef != "" {
+		line(` data-draft-ref`, "Reference: ", d.ExternalRef)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return `<ul class="flex min-w-0 flex-col gap-1 pb-2" data-draft-details>` + strings.Join(lines, "") + `</ul>`
 }
 
 // draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:

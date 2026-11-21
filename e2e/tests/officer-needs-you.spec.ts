@@ -119,7 +119,7 @@ for (const vp of [
       await expect(needs).toHaveAttribute('data-needs-count', '3');
       await expect(needs.locator('[data-needs-badge]')).toHaveText('3');
       const post = needs.locator(`[data-draft-id="${ids.post}"]`);
-      await expect(post.locator('[data-draft-body]')).toHaveText(POST_BODY);
+      await expect(post.locator('[data-draft-text] [data-stepup-preview-text]').first()).toHaveText(POST_BODY);
       const batch = needs.locator('[data-outreach-batch]');
       await expect(batch.locator('[data-outreach-entry]')).toHaveCount(2);
       await expect(batch.locator('[data-outreach-person]').first()).toContainText('untrusted');

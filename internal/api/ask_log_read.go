@@ -845,8 +845,24 @@ func askLogSubHTML(a asklog.Ask, age string) string {
 	return b.String()
 }
 
+// askLogAskID is the id of the muster ask a log row records ("Ask #859" on
+// its card), 0 for none: only an agent's question (asklog.KindAttention) is
+// one, its SourceRef that ask's id. A question in chat or a picker is the
+// session's own, with no muster ask behind it — and the log row's own id is
+// never drawn, since it is not an ask's and would read as one.
+func askLogAskID(a asklog.Ask) int64 {
+	if a.Kind != asklog.KindAttention {
+		return 0
+	}
+	id, err := strconv.ParseInt(a.SourceRef, 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
 // askLogCardHTML is one ask's card: what kind and where, its outcome as a
-// pill; the question (or that its text expired); the answer, who gave it and
+// pill, its ask id when it has one (askLogAskID); the question (or that its text expired); the answer, who gave it and
 // how long it took.
 func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	esc := html.EscapeString
@@ -859,16 +875,18 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 		b.WriteString(` data-text-expired`)
 	}
 	sub := askLogSubHTML(a, `<time datetime="`+row.AskedAt.Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.AskedAt)))+`</time>`)
+	// THE OPEN CARD'S HEAD (ui.AsksHeadHTML): its kind and where, the
+	// outcome as its pill, its ask id.
 	b.WriteString(`>
-<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) +
-		`</span>` + sub + `</div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
+` + ui.AsksHeadHTML(ui.AsksHead{Who: `<span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) + `</span>` + sub,
+		End: `<span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span>`, Chip: ui.AskIDChipHTML(askLogAskID(a))}) + `
 `)
 	switch {
 	case row.TextExpired:
 		b.WriteString(`<p class="` + ui.AsksLogExpiredClass + `" data-asklog-expired>Text expired: question and answer text is kept ` + esc(askDuration(ttl)) + `.</p>
 `)
 	case strings.TrimSpace(a.Question) != "":
-		b.WriteString(`<p class="` + ui.AsksLogClampClass + `" data-asklog-question>` + esc(strings.TrimSpace(a.Question)) + `</p>
+		b.WriteString(`<p class="` + ui.AsksLogClampClass + `" data-asklog-question>` + askTextHTML(strings.TrimSpace(a.Question)) + `</p>
 `)
 	}
 	var ans []string

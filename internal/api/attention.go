@@ -1123,7 +1123,7 @@ const sessionPushTitle = "A session is waiting on you"
 func attentionPushTitle(it attentionItem) string {
 	if it.stepUp != nil && it.Kind == attentionKindAsk {
 		// A step-up card names what it asks to do ("Post to X?").
-		return it.stepUp.Title
+		return stepUpTitleText(it.stepUp)
 	}
 	switch it.Kind {
 	case attentionKindSession:
@@ -1721,6 +1721,20 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 // and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
 // (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
 func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
+	// THE SEARCH (asks_search.go): ?q= on the page itself. An id that finds
+	// exactly one thing goes straight to it; anything else lists its results
+	// where the tabs would be.
+	searchRaw, search, searching := asksSearchRequest(r)
+	var found asksSearchResult
+	if searching && r.URL.Path == attentionPath {
+		found = s.searchAsks(r.Context(), search)
+		if to := asksSearchJump(search, found); to != "" && code == http.StatusOK && problem == "" {
+			http.Redirect(w, r, to, http.StatusSeeOther)
+			return
+		}
+	} else {
+		searching = false
+	}
 	rd := s.readAsks(r.Context()) // the render's one hub read (asksRead)
 	items, err := s.attentionItemsWith(r.Context(), rd.hosts, rd.waiting)
 	s.withFocus(r.Context(), items)
@@ -1751,8 +1765,22 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
 	// tabs, each a feed of cards.
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
-<div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) + `</div>
+<div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) +
+		// THE SEARCH BOX ends the heading's row (asks_search.go): on it, not
+		// under it, so the feed starts where it did but for a few pixels.
+		ui.AsksSearchFormHTML(attentionPath, searchRaw) + `</div>
 `)
+	if searching {
+		// The results, in the tabs' place; the page's own scripts find no
+		// feed to keep live and stand down. The id chips' script still runs.
+		b.WriteString(problemNode(problem))
+		b.WriteString(asksSearchHTML(searchRaw, found, now))
+		b.WriteString(`
+</section>
+` + ui.IDCopyScriptHTML())
+		s.writeNavDocument(w, r, code, "Search asks", ui.NavAttention, false, b.String(), navWide)
+		return
+	}
 	if filtered {
 		b.WriteString(ui.AsksFilterHTML(flt.label, attentionPath))
 	}
@@ -1804,6 +1832,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	b.WriteString(asksPageScript)
 	b.WriteString(ui.AsksFeedScriptHTML())
+	// The cards' id chips (ui/ask_id.go): plain text until this runs.
+	b.WriteString(ui.IDCopyScriptHTML())
 	// The feed area's tab swipe (ui/tab_swipe.go, the session panel's too).
 	b.WriteString(ui.TabSwipeScriptHTML())
 	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live

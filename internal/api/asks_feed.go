@@ -196,7 +196,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 `)
 	// THE HEAD: badge, who, how long — one toggle.
 	who := attentionHeadLines(it, now)
-	text := esc(it.Text)
+	text := askTextHTML(it.Text)
 	if it.Kind == attentionKindTask {
 		title, rest := taskCardParts(it.Text)
 		var sub string
@@ -204,7 +204,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 			sub = `<span class="` + ui.AsksSubClass + `"><time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time></span>`
 		}
 		who = `<span class="` + ui.AsksTitleClass + `" data-attention-title>` + esc(title) + `</span>` + sub
-		text = esc(rest)
+		text = askTextHTML(rest)
 	}
 	// 🔴 THE TOGGLE IS NAMED FOR WHAT IT DOES ("Details", ui.AsksCardToggleLabel),
 	// its words (who, how long) its DESCRIPTION: named by its content it read
@@ -218,9 +218,9 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		m.WriteString(`<p class="break-words text-sm text-fg2"><span data-attention-detail>` + itemDetailHTML(it) + `</span></p>`)
 	}
 	m.WriteString(proposalBodyHTML(it.proposal))
-	controls := ""
+	moreID := ""
 	if m.Len() > 0 {
-		controls = ` aria-controls="` + esc(more) + `"`
+		moreID = more
 	}
 	// The kind badge only where it tells something: a question is the
 	// default card, so it carries none (the design review: "Question" on most
@@ -229,43 +229,16 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	if kind != "question" {
 		badge = ui.AsksKindBadge(kind, label)
 	}
-	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false"` + controls + ` aria-label="` + ui.AsksCardToggleLabel +
-		`" aria-describedby="` + esc(it.Key) + `-who" data-asks-toggle>` +
-		badge + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
-`)
-	// THE QUESTION (what a waiting session waits on: its pending call).
-	switch {
-	case (it.Kind == attentionKindSession || it.Kind == attentionKindQuestion) && it.openCode == nil:
-		line := strings.TrimSpace(it.Text)
-		// 🔴 A QUESTION IS A SENTENCE, NOT CODE: it reads in the card's own
-		// face (the jargon audit, U-03 — in monospace it read as terminal
-		// output). Only a session waiting on a TOOL CALL ("Bash: npm
-		// publish") keeps the code face, since that line is a command.
-		cls := ui.AsksCardQuestionClass
-		if it.Kind == attentionKindSession && it.tool != "" && it.tool != claudeCodeQuestionTool {
-			cls += " font-mono text-sm"
-		}
-		if it.Text == sessionWaitingText {
-			cls = ui.AsksCardQuestionClass + " text-fg2"
-		}
-		b.WriteString(`<p class="` + cls + `" data-attention-text>` + esc(line) + `</p>
-`)
-	case it.openCode != nil:
-		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-attention-text><bdi dir="ltr">` + text + `</bdi></p>
-`)
-	case it.Kind == attentionKindAsk && it.stepUp != nil:
-		// A step-up card: its title, why and a compact mock of the post
-		// (stepUpFeedHTML), never its question as one block of text.
-		b.WriteString(stepUpFeedHTML(it.stepUp))
-	default:
-		b.WriteString(officerNoteLabelHTML(it.Context))
-		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</p>
-`)
-		// A builtin officer's context (the item, the outside message it is
-		// about) is the substance of its ask: drawn with the question, never
-		// behind the expand.
-		b.WriteString(officerContextHTML(it.Context))
+	// AN ASK'S ID ("Ask #859", ui.AskIDChipHTML) ends the top row, OUTSIDE the
+	// toggle (a button cannot hold a button): a tap on it copies the id and
+	// never expands the card.
+	chip := ""
+	if it.AskID > 0 && (it.Kind == attentionKindAsk || it.Kind == attentionKindNotice) {
+		chip = ui.AskIDChipHTML(it.AskID)
 	}
+	b.WriteString(ui.AsksHeadHTML(ui.AsksHead{ID: it.Key, Badge: badge, Who: who, Toggle: true, More: moreID, Chip: chip}) + "\n")
+	// THE QUESTION (what a waiting session waits on: its pending call).
+	b.WriteString(askCardQuestionHTML(it, text))
 	// THE FOOTER's links: View in session, the task.
 	var links []string
 	if href := askFeedSessionHref(it); href != "" {
@@ -366,6 +339,43 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// askCardQuestionHTML is THE body of an ask's card — what it asks, or what a
+// waiting session waits on — on the Open feed and the Answered tab alike (the
+// one body: an answered card drew its question as one muted block of text, a
+// step-up card's included, while the Open card drew the post's preview).
+// text is the question's own HTML (askTextHTML of it, or of a task's label).
+func askCardQuestionHTML(it attentionItem, text string) string {
+	switch {
+	case (it.Kind == attentionKindSession || it.Kind == attentionKindQuestion) && it.openCode == nil:
+		line := strings.TrimSpace(it.Text)
+		// 🔴 A QUESTION IS A SENTENCE, NOT CODE: it reads in the card's own
+		// face (the jargon audit, U-03 — in monospace it read as terminal
+		// output). Only a session waiting on a TOOL CALL ("Bash: npm
+		// publish") keeps the code face, since that line is a command.
+		cls := ui.AsksCardQuestionClass
+		if it.Kind == attentionKindSession && it.tool != "" && it.tool != claudeCodeQuestionTool {
+			cls += " font-mono text-sm"
+		}
+		if it.Text == sessionWaitingText {
+			cls = ui.AsksCardQuestionClass + " text-fg2"
+		}
+		return `<p class="` + cls + `" data-attention-text>` + askTextHTML(line) + `</p>
+`
+	case it.openCode != nil:
+		return `<p class="` + ui.AsksCardQuestionClass + `" data-attention-text><bdi dir="ltr">` + text + `</bdi></p>
+`
+	case it.Kind == attentionKindAsk && it.stepUp != nil:
+		// A step-up card: its title, why and a compact mock of the post
+		// (stepUpFeedHTML), never its question as one block of text.
+		return stepUpFeedHTML(it.stepUp)
+	}
+	// A builtin officer's context (the item, the outside message it is
+	// about) is the substance of its ask: drawn with the question, never
+	// behind the expand.
+	return officerNoteLabelHTML(it.Context) + `<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</p>
+` + officerContextHTML(it.Context)
 }
 
 // asksCardFormAttrs are a card form's htmx attributes: posted by htmx to its
@@ -603,12 +613,11 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// one-line cut here and the full text again in the more region). WHERE
 	// THE ANSWER WENT is a pill (answerDeliveryPill); the sentence that says
 	// it in full is the expanded card's.
+	// THE OPEN CARD'S HEAD AND BODY (ui.AsksHeadHTML, askCardQuestionHTML):
+	// a step-up card answered is still drawn as its post's preview.
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" aria-label="` + ui.AsksCardToggleLabel +
-		`" aria-describedby="` + key + `-who" data-asks-toggle>` +
-		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
-<p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(a.Question) + `</p>
-<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
+` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID)}) + `
+` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<p class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</p>
 ` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `
 `)
 	if retry {

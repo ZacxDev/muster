@@ -404,7 +404,7 @@ func TestAConfirmCardApprovesExactlyWhatItShowed(t *testing.T) {
 		sha[c.id] = c.sha
 	}
 	chat := chatSection(w.officerPage())
-	for _, want := range []string{`data-chat-card="` + strconv.FormatInt(cardKept, 10) + `"`, `data-chat-card-body>` + html.EscapeString(twoMediaBody) + `</p>`,
+	for _, want := range []string{`data-chat-card="` + strconv.FormatInt(cardKept, 10) + `"`, `data-chat-card-body>`, `data-stepup-preview-text><p class="whitespace-pre-wrap break-words">` + html.EscapeString(twoMediaBody) + `</p>`,
 		`name="card_sha256" value="` + sha[cardKept] + `"`, `action="` + tChatPath + `/cards/` + strconv.FormatInt(cardKept, 10) + `/approve"`, "launch/hero-1", "launch/demo-2"} {
 		if !strings.Contains(chat, want) {
 			t.Errorf("the chat lacks %q", want)

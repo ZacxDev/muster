@@ -210,6 +210,7 @@
       "tests/agent-long-title.spec.ts",
       "tests/agent-open-hops.spec.ts",
       "tests/asks-feed.spec.ts",
+      "tests/asks-search.spec.ts",
       "tests/asks-log.spec.ts",
       "tests/attention.spec.ts",
       "tests/brand-mark.spec.ts",

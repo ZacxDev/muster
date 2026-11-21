@@ -1740,13 +1740,17 @@ is never gated ([its own section](#chief_restart-is-not-gated)).
 
 A card leads with what is about to happen and why, and folds the rest away.
 
-- **The title** is the action, short: **Post to X? · #484** (or *Reply on …*,
-  *Send a DM on …*, *Send this reply on …*) for a draft's approval,
-  **Reject this draft? · #484** for a rejection, and a short action for every
-  other tool (*Start this agent?*, *Answer an ask as you?*, *Destroy an
+- **The title** is the action, short: **Post to X? · Draft #484** (or *Reply
+  on …*, *Send a DM on …*, *Send this reply on …*) for a draft's approval,
+  **Reject this draft? · Draft #484** for a rejection, and a short action for
+  every other tool (*Start this agent?*, *Answer an ask as you?*, *Destroy an
   agent?* …). On a draft card it ends with the id of the draft the confirm
-  acts on, the same id the Drafts tab shows; the changed-draft and
-  unreadable-draft titles carry it too. It is the notification's title, the
+  acts on, LABELLED as a draft's ("Draft #484", never a bare "#484", which
+  would read as an ask's id): the same id the Drafts tab's card shows, and
+  what the Asks page's search finds the draft and its cards by
+  ([attention.md](attention.md#searching-your-asks)). The changed-draft and
+  unreadable-draft titles carry it too; a card stored before the label was
+  added is drawn with it. It is the notification's title, the
   page's heading and the feed card's title.
 - **The why** is one line. For a draft that a builtin officer filed for an
   item, it is the item: the officer's type name and the item's summary or
@@ -1806,7 +1810,9 @@ A card leads with what is about to happen and why, and folds the rest away.
   those arguments out. The hashes still bind the decision (below); they are
   just not drawn. The post's text is never spelled out either: a line break
   is drawn as one, never as `\n`, and a hidden, control or bidi character
-  shows as `�` and cannot reorder the text.
+  is drawn in its place as a visible flag naming it (`U+202E`; a card stored
+  sanitised holds `U+FFFD` there), never as the character itself, so it
+  cannot reorder the text; a line under the post says it has some.
 
 The notification's body is the why, the where line and the start of the post.
 The card's text (what the page shows and the phone's prompt confirms, below) is

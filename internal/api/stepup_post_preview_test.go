@@ -16,14 +16,14 @@ import (
 // stepUpPostCard is a draft card on venue platform (target kind target) as
 // Clean stores it.
 //
-// Its title is the one muster gives that card: "Post to <venue>? · #9" for an
-// outbound draft, "Send this reply on <venue>? · #9" for a reply draft (no
+// Its title is the one muster gives that card: "Post to <venue>? · Draft #9" for an
+// outbound draft, "Send this reply on <venue>? · Draft #9" for a reply draft (no
 // platform).
 func stepUpPostCard(t *testing.T, platform, venue, target, handle, body string, media int) attention.Ask {
 	t.Helper()
-	title := "Post to " + venue + "? · #9"
+	title := "Post to " + venue + "? · Draft #9"
 	if platform == "" {
-		title = "Send this reply on " + venue + "? · #9"
+		title = "Send this reply on " + venue + "? · Draft #9"
 	}
 	c := &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: title, Why: "Marketing: launch", Asker: "main:1",
 		Preview: body, Venue: venue, Platform: platform, Target: target, Handle: handle, DraftID: 9, Details: "D"}
@@ -124,14 +124,24 @@ Still first.</p>
 }
 
 // TestAStepUpPreviewsTextIsSafeAndReadable: the officer's text is escaped,
-// its bidi and control characters are U+FFFD (they cannot reorder the text),
-// a tab is a space, a carriage return a line break — on the page and the
-// feed, whether the card came through Clean or not. Nothing is spelled out.
+// its bidi and control characters are never written into the page — each is
+// a visible flag naming it (U+202E; a card stored through Clean holds U+FFFD
+// in its place, flagged the same way), so it can neither reorder the text nor
+// pass unseen, and the card says once that it has some — a tab is a space, a
+// carriage return a line break — on the page and the feed, whether the card
+// came through Clean or not. Nothing is spelled out.
 func TestAStepUpPreviewsTextIsSafeAndReadable(t *testing.T) {
-	const evil = "<script>alert(1)</script> \u202Egnp.exe\u202C & done\tnow\rnext"
-	const want = `<p class="whitespace-pre-wrap break-words">&lt;script&gt;alert(1)&lt;/script&gt; ` + "\uFFFD" + `gnp.exe` + "\uFFFD" + ` &amp; done now
+	const evil = "<script>alert(1)</script> ‮gnp.exe‬ & done\tnow\rnext"
+	flag := func(cp string) string {
+		return `<mark class="mx-px inline-block rounded-sm bg-danger/15 px-1 align-baseline font-mono text-[11px] font-semibold leading-tight text-fg ring-1 ring-inset ring-danger/60" data-stepup-hidden="` +
+			cp + `" title="Hidden character ` + cp + `">` + cp + `</mark>`
+	}
+	wantOf := func(open, end string) string {
+		return `<p class="whitespace-pre-wrap break-words">&lt;script&gt;alert(1)&lt;/script&gt; ` + flag(open) + `gnp.exe` + flag(end) + ` &amp; done now
 next</p>`
+	}
 	cards := map[string]attention.Ask{}
+	wants := map[string]string{}
 	// An X post (whose thread split folds a CR itself) and a reply draft
 	// (whose text only the renderer reads).
 	for _, platform := range []string{"x", ""} {
@@ -141,11 +151,15 @@ next</p>`
 		rc.Preview = evil // as if stored without Clean: the renderer's own guarantee
 		raw.StepUp = &rc
 		cards["cleaned "+platform], cards["raw "+platform] = stored, raw
+		wants["cleaned "+platform], wants["raw "+platform] = wantOf("U+FFFD", "U+FFFD"), wantOf("U+202E", "U+202C")
 	}
 	for name, a := range cards {
 		page, feed := askQuestionHTML(a), askFeedCardHTML(askItem(a), time.Now())
-		if !strings.Contains(page, want) {
+		if want := wants[name]; !strings.Contains(page, want) {
 			t.Errorf("%s: the page's text, want %s in\n%s", name, want, page)
+		}
+		if !strings.Contains(page, `data-stepup-hidden-note>Contains hidden characters — each is marked where it sits, and is part of the text.</p>`) {
+			t.Errorf("%s: the page does not say the post holds hidden characters:\n%s", name, page)
 		}
 		for face, html := range map[string]string{"page": page, "feed": feed} {
 			for _, never := range []string{"<script>", "\u202E", "\u202C", "\t", "\r", `\u{`, `\t`, `\r`, `\n`} {
@@ -259,13 +273,13 @@ func TestLookAlikeLettersAreFlaggedOnTheStepUpPreview(t *testing.T) {
 // RED at 037fe5724: every such card read "Reply to a message", neutral logo.
 func TestAnOldDraftCardStillSaysItsVenue(t *testing.T) {
 	cases := []struct{ title, venue, logo, kind string }{
-		{"Post to X? · #9", "X", "x", "New post"},
+		{"Post to X? · Draft #9", "X", "x", "New post"},
 		{"Post to X?", "X", "x", "New post"},
-		{"Reply on X? · #9", "X", "x", "Reply"},
+		{"Reply on X? · Draft #9", "X", "x", "Reply"},
 		{"Send a DM on X?", "X", "x", "Direct message"},
-		{"Post to Reddit? · #9", "Reddit", "reddit", "New post"},
-		{"Send this reply on X? · #9", "X", "other", "Reply to a message"},
-		{"Reject this draft? · #9", "X", "other", "Reply to a message"},
+		{"Post to Reddit? · Draft #9", "Reddit", "reddit", "New post"},
+		{"Send this reply on X? · Draft #9", "X", "other", "Reply to a message"},
+		{"Reject this draft? · Draft #9", "X", "other", "Reply to a message"},
 	}
 	for _, c := range cases {
 		a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: c.title, Why: "Marketing: launch", Asker: "main:1",
@@ -277,7 +291,7 @@ func TestAnOldDraftCardStillSaysItsVenue(t *testing.T) {
 		}
 	}
 	// An old X post's card is a thread like a new one's.
-	a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · #9", Why: "W", Preview: "First.\n---8<---\nSecond.", Venue: "X", DraftID: 9, Details: "D"})
+	a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · Draft #9", Why: "W", Preview: "First.\n---8<---\nSecond.", Venue: "X", DraftID: 9, Details: "D"})
 	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-post-kind>Thread · 2 posts</span>`) || strings.Contains(page, "8&lt;") {
 		t.Errorf("an old X thread's card:\n%s", page)
 	}

@@ -32,7 +32,7 @@ import (
 // The card's parts (synthetic): an X post of two paragraphs and one image,
 // for draft 41 (the fixture's draft id; the spec serves its medium).
 const (
-	Title   = "Post to X? · #41"
+	Title   = "Post to X? · Draft #41"
 	Why     = "Marketing: rebrand announcement"
 	Asker   = "work:1"
 	Preview = "Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>\n\nA second paragraph."
@@ -101,7 +101,7 @@ func run(args []string) error {
 	case "clear":
 		_, err := pool.Exec(as, `DELETE FROM attention_asks WHERE asker_label = 'step-up'`)
 		return err
-	case "card", "thread", "lookalike":
+	case "card", "thread", "lookalike", "answered":
 		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: Title, Why: Why, Asker: Asker,
 			Preview: strings.TrimSpace(Preview), Venue: "X", Platform: "x", Target: "post", DraftID: DraftID,
 			Media:   []attention.StepUpMedium{{N: 0, Ref: "launch/hero-1", Type: "image/png", SHA256: strings.Repeat("0a", 32)}},
@@ -123,6 +123,13 @@ func run(args []string) error {
 		})
 		if err != nil {
 			return err
+		}
+		// answered: the card as an answer settles it (written as a row: the
+		// owner's browser cannot answer a step-up card).
+		if args[0] == "answered" {
+			if _, err := pool.Exec(as, `UPDATE attention_asks SET status = 'answered', answer = 'Confirm', answered_by = 'operator', resolved_at = now() WHERE id = $1`, a.ID); err != nil {
+				return fmt.Errorf("answered: %w", err)
+			}
 		}
 		fmt.Println(a.ID)
 		return nil

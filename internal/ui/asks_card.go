@@ -52,6 +52,8 @@ const (
 	AsksCardWhoClass = "flex min-w-0 flex-1 flex-col"
 	// AsksCardQuestionClass is the card's question, clamped while collapsed.
 	AsksCardQuestionClass = "asks-clamp whitespace-pre-wrap break-words text-[15px] leading-snug text-fg"
+	// AsksAnswerTextClass is an answered card's answer, under its question.
+	AsksAnswerTextClass = "whitespace-pre-wrap break-words text-sm text-fg"
 	// AsksCardContextClass is the "why it's here" line.
 	AsksCardContextClass = "asks-clamp-1 break-words text-xs text-fg2"
 	// AsksCardMoreClass is the expanded-only region (its one child carries
@@ -115,6 +117,77 @@ func AsksKindBadge(kind, label string) string {
 		`" data-asks-badge="` + html.EscapeString(kind) + `">` + html.EscapeString(label) + `</span>`
 }
 
+// AsksCardTopClass is a card's top row when its head (the feed card's
+// toggle, a fixed card's head) shares it with the card's id chip
+// (AskIDChipHTML): the head takes the row, the chip ends it. 🔴 THE CHIP
+// OVERHANGS THE ROW BY 4px EACH WAY (-my-1), as the toggle's own -m-1 does:
+// a 44px chip beside a 36px-tall toggle made every card 8px taller, and the
+// phone's "2.5 cards above the fold" (e2e asks-feed) fell to 2.26.
+const AsksCardTopClass = "flex min-w-0 items-center gap-1 [&>:first-child]:min-w-0 [&>:first-child]:flex-1 [&>[data-id-copy]]:-my-1"
+
+// AsksCardTopHTML is a card's top row: head (its toggle), then chip (its id
+// chip), side by side — the chip OUTSIDE the toggle, since a button cannot
+// hold a button. With no chip it is head as it is.
+func AsksCardTopHTML(head, chip string) string {
+	if chip == "" {
+		return head
+	}
+	return `<div class="` + AsksCardTopClass + `" data-asks-top>` + head + chip + `</div>`
+}
+
+// AsksHead is a card's head, as THE head every Asks card draws (AsksHeadHTML):
+// the Open feed's and the Answered tab's cards, a draft, a nudge, a log row,
+// the ask page's card. 🔴 ONE HEAD: a view that drew its own head row drifted
+// from the Open card's (the Log and Nudges rows, the ask page) — add what a
+// view needs here, never a second head beside this one.
+type AsksHead struct {
+	// ID is the card's id: the who line's id is ID+"-who" (the toggle's
+	// description). Only a toggle needs one.
+	ID string
+	// Badge is the kind badge (AsksKindBadge), "" for none.
+	Badge string
+	// Who is the head's lines: its title (AsksTitleClass) and, under it, its
+	// muted line (AsksSubClass) — already HTML.
+	Who string
+	// Toggle draws the head as the feed card's expand toggle (a card that
+	// expands); else it is a fixed card's head (AsksFixedCardAttrs).
+	Toggle bool
+	// More is the id of the toggle's more region, "" for none.
+	More string
+	// End is drawn after the head, before the chip: a state pill (a log
+	// row's outcome, a nudge's mode). "" for none.
+	End string
+	// Chip is the card's id chip (AskIDChipHTML, DraftIDChipHTML), "" for
+	// none.
+	Chip string
+}
+
+// AsksHeadHTML is head h as the card's top row (AsksCardTopHTML): the head —
+// badge, who, and a toggle's chevron — then h.End and the id chip outside
+// it (a button cannot hold a button).
+func AsksHeadHTML(h AsksHead) string {
+	var head string
+	if h.Toggle {
+		controls := ""
+		if h.More != "" {
+			controls = ` aria-controls="` + html.EscapeString(h.More) + `"`
+		}
+		who := html.EscapeString(h.ID) + `-who`
+		head = `<button type="button" class="` + AsksCardHeadClass + `" aria-expanded="false"` + controls + ` aria-label="` + AsksCardToggleLabel +
+			`" aria-describedby="` + who + `" data-asks-head data-asks-toggle>` + h.Badge + `<span id="` + who + `" class="` + AsksCardWhoClass + `">` + h.Who + `</span>` + AsksCardChevron + `</button>`
+	} else {
+		// A <span> (display: flex), not a <div>: the head is phrasing content
+		// wherever it is drawn, and the first </div> after a card's top is
+		// its top row's own end.
+		head = `<span class="` + AsksFixedHeadClass + `" data-asks-head>` + h.Badge + `<span class="` + AsksCardWhoClass + `">` + h.Who + `</span></span>`
+	}
+	return AsksCardTopHTML(head, h.End+h.Chip)
+}
+
+// AsksFixedHeadClass is a fixed card's head: the toggle's row without the
+// toggle.
+const AsksFixedHeadClass = "flex min-h-[44px] min-w-0 items-center gap-2"
+
 // AsksCardToggleLabel is a card head's accessible NAME: what the toggle does.
 // Its visible words (who, how long) are its description (aria-describedby),
 // so the head never reads as another control saying the card's words.
@@ -167,15 +240,14 @@ func AsksDraftsWaitHTML(n int) string {
 // is not an expand).
 const AsksFixedCardAttrs = ` data-asks-card data-asks-fixed`
 
-// AsksFixedHeadHTML is a fixed card's head: its kind badge (badge, "" for
-// none), its title and the muted line under it — the feed card head's
-// anatomy without the toggle.
-func AsksFixedHeadHTML(badge, title, sub string) string {
-	out := `<div class="flex min-h-[44px] min-w-0 items-center gap-2" data-asks-head>` + badge + `<span class="` + AsksCardWhoClass + `">` + title
-	if sub != "" {
-		out += `<span class="` + AsksSubClass + `">` + sub + `</span>`
+// AsksWhoHTML is a head's lines: title (already HTML, its own
+// AsksTitleClass span), then sub (already HTML) as its muted line; sub ""
+// draws none.
+func AsksWhoHTML(title, sub string) string {
+	if sub == "" {
+		return title
 	}
-	return out + `</span></div>`
+	return title + `<span class="` + AsksSubClass + `">` + sub + `</span>`
 }
 
 // AsksDraftsWaitWords is the drafts empty state's sentence for n drafts.

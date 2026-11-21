@@ -22,7 +22,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/connectors"
-	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -347,77 +346,6 @@ func draftMediaLink(id int64, n int) string {
 }
 
 // --- the card ---------------------------------------------------------------------
-
-// outboundCardHTML is the part of an OUTBOUND draft's card above its text:
-// the venue and target — for a reply target, the human reply muster received
-// with that thread, escaped and labelled untrusted — and every uploaded
-// medium rendered (an image) or playable (a video), with its ref and SHA-256.
-func outboundCardHTML(c plugins.DraftCard) string {
-	esc := html.EscapeString
-	d := c.Draft
-	t := d.Target()
-	var b strings.Builder
-	what := "New post"
-	switch t.Kind {
-	case plugins.TargetReply:
-		what = "Reply to " + esc(flows.VisibleEscape(t.Ref))
-	case plugins.TargetDM:
-		what = "DM to " + esc(flows.VisibleEscape(t.Handle))
-	case plugins.TargetFollow:
-		what = "Follow " + esc(flows.VisibleEscape(t.Handle))
-	case plugins.TargetLike:
-		what = "Like " + esc(flows.VisibleEscape(t.Ref))
-	}
-	if d.BecauseRef != nil {
-		what += " · because of " + esc(flows.VisibleEscape(*d.BecauseRef))
-	}
-	b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-outbound data-draft-venue="` + esc(d.VenueText()) +
-		`" data-draft-target-kind="` + esc(t.Kind) + `">
-<span class="break-all text-xs text-fg2"><span class="font-semibold" data-draft-outbound-what>` + what + ` on ` + esc(venueName(d.VenueText())) + `</span></span>
-`)
-	if t.Kind == plugins.TargetReply || d.BecauseRef != nil {
-		if m := c.ReplyTo; m != nil {
-			b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-reply-to>From ` + esc(m.Sender) + ` · untrusted · message ` +
-				strconv.FormatInt(m.ID, 10) + `</span>
-<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-reply-to-body>` + esc(m.Body) + `</pre>
-`)
-		} else {
-			b.WriteString(`<span class="text-xs text-fg2" data-draft-reply-to-missing>muster received no reply with this reference: check the target before you approve.</span>
-`)
-		}
-	}
-	b.WriteString("</div>\n")
-	if len(d.MediaRefs) == 0 {
-		return b.String()
-	}
-	b.WriteString(`<ul class="flex flex-col gap-2" data-draft-media>
-`)
-	for i, ref := range d.MediaRefs {
-		m, ok := d.MediaFor(ref)
-		b.WriteString(`<li class="flex flex-col gap-1" data-draft-medium data-ref="` + esc(ref) + `"`)
-		if !ok {
-			b.WriteString(`><span class="break-all text-xs text-fg2">` + esc(ref) + ` · <span class="font-semibold" data-draft-medium-missing>not uploaded yet</span></span></li>
-`)
-			continue
-		}
-		b.WriteString(` data-sha256="` + esc(m.SHA256) + `" data-content-type="` + esc(m.ContentType) + `">`)
-		src := esc(draftMediaLink(d.ID, i))
-		if strings.HasPrefix(m.ContentType, "video/") {
-			b.WriteString(`<video controls preload="metadata" class="max-h-80 w-full rounded-md bg-bg" src="` + src + `" data-draft-video></video>`)
-		} else {
-			b.WriteString(`<img alt="` + esc(ref) + `" class="max-h-80 w-auto max-w-full rounded-md object-contain" src="` + src + `" data-draft-image>`)
-		}
-		// Its file name; its type, size and SHA-256 behind Details.
-		b.WriteString(`
-<span class="break-all text-xs text-fg2" data-draft-medium-name>` + esc(ref) + `</span>
-<details class="` + ui.AsksDetailsClass + `" data-draft-medium-details><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>
-<span class="break-all font-mono text-xs text-fg2" data-draft-medium-facts>` + esc(m.ContentType) + ` · ` + esc(uploads.HumanSize(m.Size)) +
-			` · sha256 ` + esc(m.SHA256) + `</span></details></li>
-`)
-	}
-	b.WriteString("</ul>\n")
-	return b.String()
-}
 
 // outboundApproveFields are the approve form's hidden fields for an outbound
 // draft: the body's and media's SHA-256 values the card showed, which the

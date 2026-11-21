@@ -51,8 +51,8 @@ func TestAStepUpCardsPageOffersNoBrowserAnswer(t *testing.T) {
 	a.Owner, a.CreatedAt = 1, time.Now()
 	s := whereServer(t, a)
 	body := askPageBody(t, s, a, askPagePath(a.ID))
-	if got := askPageH1(body); got != "Post to X? · #41" {
-		t.Errorf("the heading %q, want %q", got, "Post to X? · #41")
+	if got := askPageH1(body); got != "Post to X? · Draft #41" {
+		t.Errorf("the heading %q, want %q", got, "Post to X? · Draft #41")
 	}
 	for _, want := range []string{
 		`<p class="break-words text-base text-fg2" data-ask-stepup-phone>Confirm this on your phone.</p>`,
@@ -200,11 +200,24 @@ func TestTheSmallerAsksFixes(t *testing.T) {
 	plugin, venue, kind := int64(3), "x", plugins.TargetPost
 	d := plugins.Draft{ID: 14, PluginID: &plugin, Venue: &venue, TargetKind: &kind, Body: "Hi", Status: plugins.DraftPending,
 		MediaRefs: []string{"launch/hero-1.webp"}, Media: []plugins.DraftMedia{{Ref: "launch/hero-1.webp", ContentType: "image/webp", Size: 2048, SHA256: strings.Repeat("b", 64)}}}
-	card := outboundCardHTML(plugins.DraftCard{Draft: d})
+	card := draftCardHTMLAt(plugins.DraftCard{Draft: d}, designNow)
+	// The medium's file name, type, size and SHA-256 are in the card's ONE
+	// Details fold (stepUpDetailsHTML), never on its face.
+	at := strings.Index(card, `<details class="`+ui.StepUpDetailsClass+`" data-stepup-details>`)
+	if at < 0 {
+		t.Fatalf("the outbound card has no Details fold:\n%s", card)
+	}
+	details := card[at:]
 	for _, want := range []string{
-		`<span class="break-all text-xs text-fg2" data-draft-medium-name>launch/hero-1.webp</span>`,
-		`<details class="` + ui.AsksDetailsClass + `" data-draft-medium-details><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>`,
-		`data-draft-medium-facts>image/webp · 2 KB · sha256 ` + strings.Repeat("b", 64) + `</span></details>`,
+		`<span data-draft-medium-name>launch/hero-1.webp</span>`,
+		`data-draft-medium-facts>image/webp · 2 KB · sha256 ` + strings.Repeat("b", 64) + `</span></li>`,
+	} {
+		if !strings.Contains(details, want) {
+			t.Errorf("the outbound card's Details lack %s:\n%s", want, card)
+		}
+	}
+	for _, want := range []string{
+		`data-stepup-details-toggle>Details` + ui.AsksCardChevron + `</summary>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the outbound card lacks %s:\n%s", want, card)
@@ -304,13 +317,13 @@ func TestASettledAskPageNamesWhoAsked(t *testing.T) {
 	for _, st := range []attention.Status{attention.Answered, attention.Cancelled, attention.Expired} {
 		a.Status = st
 		body := askPageBody(t, s, a, askPagePath(a.ID))
-		if !strings.Contains(body, `<p class="min-w-0 flex-1 truncate text-sm text-fg2">`+who+`<time `) {
+		if !strings.Contains(body, `data-ask-place>`+strings.TrimSuffix(who, " · ")+`</span><span class="`+ui.AsksSubClass+`"><time `) {
 			t.Errorf("%s: the settled page does not name who asked:\n%s", st, body)
 		}
 	}
 	n := a
 	n.Kind, n.Status = attention.KindNotice, attention.Cancelled
-	if body := askPageBody(t, s, n, askPagePath(n.ID)); !strings.Contains(body, `data-ask-source>Worker Seven</span> sent a notice · `) {
+	if body := askPageBody(t, s, n, askPagePath(n.ID)); !strings.Contains(body, `data-ask-source>Worker Seven</span> sent a notice</span>`) {
 		t.Errorf("a dismissed notice's page does not name who sent it:\n%s", body)
 	}
 }

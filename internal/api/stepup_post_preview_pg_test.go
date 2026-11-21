@@ -50,7 +50,7 @@ func TestAStepUpPostPreviewOnEveryFace(t *testing.T) {
 	r := newStepUpDraftRig(t, body)
 	a := r.decideCard(t, map[string]any{"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/hero-1")}})
 	id := strconv.FormatInt(r.draft.ID, 10)
-	title := "Post to X? · #" + id
+	title := "Post to X? · Draft #" + id
 
 	page := r.askPage(t, a.ID)
 	card := stepUpRegion(t, page)

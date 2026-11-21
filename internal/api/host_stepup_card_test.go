@@ -17,7 +17,7 @@ func stepUpFixtureAsk(t *testing.T, body string) attention.Ask {
 	t.Helper()
 	n, err := attention.Clean(attention.New{
 		Asker: attention.Asker{System: true, Label: hostDecisionLabel},
-		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · #41", Why: "Marketing: rebrand announcement",
+		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · Draft #41", Why: "Marketing: rebrand announcement",
 			Asker: "main:1", Preview: body, Venue: "X", Platform: "x", Target: "post", DraftID: 41,
 			Media:   []attention.StepUpMedium{{N: 0, Ref: "launch/hero-1", Type: "image/webp", SHA256: strings.Repeat("a", 64)}},
 			Details: "A session on host-a (main:1) asks to approve or reject a reply or outbound draft as you.\nThe call: plugin_draft_decide, with id 41, decision “approve”."},
@@ -33,7 +33,7 @@ func stepUpFixtureAsk(t *testing.T, body string) attention.Ask {
 // the parts — title, why, the post, its media line — and nothing else.
 func TestAStepUpCardsQuestionIsItsWhyAndPreview(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.\nRead more on the blog.")
-	const want = "Post to X? · #41\nMarketing: rebrand announcement\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
+	const want = "Post to X? · Draft #41\nMarketing: rebrand announcement\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
 	if a.Question != want {
 		t.Fatalf("the card's question:\n%q\nwant\n%q", a.Question, want)
 	}
@@ -56,8 +56,8 @@ func TestAStepUpCardsQuestionIsItsWhyAndPreview(t *testing.T) {
 func TestAStepUpCardsPushIsItsTitleWhyAndPost(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.\nRead more on the blog.")
 	n := attentionNotification(askItem(a), false)
-	if n.Title != "Post to X? · #41" {
-		t.Fatalf("the push title %q, want %q", n.Title, "Post to X? · #41")
+	if n.Title != "Post to X? · Draft #41" {
+		t.Fatalf("the push title %q, want %q", n.Title, "Post to X? · Draft #41")
 	}
 	const body = "Marketing: rebrand announcement · Big news: acme is now acme-two. Read more on the blog."
 	if n.Body != body {
@@ -81,7 +81,7 @@ func TestAStepUpCardsPageShowsThePostAndFoldsTheDetails(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.")
 	page := askQuestionHTML(a)
 	for _, want := range []string{
-		`<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>Post to X? · #41</h2>`,
+		`<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>Post to X? · Draft #41</h2>`,
 		`data-stepup-why>Marketing: rebrand announcement</p>`,
 		`data-stepup-asker>Asked by main:1</p>`,
 		`data-stepup-venue>X</span>`,
