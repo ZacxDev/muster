@@ -30,7 +30,7 @@ const clearBranding = () =>
 const LOGO = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM4kWL0Hx9mGBkKAPQrl0FTjoORAAAAAElFTkSuQmCC', 'base64');
 
 const PROPS = [
-  'font-size', 'line-height', 'font-weight',
+  'font-family', 'font-size', 'line-height', 'font-weight',
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
   'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
   'border-top', 'border-right', 'border-bottom', 'border-left',
@@ -65,7 +65,12 @@ async function computed(el: Locator, skip: string[] = []): Promise<Style> {
   return s;
 }
 
+// The kit page carries the CSP docs/ui-kit.md recommends to a plugin (muster's
+// origin in style-src, script-src and img-src, and NO 'unsafe-inline'), so a
+// kit that writes an inline style — or anything else that policy refuses —
+// logs a violation here.
 const KIT_PAGE = (o: string) => `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' ${o}; script-src 'self' ${o}; img-src 'self' ${o}">
 <link rel="stylesheet" href="${o}/ui-kit/v1/kit.css">
 <script src="${o}/ui-kit/v1/kit.js"></script>
 </head><body class="mu-root">
@@ -120,6 +125,10 @@ for (const [name, viewport] of [
 
       // The kit's, as a plugin draws them: another origin, kit.css + kit.js only.
       const kit = await context.newPage();
+      const cspErrors: string[] = [];
+      kit.on('console', (m) => {
+        if (/Content Security Policy|Refused to/i.test(m.text())) cspErrors.push(m.text());
+      });
       await kit.setViewportSize(viewport);
       await kit.setContent(KIT_PAGE(origin), { waitUntil: 'load' });
       await kit.evaluate(() => (window as unknown as { MusterKit: { ready: Promise<void> } }).MusterKit.ready);
@@ -127,6 +136,8 @@ for (const [name, viewport] of [
       // The icons need no CORS: the sprite is in this page, and an icon draws.
       await expect(kit.locator('svg[data-mu-sprite] symbol#mu-mic')).toHaveCount(1);
       expect(await kit.locator('#k-icon svg').evaluate((n) => (n as SVGGraphicsElement).getBBox().width)).toBeGreaterThan(0);
+      // Under the documented CSP, the kit draws without a single violation.
+      expect(cspErrors, 'CSP violations on a plugin page using the kit').toEqual([]);
 
       const pairs: [string, Locator, Locator, string[]][] = [
         ['primary button', own.primary, kit.locator('#k-primary'), []],

@@ -426,6 +426,11 @@ func TestKitJSCarriesTheSprite(t *testing.T) {
 			t.Errorf("kit.js's sprite has no mu-%s", n)
 		}
 	}
+	// 🔴 No inline style: a plugin page's CSP without 'unsafe-inline' (the one
+	// docs/ui-kit.md recommends) would log a violation on every load.
+	if strings.Contains(string(IconsSVG()), "style=") {
+		t.Error("the sprite carries a style attribute; hide it with attributes")
+	}
 	for _, req := range []string{"fetch(", "XMLHttpRequest", "icons.svg"} {
 		if strings.Contains(js, req) {
 			t.Errorf("kit.js still reaches for the sprite (%q)", req)

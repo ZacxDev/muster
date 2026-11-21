@@ -157,6 +157,7 @@ func TestTheKitSendsNoCORSToAnyone(t *testing.T) {
 // cookie; none names a user. A control first: the same comparison over the
 // Account page must DIFFER between admin and member, or it can see nothing.
 func TestTheKitCarriesNoSessionOrUserData(t *testing.T) {
+	t.Run("prefixed cookies, a legacy cookie in the request", kitSetsNoCookieOnAPrefixedDeployment)
 	_, h, _, cookie := themeServer(t)
 	putTheme(h, who{cookie: cookie}, "ember", "")
 	acct := func(member bool) string {
@@ -224,6 +225,111 @@ func TestTheKitCarriesNoSessionOrUserData(t *testing.T) {
 				t.Errorf("%s mentions %q", path, leak)
 			}
 		}
+	}
+}
+
+// kitSetsNoCookieOnAPrefixedDeployment: on a deployment whose cookies are
+// `__Host-` prefixed, hostCookieNames expires every legacy unprefixed cookie a
+// request carries — but never on a kit response, which is public and
+// long-cached. The control is the same request to /api/instance, which DOES
+// get the expiry: without it a quiet kit proves only that the middleware was
+// off.
+func kitSetsNoCookieOnAPrefixedDeployment(t *testing.T) {
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken, SecureCookies: true, PublicURL: "https://muster.example.test"}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Notes: &pwaNotes{}, Branding: &memBranding{}})
+	if !s.auth.HostPrefixedCookies() {
+		t.Fatal("control: the deployment is not prefixed")
+	}
+	h := s.Handler()
+	withLegacy := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "legacy-session-zq"})
+		req.AddCookie(&http.Cookie{Name: hostCookiePrefix + sessionCookieName, Value: "current-zq"})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if sc := withLegacy(InstancePath).Header().Values("Set-Cookie"); len(sc) == 0 || !strings.Contains(strings.Join(sc, "\n"), sessionCookieName+"=;") {
+		t.Fatalf("control: /api/instance did not expire the legacy cookie (%v); the middleware is not in play", sc)
+	}
+	for path := range kitPaths {
+		rec := withLegacy(path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", path, rec.Code)
+		}
+		if sc := rec.Header().Values("Set-Cookie"); len(sc) != 0 {
+			t.Errorf("%s sets a cookie on a prefixed deployment: %v", path, sc)
+		}
+		if strings.Contains(rec.Body.String(), "zq") {
+			t.Errorf("%s echoes the request's cookie", path)
+		}
+	}
+}
+
+// TestAStoredThemeTheImageRejectsDrawsTheDefault: a row this image cannot
+// accept — a preset it does not know (written by a later image, then rolled
+// back) or colours that fail the contrast table — draws the DEFAULT theme
+// everywhere: theme.css and kit.css are the default's bytes, /api/instance
+// says brass with no accent, and no page links a theme stylesheet. Without
+// the fallback, an unknown preset resolves to no tokens at all (every colour
+// 0 0 0, linked on every page) and a failing one is drawn as stored.
+func TestAStoredThemeTheImageRejectsDrawsTheDefault(t *testing.T) {
+	defTok, _ := theme.Choice{}.Validate()
+	wantTheme, wantKit := uikit.ThemeCSS(defTok), uikit.KitCSS(defTok)
+	// store writes c straight into the store, as a later image would (this
+	// image's save would refuse it), and into the server's 30 s row cache.
+	store := func(s *Server, mem *memBranding, c theme.Choice) {
+		mem.mu.Lock()
+		mem.st.Theme = c
+		mem.b = mem.st.Resolve()
+		b := mem.b
+		mem.mu.Unlock()
+		s.brandingStored(b)
+	}
+	// CONTROL: a theme this image accepts, stored the same way, IS drawn — so
+	// a default below is the fallback, not a store the server never read.
+	{
+		s, h, mem, _ := themeServer(t)
+		store(s, mem, theme.Choice{Preset: "harbor"})
+		if got := kitGet(h, uikit.ThemeCSSPath, nil).Body.String(); got == string(wantTheme.Body) || !strings.Contains(got, "--mu-accent: 110 176 245;") {
+			t.Fatalf("control: a stored harbor theme was not drawn:\n%s", got)
+		}
+	}
+	for name, stored := range map[string]theme.Choice{
+		"an unknown preset":        {Preset: "neon"},
+		"a failing accent":         {Preset: "harbor", Accent: "#3a2f6b"},
+		"a malformed accent":       {Preset: "harbor", Accent: "#zzzzzz"},
+		"an unknown preset+accent": {Preset: "neon", Accent: "#7fd0ff"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, h, mem, cookie := themeServer(t)
+			store(s, mem, stored)
+			if got := kitGet(h, uikit.ThemeCSSPath, nil).Body.String(); got != string(wantTheme.Body) {
+				t.Errorf("theme.css is not the default theme's:\n%s", got)
+			}
+			if got := kitGet(h, uikit.KitCSSPath, nil).Header().Get("ETag"); got != `"`+wantKit.ETag+`"` {
+				t.Errorf("kit.css ETag %s, want the default theme's %s", got, wantKit.ETag)
+			}
+			var d InstanceDoc
+			if err := json.Unmarshal(kitGet(h, InstancePath, nil).Body.Bytes(), &d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Theme == nil || d.Theme.Preset != "brass" || d.Theme.Accent != nil || d.Theme.ETag != wantTheme.ETag {
+				t.Errorf("/api/instance theme = %+v, want brass, no accent, etag %s", d.Theme, wantTheme.ETag)
+			}
+			for path, page := range map[string]string{
+				"/tasks":   get(h, "/tasks", cookie, true).Body.String(),
+				"/account": get(h, "/account", cookie, true).Body.String(),
+				"/login":   get(h, "/login", nil, true).Body.String(),
+			} {
+				if strings.Contains(page, uikit.ThemeCSSPath) {
+					t.Errorf("%s links a theme stylesheet for a theme this image rejects", path)
+				}
+				if !strings.Contains(page, "</html>") {
+					t.Errorf("control: %s is not a whole page (%d bytes)", path, len(page))
+				}
+			}
+		})
 	}
 }
 

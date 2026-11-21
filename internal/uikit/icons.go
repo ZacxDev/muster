@@ -94,7 +94,11 @@ func IconNames() []string {
 // draws nothing on its own.
 func IconsSVG() []byte {
 	var b strings.Builder
-	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:none">` + "\n")
+	// 🔴 HIDDEN BY ATTRIBUTES, NOT A style ATTRIBUTE: kit.js puts this sprite
+	// in a plugin's page, and the CSP docs/ui-kit.md recommends (style-src
+	// without 'unsafe-inline') refuses an inline style, logging a violation on
+	// every load. `hidden` and a zero size need no style.
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" hidden="hidden" width="0" height="0" focusable="false">` + "\n")
 	for _, n := range IconNames() {
 		b.WriteString(`<symbol id="mu-` + n + `" viewBox="0 0 24 24">` + Icons[n] + "</symbol>\n")
 	}

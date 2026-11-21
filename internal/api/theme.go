@@ -41,6 +41,9 @@ import (
 const (
 	ThemePath      = "/api/instance/theme"
 	themeAccountID = "theme"
+	// uiKitPathPrefix is every UI kit route, of any major version: what
+	// hostCookieNames leaves alone.
+	uiKitPathPrefix = "/ui-kit/"
 )
 
 // kitVersioned is the cache of a kit URL whose v is the current ETag: those

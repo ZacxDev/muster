@@ -26,8 +26,8 @@
   --mu-radius-md: .5rem;
   --mu-radius-lg: 1rem;
   --mu-radius-full: 9999px;
-  --mu-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mu-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --mu-font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --mu-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --mu-dur-fast: 120ms;
   --mu-dur-base: 200ms;
   --mu-dur-slow: 320ms;
@@ -63,6 +63,10 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
+/* kit.js's icon sprite: definitions only, never drawn (it also carries the
+   `hidden` attribute, so this holds where kit.css is not linked). */
+svg[data-mu-sprite] { display: none; }
 
 .mu-visually-hidden {
   position: absolute !important;

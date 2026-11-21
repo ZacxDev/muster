@@ -94,8 +94,11 @@ var Fixed = []struct{ Name, Value string }{
 	{"radius-md", ".5rem"},
 	{"radius-lg", "1rem"},
 	{"radius-full", "9999px"},
-	{"font-sans", `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`},
-	{"font-mono", `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace`},
+	// The font stacks are muster's own (Tailwind's defaults, which app.css's
+	// font-sans and font-mono use), so a kit page draws in muster's type
+	// (e2e/tests/ui-kit-parity.spec.ts compares the computed font-family).
+	{"font-sans", `ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"`},
+	{"font-mono", `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`},
 	{"dur-fast", "120ms"},
 	{"dur-base", "200ms"},
 	{"dur-slow", "320ms"},
