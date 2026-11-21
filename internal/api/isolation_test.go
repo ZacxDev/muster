@@ -269,6 +269,19 @@ var isolationClasses = map[string]routeClass{
 	"DELETE /api/instance/branding/logo":     classAdminOnly,
 	"DELETE /api/instance/branding/app-icon": classAdminOnly,
 
+	// Server-installed apps (admin_apps.go): an admin's page; the rotate and
+	// uninstall name a server app by id, which no person owns.
+	"GET /admin/apps":                 classAdminOnly,
+	"POST /admin/apps":                classAdminOnly,
+	"POST /admin/apps/{id}/rotate":    classAdminOnly,
+	"POST /admin/apps/{id}/uninstall": classAdminOnly,
+	// Account → Apps (account_apps.go): lists every server app (everyone's,
+	// owned by no one) with the principal's OWN state; Hide and Show write
+	// the principal's own grant row, keyed on its id.
+	"GET /account/apps":            classList,
+	"POST /account/apps/{id}/hide": classList,
+	"POST /account/apps/{id}/show": classList,
+
 	"GET /{$}":                   classList,
 	"GET /agents":                classList,
 	"GET /api/directories":       classList,

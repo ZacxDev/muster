@@ -23,6 +23,9 @@ type appListedPlugins struct {
 	rows []plugins.Plugin
 }
 
+// VisibleServerApps: this fake's server has no server apps.
+func (appListedPlugins) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }
+
 func (l appListedPlugins) List(context.Context) ([]plugins.Plugin, error) { return l.rows, nil }
 
 func appRow(id, owner int64, mut func(*plugins.Plugin)) plugins.Plugin {
