@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -174,7 +176,7 @@ func TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn(t *testing.T) {
 	if n := f.count(`SELECT count(*) FROM plugins WHERE name = $1`, name); n != 0 {
 		t.Fatalf("a stale install stored %d rows", n)
 	}
-	rec := f.form(f.admin, justSignedIn(), adminAppsPath, installForm(name))
+	rec := f.form(f.admin, justSignedIn(), adminAppsPath, f.withNonce(installForm(name), "install", 0))
 	m := serverTokenRE.FindStringSubmatch(rec.Body.String())
 	if rec.Code != http.StatusOK || m == nil {
 		t.Fatalf("a fresh install: %d, token shown %v", rec.Code, m != nil)
@@ -215,7 +217,7 @@ func TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn(t *testing.T) {
 	if rec := f.form(f.admin, staleSignIn(), rot, url.Values{}); rec.Code != http.StatusForbidden {
 		t.Errorf("a stale rotate: %d; want 403", rec.Code)
 	}
-	rec = f.form(f.admin, justSignedIn(), rot, url.Values{})
+	rec = f.form(f.admin, justSignedIn(), rot, f.withNonce(url.Values{}, "rotate", id))
 	m2 := serverTokenRE.FindStringSubmatch(rec.Body.String())
 	if rec.Code != http.StatusOK || m2 == nil || m2[1] == m[1] {
 		t.Fatalf("a fresh rotate: %d, a new token %v", rec.Code, m2 != nil && m2[1] != m[1])
@@ -235,7 +237,7 @@ func TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn(t *testing.T) {
 	if !strings.Contains(f.get(f.admin, adminAppsPath).Body.String(), `id="admin-apps-full"`) {
 		t.Errorf("a full server still offers the install form")
 	}
-	if rec := f.form(f.admin, justSignedIn(), adminAppsPath, installForm(name+"-6")); rec.Code != http.StatusBadRequest {
+	if rec := f.form(f.admin, justSignedIn(), adminAppsPath, f.withNonce(installForm(name+"-6"), "install", 0)); rec.Code != http.StatusBadRequest {
 		t.Errorf("a sixth install: %d; want 400", rec.Code)
 	}
 	// Uninstall: a stale sign-in is enough.
@@ -312,5 +314,110 @@ func TestAccountAppsHideAndShow(t *testing.T) {
 	}
 	if strings.Contains(f.get(f.a, accountAppsPath).Body.String(), "Can act for you until") {
 		t.Errorf("Account → Apps says the app may act for A after Show with no redeem")
+	}
+}
+
+// withNonce is v with the one-time nonce the page draws for a form of kind
+// (install, or rotate of app id) against the apps' state now — what the
+// page's own form carries. It checks the page does draw exactly that value.
+func (f *srvFix) withNonce(v url.Values, kind string, id int64) url.Values {
+	f.t.Helper()
+	apps, err := f.store.ServerApps(f.sys(), f.pats, f.now)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	state := installState(apps)
+	if kind == "rotate" {
+		state = ""
+		for _, a := range apps {
+			if a.App.ID == id {
+				state = rotateState(a)
+			}
+		}
+	}
+	n := f.srv.adminAppsNonce(kind, state)
+	if page := f.get(f.admin, adminAppsPath).Body.String(); len(apps) < plugins.MaxServerApps || kind == "rotate" {
+		if !strings.Contains(page, `name="nonce" value="`+n+`"`) {
+			f.t.Fatalf("the page does not draw the %s form's nonce", kind)
+		}
+	}
+	out := url.Values{}
+	for k, vs := range v {
+		out[k] = vs
+	}
+	out.Set("nonce", n)
+	return out
+}
+
+// TestARotateOrInstallResentIsRefusedAndChangesNothing (audit round 1 of
+// #937): Rotate and Install answer with the page that shows the token, so a
+// reload re-sends the POST. The re-sent form's one-time nonce is spent: it
+// answers 409 "already done" and changes nothing — the token just shown still
+// authenticates, and no second app is installed. A nonce a person typed is
+// refused the same way.
+func TestARotateOrInstallResentIsRefusedAndChangesNothing(t *testing.T) {
+	f := newSrvFix(t)
+	rot := "/admin/apps/" + strconv.FormatInt(f.app.ID, 10) + "/rotate"
+	form := f.withNonce(url.Values{}, "rotate", f.app.ID)
+	first := f.form(f.admin, justSignedIn(), rot, form)
+	m := serverTokenRE.FindStringSubmatch(first.Body.String())
+	if first.Code != http.StatusOK || m == nil {
+		t.Fatalf("the rotate: %d, token shown %v", first.Code, m != nil)
+	}
+	again := f.form(f.admin, justSignedIn(), rot, form)
+	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), "This was already done") || serverTokenRE.MatchString(again.Body.String()) {
+		t.Errorf("the rotate re-sent: %d (a token shown %v); want 409 already done, no token", again.Code, serverTokenRE.MatchString(again.Body.String()))
+	}
+	if p, err := f.store.Authenticate(f.sys(), m[1]); err != nil || p.ID != f.app.ID {
+		t.Errorf("the token the first rotate showed, after the re-send: %v; want it still live", err)
+	}
+	if rec := f.form(f.admin, justSignedIn(), rot, url.Values{"nonce": {strings.Repeat("a", 64)}}); rec.Code != http.StatusConflict {
+		t.Errorf("a rotate with a made-up nonce: %d; want 409", rec.Code)
+	}
+	name := "srv-resend-" + f.suffix
+	inst := f.withNonce(installForm(name), "install", 0)
+	if rec := f.form(f.admin, justSignedIn(), adminAppsPath, inst); rec.Code != http.StatusOK {
+		t.Fatalf("the install: %d", rec.Code)
+	}
+	var id int64
+	_ = f.pool.QueryRow(f.sys(), `SELECT id FROM plugins WHERE name = $1`, name).Scan(&id)
+	f.appIDs = append(f.appIDs, id)
+	inst.Set("name", name+"-again")
+	if rec := f.form(f.admin, justSignedIn(), adminAppsPath, inst); rec.Code != http.StatusConflict {
+		t.Errorf("the install re-sent: %d; want 409", rec.Code)
+	}
+	if n := f.count(`SELECT count(*) FROM plugins WHERE name = $1`, name+"-again"); n != 0 {
+		t.Errorf("the re-sent install installed a second app")
+	}
+}
+
+// failingInstall is the real store with an install that fails untyped.
+type failingInstall struct{ *plugins.PGStore }
+
+func (failingInstall) InstallServerApp(context.Context, plugins.ServerAppIn, users.Actor) (string, plugins.Plugin, error) {
+	return "", plugins.Plugin{}, errors.New("pq: secret-detail in the origin column")
+}
+
+// TestAnInstallAnswersOnlyTypedErrors (audit round 1 of #937): a bad origin
+// is the store's ErrServerAppOrigin, answered 400 with muster's own sentence;
+// an untyped failure is a generic 500 that never shows the error's text, even
+// when that text happens to say "origin".
+func TestAnInstallAnswersOnlyTypedErrors(t *testing.T) {
+	f := newSrvFix(t)
+	bad := installForm("srv-badorigin-" + f.suffix)
+	bad.Set("origin", "https://*.elsewhere.example.test")
+	rec := f.form(f.admin, justSignedIn(), adminAppsPath, f.withNonce(bad, "install", 0))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Choose an origin from this server") {
+		t.Errorf("a bad origin: %d; want 400 with the origin sentence", rec.Code)
+	}
+	if _, _, err := f.store.InstallServerApp(f.sys(), plugins.ServerAppIn{Name: "x-" + f.suffix, AppLabel: "Xy", AppIcon: "video",
+		Origin: "https://*.elsewhere.example.test", EntryURL: hoEntry, Origins: f.pats}, users.Actor{Via: "cli"}); !errors.Is(err, plugins.ErrServerAppOrigin) || !errors.Is(err, plugins.ErrInvalid) {
+		t.Errorf("the store's bad-origin error: %v; want ErrServerAppOrigin (and ErrInvalid)", err)
+	}
+	form := f.withNonce(installForm("srv-untyped-"+f.suffix), "install", 0)
+	f.srv.ext.Plugins = failingInstall{f.store}
+	rec = f.form(f.admin, justSignedIn(), adminAppsPath, form)
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "secret-detail") {
+		t.Errorf("an untyped failure: %d, shows the error text %v; want a generic 500", rec.Code, strings.Contains(rec.Body.String(), "secret-detail"))
 	}
 }

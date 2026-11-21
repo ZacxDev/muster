@@ -214,14 +214,17 @@ test('two people each get the tab and two different subjects; B hides it and B\'
     await expect(a.page.locator('[data-app-newtab]')).toHaveCount(0);
 
     // B hides it: B's open frame goes within one alive poll; A's stays.
-    // (B's own Account → Apps form, posted from B's session; a second tab
-    // would put B's app page in the background, where the poll rests.)
-    const page = await b.ctx.request.get(browserURL + '/account/apps');
-    expect(await page.text(), "B's Account → Apps lists the app with its Hide").toContain(`data-app-hide="${appID}"`);
-    const hid = await b.ctx.request.post(`${browserURL}/account/apps/${appID}/hide`, {
-      headers: { Origin: browserURL, 'Content-Type': 'application/x-www-form-urlencoded' }, data: '', maxRedirects: 0,
-    });
-    expect(hid.status(), 'the hide was accepted').toBe(303);
+    // B's REAL Hide button on Account → Apps, in a second tab of B's own
+    // browser, so the browser's own headers (Origin, Sec-Fetch-Site) are the
+    // ones the server checks. The app page is brought back to the front at
+    // once: a background tab's alive poll rests (visibilitychange restarts it).
+    const acct = await b.ctx.newPage();
+    await acct.goto(browserURL + '/account/apps');
+    await expect(acct.locator(`[data-account-app="${appID}"]`)).toContainText(LABEL);
+    await Promise.all([acct.waitForURL(/\/account\/apps\?saved=1$/), acct.click(`[data-app-hide="${appID}"]`)]);
+    await expect(acct.locator(`[data-account-app="${appID}"]`)).toHaveAttribute('data-app-state', 'hidden');
+    await acct.close();
+    await b.page.bringToFront();
     await expect(b.page.locator('[data-app-frame]'), "B's frame goes after the hide").toHaveCount(0, { timeout: GONE_MS });
     await expect(b.page.locator('#app-status')).toHaveText('This app was removed.');
     await expect(a.page.locator('[data-app-frame]'), "A's frame stays").toHaveCount(1);

@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"html"
 	"net/http"
@@ -99,13 +102,13 @@ func (s *Server) renderAdminApps(w http.ResponseWriter, r *http.Request, code in
 	} else {
 		b.WriteString(`<ul class="flex flex-col gap-4" id="admin-apps">`)
 		for _, a := range apps {
-			b.WriteString(s.adminAppItem(r.Context(), a))
+			b.WriteString(s.adminAppItem(r.Context(), a, s.adminAppsNonce("rotate", rotateState(a))))
 		}
 		b.WriteString(`</ul>`)
 	}
 	b.WriteString(`</section>`)
 	if len(apps) < plugins.MaxServerApps {
-		b.WriteString(s.adminAppInstallForm())
+		b.WriteString(s.adminAppInstallForm(s.adminAppsNonce("install", installState(apps))))
 	} else {
 		b.WriteString(`<p class="text-sm text-fg2" id="admin-apps-full">This server has ` + strconv.Itoa(plugins.MaxServerApps) + ` apps, the most it may have. Uninstall one to add another.</p>`)
 	}
@@ -114,7 +117,7 @@ func (s *Server) renderAdminApps(w http.ResponseWriter, r *http.Request, code in
 }
 
 // adminAppItem is one installed app's entry.
-func (s *Server) adminAppItem(ctx context.Context, a plugins.ServerAppInfo) string {
+func (s *Server) adminAppItem(ctx context.Context, a plugins.ServerAppInfo, nonce string) string {
 	p := a.App
 	id := strconv.FormatInt(p.ID, 10)
 	label, icon, origin, entry := "", "", "", ""
@@ -158,7 +161,7 @@ func (s *Server) adminAppItem(ctx context.Context, a plugins.ServerAppInfo) stri
 	b.WriteString(`<span class="text-sm text-fg" data-live-grants="` + strconv.Itoa(a.LiveGrants) + `">` + liveGrantsLine(a.LiveGrants) + `</span>`)
 	b.WriteString(`<div class="flex flex-wrap gap-2">`)
 	b.WriteString(`<form method="POST" action="` + adminAppsPath + `/` + id + `/rotate" data-step-up-form data-step-up-why="` +
-		html.EscapeString(AdminAppsRotateWhy()) + `"><p class="text-sm text-fg2">` + AdminAppsRotateWarning + `</p><button type="submit" class="` + adminQuiet +
+		html.EscapeString(AdminAppsRotateWhy()) + `"><input type="hidden" name="nonce" value="` + nonce + `"><p class="text-sm text-fg2">` + AdminAppsRotateWarning + `</p><button type="submit" class="` + adminQuiet +
 		`" data-rotate="` + id + `">Rotate token</button></form>`)
 	b.WriteString(`<form method="POST" action="` + adminAppsPath + `/` + id + `/uninstall"><p class="text-sm text-fg2">` + html.EscapeString(AdminAppsUninstallWarning) +
 		`</p><button type="submit" class="` + adminQuiet + `" data-uninstall="` + id + `">Uninstall</button></form>`)
@@ -180,10 +183,10 @@ func liveGrantsLine(n int) string {
 // adminAppInstallForm is the install form: a name, a tab label and icon, an
 // origin from MUSTER_PLUGIN_ORIGINS and an entry URL under it, and Files
 // tasks. No other capability is offered: a server app has no person's chief.
-func (s *Server) adminAppInstallForm() string {
+func (s *Server) adminAppInstallForm(nonce string) string {
 	var b strings.Builder
 	b.WriteString(`<form method="POST" action="` + adminAppsPath + `" class="` + adminCard + `" data-step-up-form data-step-up-why="` +
-		html.EscapeString(AdminAppsInstallWhy()) + `"><h2 class="text-base font-semibold text-fg">Install an app</h2>`)
+		html.EscapeString(AdminAppsInstallWhy()) + `"><input type="hidden" name="nonce" value="` + nonce + `"><h2 class="text-base font-semibold text-fg">Install an app</h2>`)
 	field := func(id, label, attrs string) {
 		b.WriteString(`<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label><input id="` + id + `" name="` + id +
 			`" class="` + adminInput + `" ` + attrs + `>`)
@@ -229,9 +232,24 @@ func (s *Server) handleAdminAppInstall(w http.ResponseWriter, r *http.Request) {
 		Origins:  s.ext.PluginOrigins,
 		Tasks:    r.PostFormValue("tasks") == "1",
 	}
+	apps, ok := s.adminAppsFor(w, r)
+	if !ok {
+		return
+	}
+	if !s.adminAppsNonceOK(w, r, "install", installState(apps)) {
+		return
+	}
 	tok, p, err := s.ext.Plugins.InstallServerApp(r.Context(), in, adminActor(r))
 	if err != nil {
-		if errors.Is(err, plugins.ErrInvalid) || errors.Is(err, plugins.ErrViewerOriginRetired) || strings.Contains(err.Error(), "origin") {
+		// 🔴 TYPED ERRORS ONLY (audit round 1 of #937): the bad origin is its
+		// sentinel, with muster's own sentence; another validation refusal
+		// (ErrInvalid) says the store's own rule; anything else is a generic
+		// 500 that never shows the error's text.
+		switch {
+		case errors.Is(err, plugins.ErrServerAppOrigin):
+			s.renderAdminApps(w, r, http.StatusBadRequest, AdminAppsOriginRefusal, "", "")
+			return
+		case errors.Is(err, plugins.ErrInvalid):
 			s.renderAdminApps(w, r, http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), "", "")
 			return
 		}
@@ -250,6 +268,23 @@ func (s *Server) handleAdminAppRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.adminAppStale(w, r, "Making a new token") {
+		return
+	}
+	apps, ok := s.adminAppsFor(w, r)
+	if !ok {
+		return
+	}
+	var cur *plugins.ServerAppInfo
+	for i := range apps {
+		if apps[i].App.ID == id {
+			cur = &apps[i]
+		}
+	}
+	if cur == nil {
+		s.renderAdminApps(w, r, http.StatusNotFound, "There is no such app.", "", "")
+		return
+	}
+	if !s.adminAppsNonceOK(w, r, "rotate", rotateState(*cur)) {
 		return
 	}
 	tok, p, err := s.ext.Plugins.RotateServerApp(r.Context(), id, adminActor(r))
@@ -292,3 +327,66 @@ func (s *Server) handleAdminAppUninstall(w http.ResponseWriter, r *http.Request)
 // MUSTER_PLUGIN_ORIGINS set (the admin tab bar links it only then).
 func (s *Server) adminAppsServed() bool { return s.ext.Plugins != nil && len(s.ext.PluginOrigins) > 0 }
 
+// AdminAppsOriginRefusal is the install's answer to a bad origin or entry URL.
+const AdminAppsOriginRefusal = "Choose an origin from this server's MUSTER_PLUGIN_ORIGINS, and an https entry URL under it with no port, query or fragment."
+
+// AdminAppsAlreadyDone answers a form whose one-time nonce is spent: the
+// install or rotate it was for already happened (a reload re-sent it).
+const AdminAppsAlreadyDone = "This was already done. Reload /admin/apps to see where things stand; nothing was changed now."
+
+// 🔴 THE ONE-TIME FORM NONCE (audit round 1 of #937). Install and Rotate
+// answer their POST with the page that shows the token, so a reload re-sends
+// the POST — inside the fresh sign-in window it would rotate AGAIN and kill the
+// token just shown, or install a second app. Each form carries a nonce bound
+// to the state it was drawn against — for Rotate, that app's CURRENT token
+// hash; for Install, every live app's id and token hash — under an HMAC
+// keyed on the deployment's hook token. The POST recomputes it from the state
+// NOW: once the rotate or install happened, the state moved and the nonce no
+// longer matches, so the re-sent form is refused (409, AdminAppsAlreadyDone)
+// and changes nothing. Stateless, so every replica agrees; the token never
+// rides a URL.
+
+// rotateState is the state a Rotate form's nonce is bound to.
+func rotateState(a plugins.ServerAppInfo) string {
+	return strconv.FormatInt(a.App.ID, 10) + ":" + a.TokenHash
+}
+
+// installState is the state an Install form's nonce is bound to.
+func installState(apps []plugins.ServerAppInfo) string {
+	var b strings.Builder
+	for _, a := range apps {
+		b.WriteString(rotateState(a) + ";")
+	}
+	return b.String()
+}
+
+// adminAppsNonce is the nonce of a kind of form drawn against state.
+func (s *Server) adminAppsNonce(kind, state string) string {
+	key := sha256.Sum256([]byte("muster-admin-apps-nonce-v1\x00" + s.auth.HookToken))
+	m := hmac.New(sha256.New, key[:])
+	m.Write([]byte(kind + "\x00" + state))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// adminAppsNonceOK checks the request's nonce against state now, answering the
+// already-done page (409) when it does not match.
+func (s *Server) adminAppsNonceOK(w http.ResponseWriter, r *http.Request, kind, state string) bool {
+	want := s.adminAppsNonce(kind, state)
+	if hmac.Equal([]byte(r.PostFormValue("nonce")), []byte(want)) {
+		return true
+	}
+	s.renderAdminApps(w, r, http.StatusConflict, AdminAppsAlreadyDone, "", "")
+	return false
+}
+
+// adminAppsFor reads the live apps for a write's nonce, answering a 500 when
+// it cannot.
+func (s *Server) adminAppsFor(w http.ResponseWriter, r *http.Request) ([]plugins.ServerAppInfo, bool) {
+	apps, err := s.ext.Plugins.ServerApps(r.Context(), s.ext.PluginOrigins, s.now())
+	if err != nil {
+		s.logger.Printf("admin apps: list for a write: %v", err)
+		s.renderAdminApps(w, r, http.StatusInternalServerError, "The apps could not be read.", "", "")
+		return nil, false
+	}
+	return apps, true
+}

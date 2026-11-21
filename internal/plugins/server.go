@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +55,11 @@ const (
 // code would carry nothing a Sign out everywhere could be compared with. The
 // mint answers 401 "sign in again", as pairing a phone does.
 var ErrSignInUnknown = errors.New("plugins: this session records no sign-in time")
+
+// ErrServerAppOrigin: an install's origin is not one of the deployment's
+// MUSTER_PLUGIN_ORIGINS, or its entry URL is not an https URL under it. It
+// also matches ErrInvalid, with ValidViewerLink's own reason.
+var ErrServerAppOrigin = errors.New("plugins: a server app's origin and entry URL must be one of this server's MUSTER_PLUGIN_ORIGINS and an https URL under it")
 
 // subjectRE is a subject's shape: 22 base64url characters (128 bits).
 const subjectLen = 22
@@ -398,7 +404,7 @@ func (s *PGStore) InstallServerApp(ctx context.Context, in ServerAppIn, by users
 		return "", Plugin{}, err
 	}
 	if _, err := ValidViewerLink(in.Origins, in.Origin, in.EntryURL); err != nil {
-		return "", Plugin{}, err
+		return "", Plugin{}, fmt.Errorf("%w: %w", ErrServerAppOrigin, err)
 	}
 	caps := []Capability{CapApp}
 	if in.Tasks {
@@ -683,6 +689,9 @@ type ServerAppInfo struct {
 	InstalledBy  *int64
 	InstalledVia string
 	LiveGrants   int
+	// TokenHash is the row's current token_hash: never shown, it binds the
+	// page's one-time form nonce to the token a Rotate replaces.
+	TokenHash string
 }
 
 // ServerApps is every live server app, oldest first, for an admin's page or
@@ -690,7 +699,7 @@ type ServerAppInfo struct {
 // every principal); the caller gates who may read it.
 func (s *PGStore) ServerApps(ctx context.Context, origins []OriginPattern, now time.Time) ([]ServerAppInfo, error) {
 	sys := authz.System(ctx)
-	rows, err := s.pool.Query(sys, `SELECT `+pluginCols+`, installed_by, coalesce(installed_via, '') FROM plugins
+	rows, err := s.pool.Query(sys, `SELECT `+pluginCols+`, installed_by, coalesce(installed_via, ''), token_hash FROM plugins
 		WHERE scope = 'server' AND revoked_at IS NULL ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -698,7 +707,7 @@ func (s *PGStore) ServerApps(ctx context.Context, origins []OriginPattern, now t
 	var out []ServerAppInfo
 	for rows.Next() {
 		var a ServerAppInfo
-		if err := rows.Scan(append(pluginDest(&a.App), &a.InstalledBy, &a.InstalledVia)...); err != nil {
+		if err := rows.Scan(append(pluginDest(&a.App), &a.InstalledBy, &a.InstalledVia, &a.TokenHash)...); err != nil {
 			rows.Close()
 			return nil, err
 		}
