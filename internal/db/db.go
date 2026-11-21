@@ -28,10 +28,54 @@ func SetQueryTracer(t pgx.QueryTracer) { queryTracer = t }
 // connection rather than raise this for everyone.
 const StatementTimeout = 10 * time.Second
 
+// DefaultMaxConns and DefaultMaxConnIdleTime are the pool's size and idle
+// timeout when the DSN does not set pool_max_conns / pool_max_conn_idle_time.
+//
+// 🔴 pgx's OWN DEFAULT IS max(4, runtime.NumCPU()) — the NODE's CPU count, not
+// anything about the database — so the same image opens 4 connections on a
+// laptop and 24 on a 24-CPU node, and holds them for pgx's 30-minute idle
+// timeout. Measured: a 1Gi Postgres container was OOM-killed by ~24 idle
+// backends at ~40 MB each, worst during a rollout, when two pods each hold a
+// pool. muster's load is a handful of short queries, so 8 is ample.
+//
+// The DSN is the knob: pool_max_conns=N and pool_max_conn_idle_time=<duration>
+// in DATABASE_URL always win over these (docs/configuration.md).
+const (
+	DefaultMaxConns        = 8
+	DefaultMaxConnIdleTime = 5 * time.Minute
+)
+
+// poolConfig parses dsn into a pool config with muster's pool defaults
+// applied wherever the DSN did not set its own.
+//
+// "Set by the DSN" cannot be read off pgxpool.ParseConfig's result: it fills
+// pgx's defaults in for absent keys, so a DSN that says pool_max_conns=24 and
+// one that says nothing look the same on a 24-CPU node. pgx.ParseConfig — the
+// connection-level parser pgxpool itself calls first, so it reads both the URL
+// and the keyword/value form exactly as pgxpool does — leaves the pool_* keys
+// in RuntimeParams, which is where they are looked for.
+func poolConfig(dsn string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if _, set := raw.RuntimeParams["pool_max_conns"]; !set {
+		cfg.MaxConns = DefaultMaxConns
+	}
+	if _, set := raw.RuntimeParams["pool_max_conn_idle_time"]; !set {
+		cfg.MaxConnIdleTime = DefaultMaxConnIdleTime
+	}
+	return cfg, nil
+}
+
 // Connect opens a pool against dsn with muster's connection settings applied,
 // and verifies it can actually reach the server before returning.
 func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+	cfg, err := poolConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}

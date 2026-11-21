@@ -166,7 +166,9 @@ postgres:
 externalDatabase:
   # DATABASE_URL, from a Secret you made: {name, key}. Used when
   # postgres.enabled is false. The role must own its database (migrations
-  # create tables).
+  # create tables). muster's pool holds at most 8 connections; append
+  # pool_max_conns=N (and pool_max_conn_idle_time=<duration>) to the URL to
+  # change it (docs/configuration.md).
   existingSecret: ""
   key: DATABASE_URL
 
