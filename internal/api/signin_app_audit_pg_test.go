@@ -223,31 +223,76 @@ func TestAppSignInKnownDeviceIsRevocable(t *testing.T) {
 	reset()
 }
 
-// TestAppSignInARevocationDuringTheMintEndsTheNewSession (gotrue): a Sign out
-// everywhere that lands after the redeem committed but before GoTrue issued
+// TestAppSignInARevocationDuringTheMintEndsTheNewSession (gotrue): a
+// revocation that lands after the redeem committed but before GoTrue issued
 // the session (the credentials lock is already released then) must not leave
 // that session standing: the redeem re-reads the account, ends the session at
-// GoTrue and sets no cookie. The control is every other redeem in this file.
+// GoTrue and sets no cookie. One case per arm of the re-check — a Sign out
+// everywhere, a reset's session cutoff, a disable — each landing ONLY its own
+// column, so removing any one arm fails its own case. The control is every
+// other redeem in this file.
 func TestAppSignInARevocationDuringTheMintEndsTheNewSession(t *testing.T) {
+	for _, c := range []struct{ name, q string }{
+		{"a sign-out everywhere", `UPDATE users SET signed_out_at = now() + interval '1 second' WHERE id = $1`},
+		{"a reset's cutoff", `UPDATE users SET sessions_not_before = now() + interval '1 second' WHERE id = $1`},
+		{"a disable", `UPDATE users SET disabled_at = now() WHERE id = $1`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := newAppRig(t)
+			ph := a.phone(t)
+			desk := jar{}
+			s := a.start(t, desk)
+			a.approve(t, ph, s.Code)
+			a.s.appSignInAfterMint = func() {
+				if _, err := a.pool.Exec(authz.System(context.Background()), c.q, a.uid); err != nil {
+					t.Error(err)
+				}
+				a.s.gt.forgetUser(a.uid)
+			}
+			logouts := a.fake.CountCalls("POST", "/logout")
+			w := a.redeem(desk, s.Code)
+			if w.Code != http.StatusForbidden || sessionCookies(w) {
+				t.Fatalf("redeem with %s during the mint: %d %s", c.name, w.Code, w.Body.String())
+			}
+			if a.fake.CountCalls("POST", "/logout") != logouts+1 {
+				t.Fatalf("%s during the mint: the session GoTrue issued was not ended", c.name)
+			}
+		})
+	}
+}
+
+// TestAppSignInForgedBindingsArePolledUnderTheAddress: a poll is counted under
+// its binding only when that binding names a request; a well-shaped cookie
+// naming none (a fresh random one on every poll) is counted under the client
+// address, so it cannot buy itself an unlimited budget. A real request's own
+// polls, and a second real desktop's, from that same address are unaffected.
+func TestAppSignInForgedBindingsArePolledUnderTheAddress(t *testing.T) {
 	a := newAppRig(t)
-	ph := a.phone(t)
-	desk := jar{}
-	s := a.start(t, desk)
-	a.approve(t, ph, s.Code)
-	a.s.appSignInAfterMint = func() {
-		if _, err := a.pool.Exec(authz.System(context.Background()),
-			`UPDATE users SET signed_out_at = now() + interval '1 second' WHERE id = $1`, a.uid); err != nil {
-			t.Error(err)
+	desk, other := jar{}, jar{}
+	a.start(t, desk, fromIP("203.0.113.40"))
+	a.start(t, other, fromIP("203.0.113.40"))
+	refused := 0
+	for i := 0; i < appSignInPollLimit+10; i++ {
+		forged, err := auth.RandomToken(32)
+		if err != nil {
+			t.Fatal(err)
 		}
-		a.s.gt.forgetUser(a.uid)
+		if !signinreq.BindingShapeOK(forged) {
+			t.Fatalf("the forged binding %q is not well shaped: the test would not reach the guard", forged)
+		}
+		w := a.do("GET", appSignInStatusPath, nil, jar{appSignInCookie: forged}, fromIP("203.0.113.40"))
+		if w.Code == http.StatusTooManyRequests {
+			refused++
+		}
 	}
-	logouts := a.fake.CountCalls("POST", "/logout")
-	w := a.redeem(desk, s.Code)
-	if w.Code != http.StatusForbidden || sessionCookies(w) {
-		t.Fatalf("redeem with a sign-out everywhere during the mint: %d %s", w.Code, w.Body.String())
+	if refused < 10 {
+		t.Fatalf("forged bindings from one address: %d of %d polls refused; want the %d past the address's limit",
+			refused, appSignInPollLimit+10, 10)
 	}
-	if a.fake.CountCalls("POST", "/logout") != logouts+1 {
-		t.Fatal("the session GoTrue issued was not ended")
+	for name, j := range map[string]jar{"the real request": desk, "a second real desktop": other} {
+		if w := a.do("GET", appSignInStatusPath, nil, j, fromIP("203.0.113.40")); w.Code != http.StatusOK {
+			t.Errorf("%s polling from the same address: %d", name, w.Code)
+		}
 	}
 }
 

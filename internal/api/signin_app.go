@@ -90,7 +90,7 @@ const appSignInCookie = "muster_signin_app"
 // `interval`); a request polled more than appSignInPollLimit times a minute is
 // answered 429 with a longer one (its `slow_down`). The count is per REQUEST
 // (its binding), not per address, so desktops behind one NAT do not trip each
-// other; a poll with no valid binding is counted per address.
+// other; a poll whose binding names no request is counted per address.
 const (
 	appSignInPollInterval = 2 * time.Second
 	appSignInSlowInterval = 10 * time.Second
@@ -261,8 +261,15 @@ func (s *Server) handleAppSignInStatus(w http.ResponseWriter, r *http.Request) {
 	// RFC 8628's slow_down: a page polling faster than it was told is told to
 	// wait longer, and is not answered.
 	binding := cookieValue(r, s.auth.cookieName(appSignInCookie))
+	req, err := s.ext.SignInRequests.Status(r.Context(), binding)
+	// 🔴 A POLL IS COUNTED UNDER ITS BINDING ONLY WHEN THE BINDING NAMES A
+	// REQUEST. Any other — malformed, absent, or well shaped but naming nothing
+	// (a fresh random cookie on every poll) — is counted under the client
+	// address, or one address could poll without limit by inventing bindings
+	// (TestAppSignInForgedBindingsArePolledUnderTheAddress). The look-up comes
+	// first so the key is known: one indexed read of a hash, never a list.
 	key := "binding:" + binding
-	if !signinreq.BindingShapeOK(binding) {
+	if err != nil {
 		key = "addr:" + clientIP(r)
 	}
 	if !s.appSignIn.poll.take(key, time.Now(), appSignInWindow, appSignInPollLimit) {
@@ -270,7 +277,6 @@ func (s *Server) handleAppSignInStatus(w http.ResponseWriter, r *http.Request) {
 			"interval": int(appSignInSlowInterval / time.Second)})
 		return
 	}
-	req, err := s.ext.SignInRequests.Status(r.Context(), binding)
 	switch {
 	case errors.Is(err, signinreq.ErrNotFound):
 		// No cookie, or a request swept away: the page starts again.
@@ -380,10 +386,18 @@ func (s *Server) handleAppSignInRedeem(w http.ResponseWriter, r *http.Request) {
 	// (TestAppSignInARevocationDuringTheMintEndsTheNewSession). One that
 	// commits after THIS read meets an ordinary session issued before it, which
 	// it ends like any other.
-	if fresh, err := s.gt.Users.ByID(r.Context(), u.ID); err != nil || !approvalStands(fresh, req.ApproverSigninAt) {
+	fresh, err := s.gt.Users.ByID(r.Context(), u.ID)
+	if err != nil || !approvalStands(fresh, req.ApproverSigninAt) {
 		end, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 		_ = s.gt.Client.Logout(end, ip, sess.AccessToken, gotrue.ScopeLocal)
 		cancel()
+		if err != nil {
+			// The account could not be read: nothing says the approval ended,
+			// so the person is told to try again, not that the phone signed out.
+			s.logger.Printf("login: sign-in with the muster app: re-reading user %d after the mint: %v (request %d)", u.ID, err, req.ID)
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Sign-in is unavailable right now. Try again shortly."})
+			return
+		}
 		s.logger.Printf("login: refused a sign-in with the muster app: user %d's sessions were ended while it was issued (request %d)", u.ID, req.ID)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"state": string(signinreq.StateDenied),
 			"error": "The phone that approved this has been signed out. Start again."})
