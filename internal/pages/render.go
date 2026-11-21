@@ -687,9 +687,22 @@ type ShellView struct {
 	Embed bool
 }
 
-// OwnerChrome is what the owner's own view draws beyond a link's: the version
-// chip and its popover.
+// OwnerChrome is what the owner's own view draws beyond a link's: the
+// breadcrumbs, the title's popover, the version chip and its popover, and
+// Share.
 type OwnerChrome struct {
+	// PageID is the page's id: the title's popover shows it ("Page #7") and
+	// its Copy ID copies it.
+	PageID int64
+	// Crumbs are the breadcrumbs drawn before the title, in place of the
+	// brand's name: Pages, and on a team's page the team. None draws the
+	// brand's name, as a link's header does.
+	Crumbs []Crumb
+	// Updated is when the page last changed, in words (ui.PlainWhen), which
+	// ShareScript redraws in the reader's own zone with its time from
+	// UpdatedMS; UpdatedMS 0 leaves it out of the title's popover.
+	Updated   string
+	UpdatedMS int64
 	// Version is the version the frame shows.
 	Version int
 	// Versions is every version, newest first.
@@ -702,15 +715,25 @@ type OwnerChrome struct {
 	// then no session button and no "Made by" link are drawn — never a guess.
 	SessionHref  string
 	SessionLabel string
-	// ShareButton is the page's Share button (ui.PageShareButton) and
-	// ShareScript its behaviour (ui.PageShareScript): the ONE share flow, the
-	// chat's and the Pages screens' own.
+	// ShareButton is the page's Share button (ui.PageShareButton), drawn at
+	// the header's end, and ShareScript its behaviour (ui.PageShareScript):
+	// the ONE share flow, the chat's and the Pages screens' own. "" draws no
+	// Share: the caller sets it only for a reader who may manage the page
+	// (pages.MayManage). ShareScript is drawn either way (it also redraws
+	// the popovers' times).
 	//
 	// 🔴 TRUSTED MARKUP AND SCRIPT, written as they are: muster's own
 	// renderer's output (every page-derived value in it escaped there), never
 	// a page's words.
 	ShareButton string
 	ShareScript string
+}
+
+// Crumb is one breadcrumb of the owner's header: its words, and where a tap
+// goes ("" draws it as words alone).
+type Crumb struct {
+	Label string
+	Href  string
 }
 
 // ShellVersion is one version as the popover lists it.
@@ -753,12 +776,23 @@ header[data-hidden]:not(:focus-within){transform:translateY(-100%)}
 header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
 header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header button.t{flex:1 1 0;min-width:3.5rem;height:` + shellHeaderPx + `px;margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;text-align:left;cursor:pointer}
+header a,header button{-webkit-tap-highlight-color:transparent}header .crumbs{display:contents}
+header .cr{flex:none;display:block;height:` + shellHeaderPx + `px;line-height:` + shellHeaderPx + `px;color:var(--muted);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header a.cr:hover,header a.cr:focus-visible{color:var(--fg);text-decoration:underline}
+header .cr.team{flex:0 1 auto;min-width:1.5em;max-width:30%}
+header .sep{flex:none;color:var(--muted)}
+header form{display:contents}
+header form>button{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;padding:0 10px;
+border-radius:999px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+header form>button::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
+header form>button[aria-busy=true]{opacity:.6}
 iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
 .sess{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
 border:1px solid var(--edge);color:inherit;text-decoration:none;font-size:13px}
 .sess::after{content:"";position:absolute;left:-2px;right:-2px;bottom:-6px;height:44px}.sess svg{flex:none;width:14px;height:14px}
 .sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
+@media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}header{gap:6px}header form>button{padding:0 9px}header form>button span+span{display:none}}
 .chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid var(--edge);
 background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
@@ -774,6 +808,8 @@ background:transparent;color:inherit;font:inherit;text-align:left;text-decoratio
 .pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:var(--s2)}
 .pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:var(--muted)}
 .pop hr{border:0;border-top:1px solid var(--line);margin:6px 4px}
+@media (min-width:640px){.pop.about{right:auto;left:8px}}
+.about .ft{margin:8px 12px 4px;font-weight:600;white-space:normal;overflow-wrap:anywhere}.about .meta{margin:0 12px 6px;font-size:13px;color:var(--muted)}
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
 .confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:var(--s1);
 padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
@@ -788,8 +824,9 @@ background:transparent;border:1px solid var(--edge)}.confirm button.go{backgroun
 #action-toasts>*{padding:8px 12px;border-radius:8px;background:var(--fg);color:var(--bg);font-size:14px;overflow-wrap:anywhere}`
 
 // Shell is the shell document: the instance branding and the title in one
-// slim header (and, for the owner, the version chip), the sandboxed frame of
-// the content and the relay script (ShellScript).
+// slim header (and, for the owner, breadcrumbs in the brand name's place, the
+// title as the button of its popover, the version chip and Share), the
+// sandboxed frame of the content and the relay script (ShellScript).
 func Shell(v ShellView) string {
 	esc := html.EscapeString
 	var b strings.Builder
@@ -807,11 +844,37 @@ func Shell(v ShellView) string {
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
 	}
-	if v.BrandName != "" {
+	o := v.Owner
+	top := ""
+	if v.Embed {
+		top = ` target="_blank" rel="noopener"`
+	}
+	// The owner's breadcrumbs take the brand name's place; a link's viewer
+	// (no Owner) gets the brand, never a crumb into screens they cannot open.
+	if o != nil && len(o.Crumbs) > 0 {
+		b.WriteString(`<nav class="crumbs" aria-label="Breadcrumb" data-page-crumbs>`)
+		for i, c := range o.Crumbs {
+			cls := "cr"
+			if i > 0 {
+				cls += " team"
+			}
+			if c.Href != "" {
+				b.WriteString(`<a class="` + cls + `" href="` + esc(c.Href) + `"` + top + ` data-page-crumb>` + esc(c.Label) + `</a>`)
+			} else {
+				b.WriteString(`<span class="` + cls + `" title="` + esc(c.Label) + `" data-page-crumb>` + esc(c.Label) + `</span>`)
+			}
+			b.WriteString(`<span class="sep" aria-hidden="true">›</span>`)
+		}
+		b.WriteString(`</nav>`)
+	} else if v.BrandName != "" {
 		b.WriteString(`<span class="n" data-brand-name>` + esc(v.BrandName) + `</span>`)
 	}
-	b.WriteString(`<span class="t" data-page-title title="` + esc(v.Title) + `">` + esc(v.Title) + `</span>`)
-	o := v.Owner
+	if o != nil {
+		b.WriteString(`<button type="button" class="t" data-page-title title="` + esc(v.Title) + `" aria-haspopup="dialog" aria-expanded="false" aria-controls="page-about">` +
+			esc(v.Title) + `</button>`)
+	} else {
+		b.WriteString(`<span class="t" data-page-title title="` + esc(v.Title) + `">` + esc(v.Title) + `</span>`)
+	}
 	if o != nil && o.SessionHref != "" {
 		b.WriteString(`<a class="sess" href="` + esc(o.SessionHref) + `" data-page-session title="Made by ` + esc(o.SessionLabel) +
 			`" aria-label="Open the session that made this page: ` + esc(o.SessionLabel) + `">` + sessionIcon + `<span class="sl">` + esc(o.SessionLabel) + `</span></a>`)
@@ -819,7 +882,7 @@ func Shell(v ShellView) string {
 	if o != nil {
 		vn := strconv.Itoa(o.Version)
 		b.WriteString(`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" ` +
-			`aria-label="Version ` + vn + `: show versions">v` + vn + ` <span aria-hidden="true">▾</span></button>`)
+			`aria-label="Version ` + vn + `: show versions">v` + vn + ` <span aria-hidden="true">▾</span></button>` + o.ShareButton)
 	}
 	b.WriteString(`</header>
 <iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
@@ -844,14 +907,23 @@ func Shell(v ShellView) string {
 			}
 			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
 		}
-		made, top := "", ""
-		if v.Embed {
-			top = ` target="_blank" rel="noopener"`
-		}
+		made := ""
 		if o.SessionHref != "" {
 			made = `<a href="` + esc(o.SessionHref) + `"` + top + ` data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
 		}
-		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `"` + top + ` data-page-details>Page details</a></div>
+		b.WriteString(`</ul><hr>` + made + `<a href="` + esc(o.DetailHref) + `"` + top + ` data-page-details>Page details</a></div>
+`)
+		// The title's popover: the whole title, wrapped; the page's id,
+		// the version shown and when the page last changed; Copy ID.
+		pid := strconv.FormatInt(o.PageID, 10)
+		meta := `Page #` + pid + ` · v` + strconv.Itoa(o.Version)
+		if o.UpdatedMS > 0 {
+			meta += ` · updated <time data-plain-when="` + strconv.FormatInt(o.UpdatedMS, 10) + `" data-plain-when-prefix="">` + esc(o.Updated) + `</time>`
+		}
+		b.WriteString(`<div class="scrim" data-about-scrim hidden></div>
+<div class="pop about" id="page-about" role="dialog" aria-label="About this page" data-page-about hidden>
+<p class="ft" data-page-about-title>` + esc(v.Title) + `</p><p class="meta" data-page-about-meta>` + meta + `</p>` +
+			`<button type="button" data-copy-page-id="` + pid + `">Copy ID</button></div>
 <div id="action-toasts" aria-live="polite"></div>
 <div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
 <p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
@@ -913,8 +985,9 @@ func Shell(v ShellView) string {
 //   - any report above the last one (a scroll up) shows it;
 //   - only a report below the last one, past the header's height AND more
 //     than the header's height below where it last came back, hides it;
-//   - keyboard focus inside it (CSS :focus-within) and the open version
-//     popover show it whatever the reports say;
+//   - keyboard focus inside it (CSS :focus-within) and an open popover of
+//     its own (the version chip's, the title's) show it whatever the
+//     reports say;
 //   - 🔴 and, needing nothing of the page: it comes back once no report
 //     FURTHER DOWN has arrived for revealMs, and in any case hideCapMs after
 //     it hid, whatever the reports say. So it is never hidden for longer
@@ -944,7 +1017,7 @@ function setHidden(h){
 }
 function reveal(){setHidden(false);}
 window.__musterHeader=function(show){setHidden(!show);};
-function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
+function popOpen(){return !!document.querySelector('header [aria-haspopup="dialog"][aria-expanded="true"]');}
 function onY(y){
  if(typeof y!=="number"||!isFinite(y)||y<0)return;
  var prev=lastY,down=y>prev;lastY=y;
@@ -1076,19 +1149,39 @@ window.addEventListener("message",function(ev){
 })();`
 }
 
-// ownerScript is the version chip's popover: a real button (aria-expanded)
-// opening a dialog; on open the header shows and focus goes to the version
-// shown; Escape, a tap outside (the scrim) or the chip again closes it, and
-// focus returns to the chip.
+// ownerScript is the owner's header's two popovers — the version chip's and
+// the title's — each a real button (aria-expanded) opening a dialog; on open
+// the header shows, any other popover closes (one is open at a time), and
+// focus goes into it (the version shown; Copy ID); Escape, a tap outside
+// (its scrim) or its button again closes it, and focus returns to the
+// button. Copy ID puts the page's id on the clipboard (cgCopyText, from
+// ShareScript) and says so in a toast.
 const ownerScript = `(function(){"use strict";
-var chip=document.querySelector("[data-version-chip]"),pop=document.getElementById("page-versions"),scrim=document.querySelector("[data-versions-scrim]");
-if(!chip||!pop||!scrim)return;
-function set(open,back){
- chip.setAttribute("aria-expanded",open?"true":"false");pop.hidden=!open;scrim.hidden=!open;
- if(open){window.__musterHeader&&window.__musterHeader(true);var c=pop.querySelector("a[aria-current]")||pop.querySelector("a,button");if(c)c.focus();}
- else if(back)chip.focus();
+var pairs=[];
+function set(p,open,back){
+ if(open)pairs.forEach(function(q){if(q!==p&&!q.pop.hidden)set(q,false,false);});
+ p.btn.setAttribute("aria-expanded",open?"true":"false");p.pop.hidden=!open;p.scrim.hidden=!open;
+ if(open){window.__musterHeader&&window.__musterHeader(true);var c=p.pop.querySelector("a[aria-current]")||p.pop.querySelector("a,button");if(c)c.focus();}
+ else if(back)p.btn.focus();
 }
-chip.addEventListener("click",function(){set(pop.hidden,true);});
-scrim.addEventListener("click",function(){set(false,false);});
-document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!pop.hidden){e.preventDefault();set(false,true);}});
+function wire(btn,pop,scrim){
+ if(!btn||!pop||!scrim)return;
+ var p={btn:btn,pop:pop,scrim:scrim};pairs.push(p);
+ btn.addEventListener("click",function(){set(p,pop.hidden,true);});
+ scrim.addEventListener("click",function(){set(p,false,false);});
+}
+wire(document.querySelector("[data-version-chip]"),document.getElementById("page-versions"),document.querySelector("[data-versions-scrim]"));
+wire(document.querySelector("button[data-page-title]"),document.getElementById("page-about"),document.querySelector("[data-about-scrim]"));
+document.addEventListener("keydown",function(e){if(e.key!=="Escape")return;pairs.forEach(function(p){if(!p.pop.hidden){e.preventDefault();set(p,false,true);}});});
+function toast(msg){
+ var host=document.getElementById("action-toasts");if(!host)return;
+ var t=document.createElement("div");t.setAttribute("role","status");t.setAttribute("data-page-toast","");t.textContent=msg;host.appendChild(t);
+ setTimeout(function(){t.remove();},5000);
+}
+var copy=document.querySelector("[data-copy-page-id]");
+if(copy)copy.addEventListener("click",function(){
+ var id=copy.getAttribute("data-copy-page-id");
+ if(!window.cgCopyText)return toast("Page ID: "+id);
+ window.cgCopyText(id).then(function(){toast("ID copied");},function(){toast("Page ID: "+id);});
+});
 })();`

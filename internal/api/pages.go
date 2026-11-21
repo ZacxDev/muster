@@ -1440,15 +1440,27 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion, Href: href})
 	}
-	pageShellTimes(list, versions, s.now())
-	shareURL := ""
-	if shared, serr := s.ext.Pages.ShareLinks(ctx); serr != nil {
-		s.logger.Printf("pages: page %d: share link: %v", id, serr)
-	} else if l := shared[id]; l.Token != "" {
-		shareURL = s.pageLinkURL(l)
-	}
+	now := s.now()
+	pageShellTimes(list, versions, now)
+	// Share, in the header, only for a reader who may MANAGE the page
+	// (pages.MayManage: its owner; on a team's page its creator) — a team
+	// member who may only view it is drawn none.
 	var share strings.Builder
-	_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
+	if pageManageable(ctx, p) {
+		shareURL := ""
+		if shared, serr := s.ext.Pages.ShareLinks(ctx); serr != nil {
+			s.logger.Printf("pages: page %d: share link: %v", id, serr)
+		} else if l := shared[id]; l.Token != "" {
+			shareURL = s.pageLinkURL(l)
+		}
+		_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
+	}
+	// The breadcrumbs: Pages, and on a team's page its team (no screen of
+	// a team's own pages exists, so that crumb is words, not a link).
+	crumbs := []pages.Crumb{{Label: "Pages", Href: ui.PagesPath}}
+	if memberOnTeamPage(ctx, p) {
+		crumbs = append(crumbs, pages.Crumb{Label: s.teamNames(ctx, []int64{p.OwnerID})[p.OwnerID]})
+	}
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	if embed {
 		// Framed in the session's own panel: no button back to the session
@@ -1457,7 +1469,8 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	}
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
 	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed,
-		Owner: &pages.OwnerChrome{Version: v.Version, Versions: list, DetailHref: pagePath(id),
+		Owner: &pages.OwnerChrome{PageID: id, Crumbs: crumbs, Updated: ui.PlainWhen(p.UpdatedAt, now), UpdatedMS: p.UpdatedAt.UnixMilli(),
+			Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
 			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))
 }

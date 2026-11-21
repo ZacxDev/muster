@@ -814,10 +814,23 @@ for (const vp of [
       expect(hb.height, 'the header is one slim row').toBeLessThanOrEqual(44);
       const title = page.locator('[data-page-title]');
       await expect(title).toHaveAttribute('title', VIEW_TITLE);
-      const t = await title.evaluate((e) => ({ cut: e.scrollWidth > e.clientWidth, overflow: getComputedStyle(e).textOverflow, height: e.getBoundingClientRect().height }));
+      // The owner's title is a button the header's height (its popover's,
+      // a 40px target), so "one line" is counted from its text's own boxes.
+      const t = await title.evaluate((e) => {
+        const r = document.createRange();
+        r.selectNodeContents(e);
+        const lines = () => new Set(Array.from(r.getClientRects()).map((b) => Math.round(b.top))).size;
+        const out = { cut: e.scrollWidth > e.clientWidth, overflow: getComputedStyle(e).textOverflow, lines: lines(), wrapped: 0 };
+        // CONTROL: let it wrap, and the same count sees several lines.
+        (e as HTMLElement).style.whiteSpace = 'normal';
+        out.wrapped = lines();
+        (e as HTMLElement).style.whiteSpace = '';
+        return out;
+      });
       expect(t.cut, 'the title is cut short').toBe(true);
       expect(t.overflow).toBe('ellipsis');
-      expect(t.height, 'the title is one line').toBeLessThan(24);
+      expect(t.lines, 'the title is one line').toBe(1);
+      expect(t.wrapped, 'CONTROL: the count sees a wrapped title').toBeGreaterThan(1);
       // The page's own script sent on load, untouched: muster's bar asks the
       // owner (the second send, while it waits, is refused), and nothing is
       // recorded; Cancel answers the page "Not sent".
@@ -841,7 +854,9 @@ for (const vp of [
       await expect(chip).toHaveAttribute('aria-expanded', 'true');
       await expect(pop).toBeVisible();
       await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · today at \d{1,2}:\d{2}\s[AP]M$/, /^Version 1today at \d{1,2}:\d{2}\s[AP]M$/]);
-      await expect(pop.locator('[data-page-share]')).toBeVisible();
+      // Share is the header's own now (its end), not the popover's.
+      await expect(pop.locator('[data-page-share]')).toHaveCount(0);
+      await expect(header.locator('[data-page-share]')).toHaveCount(1);
       await expect(pop.locator('[data-page-details]')).toHaveAttribute('href', `/pages/${pageID}`);
       await expect(pop.locator('[data-version-link="2"]')).toBeFocused();
       for (const el of await pop.locator('a, button').all()) {

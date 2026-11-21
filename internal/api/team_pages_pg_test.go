@@ -244,6 +244,35 @@ func TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage(t *testing.T) {
 	}
 }
 
+// TestATeamPagesViewHasTheTeamsCrumbAndOnlyTheCreatorsShare: every member's
+// view of a team's page draws "Pages › <team name> ›" before the title; only
+// the creator (pages.MayManage) is drawn the header's Share — a viewer and an
+// operator who is not the creator are drawn none, anywhere in the view.
+func TestATeamPagesViewHasTheTeamsCrumbAndOnlyTheCreatorsShare(t *testing.T) {
+	f := newTeamPageFixture(t)
+	id := f.teamPage(t, "Offsite agenda")
+	sid := strconv.FormatInt(id, 10)
+	name := f.srv.teamNames(context.Background(), []int64{f.teamA})[f.teamA]
+	crumbs := `<a class="cr" href="/pages" data-page-crumb>Pages</a><span class="sep" aria-hidden="true">›</span>` +
+		`<span class="cr team" title="` + name + `" data-page-crumb>` + name + `</span><span class="sep" aria-hidden="true">›</span></nav>`
+	share := `action="/pages/` + sid + `/share"`
+	for who, c := range map[string]struct {
+		uid   int64
+		share bool
+	}{"creator": {f.creator, true}, "viewer": {f.viewer, false}, "operator (not the creator)": {f.both, false}} {
+		code, body := f.req(t, c.uid, http.MethodGet, "/pages/"+sid+"/view", "", nil)
+		if code != http.StatusOK {
+			t.Fatalf("%s's view: %d", who, code)
+		}
+		if !strings.Contains(body, crumbs) {
+			t.Errorf("%s's view lacks the team's crumbs %q", who, crumbs)
+		}
+		if got := strings.Contains(body, share) || strings.Contains(body, "data-page-share="); got != c.share {
+			t.Errorf("%s's view draws Share: %v; want %v", who, got, c.share)
+		}
+	}
+}
+
 // TestAnyMemberSharesATeamsPage: a VIEWER's Share makes the page's link and
 // hands its address (JSON, as the button's script asks); the link is the
 // team's, made by that person by name.
