@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,22 +121,29 @@ func (s *Server) serveServerPlugin(w http.ResponseWriter, r *http.Request, next 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": ActForShapeRefusal})
 		return
 	}
+	// 🔴 AN EMPTY OR BLANK VALUE IS A SHAPE ERROR on an act-for route (audit
+	// round 1): it must never reach the acts-as-nobody path, whose handlers
+	// have no principal to act as. The door branches on the ROUTE, not on the
+	// subject being empty.
 	subject := ""
 	if route.actFor {
-		subject = actFor[0]
+		if subject = actFor[0]; strings.TrimSpace(subject) == "" {
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": ActForShapeRefusal})
+			return
+		}
 	}
 	r = r.WithContext(contextWithPlugin(r.Context(), p))
-	s.admitServerPlugin(w, r, next, p, subject)
+	s.admitServerPlugin(w, r, next, p, route.actFor, subject)
 }
 
-// admitServerPlugin is the door's second entry, beside admit: with subject ""
-// (an acts-as-nobody route) it runs admit's own pre-handler refusals and
+// admitServerPlugin is the door's second entry, beside admit: on a route that
+// does not act for anyone (actFor false) it runs admit's own pre-handler refusals and
 // calls next with NO principal — any store call that needs one fails closed.
-// With subject set it asks THE gate (LiveServerGrants, one subject) and, for a
+// On an act-for route it asks THE gate (LiveServerGrants, one subject) and, for a
 // live grant, calls admit with that person's principal through
 // authz.ViaServerPlugin; anything else is the one 404, ServerActForNotFound.
-func (s *Server) admitServerPlugin(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, p plugins.Plugin, subject string) {
-	if subject == "" {
+func (s *Server) admitServerPlugin(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, p plugins.Plugin, actFor bool, subject string) {
+	if !actFor {
 		nobody := authz.Principal{Via: authz.ViaServerPlugin}
 		if s.refuseCrossOriginCookieWrite(w, r, nobody) || s.refusePluginTokenElsewhere(w, r, nobody.Via) ||
 			s.refuseDeviceTokenElsewhere(w, r, nobody.Via) {
@@ -206,9 +214,11 @@ func messagesOwner(p plugins.Plugin) int64 {
 const (
 	// ownersCheckPerMinute is one server app's owners/check calls a minute.
 	ownersCheckPerMinute = 60
-	// maxOwnersCheckBody bounds the body: MaxOwnersCheck subjects of 22
-	// characters, quoted and comma-separated, plus the key.
-	maxOwnersCheckBody = plugins.MaxOwnersCheck*26 + 64
+	// maxOwnersCheckBody bounds what is read: room for MaxOwnersCheck subjects
+	// pretty-printed (each on its own indented line) with plenty to spare.
+	// The count is enforced after decoding (audit round 1: a cap sized for
+	// compact JSON refused an indented body of 200 valid subjects).
+	maxOwnersCheckBody = 16 << 10
 )
 
 // handlePluginOwnersCheck is POST /plugin/v1/owners/check {"subjects": [...]}
@@ -315,9 +325,9 @@ func (l *serverTaskLimit) reserve(app, owner int64, now time.Time) (int, bool) {
 	if l.person == nil {
 		l.person, l.app = map[appNotifyWho][]time.Time{}, map[int64][]time.Time{}
 	}
+	l.prune(now)
 	who := appNotifyWho{app, owner}
-	pt, at := trimWindow(l.person[who], now, serverTaskWindow), trimWindow(l.app[app], now, serverTaskWindow)
-	l.person[who], l.app[app] = pt, at
+	pt, at := l.person[who], l.app[app]
 	var until time.Duration
 	if len(pt) >= serverTaskPersonBurst {
 		until = max(until, serverTaskWindow-now.Sub(pt[len(pt)-serverTaskPersonBurst]))
@@ -330,6 +340,26 @@ func (l *serverTaskLimit) reserve(app, owner int64, now time.Time) (int, bool) {
 	}
 	l.person[who], l.app[app] = append(pt, now), append(at, now)
 	return 0, true
+}
+
+// prune forgets every write that has rolled out of the window, and every key
+// left with none, so the maps hold only who wrote in the last hour (as
+// appNotifyLimit.prune does). l.mu is held.
+func (l *serverTaskLimit) prune(now time.Time) {
+	for k, ts := range l.person {
+		if ts = trimWindow(ts, now, serverTaskWindow); len(ts) == 0 {
+			delete(l.person, k)
+		} else {
+			l.person[k] = ts
+		}
+	}
+	for k, ts := range l.app {
+		if ts = trimWindow(ts, now, serverTaskWindow); len(ts) == 0 {
+			delete(l.app, k)
+		} else {
+			l.app[k] = ts
+		}
+	}
 }
 
 // refund gives back the write reserve took at now for (app, owner).
@@ -346,6 +376,12 @@ func (l *serverTaskLimit) refund(app, owner int64, now time.Time) {
 		return ts
 	}
 	l.person[who], l.app[app] = drop(l.person[who]), drop(l.app[app])
+	if len(l.person[who]) == 0 {
+		delete(l.person, who)
+	}
+	if len(l.app[app]) == 0 {
+		delete(l.app, app)
+	}
 }
 
 // handleServerAppTask is POST /plugin/v1/tasks for a SERVER app, acting for

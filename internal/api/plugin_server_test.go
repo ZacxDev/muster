@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -247,64 +248,84 @@ func assertSiteLedger(t *testing.T, what string, got map[string]bool, want []str
 // NEW site decide too. Fails when the set grows or shrinks.
 var thePluginOwnerReadSites = []string{
 	// PersonalOwner reads: each says what a server app (no owner) does.
-	"internal/api Server.autostartStart",       // refused: no owner, no auto-start
-	"internal/api Server.handlePluginSelf",     // the personal answer; a server app's is serverPluginSelf
-	"internal/api Server.liveAppPlugins",       // a personal tab only (a server app's tab is 1h.2's arm)
-	"internal/api Server.requirePluginToken",   // the personal door; a server app took the server arm first
-	"internal/api messagesOwner",               // 0 for a server app, on paths it is never served
-	"internal/plugins Deliverer.Deliver",       // a message's plugin: messages-only
-	"internal/plugins PGStore.SetDeliverTo",    // refused for a server app
-	"internal/plugins PGStore.routeEngagement", // messages-only: refused
-	"internal/plugins PGStore.routeToOfficer",  // messages-only: refused
-	"internal/plugins Plugin.PersonalOwner",    // the accessor itself
-	"internal/plugins personallyOwnedBy",       // never true for a server app
-	// messagesOwner calls: the messages, drafts, task-writes and mail paths,
-	// none of which serverPluginRoutes serves a server app.
-	"internal/api Server.draftRefused",
-	"internal/api Server.handlePluginDraftCheck",
-	"internal/api Server.handlePluginDraftChecksToggle",
-	"internal/api Server.handlePluginDraftClaim",
-	"internal/api Server.handlePluginDraftMedia",
-	"internal/api Server.handlePluginDraftResult",
-	"internal/api Server.handlePluginTaskWriteResult",
-	"internal/api Server.handlePluginTaskWritesClaim",
-	"internal/api Server.notifyDraftRefused",
-	"internal/api Server.retryQueuedPluginMessages",
-	"internal/api Server.runMailResume",
-	"internal/api Server.startMailResume",
+	"internal/api Server.autostartStart#1",       // refused: no owner, no auto-start
+	"internal/api Server.handlePluginSelf#1",     // the personal answer; a server app's is serverPluginSelf
+	"internal/api Server.liveAppPlugins#1",       // a personal tab (a server app's is its own arm)
+	"internal/api Server.requirePluginToken#1",   // the personal door; a server app took the server arm first
+	"internal/api messagesOwner#1",               // 0 for a server app, on paths it is never served
+	"internal/plugins Deliverer.Deliver#1",       // a message's plugin: messages-only
+	"internal/plugins Deliverer.Deliver#2",       // the same message, its owner re-checked
+	"internal/plugins PGStore.SetDeliverTo#1",    // refused for a server app
+	"internal/plugins PGStore.routeEngagement#1", // messages-only: refused
+	"internal/plugins PGStore.routeToOfficer#1",  // messages-only: refused
+	"internal/plugins Plugin.PersonalOwner#1",    // the accessor itself
+	"internal/plugins personallyOwnedBy#1",       // never true for a server app
+	// messagesOwner calls, ONE ENTRY PER CALL: the messages, drafts,
+	// task-writes and mail paths, none of which serverPluginRoutes serves a
+	// server app.
+	"internal/api Server.draftRefused#1",
+	"internal/api Server.handlePluginDraftCheck#1",
+	"internal/api Server.handlePluginDraftCheck#2",
+	"internal/api Server.handlePluginDraftCheck#3",
+	"internal/api Server.handlePluginDraftChecksToggle#1",
+	"internal/api Server.handlePluginDraftChecksToggle#2",
+	"internal/api Server.handlePluginDraftClaim#1",
+	"internal/api Server.handlePluginDraftMedia#1",
+	"internal/api Server.handlePluginDraftResult#1",
+	"internal/api Server.handlePluginDraftResult#2",
+	"internal/api Server.handlePluginTaskWriteResult#1",
+	"internal/api Server.handlePluginTaskWritesClaim#1",
+	"internal/api Server.notifyDraftRefused#1",
+	"internal/api Server.notifyDraftRefused#2",
+	"internal/api Server.notifyDraftRefused#3",
+	"internal/api Server.retryQueuedPluginMessages#1",
+	"internal/api Server.retryQueuedPluginMessages#2",
+	"internal/api Server.retryQueuedPluginMessages#3",
+	"internal/api Server.retryQueuedPluginMessages#4",
+	"internal/api Server.retryQueuedPluginMessages#5",
+	"internal/api Server.retryQueuedPluginMessages#6",
+	"internal/api Server.runMailResume#1",
+	"internal/api Server.startMailResume#1",
 	// authz.ViaPlugin: the personal (and team) plugin door.
-	"internal/api Server.requirePluginToken#via",
-	"internal/api Server.teamPreviewPrincipal#via",
-	"internal/api teamAgentDoors#via",
-	"internal/plugins PGStore.CreatePairRequest#via",
-	"internal/plugins PGStore.RedeemPair#via",
+	"internal/api Server.requirePluginToken#via#1",
+	"internal/api Server.teamPreviewPrincipal#via#1",
+	"internal/api teamAgentDoors#via#1",
+	"internal/plugins PGStore.CreatePairRequest#via#1",
+	"internal/plugins PGStore.RedeemPair#via#1",
 	// authz.IsPluginVia: BOTH plugin doors.
-	"internal/api Server.refusePluginTokenElsewhere#isplugin",
-	"internal/plugins ruleWriter#isplugin",
+	"internal/api Server.refusePluginTokenElsewhere#isplugin#1",
+	"internal/plugins ruleWriter#isplugin#1",
 }
 
 // TestThePluginOwnerReadSitesAreALedger walks the module's AST.
 func TestThePluginOwnerReadSitesAreALedger(t *testing.T) {
-	got := map[string]bool{}
+	// 🔴 KEYED PER READ, not per declaration (audit round 1): each read is its
+	// declaration, its kind and its ordinal within that declaration, so a
+	// SECOND read added to a listed function is a new entry and fails this.
+	got, seen := map[string]bool{}, map[string]int{}
+	mark := func(key string) {
+		seen[key]++
+		got[key+"#"+strconv.Itoa(seen[key])] = true
+	}
 	moduleFuncs(t, func(site string, n ast.Node) {
 		switch x := n.(type) {
 		case *ast.SelectorExpr:
 			if x.Sel.Name == "PersonalOwner" {
-				got[site] = true
+				mark(site)
 			}
 			if id, ok := x.X.(*ast.Ident); ok && id.Name == "authz" && x.Sel.Name == "ViaPlugin" {
-				got[site+"#via"] = true
+				mark(site + "#via")
 			}
 			if id, ok := x.X.(*ast.Ident); ok && id.Name == "authz" && x.Sel.Name == "IsPluginVia" {
-				got[site+"#isplugin"] = true
+				mark(site + "#isplugin")
 			}
 		case *ast.CallExpr:
 			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "messagesOwner" {
-				got[site] = true
+				mark(site)
 			}
 		case *ast.FuncDecl:
 			if x.Name.Name == "PersonalOwner" {
-				got[site] = true
+				mark(site)
 			}
 		}
 	})
@@ -434,5 +455,31 @@ func TestAServerAppMayNotRouteToTheChiefWhateverItsRowSays(t *testing.T) {
 		if pluginTasksOnlyRefusal(personal, in) != "" {
 			t.Errorf("CONTROL a personal messages token is refused %s", name)
 		}
+	}
+}
+
+// TestServerTaskLimitForgetsIdleKeys (audit round 1): a key whose writes all
+// rolled out of the hour is pruned on the next reserve, as appNotifyLimit
+// prunes, so the maps hold only who wrote in the last hour.
+func TestServerTaskLimitForgetsIdleKeys(t *testing.T) {
+	var l serverTaskLimit
+	t0 := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	for owner := int64(1); owner <= 50; owner++ {
+		if _, ok := l.reserve(7, owner, t0); !ok {
+			t.Fatal("a first write was refused")
+		}
+	}
+	if len(l.person) != 50 || len(l.app) != 1 {
+		t.Fatalf("CONTROL: %d person keys and %d app keys; want 50 and 1", len(l.person), len(l.app))
+	}
+	if _, ok := l.reserve(8, 99, t0.Add(serverTaskWindow)); !ok {
+		t.Fatal("a write an hour later was refused")
+	}
+	if len(l.person) != 1 || len(l.app) != 1 {
+		t.Errorf("after an hour: %d person keys and %d app keys; want only the new writer's 1 and 1", len(l.person), len(l.app))
+	}
+	l.refund(8, 99, t0.Add(serverTaskWindow))
+	if len(l.person) != 0 || len(l.app) != 0 {
+		t.Errorf("after the refund: %d person keys and %d app keys; want none", len(l.person), len(l.app))
 	}
 }

@@ -131,6 +131,7 @@ var pluginRowReads = map[string]string{
 	// app's own id (or, fork 9, its entry URL).
 	"PGStore.authenticateServerApp": "a server app's token lookup, under System: scope = 'server', no owner",
 	"PGStore.mintServerHandoff":     "the mint's server arm, under System: scope = 'server', the app's id",
+	"PGStore.RedeemServerHandoff":   "the redeem's re-check of its own app, under System, held FOR SHARE: scope = 'server', the app's id",
 	"PGStore.serverAppAtEntry":      "fork 9, under System on its own connection: a live server app's entry URL",
 	"PGStore.InstallServerApp":      "an admin's install, under System: counts live server apps (scope = 'server')",
 	"PGStore.RotateServerApp":       "an admin's rotate, under System: scope = 'server', the app's id",

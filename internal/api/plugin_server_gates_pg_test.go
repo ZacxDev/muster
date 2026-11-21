@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // THE SERVER APP'S GATES (docs/design/meetings.md "1h tests"), each through
@@ -412,6 +413,31 @@ func TestTheActForHeaderShape(t *testing.T) {
 		r.Header.Add(MusterActForHeader, sub)
 		r.Header.Add(MusterActForHeader, sub)
 	})
+	// 🔴 AN EMPTY OR BLANK VALUE IS NOT "NO SUBJECT" (audit round 1): on every
+	// act-for route it is the shape's 400, before any handler — never the
+	// acts-as-nobody path, whose handlers have no principal to act as.
+	handled := 0
+	f.srv.principalProbe = func(*http.Request) { handled++ }
+	f.srv.serverNobodyProbe = func(*http.Request) { handled++ }
+	for _, route := range []struct{ method, path, body string }{
+		{"POST", pluginNotifyPath, knockBody("shape-e", 1)},
+		{"DELETE", pluginNotifyPath + "/shape-e", ""},
+		{"POST", pluginTasksPath, srvTask("shape-e", "Shape")},
+	} {
+		for _, v := range []string{"", "   ", "\t"} {
+			rec := f.do(route.method, route.path, route.body, func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer "+f.tok)
+				r.Header.Set(MusterActForHeader, v)
+			})
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Muster-Act-For") {
+				t.Errorf("%s %s with Muster-Act-For %q: %d %s; want 400 %q", route.method, route.path, v, rec.Code, rec.Body.String(), ActForShapeRefusal)
+			}
+		}
+	}
+	if handled != 0 {
+		t.Errorf("an empty or blank Muster-Act-For reached %d handler(s); want none", handled)
+	}
+	f.srv.principalProbe, f.srv.serverNobodyProbe = nil, nil
 	if twice.Code != http.StatusBadRequest {
 		t.Errorf("the header twice: %d; want 400", twice.Code)
 	}
@@ -467,6 +493,12 @@ func TestOwnersCheckAnswersOnlyWhatItWasAsked(t *testing.T) {
 	}
 	if rec, st := f.check(f.tok, many[:plugins.MaxOwnersCheck]...); rec.Code != http.StatusOK || len(st) != 1 {
 		t.Errorf("CONTROL 200 subjects: %d %v; want 200 and one entry", rec.Code, st)
+	}
+	// A pretty-printed body of 200 valid subjects is read whole (audit round
+	// 1: a cap sized for compact JSON refused it); the count is the limit.
+	indented, _ := json.MarshalIndent(map[string]any{"subjects": many[:plugins.MaxOwnersCheck]}, "", "    ")
+	if rec := f.do("POST", pluginOwnersCheckPath, string(indented), srvBearer(f.tok)); rec.Code != http.StatusOK {
+		t.Errorf("an indented body of 200 subjects (%d bytes): %d %s; want 200", len(indented), rec.Code, rec.Body.String())
 	}
 	if rec, _ := f.check(f.tok, "not-a-subject"); rec.Code != http.StatusBadRequest {
 		t.Errorf("a malformed subject: %d; want 400", rec.Code)
@@ -576,4 +608,79 @@ func jsonUnmarshalString(s string, v any) error { return json.Unmarshal([]byte(s
 func jsonString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// TestARedeemAfterTheAppWasRevokedWritesNoGrant (audit round 1): the redeem
+// re-checks the app inside its own transaction (the row held FOR SHARE), so a
+// code whose app was revoked after the door authenticated its token — the
+// state an uninstall racing the redeem leaves — is the one 404 and writes no
+// grant. The door's Plugin value is the stale read the race hands the store.
+func TestARedeemAfterTheAppWasRevokedWritesNoGrant(t *testing.T) {
+	f := newSrvFix(t)
+	_, code := f.mintAt(f.a, f.app.ID, f.signin)
+	f.exec(`UPDATE plugins SET revoked_at = now() WHERE id = $1`, f.app.ID)
+	if _, err := f.store.RedeemServerHandoff(f.sys(), f.app, code, f.now); err != plugins.ErrNotFound {
+		t.Errorf("a redeem for a revoked app: %v; want ErrNotFound", err)
+	}
+	if n := f.count(`SELECT count(*) FROM plugin_server_users WHERE plugin_id = $1`, f.app.ID); n != 0 {
+		t.Errorf("a redeem for a revoked app wrote %d grant rows", n)
+	}
+}
+
+// TestAServerAppLearnsNothingOfAPersonsPushSetup (audit round 1): for a
+// SERVER app a person who muted app pushes, and one with no device, are each
+// answered 202 exactly as a person with a device is, and each is held to the
+// same caps (the 31st knock is 429 either way); nothing reaches a device. A
+// PERSONAL app plugin keeps its 204 (the control, in plugin_notify_pg_test.go
+// and here).
+func TestAServerAppLearnsNothingOfAPersonsPushSetup(t *testing.T) {
+	f := newSrvFix(t)
+	nodev := f.person("No Device", "member", "")
+	muted := f.person("Muted Person", "member", "")
+	f.device(muted)
+	f.push.mu.Lock()
+	if f.push.muted == nil {
+		f.push.muted = map[int64][]string{}
+	}
+	f.push.muted[muted] = []string{push.EventApp}
+	f.push.mu.Unlock()
+	subA := f.open(f.a, f.app.ID, f.tok)
+	subN := f.open(nodev, f.app.ID, f.tok)
+	subM := f.open(muted, f.app.ID, f.tok)
+	want := func(sub, ref string) string {
+		rec := f.knock(f.tok, sub, ref)
+		return strconv.Itoa(rec.Code) + " " + strings.ReplaceAll(strings.TrimSpace(rec.Body.String()), ref, "<ref>")
+	}
+	base := want(subA, "priv-a")
+	if !strings.HasPrefix(base, "202 ") {
+		t.Fatalf("CONTROL a person with a device: %s; want 202", base)
+	}
+	before := f.pushesTo(muted)
+	for name, sub := range map[string]string{"no device": subN, "muted": subM} {
+		if got := want(sub, "priv-"+strings.ReplaceAll(name, " ", "")); got != base {
+			t.Errorf("%s: %q; want exactly the device-holder's %q", name, got, base)
+		}
+	}
+	if f.pushesTo(muted) != before {
+		t.Errorf("a muted person's device was sent a knock")
+	}
+	for name, sub := range map[string]string{"no device": subN, "with a device": subA} {
+		for i := 1; i < appNotifyPluginBurst; i++ {
+			_ = f.knock(f.tok, sub, "cap-"+strconv.Itoa(i))
+		}
+		if rec := f.knock(f.tok, sub, "cap-over"); rec.Code != http.StatusTooManyRequests {
+			t.Errorf("%s: the 31st knock %d; want 429 (the caps do not depend on the devices)", name, rec.Code)
+		}
+	}
+	// A personal app plugin is its owner's own: 204 with no device.
+	seam := &handoffSeam{t: t, srv: f.srv, h: f.h, hdr: f.hdr}
+	form := appForm("srv-priv-own-"+f.suffix, "https://w7.viewer.example.net/enter")
+	form.Set("app_label", "Own Hall")
+	ptok, _, prec := seam.create(nodev, form)
+	if ptok == "" {
+		t.Fatalf("minting a personal app plugin: %d %s", prec.Code, prec.Body.String())
+	}
+	if rec := f.actFor(ptok, "", "POST", pluginNotifyPath, knockBody("own-1", 1)); rec.Code != http.StatusNoContent {
+		t.Errorf("CONTROL a personal app plugin, no device: %d; want 204", rec.Code)
+	}
 }

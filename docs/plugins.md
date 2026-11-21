@@ -342,6 +342,11 @@ since the sign-in, a retired origin).
   everywhere or the session cutoff, compared with the sign-in of the session
   that minted the code, never with the redeem's time. A sign-out in one
   browser does not end it.
+- **A server app learns nothing of a person's push setup.** Its knock caps
+  are spent first, and a person who turned "An app needs you" off, or has no
+  device, is answered `202 {"queued": true, …}` exactly as one who has both
+  (the knock is dropped and logged). A personal app plugin, its owner's own,
+  keeps the `204`.
 - A knock goes to the person the subject names, never the admin who
   installed the app. The knock caps are per `(app, person)`: 30 an hour each,
   under a per-app ceiling of **600 knocks an hour**; one person's knocks can
@@ -356,7 +361,7 @@ POST /plugin/v1/owners/check   {"subjects": ["<subject>", ...]}
 ```
 
 - 1 to **200** subjects, each the subject shape; more, none or a malformed
-  one is `400`. 60 calls a minute per app (`429` with `Retry-After`).
+  one is `400`. The body may be pretty-printed (up to 16 KiB is read). 60 calls a minute per app (`429` with `Retry-After`).
 - **Exactly one entry per subject asked about, and no other.** A subject the
   app never redeemed is `revoked`, as any ended one is, so the answer cannot
   tell "never seen" from "ended".

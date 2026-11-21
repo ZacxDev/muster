@@ -914,7 +914,11 @@ could **withdraw A's knock** by naming A's ref, and A's knocks would spend
 B's caps. The per-plugin caps (30 knocks an hour, 60 withdrawals of nothing
 an hour) become **per (plugin, person)**, under a new per-app ceiling of 600
 knocks an hour. The person's own knock budget (10 per 10 minutes across all
-their app plugins) is unchanged. The knock's title is the server app's label,
+their app plugins) is unchanged. 🔴 **A server app learns nothing of a person's push
+setup** (core PR 1h.1, audit round 1): its caps are spent before the toggle
+and device checks, and a person who muted "An app needs you" or has no device
+is answered `202` exactly as one who has both (dropped and logged). Only a
+personal app plugin keeps the `204`. The knock's title is the server app's label,
 the admin's words.
 
 #### Tasks for a server app

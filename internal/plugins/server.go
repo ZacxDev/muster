@@ -281,6 +281,19 @@ func (s *PGStore) RedeemServerHandoff(ctx context.Context, app Plugin, code stri
 	refused := false
 	sys := authz.System(ctx)
 	err := s.inTx(sys, func(tx pgx.Tx) error {
+		// 🔴 THE APP IS RE-CHECKED AND HELD (audit round 1): its row is locked
+		// FOR SHARE, so an uninstall racing this redeem waits for it — and then
+		// deletes the grant it made — or wins first, and this redeem is the
+		// one 404 and writes nothing. The door's Authenticate is a read from
+		// before this transaction began.
+		var held int64
+		switch err := tx.QueryRow(sys, `SELECT id FROM plugins WHERE id = $1 AND scope = 'server' AND revoked_at IS NULL FOR SHARE`,
+			app.ID).Scan(&held); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return ErrNotFound
+		case err != nil:
+			return err
+		}
 		var target []byte
 		var signin *time.Time
 		err := tx.QueryRow(sys, `UPDATE plugin_handoffs SET redeemed_at = $3

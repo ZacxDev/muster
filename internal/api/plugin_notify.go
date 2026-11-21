@@ -154,8 +154,21 @@ func (s *Server) handlePluginNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner, tag := notifyRecipient(r), appNotifyTag(p.ID, in.Ref)
+	// 🔴 A SERVER APP LEARNS NOTHING ABOUT A PERSON'S PUSH SETUP (audit round
+	// 1): its caps are spent FIRST, and a person who muted app pushes or has
+	// no device is answered exactly as one who has both — 202, dropped and
+	// logged. A personal app plugin is its owner's own and keeps the 204.
+	server := p.IsServer()
+	if server && !s.allowKnock(w, p, owner, in.Ref, tag) {
+		return
+	}
+	queued := func() { s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "tag": tag}) }
 	if s.pushMuted(r.Context(), owner, push.EventApp) {
 		s.logPushDrop(tag, push.EventApp, owner, pushDropMuted)
+		if server {
+			queued()
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -167,13 +180,14 @@ func (s *Server) handlePluginNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(devs) == 0 {
 		s.logPushDrop(tag, push.EventApp, owner, pushDropNoDevice)
+		if server {
+			queued()
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if wait, ok := s.appNotifies.allow(p.ID, owner, in.Ref, p.IsServer(), s.now()); !ok {
-		s.logPushDrop(tag, push.EventApp, owner, pushDropAppCap)
-		w.Header().Set("Retry-After", strconv.Itoa(wait))
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": pushDropSentence(pushDropAppCap), "retry_after": wait})
+	if !server && !s.allowKnock(w, p, owner, in.Ref, tag) {
 		return
 	}
 	s.goNotify(owner, push.EventApp, RouterNotification{
@@ -225,6 +239,19 @@ func (s *Server) handlePluginNotifyWithdraw(w http.ResponseWriter, r *http.Reque
 	}
 	s.goNotify(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
 	s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "tag": tag})
+}
+
+// allowKnock spends the knock caps for (p, owner, ref), or answers the 429
+// with Retry-After (logged as a dropped push) and reports false.
+func (s *Server) allowKnock(w http.ResponseWriter, p plugins.Plugin, owner int64, ref, tag string) bool {
+	wait, ok := s.appNotifies.allow(p.ID, owner, ref, p.IsServer(), s.now())
+	if ok {
+		return true
+	}
+	s.logPushDrop(tag, push.EventApp, owner, pushDropAppCap)
+	w.Header().Set("Retry-After", strconv.Itoa(wait))
+	s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": pushDropSentence(pushDropAppCap), "retry_after": wait})
+	return false
 }
 
 // notifyRecipient is whom a knock or its withdrawal is for: THE REQUEST
