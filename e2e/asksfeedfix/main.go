@@ -14,7 +14,9 @@
 //   - its question WITH options ("Deploy the importer to staging now?"), linked
 //     to a task, with two suggested replies; four lines, more than a card's
 //     three-line clamp, so expanding its card shows more (its chevron drawn);
-//   - its FREE-TEXT question ("Which branch should the release be cut from?");
+//   - its FREE-TEXT question ("Which branch should the release be cut from?"),
+//     carrying a markdown link to a YouTube clip with a start (drawn as a
+//     link and its clip range);
 //   - a second question with options ("Rotate the staging key?"), so answering
 //     one card leaves another to move focus to;
 //   - muster's NOTICE ("This session may be waiting on you");
@@ -140,7 +142,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool, owner int64, name string) err
 	if _, err := mk("rotate", attention.New{Asker: agent, Question: "Rotate the staging key?", Options: []string{"Rotate it", "Leave it"}}); err != nil {
 		return err
 	}
-	if _, err := mk("freetext", attention.New{Asker: agent, Question: "Which branch should the release be cut from?"}); err != nil {
+	if _, err := mk("freetext", attention.New{Asker: agent, Question: "Which branch should the release be cut from? [The walkthrough](https://youtu.be/dQw4w9WgXcQ?t=120)"}); err != nil {
 		return err
 	}
 	deploy, err := mk("deploy", attention.New{Asker: agent, Question: "Deploy the importer to staging now?\n\nThe tests pass; the last deploy was two days ago.\nA rollback is one command.",

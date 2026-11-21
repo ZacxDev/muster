@@ -153,7 +153,7 @@ func TestAFactsSeparatorTravelsWithTheFactAfterIt(t *testing.T) {
 	ask := asklog.Ask{ID: 41, Kind: asklog.KindPlainText, Host: "work-laptop", TmuxSession: "ratelimit", Repo: "acme/api",
 		Question: "Go on?", Answer: "yes", AnsweredBy: asklog.ByOwner, Outcome: asklog.OutcomeAnswered,
 		AskedAt: glanceNow.Add(-15 * time.Minute), AnsweredAt: glanceNow.Add(-15*time.Minute + 7*time.Second)}
-	card := wrapParse(t, askLogCardHTML(ask, glanceNow, asklog.DefaultTextTTL))
+	card := wrapParse(t, askLogCardHTML(ask, glanceNow, asklog.DefaultTextTTL, ""))
 	ans := wrapFindAll(card, "data-asklog-answer")
 	if len(ans) != 1 {
 		t.Fatalf("%d answer lines, want 1", len(ans))
@@ -217,7 +217,7 @@ func TestALogRowsAgeIsNeverCut(t *testing.T) {
 		{"nowhere", asklog.Ask{ID: 8, Kind: asklog.KindAttention, AskedAt: glanceNow.Add(-3 * time.Hour)}, "3h ago"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			doc := wrapParse(t, askLogCardHTML(c.ask, glanceNow, asklog.DefaultTextTTL))
+			doc := wrapParse(t, askLogCardHTML(c.ask, glanceNow, asklog.DefaultTextTTL, ""))
 			var times []*xhtml.Node
 			var walk func(*xhtml.Node)
 			walk = func(n *xhtml.Node) {
@@ -294,7 +294,7 @@ func TestAskLogPlaceNeverCutToAStub(t *testing.T) {
 		{"nowhere", asklog.Ask{ID: 12, Kind: asklog.KindAttention, AskedAt: glanceNow.Add(-3 * time.Hour)}, "", "", "", "3h ago"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			doc := wrapParse(t, askLogCardHTML(c.ask, glanceNow, asklog.DefaultTextTTL))
+			doc := wrapParse(t, askLogCardHTML(c.ask, glanceNow, asklog.DefaultTextTTL, ""))
 			subs := wrapFindAll(doc, "data-asklog-sub")
 			if len(subs) != 1 {
 				t.Fatalf("%d sub lines, want 1", len(subs))

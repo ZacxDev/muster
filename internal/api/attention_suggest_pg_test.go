@@ -293,7 +293,7 @@ func TestTheAskPageIsTheAsksOwn(t *testing.T) {
 	id := f.ask(t, f.opTok, "Deploy <the> importer?", "deploy now", "wait")
 	sid := strconv.FormatInt(id, 10)
 	page := f.page(t, askPagePath(id))
-	for _, want := range []string{`data-ask-question>Deploy &lt;the&gt; importer?</p>`, `name="option" value="deploy now"`,
+	for _, want := range []string{`data-ask-question>Deploy &lt;the&gt; importer?</div>`, `name="option" value="deploy now"`,
 		`<form id="ask-answer" method="POST" action="/attention/asks/` + sid + `/answer"`,
 		`name="return" value="/attention/asks/` + sid + `"`, `href="/agents/` + f.op.Name + `"`, `id="app-compose"`,
 		`interactive-widget=resizes-content`, `aria-label="Back to Asks"`} {

@@ -1314,7 +1314,7 @@ func TestATaskEventKeepsTheRawTitleAndTheQueueShowsItPlain(t *testing.T) {
 	}
 	html := attentionItemsHTML(items, time.Now())
 	// The card is titled "Task #N"; its question line is the title, plain.
-	if want := "data-attention-text>Rotate the key for C#</p>"; !strings.Contains(html, want) {
+	if want := "data-attention-text>Rotate the key for C#</div>"; !strings.Contains(html, want) {
 		t.Errorf("the attention queue does not show the title plain (%q):\n%s", want, html)
 	}
 }

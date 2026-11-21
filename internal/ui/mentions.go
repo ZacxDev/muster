@@ -330,7 +330,7 @@ func mentionFor(mx *MentionIndex, src string, partial bool) *mentionCtx {
 }
 
 // mdMention links s's mentions, stashing each anchor in v. s is escaped inline
-// text with code spans, links and URLs already vaulted (mdInlineWith).
+// text with code spans, links and URLs already vaulted (mdInlineOpts).
 //
 // ⚠ ITS SLICES ARE SPELLED s[i:j] OR GO THROUGH span: Tailwind scans this
 // package's Go for class names (tailwind.config.js), and a slice bounded by

@@ -460,7 +460,7 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 	b.WriteString(ui.AsksSectionLabel("asklog-asks", "Every ask, newest first") + `
 <ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asklog-asks" data-testid="asklog-list">`)
 	for _, a := range rows {
-		b.WriteString(askLogCardHTML(a, now, s.askLogTextTTL()))
+		b.WriteString(askLogCardHTML(a, now, s.askLogTextTTL(), s.askLogPage(ctx, a)))
 	}
 	if len(rows) == 0 {
 		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="log-page" data-asklog-empty="page"`, "", "", "No older asks.", ""))
@@ -861,10 +861,28 @@ func askLogAskID(a asklog.Ask) int64 {
 	return id
 }
 
+// askLogPage is the page log row a opens: its muster ask's (askLogAskID),
+// when ctx's principal may open it (askHasPage: their own ask, never one put
+// to the chief); "" for a row with none, and for an ask that cannot be read.
+func (s *Server) askLogPage(ctx context.Context, a asklog.Ask) string {
+	id := askLogAskID(a)
+	if id <= 0 || s.ext.Attention == nil {
+		return ""
+	}
+	ask, err := s.ext.Attention.Get(ctx, id)
+	if err != nil || !askHasPage(ask, requestOwner(ctx)) {
+		return ""
+	}
+	return askPagePath(id)
+}
+
 // askLogCardHTML is one ask's card: what kind and where, its outcome as a
 // pill, its ask id when it has one (askLogAskID); the question (or that its text expired); the answer, who gave it and
 // how long it took.
-func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
+//
+// page is the row's ask page (askLogPage), "" for none: with one, its head is
+// the link to it.
+func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration, page string) string {
 	esc := html.EscapeString
 	row := askLogRowOf(a)
 	id := strconv.FormatInt(a.ID, 10)
@@ -879,14 +897,14 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	// outcome as its pill, its ask id.
 	b.WriteString(`>
 ` + ui.AsksHeadHTML(ui.AsksHead{Who: `<span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) + `</span>` + sub,
-		End: `<span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span>`, Chip: ui.AskIDChipHTML(askLogAskID(a))}) + `
+		End: `<span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span>`, Chip: ui.AskIDChipHTML(askLogAskID(a)), Href: page}) + `
 `)
 	switch {
 	case row.TextExpired:
 		b.WriteString(`<p class="` + ui.AsksLogExpiredClass + `" data-asklog-expired>Text expired: question and answer text is kept ` + esc(askDuration(ttl)) + `.</p>
 `)
 	case strings.TrimSpace(a.Question) != "":
-		b.WriteString(`<p class="` + ui.AsksLogClampClass + `" data-asklog-question>` + askTextHTML(strings.TrimSpace(a.Question)) + `</p>
+		b.WriteString(`<div class="` + ui.AsksLogClampClass + `" data-asklog-question>` + askTextHTML(strings.TrimSpace(a.Question)) + `</div>
 `)
 	}
 	var ans []string

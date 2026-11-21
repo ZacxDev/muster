@@ -161,7 +161,7 @@ func TestAnOldStepUpCardStillRenders(t *testing.T) {
 	old := attention.Ask{ID: 3, Asker: attention.Asker{System: true, Label: hostDecisionLabel}, Options: []string{hostDecisionConfirm, hostDecisionRefuse},
 		Question: "A session on host-a (main:1) asks to destroy one of your agents: agent_destroy {\"id\":5}\n\nThis machine runs host officer acme:main [0011223344ff]"}
 	page := askQuestionHTML(old)
-	if !strings.Contains(page, `data-ask-question>A session on host-a (main:1) asks to destroy one of your agents: agent_destroy {&#34;id&#34;:5}`) ||
+	if !strings.Contains(page, `data-ask-question>A session on host-a (main:1) asks to destroy one of your agents: agent_destroy {&quot;id&quot;:5}`) ||
 		strings.Contains(page, "data-stepup-card") {
 		t.Fatalf("an old card's page:\n%s", page)
 	}

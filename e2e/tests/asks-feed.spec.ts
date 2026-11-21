@@ -167,16 +167,18 @@ for (const vp of [
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
     });
 
-    test('a tap expands a card in place and collapses it; View in session is at its bottom', async ({ page }) => {
+    test('the chevron expands a card in place and collapses it; View in session is at its bottom', async ({ page }) => {
       await openFeed(page);
       const card = page.locator(`#ask-${ids.deploy}`);
       const toggle = card.locator('[data-asks-toggle]');
       const question = card.locator('[data-attention-text]');
       await expect(card).toHaveAttribute('data-expanded', 'false');
       await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-      // A tap on the question (not a control) opens it.
-      await question.tap();
+      // A tap on the chevron expands it in place (a tap on the rest of an
+      // ask's card opens its page: "a card with a page", below).
+      await toggle.tap();
       await expect(card).toHaveAttribute('data-expanded', 'true');
+      await expect(page).toHaveURL(`${origin}/attention`);
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
       // View in session: the asking agent's page, the card's last row.
       const view = card.locator('[data-asks-view-session]');
@@ -187,7 +189,7 @@ for (const vp of [
       expect(cardBox.y + cardBox.height - (viewBox.y + viewBox.height), 'and at the card’s bottom').toBeLessThan(24);
       // The task link sits beside it.
       await expect(card.locator('[data-asks-task]')).toHaveAttribute('href', `/tasks/${ids.task}`);
-      // A tap on the head collapses it again.
+      // A tap on the chevron collapses it again.
       await toggle.tap();
       await expect(card).toHaveAttribute('data-expanded', 'false');
       // A tap on an option does NOT expand (it answers): covered below; the
@@ -206,13 +208,12 @@ for (const vp of [
       const short = page.locator(`#ask-${ids.rotate}`), long = page.locator(`#ask-${ids.deploy}`);
       await expect(short).toHaveAttribute('data-asks-nomore', '');
       await expect(short.locator('.asks-chevron')).toBeHidden();
+      // The chevron is its own button on an ask's card: not drawn at all.
       const toggle = short.locator('[data-asks-toggle]');
+      await expect(toggle).toBeHidden();
       await expect(toggle).toHaveAttribute('aria-disabled', 'true');
       await expect(toggle).not.toHaveAttribute('aria-expanded', /.*/);
-      await short.locator('[data-attention-text]').click();
-      // aria-disabled: Playwright would wait for it to be enabled; a tap
-      // still lands on it, so it is forced.
-      await toggle.click({ force: true });
+      await toggle.evaluate((el) => (el as HTMLElement).click());
       await expect(short).toHaveAttribute('data-expanded', 'false');
       await short.focus();
       await page.keyboard.press('Enter');
@@ -797,6 +798,135 @@ for (const vp of [
       await drag('right');
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
       await cdp.detach();
+    });
+  });
+}
+
+// A CARD WITH A PAGE (#948, operator decision "Tap opens page, chevron
+// expands"): an ask's card is ONE real link to its page (its head,
+// data-asks-card-link), and a tap anywhere else on it that is not a control
+// follows that link; its chevron is a button of its own that expands it in
+// place. At a phone (390×844, touch) and a desktop (1440×900, a mouse).
+//
+// 🔴 RED at origin/main: a tap on the card expanded it, no card had a link to
+// its page, and a question's URL was plain text.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', use: { viewport: { width: 1440, height: 900 } } },
+]) {
+  test.describe(`a card with a page, ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+    const press = (l: ReturnType<Page['locator']>, position?: { x: number; y: number }) =>
+      vp.use.hasTouch ? l.tap({ position }) : l.click({ position });
+
+    test('a tap on the card opens its page; its chevron expands it in place', async ({ page }) => {
+      await openFeed(page);
+      const card = page.locator(`#ask-${ids.deploy}`);
+      const link = card.locator('[data-asks-card-link]');
+      // One real link to the page, reachable by Tab.
+      await expect(link).toHaveCount(1);
+      await expect(link).toHaveAttribute('href', `/attention/asks/${ids.deploy}`);
+      expect(await link.evaluate((el) => (el as HTMLElement).tabIndex), 'the link is in the tab order').toBe(0);
+      // The chevron expands and collapses the card, and goes nowhere.
+      const toggle = card.locator('[data-asks-toggle]');
+      await expect(toggle).toHaveAccessibleName('Expand');
+      await press(toggle);
+      await page.waitForTimeout(400);
+      await expect(page, 'the chevron navigated').toHaveURL(`${origin}/attention`);
+      await expect(card).toHaveAttribute('data-expanded', 'true');
+      await press(toggle);
+      await expect(card).toHaveAttribute('data-expanded', 'false');
+      // A tap on the question (not a control) opens the ask's page.
+      await press(card.locator('[data-attention-text]'), { x: 6, y: 6 });
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
+      await expect(page.locator('[data-ask-question]')).toBeVisible();
+      // The keyboard: the link focused, Enter opens it.
+      await page.goto(origin + '/attention');
+      await link.focus();
+      await page.keyboard.press('Enter');
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
+      // The Answered tab's card opens its page the same way.
+      await page.goto(origin + '/attention?tab=answered');
+      const answered = page.locator(`#answered-${ids.answered}`);
+      await expect(answered).toBeVisible();
+      await press(answered.locator('[data-attention-text]'), { x: 6, y: 6 });
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.answered}`);
+    });
+
+    test('a link in the question, the reply box, the id chip and an option never open the card', async ({ page }) => {
+      await openFeed(page);
+      await page.context().route('https://youtu.be/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<title>clip</title>' }));
+      const free = page.locator(`#ask-${ids.freetext}`);
+      // The question's link is an anchor, its clip range after it.
+      const qlink = free.locator('[data-attention-text] a');
+      await expect(qlink).toHaveAttribute('href', 'https://youtu.be/dQw4w9WgXcQ?t=120');
+      await expect(qlink).toHaveAttribute('target', '_blank');
+      await expect(free.locator('[data-ask-clip]')).toHaveText('2:00');
+      const [tab] = await Promise.all([page.context().waitForEvent('page'), press(qlink)]);
+      await tab.close();
+      await expect(page, 'the question’s link opened the card').toHaveURL(`${origin}/attention`);
+      // The reply box takes the tap.
+      const box = free.locator('textarea');
+      await press(box);
+      await expect(box).toBeFocused();
+      // The id chip copies; it does not open the card.
+      await press(free.locator('[data-id-copy]'));
+      // An option answers; the card leaves and the page stays.
+      const rotate = page.locator(`#ask-${ids.rotate}`);
+      await press(rotate.getByRole('button', { name: 'Leave it', exact: true }));
+      await expect(rotate).toHaveCount(0);
+      await page.waitForTimeout(400);
+      await expect(page, 'a control opened the card').toHaveURL(`${origin}/attention`);
+      // Control: a tap on the same card's words (not its link) does open it.
+      await press(free.locator('[data-attention-text]'), { x: 6, y: 6 });
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.freetext}`);
+    });
+
+    test('a text selection on the card does not open it; a click does', async ({ page }) => {
+      await openFeed(page);
+      const q = page.locator(`#ask-${ids.deploy} [data-attention-text]`);
+      const b = (await q.boundingBox())!;
+      await page.mouse.move(b.x + 4, b.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(b.x + Math.min(180, b.width - 8), b.y + 8, { steps: 10 });
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+      await expect(page, 'ending a selection opened the card').toHaveURL(`${origin}/attention`);
+      // ... and the drag did select text (so the guard above was reached).
+      expect(await page.evaluate(() => String(window.getSelection())), 'the drag selected text').not.toBe('');
+      // Control: with no selection, a plain click at the same point opens it.
+      await page.evaluate(() => window.getSelection()!.removeAllRanges());
+      await page.mouse.click(b.x + 4, b.y + 8);
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
+    });
+
+    if (!vp.use.hasTouch) {
+      test('a ctrl/cmd click and a middle click on the card open its page in a new tab', async ({ page }) => {
+        await openFeed(page);
+        const q = page.locator(`#ask-${ids.deploy} [data-attention-text]`);
+        for (const click of [{ modifiers: ['ControlOrMeta' as const] }, { button: 'middle' as const }]) {
+          const [tab] = await Promise.all([page.context().waitForEvent('page'), q.click({ position: { x: 6, y: 6 }, ...click })]);
+          await tab.waitForURL(`${origin}/attention/asks/${ids.deploy}`);
+          await tab.close();
+          await expect(page, `${JSON.stringify(click)} moved this tab`).toHaveURL(`${origin}/attention`);
+        }
+      });
+    }
+
+    test('without JavaScript the card’s link still opens its page', async ({ page, browser }) => {
+      await signIn(page, origin);
+      const state = await page.context().storageState();
+      const ctx = await browser.newContext({ ...vp.use, javaScriptEnabled: false, storageState: state });
+      try {
+        const p = await ctx.newPage();
+        await p.goto(origin + '/attention');
+        const link = p.locator(`#ask-${ids.deploy} [data-asks-card-link]`);
+        await expect(link).toBeVisible();
+        await (vp.use.hasTouch ? link.tap() : link.click());
+        await expect(p).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
+      } finally {
+        await ctx.close();
+      }
     });
   });
 }

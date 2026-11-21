@@ -59,7 +59,7 @@ func (s *Server) handleAskPage(w http.ResponseWriter, r *http.Request) {
 	a, err := s.ext.Attention.Get(r.Context(), id)
 	// Another owner's ask reads as a missing one (row-level security), and the
 	// explicit owner check holds with it rolled back.
-	if err != nil || a.Owner != requestOwner(r.Context()) || a.ToChief {
+	if err != nil || !askHasPage(a, requestOwner(r.Context())) {
 		if err != nil && attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: the ask page of %d: %v", id, err)
 		}
@@ -67,6 +67,29 @@ func (s *Server) handleAskPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderAskPage(w, r, a)
+}
+
+// askHasPage is THE rule for whether ask a has a page viewer may open: their
+// own ask, never one a session put to the chief. handleAskPage refuses every
+// other with a 404, and every card that links to an ask's page (withAskPages,
+// the Log's rows) links only where this holds — so no card links to a 404.
+func askHasPage(a attention.Ask, viewer int64) bool {
+	return a.ID > 0 && viewer > 0 && a.Owner == viewer && !a.ToChief
+}
+
+// withAskPages sets each ask's and notice's page (attentionItem.page) where
+// its reader — ctx's principal — may open it (askHasPage).
+func withAskPages(ctx context.Context, items []attentionItem) {
+	viewer := requestOwner(ctx)
+	for i := range items {
+		it := &items[i]
+		if it.Kind != attentionKindAsk && it.Kind != attentionKindNotice {
+			continue
+		}
+		if askHasPage(attention.Ask{ID: it.AskID, Owner: it.owner, ToChief: it.toChief}, viewer) {
+			it.page = askPagePath(it.AskID)
+		}
+	}
 }
 
 // askShowsSuggestions reports whether ask a's stored suggestions may be shown
@@ -224,7 +247,7 @@ func askQuestionHTML(a attention.Ask) string {
 	if a.StepUp != nil {
 		return stepUpCardHTML(a.StepUp)
 	}
-	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + askTextHTML(a.Question) + "</p>\n"
+	return `<div class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + askTextHTML(a.Question) + "</div>\n"
 }
 
 // The ask page's own words and classes.
@@ -312,7 +335,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 <p class="text-base font-semibold text-fg">` + esc(state) + `</p>
 `)
 		if a.Answer != "" {
-			b.WriteString(`<p class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</p>
+			b.WriteString(`<div class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 `)
 		}
 		if a.Status == attention.Answered {

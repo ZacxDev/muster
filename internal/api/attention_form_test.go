@@ -105,8 +105,17 @@ func TestTheAnswerFormsTwoPostsAreUnchanged(t *testing.T) {
 		if strings.Contains(answer, "formaction") {
 			t.Errorf("%s: the answer form carries a formaction", c.name)
 		}
-		head := regexp.MustCompile(`(?s)<button type="button"[^>]*data-asks-toggle>.*?</button>`).FindString(out)
-		if strings.Contains(head, "ask-9-dismiss") {
+		// The head: the Asks card's top row (an ask's link head and its
+		// chevron), its toggle head, or a session page card's head. Found first (the control), then
+		// checked to hold no Dismiss.
+		head := regexp.MustCompile(`(?s)<div class="[^"]*" data-asks-top>.*?</div>|<button type="button"[^>]*data-asks-head data-asks-toggle>.*?</button>|<a [^>]*data-asks-head[^>]*>.*?</a>` +
+			// A session page's card: its head is the link to the session, or
+			// (no link) the plain head row.
+			`|<a href="[^"]*" class="[^"]*" data-attention-session>.*?</a>|<div class="` + regexp.QuoteMeta(ui.AsksHeadClass) + ` flex-1">.*?</div>`).FindString(out)
+		if head == "" {
+			t.Fatalf("%s: CONTROL: no head found:\n%s", c.name, out)
+		}
+		if strings.Contains(head, "ask-9-dismiss") || strings.Contains(head, "data-attention-dismiss") {
 			t.Errorf("%s: Dismiss in the head", c.name)
 		}
 		dismiss := regexp.MustCompile(`<form id="ask-9-dismiss" method="POST" action="/attention/asks/9/cancel" hidden([^>]*)>([^<]*(?:<input[^>]*>)?)</form>`).FindStringSubmatch(out)

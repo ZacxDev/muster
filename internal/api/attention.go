@@ -338,6 +338,13 @@ type attentionItem struct {
 	// for a member — a TEAM's (team sharing 2b.3). Set by askItem; zero for
 	// every other item.
 	owner int64
+	// toChief: an ask a session put to the chief (attention.Ask.ToChief),
+	// which has no page. Set by askItem.
+	toChief bool
+	// page is the ask's own page (askPagePath) when the reader may open it
+	// (askHasPage), "" otherwise and for every other item: what its card's
+	// head links to. Set by withAskPages.
+	page string
 	// watchOnly, when set, is why this ask is drawn UNANSWERABLE for the
 	// reader (teamWatcherOf: a viewer of the team that owns it): no options,
 	// no answer box, no Dismiss — this sentence in their place. Set by
@@ -510,7 +517,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, OfficerID: officerAskID(a), target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
-		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
+		ownerCard: a.OwnerCard, owner: a.Owner, toChief: a.ToChief, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
 		it.officerAsk = officerSystemAsk(a)
@@ -989,6 +996,7 @@ func attentionFocusHTML(title string, age ui.FocusAge) string {
 // links is false on a session page's asks block (attention_asker.go): those
 // asks are that very session's, and a link to the page already open is noise.
 func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links bool) {
+	withAskPages(ctx, items)
 	owner := requestOwner(ctx)
 	dict := s.dictatePath()
 	for i := range items {

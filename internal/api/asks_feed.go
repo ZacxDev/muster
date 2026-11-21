@@ -173,9 +173,10 @@ func taskCardParts(text string) (title, rest string) {
 }
 
 // askFeedCardHTML is ONE item's card on the Asks page's Open feed (the
-// component: ui/asks_card.go). The head is a toggle, never a link: the way to
-// the session is the footer's "View in session", at the card's bottom whether
-// it is expanded or not.
+// component: ui/asks_card.go). An ask's or a notice's head is the link to its
+// page (attentionItem.page, askHasPage), its chevron the expand; any other card's head is the
+// expand. The way to the session is the footer's "View in session", at the
+// card's bottom whether it is expanded or not.
 func askFeedCardHTML(it attentionItem, now time.Time) string {
 	esc := html.EscapeString
 	var b strings.Builder
@@ -236,7 +237,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	if it.AskID > 0 && (it.Kind == attentionKindAsk || it.Kind == attentionKindNotice) {
 		chip = ui.AskIDChipHTML(it.AskID)
 	}
-	b.WriteString(ui.AsksHeadHTML(ui.AsksHead{ID: it.Key, Badge: badge, Who: who, Toggle: true, More: moreID, Chip: chip}) + "\n")
+	b.WriteString(ui.AsksHeadHTML(ui.AsksHead{ID: it.Key, Badge: badge, Who: who, Toggle: true, More: moreID, Chip: chip, Href: it.page}) + "\n")
 	// THE QUESTION (what a waiting session waits on: its pending call).
 	b.WriteString(askCardQuestionHTML(it, text))
 	// THE FOOTER's links: View in session, the task.
@@ -361,10 +362,16 @@ func askCardQuestionHTML(it attentionItem, text string) string {
 		if it.Text == sessionWaitingText {
 			cls = ui.AsksCardQuestionClass + " text-fg2"
 		}
-		return `<p class="` + cls + `" data-attention-text>` + askTextHTML(line) + `</p>
+		// A tool call's line is a command, drawn as written (plainTextHTML);
+		// a question is ask text.
+		body := askTextHTML(line)
+		if strings.Contains(cls, "font-mono") {
+			body = plainTextHTML(line)
+		}
+		return `<div class="` + cls + `" data-attention-text>` + body + `</div>
 `
 	case it.openCode != nil:
-		return `<p class="` + ui.AsksCardQuestionClass + `" data-attention-text><bdi dir="ltr">` + text + `</bdi></p>
+		return `<p class="` + ui.AsksCardQuestionClass + `" data-attention-text><bdi dir="ltr">` + plainTextHTML(it.Text) + `</bdi></p>
 `
 	case it.Kind == attentionKindAsk && it.stepUp != nil:
 		// A step-up card: its title, why and a compact mock of the post
@@ -374,7 +381,7 @@ func askCardQuestionHTML(it attentionItem, text string) string {
 	// A builtin officer's context (the item, the outside message it is
 	// about) is the substance of its ask: drawn with the question, never
 	// behind the expand.
-	return officerNoteLabelHTML(it.Context) + `<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</p>
+	return officerNoteLabelHTML(it.Context) + `<div class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</div>
 ` + officerContextHTML(it.Context)
 }
 
@@ -616,8 +623,8 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// THE OPEN CARD'S HEAD AND BODY (ui.AsksHeadHTML, askCardQuestionHTML):
 	// a step-up card answered is still drawn as its post's preview.
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID)}) + `
-` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<p class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</p>
+` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID), Href: it.page}) + `
+` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<div class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 ` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `
 `)
 	if retry {
@@ -680,6 +687,7 @@ func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts 
 		items[i] = askItem(a, hosts...)
 	}
 	s.withNames(ctx, items)
+	withAskPages(ctx, items)
 	return items
 }
 

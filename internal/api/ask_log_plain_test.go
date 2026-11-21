@@ -83,7 +83,7 @@ func TestALogRowSaysWhereInWords(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.a.ID, c.a.Kind, c.a.Runtime, c.a.AskedAt = 7, asklog.KindPlainText, asklog.RuntimeClaudeCode, now.Add(-15*time.Minute)
-			out := askLogCardHTML(c.a, now, 30*24*time.Hour)
+			out := askLogCardHTML(c.a, now, 30*24*time.Hour, "")
 			i := strings.Index(out, `data-asklog-sub`)
 			if i < 0 {
 				t.Fatalf("no sub line:\n%s", out)
@@ -119,7 +119,7 @@ func TestAnAsksQuestionIsNotDrawnAsCode(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := askFeedCardHTML(c.it, now)
-			m := regexp.MustCompile(`<p class="([^"]*)" data-attention-text>([^<]*)</p>`).FindStringSubmatch(out)
+			m := regexp.MustCompile(`<div class="([^"]*)" data-attention-text>([^<]*)</div>`).FindStringSubmatch(out)
 			if m == nil {
 				t.Fatalf("no question line:\n%s", out)
 			}

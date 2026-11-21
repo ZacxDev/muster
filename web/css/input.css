@@ -794,6 +794,15 @@ html:has([data-asks-feed]) {
 .asks-card[data-asks-nomore] .asks-chevron {
   display: none;
 }
+/* ... and on a card whose head is its page's link, the chevron is a button
+   of its own (AsksCardChevronButtonClass): that button is not drawn either. */
+.asks-card[data-asks-nomore] [data-asks-toggle]:not([data-asks-head]) {
+  display: none;
+}
+/* A card with a page of its own opens it on a tap (the feed's script). */
+.asks-card:has(> [data-asks-top] > [data-asks-card-link]) {
+  cursor: pointer;
+}
 /* A <details> whose <summary> draws the chevron (a step-up card's Details):
    it turns with [open], whatever card it sits in. */
 details[data-stepup-details]:not([open]) > summary .asks-chevron {

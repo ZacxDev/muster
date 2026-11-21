@@ -137,7 +137,9 @@ func ownerAskCardAs(toolID string, ask OwnerAsk, state, chose, shown string, ask
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
 		Span(Class("min-w-0 truncate"), g.Text("Chief is asking")),
 		Span(g.Attr("data-owner-ask-label", ""), Class("ml-auto shrink-0 text-muted"), g.Text(label)))
-	question := P(ID(qid), g.Attr("data-owner-ask-question", ""), Class("break-words font-medium text-fg"), g.Text(ask.Question))
+	// The question and the answer are ask text (AskTextHTML: markdown, every
+	// hidden code point a visible flag), as on the Asks page's card.
+	question := Div(ID(qid), g.Attr("data-owner-ask-question", ""), Class("whitespace-pre-wrap break-words font-medium text-fg"), g.Raw(AskTextHTML(ask.Question)))
 
 	var body g.Node
 	if state == OwnerAskClosed {
@@ -153,8 +155,8 @@ func ownerAskCardAs(toolID string, ask OwnerAsk, state, chose, shown string, ask
 		}
 		body = g.Group{
 			Ul(Class("list-disc pl-5 text-xs"), g.Group(opts)),
-			P(g.Attr("data-owner-ask-answer", ""), g.Attr("role", "status"), Class("break-words text-xs text-fg"),
-				Span(Class("font-semibold text-accent"), g.Text("Your answer: ")), g.Text(answer)),
+			Div(g.Attr("data-owner-ask-answer", ""), g.Attr("role", "status"), Class("whitespace-pre-wrap break-words text-xs text-fg"),
+				Span(Class("font-semibold text-accent"), g.Text("Your answer: ")), g.Raw(AskTextHTML(answer))),
 		}
 	} else {
 		body = ownerAskForm(base, ask)

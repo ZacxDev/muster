@@ -109,14 +109,14 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		if d.Mode == chiefnudge.ModeLive {
 			label = "Message: "
 		}
-		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-message>` + label + askTextHTML(d.Message) + `</p>
+		b.WriteString(`<div class="` + ui.AsksTextClass + `" data-nudge-message>` + label + askTextHTML(d.Message) + `</div>
 `)
 	case d.Question != "":
 		q := d.Question
 		if len(d.Options) > 0 {
 			q += "\nOptions: " + strings.Join(d.Options, " · ")
 		}
-		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + askTextHTML(q) + `</p>
+		b.WriteString(`<div class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + askTextHTML(q) + `</div>
 `)
 	}
 	out := nudgeOutcomeLabel(d.Outcome)

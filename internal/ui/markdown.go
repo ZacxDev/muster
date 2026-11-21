@@ -190,18 +190,45 @@ func (v *mdVault) restore(s string) string {
 // before emphasis so `*` in link text isn't eaten) — but correctness no longer
 // depends on later patterns failing to match earlier output, which is what made
 // two links in one paragraph corrupt each other.
-func mdInline(escaped string) string { return mdInlineWith(escaped, nil) }
+func mdInline(escaped string) string { return mdInlineOpts(escaped, mdOpts{}) }
 
-// mdInlineWith is mdInline, linking the mentions mc resolves (mentions.go).
-// They are matched AFTER code spans, links and bare URLs are vaulted, so none
-// of those is looked inside, and BEFORE emphasis, which then sees each link
-// only as a placeholder. A nil mc links none.
-func mdInlineWith(escaped string, mc *mentionCtx) string {
+// mdOpts is how one render draws: its headings (doc), the mentions it links
+// (mc) and whether it is ASK TEXT (ask_text.go: flagged code points drawn as flags,
+// paragraphs left as text, a YouTube link's clip range after its anchor).
+type mdOpts struct {
+	doc bool
+	mc  *mentionCtx
+	ask bool
+}
+
+// esc is this render's escape of one piece of author text: mdEscape, or — for
+// ask text — askEscape, which turns each flagged code point into a token
+// the last pass draws as its flag.
+func (o mdOpts) esc(s string) string {
+	if o.ask {
+		return askEscape(s)
+	}
+	return mdEscape(s)
+}
+
+// mdInlineOpts is mdInline as render o draws it, linking the mentions o.mc
+// resolves (mentions.go). They are matched AFTER code spans, links and bare
+// URLs are vaulted, so none of those is looked inside, and BEFORE emphasis,
+// which then sees each link only as a placeholder. A nil o.mc links none.
+func mdInlineOpts(escaped string, o mdOpts) string {
+	mc := o.mc
 	// Defence in depth: mdEscape already strips NUL from all author text, but this
 	// function is package-visible and takes an "already-escaped" string on trust,
 	// so re-strip rather than rely on every future caller having gone through it.
 	escaped = strings.ReplaceAll(escaped, mdVaultSep, "")
 	v := &mdVault{}
+	// 🔴 ASK TEXT'S MACHINE TAG IS NEVER MARKDOWN (askWatchTag): stashed as
+	// written, so no later pass can read an `_` in its video id as emphasis.
+	if o.ask {
+		if tag := askWatchTag.FindString(escaped); tag != "" {
+			escaped = v.stash(tag) + escaped[len(tag):]
+		}
+	}
 
 	// Code spans are stashed WHOLE. Their content must stay literal — the previous
 	// implementation ran emphasis over it, so `a*b*c` rendered as a<em>b</em>c
@@ -222,8 +249,8 @@ func mdInlineWith(escaped string, mc *mentionCtx) string {
 			g[1] + `</code>`)
 	})
 	s = mdSessionCards(s, v, mc)
-	s = mdLinkify(s, v)
-	s = mdAutolink(s, v)
+	s = mdLinkify(s, v, o)
+	s = mdAutolink(s, v, o)
 	s = mdMention(s, v, mc)
 	s = mdEmphasis(s)
 	return v.restore(s)
@@ -250,7 +277,7 @@ func mdAnchor(href, label string) string {
 // terminate the attribute. The scheme needs no separate check here — unlike
 // mdLinkify, the pattern itself only matches http:// and https://, so
 // `javascript:` and `data:` are not merely rejected, they are unmatchable.
-func mdAutolink(escaped string, v *mdVault) string {
+func mdAutolink(escaped string, v *mdVault, o mdOpts) string {
 	return mdBareURL.ReplaceAllStringFunc(escaped, func(m string) string {
 		trail := mdURLTrail.FindString(m)
 		if trail != "" {
@@ -259,7 +286,12 @@ func mdAutolink(escaped string, v *mdVault) string {
 		if m == "" {
 			return trail
 		}
-		return v.stash(mdAnchor(m, m)) + trail
+		// 🔴 A URL HOLDING A FLAGGED CODE POINT IS NOT A LINK (askEscape's
+		// token): its text stays text, the code point drawn as its flag.
+		if strings.Contains(m, askHiddenSep) {
+			return m + trail
+		}
+		return v.stash(mdAnchor(m, m)+o.clip(m)+o.linkHost(m, m)) + trail
 	})
 }
 
@@ -394,18 +426,19 @@ func mdUnderCloses(s string, j int) bool {
 // — crossing <em>/</a>, i.e. malformed HTML. Emphasizing the label here, in
 // isolation, both prevents that and preserves `[*x*](u)` italicizing as it always
 // has.
-func mdLinkify(escaped string, v *mdVault) string {
+func mdLinkify(escaped string, v *mdVault, o mdOpts) string {
 	return mdLink.ReplaceAllStringFunc(escaped, func(m string) string {
 		g := mdLink.FindStringSubmatch(m)
 		if g == nil {
 			return m
 		}
 		text, href := g[1], g[2]
-		if !mdHTTPScheme.MatchString(href) {
-			// Not an http(s) link → leave the literal markdown text (inert).
+		if !mdHTTPScheme.MatchString(href) || strings.Contains(href, askHiddenSep) {
+			// Not an http(s) link (or one holding a flagged code point: ask
+			// text's token) → leave the literal markdown text (inert).
 			return m
 		}
-		return v.stash(mdAnchor(href, mdEmphasis(text)))
+		return v.stash(mdAnchor(href, mdEmphasis(text)) + o.clip(href) + o.linkHost(href, text))
 	})
 }
 
@@ -471,6 +504,31 @@ func snippetPlain(src string, n int) string {
 	return textplain.Title(src)
 }
 
+// mdOut is markdownRenderOpts' output: blocks written as they are, and ask
+// text's paragraphs and blank lines (text) joined by a real line break when
+// one follows another — never beside a block, which breaks the line itself.
+type mdOut struct {
+	b        strings.Builder
+	lastText bool
+}
+
+// WriteString writes (part of) a block.
+func (o *mdOut) WriteString(s string) {
+	o.b.WriteString(s)
+	o.lastText = false
+}
+
+// text writes one ask-text line: a paragraph, or "" for a blank line.
+func (o *mdOut) text(s string) {
+	if o.lastText {
+		o.b.WriteString("\n")
+	}
+	o.b.WriteString(s)
+	o.lastText = true
+}
+
+func (o *mdOut) String() string { return o.b.String() }
+
 // --- GFM pipe tables ---------------------------------------------------------
 //
 // A header row containing `|` immediately followed by a separator row, cells
@@ -529,12 +587,12 @@ func mdTableStartsAt(lines []string, i int) bool {
 // carries internal/pages/content_theme.css, which `make css` builds from this
 // file alone (tailwind.pages.config.js): a new class needs `make css`, and
 // internal/pages TestEveryMarkdownClassHasARule fails until it is run.
-func MarkdownHTML(src string) string { return markdownRender(src, true, nil) }
+func MarkdownHTML(src string) string { return markdownRenderOpts(src, mdOpts{doc: true}) }
 
 // markdownHTML is the pure string transform (testable without a DOM). The output
 // contains ONLY tags this function emits; all author text passed through
 // mdEscape first.
-func markdownHTML(src string) string { return markdownRender(src, false, nil) }
+func markdownHTML(src string) string { return markdownRenderOpts(src, mdOpts{}) }
 
 // markdownHTMLWith is markdownHTML, linking the mentions mx resolves.
 func markdownHTMLWith(src string, mx *MentionIndex) string {
@@ -544,11 +602,23 @@ func markdownHTMLWith(src string, mx *MentionIndex) string {
 // markdownRender is markdownHTML, with headings drawn as <h1>…<h6> when
 // docHeadings is set (MarkdownHTML), and mentions linked when mc is set.
 func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
+	return markdownRenderOpts(src, mdOpts{doc: docHeadings, mc: mc})
+}
+
+// markdownRenderOpts is markdownRender as render o draws it. ASK TEXT (o.ask)
+// differs in one more way than its escape: a paragraph is NOT wrapped in a
+// <p> and its lines are joined by real line breaks, and a blank line is one
+// too — its box is whitespace-pre-wrap, so plain ask text reads exactly as it
+// did before it was markdown, and a label before it ("Your answer: ") stays
+// on its first line. A block (a list, a quote, a code block…) breaks the line
+// itself, so no line break is written beside one.
+func markdownRenderOpts(src string, o mdOpts) string {
+	mc, docHeadings := o.mc, o.doc
 	// Normalize newlines so \r\n / \r split cleanly.
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	src = strings.ReplaceAll(src, "\r", "\n")
 	lines := strings.Split(src, "\n")
-	var out strings.Builder
+	var out mdOut
 	i := 0
 	for i < len(lines) {
 		line := lines[i]
@@ -564,14 +634,14 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			i++
 			var code []string
 			for i < len(lines) && !mdFenceEndRe.MatchString(lines[i]) {
-				code = append(code, mdEscape(lines[i]))
+				code = append(code, o.esc(lines[i]))
 				i++
 			}
 			i++ // consume closing fence (if present)
 			label := "code"
 			if lang != "" {
 				// lang is author-controlled → escape it before using as the summary text.
-				label = mdEscape(lang) + " code"
+				label = o.esc(lang) + " code"
 			}
 			out.WriteString(`<details class="group/code my-1 rounded-lg bg-bg/60 ring-1 ring-inset ring-line">`)
 			out.WriteString(`<summary class="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted transition hover:text-fg marker:content-['']"><span class="transition group-open/code:rotate-90">▸</span>` + label + `</summary>`)
@@ -594,7 +664,7 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 		// Heading.
 		if m := mdHeadingRe.FindStringSubmatch(line); m != nil && docHeadings {
 			tag := "h" + strconv.Itoa(len(m[1]))
-			out.WriteString("<" + tag + ">" + mdInlineWith(mdEscape(m[2]), mc) + "</" + tag + ">")
+			out.WriteString("<" + tag + ">" + mdInlineOpts(o.esc(m[2]), o) + "</" + tag + ">")
 			i++
 			continue
 		}
@@ -604,7 +674,7 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 				size = "text-base"
 			}
 			out.WriteString(`<div class="mt-1 font-semibold text-fg ` + size + `">`)
-			out.WriteString(mdInlineWith(mdEscape(m[2]), mc))
+			out.WriteString(mdInlineOpts(o.esc(m[2]), o))
 			out.WriteString(`</div>`)
 			i++
 			continue
@@ -614,7 +684,7 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 		if mdBlockquote.MatchString(line) {
 			var quote []string
 			for i < len(lines) && mdBlockquote.MatchString(lines[i]) {
-				quote = append(quote, mdInlineWith(mdEscape(mdBlockquote.ReplaceAllString(lines[i], "")), mc))
+				quote = append(quote, mdInlineOpts(o.esc(mdBlockquote.ReplaceAllString(lines[i], "")), o))
 				i++
 			}
 			out.WriteString(`<blockquote class="my-1 border-l-2 border-accent/60 bg-s2 py-1 pl-3 text-fg2">`)
@@ -628,7 +698,7 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			out.WriteString(`<ul class="my-1 list-disc space-y-0.5 pl-5">`)
 			for i < len(lines) && mdBulletRe.MatchString(lines[i]) {
 				item := mdBulletRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
+				out.WriteString(`<li>` + mdInlineOpts(o.esc(item), o) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ul>`)
@@ -640,7 +710,7 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			out.WriteString(`<ol class="my-1 list-decimal space-y-0.5 pl-5">`)
 			for i < len(lines) && mdOrderedRe.MatchString(lines[i]) {
 				item := mdOrderedRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
+				out.WriteString(`<li>` + mdInlineOpts(o.esc(item), o) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ol>`)
@@ -661,13 +731,13 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			i += 2 // consume the header row AND the separator row
 			out.WriteString(`<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs"><thead><tr>`)
 			for _, c := range head {
-				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInlineWith(mdEscape(c), mc) + `</th>`)
+				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInlineOpts(o.esc(c), o) + `</th>`)
 			}
 			out.WriteString(`</tr></thead><tbody>`)
 			for i < len(lines) && strings.Contains(lines[i], "|") && !mdBlankLineRe.MatchString(lines[i]) {
 				out.WriteString(`<tr>`)
 				for _, c := range mdTableCells(lines[i]) {
-					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInlineWith(mdEscape(c), mc) + `</td>`)
+					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInlineOpts(o.esc(c), o) + `</td>`)
 				}
 				out.WriteString(`</tr>`)
 				i++
@@ -676,8 +746,11 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			continue
 		}
 
-		// Blank line.
+		// Blank line (in ask text, a line break of its own).
 		if mdBlankLineRe.MatchString(line) {
+			if o.ask {
+				out.text("")
+			}
 			i++
 			continue
 		}
@@ -698,10 +771,14 @@ func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 			// branch above never sees it, and the table renders as a line of pipes.
 			!mdTableStartsAt(lines, i) &&
 			!mdBlockquote.MatchString(lines[i]) {
-			para = append(para, mdEscape(lines[i]))
+			para = append(para, o.esc(lines[i]))
 			i++
 		}
-		out.WriteString(`<p class="my-1">` + mdInlineWith(strings.Join(para, "<br>"), mc) + `</p>`)
+		if o.ask {
+			out.text(mdInlineOpts(strings.Join(para, "\n"), o))
+			continue
+		}
+		out.WriteString(`<p class="my-1">` + mdInlineOpts(strings.Join(para, "<br>"), o) + `</p>`)
 	}
 	// The session cards' ⓘ sheets, after the message: each is a <div>, which
 	// may not sit inside the paragraph its card is in (session_card.go).

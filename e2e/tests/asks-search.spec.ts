@@ -271,6 +271,20 @@ for (const vp of [
       await expect(page).toHaveURL(`${origin}/attention?q=${encodeURIComponent(agent.toUpperCase())}`);
     });
 
+    // A RESULT IS ITS PAGE'S LINK (#948): a tap on a result's words, not
+    // only on its head, opens the ask. RED at origin/main: a result was a
+    // fixed card, and only its head link opened anything.
+    test('a tap on a result opens its ask', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      await search(page, agent.toUpperCase());
+      const result = page.locator(`#search-ask-${ids.deploy}`);
+      await expect(result.locator('[data-asks-card-link]')).toHaveAttribute('href', `/attention/asks/${ids.deploy}`);
+      const text = result.locator('[data-asks-search-text]');
+      await (vp.use.hasTouch ? text.tap({ position: { x: 6, y: 6 } }) : text.click({ position: { x: 6, y: 6 } }));
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
+    });
+
     test('the id copies at a tap or a key, and never expands its card', async ({ page, context }) => {
       await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
       await signIn(page, origin);

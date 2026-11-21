@@ -1051,7 +1051,7 @@ func draftAnswersHTML(c plugins.DraftCard) string {
 const draftReplyToMissing = "muster received no reply with this reference: check the target before you approve."
 
 // draftQuoteHTML is the message a draft answers, from the OUTSIDE party:
-// sender, an optional subject and its body (askTextHTML: real line breaks,
+// sender, an optional subject and its body (plainTextHTML: real line breaks,
 // hidden code points flagged), in its own quote box, labelled untrusted and
 // never mistaken for the draft. attrs are the box's own data attributes.
 func draftQuoteHTML(sender, subject, body, attrs string) string {
@@ -1063,7 +1063,7 @@ func draftQuoteHTML(sender, subject, body, attrs string) string {
 		b.WriteString(`<span class="break-words text-xs text-fg2">` + stepUpHiddenHTML(subject) + `</span>
 `)
 	}
-	b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-draft-quote-body>` + askTextHTML(body) + `</p>
+	b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-draft-quote-body>` + plainTextHTML(body) + `</p>
 </div>
 `)
 	return b.String()

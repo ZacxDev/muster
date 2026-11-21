@@ -232,10 +232,15 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // footer — never in its head, beside the expand chevron (Round 0 of #620).
   const dismissBtn = askItem.getByRole('button', { name: 'Dismiss without answering' });
   await expect(dismissBtn).toHaveAttribute('title', 'Dismiss without answering');
-  // Measured against the HEAD (the toggle the chevron sits in): a card with
-  // nothing more to show draws no chevron (data-asks-nomore), and Dismiss is
-  // never in the head either way.
-  await clearOf(askItem.locator('[data-asks-toggle]'), dismissBtn, 16);
+  // Measured against the card's TOP ROW (its head — the link to its page —
+  // and the chevron, a button of its own beside it): a card with nothing more
+  // to show draws no chevron (data-asks-nomore), so the row, which is always
+  // drawn, is what Dismiss must stay clear of. Dismiss is never in it.
+  const topRow = askItem.locator(':scope > [data-asks-top]');
+  await expect(topRow.locator(':scope > [data-asks-card-link]')).toHaveCount(1);
+  await expect(topRow.locator(':scope > button[data-asks-toggle]')).toHaveCount(1);
+  await expect(topRow.locator('[data-attention-dismiss]')).toHaveCount(0);
+  await clearOf(topRow, dismissBtn, 16);
 
   // The operator taps an option chip: that is the answer.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
