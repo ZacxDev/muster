@@ -253,6 +253,10 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	case it.openCode != nil:
 		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-attention-text><bdi dir="ltr">` + text + `</bdi></p>
 `)
+	case it.Kind == attentionKindAsk && it.stepUp != nil:
+		// A step-up card: its title, why and a compact mock of the post
+		// (stepUpFeedHTML), never its question as one block of text.
+		b.WriteString(stepUpFeedHTML(it.stepUp))
 	default:
 		b.WriteString(officerNoteLabelHTML(it.Context))
 		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</p>

@@ -345,9 +345,10 @@ as **payload v2**:
   and **Refuse**, so its notification's buttons decide it with one tap, signed
   with the phone's step-up key, whose prompt shows the card's text
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
-  Its title is the card's action (*Post to X?*). Its body is the card's why and
-  the start of the post or summary. It has no options line, and it never
-  carries the machine, the session, the hash or the call's arguments
+  Its title is the card's action, with the draft's id on a draft card
+  (*Post to X? · #484*). Its body is the card's why and the start of the post
+  or summary. It has no options line, and it never carries the machine, the
+  session, a hash, a media type or size, or the call's arguments
   ([what a card shows](mirroring.md#what-a-card-shows)). A
   browser's notification of it has no buttons that decide anything: a tap
   opens muster.

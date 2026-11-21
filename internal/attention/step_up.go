@@ -15,8 +15,8 @@ import (
 // A step-up card (internal/api hostStepUpGate) asks the owner to confirm, on
 // their paired phone, one owner-authority call a session made. What the owner
 // needs on its face is WHAT is about to happen and WHY — for a post, the post
-// itself. The host, the session, the security reason and the call's hash are
-// on the record, but folded away (Details).
+// itself. The host, the session, the call in words and the security reason
+// are on the record, but folded away (Details); no hash is shown on any face.
 //
 // 🔴 ONE SOURCE. The card's question — what its push body, its page and the
 // phone's step-up prompt (`confirms`) all read — is StepUpCard.Text(), and
@@ -75,6 +75,16 @@ type StepUpCard struct {
 	Preview string `json:"preview,omitempty"`
 	// Venue is where a post goes, "" for any other card.
 	Venue string `json:"venue,omitempty"`
+	// Platform is an outbound draft's venue as its plugin names it ("x",
+	// "reddit"): what picks the preview's logo. "" for a reply draft (its
+	// venue is its plugin's label) and for any other card.
+	Platform string `json:"platform,omitempty"`
+	// Target is an outbound draft's target kind (post, reply, dm, follow,
+	// like): how its preview is labelled. "" for any other card.
+	Target string `json:"target,omitempty"`
+	// Handle is the person a dm or a follow reaches, as the draft names it;
+	// "" for every other card.
+	Handle string `json:"handle,omitempty"`
 	// DraftID is the draft a plugin_draft_decide card is bound to (its
 	// Media are served from it), 0 for any other card.
 	DraftID int64 `json:"draft_id,omitempty"`
@@ -85,12 +95,15 @@ type StepUpCard struct {
 	// preview and says to refuse.
 	Changed bool `json:"changed,omitempty"`
 	// Details is the boilerplate, on the record: the host, the session, the
-	// call and its arguments, why the phone is needed, and the call's hash.
+	// call and its arguments in words (never JSON, never a hash), and why the
+	// phone is needed.
 	Details string `json:"details"`
 }
 
 // StepUpMedium is one medium of a draft a card shows: its index among the
 // draft's refs (what the draft's media route serves), its ref, type and hash.
+// The type picks how it is drawn (an image or a video) and the hash is on the
+// record; neither is ever drawn on any face of the card.
 type StepUpMedium struct {
 	N      int    `json:"n"`
 	Ref    string `json:"ref"`
@@ -173,11 +186,12 @@ func stepUpID(field, s string, max int) (string, error) {
 	return out, nil
 }
 
-// stepUpBlock is s as a multi-line field bounded to max runes: CRLF folded,
-// each line sanitised (fence.Sanitize), blank edges trimmed; refused when
-// longer.
+// stepUpBlock is s as a multi-line field bounded to max runes: CRLF and a
+// lone CR folded to a line break (as a venue reads them: internal/plugins
+// normPart), each line sanitised (fence.Sanitize), blank edges trimmed;
+// refused when longer.
 func stepUpBlock(field, s string, max int) (string, error) {
-	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n"), "\n")
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(fence.Sanitize(l), " ")
 	}
@@ -204,6 +218,9 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 	out.Asker = stepUpLine(c.Asker, MaxStepUpAskerRunes)
 	out.About = stepUpLine(c.About, MaxStepUpAboutRunes)
 	out.Venue = stepUpLine(c.Venue, MaxStepUpVenueRunes)
+	out.Platform = stepUpLine(c.Platform, MaxStepUpVenueRunes)
+	out.Target = stepUpLine(c.Target, 16)
+	out.Handle = stepUpLine(c.Handle, MaxStepUpAskerRunes)
 	if out.Preview, err = stepUpBlock("preview", c.Preview, MaxStepUpPreviewRunes); err != nil {
 		return nil, err
 	}
@@ -238,6 +255,7 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 	if out.Changed {
 		// A changed draft's card shows nothing of it.
 		out.Preview, out.Venue, out.Media = "", "", nil
+		out.Platform, out.Target, out.Handle = "", "", ""
 	}
 	return &out, nil
 }

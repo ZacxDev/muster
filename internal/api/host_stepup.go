@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,12 +384,11 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 		return toolErr("%s from %s needs your owner's confirmation on their phone (%s), and this server has no "+
 			"attention store to ask through; decide it in muster's web UI", name, host, strings.ToLower(why[:1])+why[1:]), true
 	}
-	sum := sha256.Sum256([]byte(name + "\x00" + args))
 	// The card's parts (host_stepup_card.go): its title, why and preview on
 	// its face, the boilerplate in its Details. Its question is built from
 	// them (attention.Clean), the one text the push, the page and the
 	// phone's prompt read.
-	details := stepUpDetails(host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, args, why, hex.EncodeToString(sum[:6]))
+	details := stepUpDetails(host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, args, why)
 	card := s.stepUpCardFor(ctx, host, c, name, args, what, held, details)
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, p.UserID), attention.New{
 		Asker:   attention.Asker{System: true, Label: hostDecisionLabel},

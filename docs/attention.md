@@ -597,8 +597,11 @@ from the question and its options, grounded in them by the same filter:
   A **step-up confirmation card** is answered this way, and only this way:
   its **Confirm** and **Refuse** are notification buttons, and the phone's
   prompt shows the card's own text, which muster hands the phone with the
-  challenge (`confirms`). Neither this page nor the card on the Asks feed
-  can answer a card: both draw no Confirm, Refuse or answer box, only the
+  challenge (`confirms`). Both this page and the card on the Asks feed show
+  the card's title (with the draft's id on a draft card) and, for a draft, a
+  preview of the post as it will look on its venue: its logo, its text, its
+  images ([what a card shows](mirroring.md#what-a-card-shows)). Neither can
+  answer a card: both draw no Confirm, Refuse or answer box, only the
   plain line *Confirm this on your phone.*, and **Dismiss**
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
   A card that is dismissed (or expires) runs nothing: a Confirm signed on the

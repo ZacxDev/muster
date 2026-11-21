@@ -27,14 +27,16 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 )
 
-// The card's parts (synthetic).
+// The card's parts (synthetic): an X post of two paragraphs and one image,
+// for draft 41 (the fixture's draft id; the spec serves its medium).
 const (
-	Title   = "Post to X?"
+	Title   = "Post to X? · #41"
 	Why     = "Marketing: rebrand announcement"
 	Asker   = "work:1"
-	Preview = "Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>"
-	Details = `A session on host-a (work:1 @ host-a) asks to approve or reject a reply or outbound draft as you: plugin_draft_decide {"id":41,"decision":"approve"}` +
-		"\n\nThis machine runs host officer acme:main, and its sessions are named by a header any process there can set — so this needs you. [0123456789ab]"
+	Preview = "Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>\n\nA second paragraph."
+	Details = "A session on host-a (work:1 @ host-a) asks to approve or reject a reply or outbound draft as you.\nThe call: plugin_draft_decide, with id 41, decision “approve”." +
+		"\n\nThis machine runs host officer acme:main, and its sessions are named by a header any process there can set — so this needs you."
+	DraftID = 41
 )
 
 func main() {
@@ -76,7 +78,9 @@ func run(args []string) error {
 		a, err := attention.NewPG(pool).Create(as, attention.New{
 			Asker: attention.Asker{System: true, Label: "step-up"},
 			StepUp: &attention.StepUpCard{Tool: "plugin_draft_decide", Title: Title, Why: Why, Asker: Asker,
-				Preview: strings.TrimSpace(Preview), Venue: "X", Details: Details},
+				Preview: strings.TrimSpace(Preview), Venue: "X", Platform: "x", Target: "post", DraftID: DraftID,
+				Media:   []attention.StepUpMedium{{N: 0, Ref: "launch/hero-1", Type: "image/png", SHA256: strings.Repeat("0a", 32)}},
+				Details: Details},
 			Options: []string{"Confirm", "Refuse"},
 		})
 		if err != nil {
