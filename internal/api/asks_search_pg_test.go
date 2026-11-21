@@ -174,9 +174,17 @@ func TestATextSearchListsTheOwnersAsksNewestFirst(t *testing.T) {
 	if got := tagless(liByID(page, "search-ask-"+strconv.FormatInt(dismissed.ID, 10))); !strings.Contains(got, "Dismissed · ") {
 		t.Errorf("the dismissed result reads %q", got)
 	}
-	// The box holds the query; no tabs under it.
-	if !strings.Contains(page, `name="q" value="zebra"`) || strings.Contains(page, "data-asks-tabs") {
-		t.Errorf("the box does not hold the query, or the tabs are still drawn")
+	// The box holds the query. The results fill the region, and the tabs are
+	// drawn AFTER it, in the wrapper the stylesheet hides while the region
+	// holds anything (so emptying the box shows them with no reload).
+	if !strings.Contains(page, `name="q" value="zebra"`) {
+		t.Errorf("the box does not hold the query")
+	}
+	region := strings.Index(page, `<div id="asks-search-region" class="contents" data-asks-search-region><section `)
+	main := strings.Index(page, `<div class="contents" data-asks-main>`)
+	tabs := strings.Index(page, "data-asks-tabs")
+	if region < 0 || main < region || tabs < main {
+		t.Errorf("not results in the region, then the tabs in their wrapper: region %d, wrapper %d, tabs %d", region, main, tabs)
 	}
 	// One match is a list too.
 	code, loc, page = f.searchGet(t, "something ELSE")
@@ -212,6 +220,10 @@ func TestAnEmptySearchIsThePageAsBefore(t *testing.T) {
 		page := f.page(t, path)
 		if !strings.Contains(page, "data-asks-tabs") || strings.Contains(page, "asks-search-results") {
 			t.Errorf("%s: not the page as before", path)
+		}
+		// The region is there, EMPTY to the byte (the stylesheet's :empty).
+		if !strings.Contains(page, `<div id="asks-search-region" class="contents" data-asks-search-region></div><div class="contents" data-asks-main>`) {
+			t.Errorf("%s: no empty results region before the page", path)
 		}
 		if !strings.Contains(page, `<form role="search" method="get" action="/attention" hx-boost="false"`) || !strings.Contains(page, `name="q" value=""`) {
 			t.Errorf("%s: no empty search box", path)
@@ -369,5 +381,131 @@ func TestAnIdSearchFindsATeamDraftTheMemberCanOpen(t *testing.T) {
 	a, b := searchResultsSection(theirs.Body.String(), "draft "+dn), searchResultsSection(none.Body.String(), "draft "+missing)
 	if a == "" || a != b || none.Code != theirs.Code {
 		t.Errorf("another owner's draft id reads differently from a missing one:\n%s\n---\n%s", a, b)
+	}
+}
+
+// liveSearch is the search box's own live request for raw: the field's htmx
+// GET, which names the results region as its target (no redirect followed).
+func (f *attnFixture) liveSearch(t *testing.T, raw string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := f.operator()
+	h["HX-Request"] = "true"
+	h["HX-Target"] = "asks-search-region"
+	return f.call(t, http.MethodGet, "/attention?q="+url.QueryEscape(raw), nil, h)
+}
+
+// TestTheLiveSearchListsAnIdAndNeverJumps: typing never navigates away
+// (operator decision). The box's live request for an id — every spelling —
+// is answered with the results alone, the ask among them, never the 303 a
+// submitted id earns; and the address the page should show. The control: the
+// same id SUBMITTED (no live target: a navigation, boosted — the fixture sends
+// HX-Request — or not) still goes straight to the ask. RED at origin/main: the
+// live request got the 303.
+func TestTheLiveSearchListsAnIdAndNeverJumps(t *testing.T) {
+	f := newAttnFixture(t)
+	a := f.mirrorAsk(t, "Rotate the heron key?")
+	id := strconv.FormatInt(a.ID, 10)
+	if code, loc, _ := f.searchGet(t, id); code != http.StatusSeeOther || loc != "/attention/asks/"+id {
+		t.Fatalf("control: the submitted id: %d %q, want 303 to the ask", code, loc)
+	}
+	for _, q := range []string{id, "#" + id, "Ask #" + id} {
+		w := f.liveSearch(t, q)
+		body := w.Body.String()
+		if w.Code != http.StatusOK || w.Header().Get("Location") != "" {
+			t.Errorf("live ?q=%q: %d %q, want 200 and no redirect", q, w.Code, w.Header().Get("Location"))
+			continue
+		}
+		if got := searchResults(body); strings.Join(got, ",") != "ask:"+id {
+			t.Errorf("live ?q=%q: results %v, want the ask", q, got)
+		}
+		// The region's contents only: the results section, no page around it.
+		if !strings.HasPrefix(body, `<section class="flex min-w-0 flex-col gap-2" aria-label="Search results" data-testid="asks-search-results">`) ||
+			!strings.HasSuffix(body, "</section>") || strings.Contains(body, "<html") || strings.Contains(body, "data-asks-tabs") {
+			t.Errorf("live ?q=%q is not the results alone:\n%.300s", q, body)
+		}
+		if !strings.Contains(body, `data-asks-search-count="1"><span>1 result</span> <a `) {
+			t.Errorf("live ?q=%q: the count line: %s", q, htmlRegion(body, `data-asks-search-count`, `</p>`))
+		}
+		if got, want := w.Header().Get("HX-Replace-Url"), "/attention?q="+url.QueryEscape(q); got != want {
+			t.Errorf("live ?q=%q: HX-Replace-Url %q, want %q", q, got, want)
+		}
+		if v := w.Header().Values("Vary"); !strings.Contains(strings.Join(v, ","), "HX-Target") {
+			t.Errorf("live ?q=%q: Vary %v does not name HX-Target", q, v)
+		}
+	}
+	// Back to an address the typing set, which htmx holds no copy of: it asks
+	// the server for the page (HX-History-Restore-Request), and gets the list
+	// it left — not the ask again.
+	h := f.operator()
+	h["HX-History-Restore-Request"] = "true"
+	w := f.call(t, http.MethodGet, "/attention?q="+id, nil, h)
+	if w.Code != http.StatusOK || strings.Join(searchResults(w.Body.String()), ",") != "ask:"+id || !strings.Contains(w.Body.String(), "data-asks-tabs") {
+		t.Errorf("history restore of ?q=%s: %d %q %v, want the page listing the ask", id, w.Code, w.Header().Get("Location"), searchResults(w.Body.String()))
+	}
+}
+
+// TestTheLiveSearchEmptiedIsThePageAgain: the box emptied (or spaces) answers
+// an empty region — which shows the page's tabs again — and the page's own
+// address; words answer their results. RED at origin/main: the whole page.
+func TestTheLiveSearchEmptiedIsThePageAgain(t *testing.T) {
+	f := newAttnFixture(t)
+	a := f.mirrorAsk(t, "Feed the pelican?")
+	for _, q := range []string{"", "   "} {
+		w := f.liveSearch(t, q)
+		if w.Code != http.StatusOK || w.Body.Len() != 0 || w.Header().Get("HX-Replace-Url") != "/attention" {
+			t.Errorf("live ?q=%q: %d %q (%d bytes), want 200, empty, /attention", q, w.Code, w.Header().Get("HX-Replace-Url"), w.Body.Len())
+		}
+	}
+	w := f.liveSearch(t, "PELICAN")
+	if got := searchResults(w.Body.String()); w.Code != http.StatusOK || strings.Join(got, ",") != "ask:"+strconv.FormatInt(a.ID, 10) {
+		t.Errorf("live ?q=PELICAN: %d %v", w.Code, got)
+	}
+	if got := w.Header().Get("HX-Replace-Url"); got != "/attention?q=PELICAN" {
+		t.Errorf("live ?q=PELICAN: HX-Replace-Url %q", got)
+	}
+}
+
+// TestTheSearchBoxSearchesAsYouType: the box has NO button (operator
+// decision); its field asks for results 300ms after the last input (its clear
+// button's included), into the results region, a newer
+// request replacing one in flight, with the in-flight spinner. RED at
+// origin/main: a Search button and no request of its own.
+func TestTheSearchBoxSearchesAsYouType(t *testing.T) {
+	f := newAttnFixture(t)
+	f.mirrorAsk(t, "Anything?")
+	page := f.page(t, "/attention")
+	form := htmlRegion(page, `<form role="search"`, `</form>`)
+	if form == "" {
+		t.Fatal("no search form")
+	}
+	if strings.Contains(form, "<button") || strings.Contains(form, `type="submit"`) || strings.Contains(form, "data-asks-search-submit") {
+		t.Errorf("the box still has a button:\n%s", form)
+	}
+	input := htmlRegion(form, `<input type="search"`, `>`)
+	for _, want := range []string{
+		` hx-get="/attention" `,
+		` hx-trigger="input changed delay:300ms" `,
+		` hx-target="#asks-search-region" `,
+		` hx-swap="innerHTML" `,
+		` hx-sync="this:replace" `,
+		` hx-indicator="#asks-search-busy" `,
+		` name="q" `,
+	} {
+		if !strings.Contains(input+" ", want) {
+			t.Errorf("the field lacks %q:\n%s", want, input)
+		}
+	}
+	// The in-flight indicator is the element the field names, holding htmx's
+	// htmx-indicator spinner.
+	busy := htmlRegion(form, `<span id="asks-search-busy"`, `</span>`)
+	if !regexp.MustCompile(`<svg class="htmx-indicator [^"]*"[^>]*data-asks-search-spinner>`).MatchString(busy) {
+		t.Errorf("no spinner in the indicator:\n%s", busy)
+	}
+	// The region the field targets is on the page, empty, before the tabs.
+	if !strings.Contains(page, `<div id="asks-search-region" class="contents" data-asks-search-region></div>`) {
+		t.Errorf("no empty results region")
+	}
+	if n := strings.Count(page, "/static/js/asks-search"); n != 1 {
+		t.Errorf("the search box's script is on the page %d times", n)
 	}
 }

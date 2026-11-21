@@ -9,9 +9,13 @@ import { startServer, Running } from '../lib/server';
 // asks_search.go, internal/ui ask_id.go), in a real browser against a real
 // muster-server, at a phone (390×844, touch) and a desktop (1440×900):
 //
-//   - typing an ask's id into the box over the page goes straight to that
-//     ask's page, and Back returns to the page (the jump is not a history
-//     entry that bounces);
+//   - the box searches as you type (debounced; no Search button): the results
+//     replace the page in place, with no navigation and no history entry per
+//     key, focus and caret staying in the box; an id typed is LISTED, never
+//     jumped to; emptied, the page is back; a slow earlier search never lands
+//     over a newer one, and a spinner shows while one is in flight;
+//   - Enter on an ask's id goes straight to that ask's page, and Back returns
+//     to the page (the jump is not a history entry that bounces);
 //   - words list the matching asks, each linking to its page, with a count;
 //     nothing found is one line with a way back;
 //   - each card carries its id ("Ask #N", "Draft #N") as a small button that
@@ -150,6 +154,120 @@ for (const vp of [
       await expect(page.locator('[data-asks-tabs]')).toBeVisible();
     });
 
+    test('typing searches in place: no button, no navigation, focus stays in the box', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      // The box has no Search button: typing is the search.
+      await expect(page.locator('[data-asks-search] button')).toHaveCount(0);
+      await expect(page.locator('[data-asks-tabs]')).toBeVisible();
+      // A marker on the window: a navigation (a reload, a redirect) loses it.
+      await page.evaluate(() => { (window as unknown as { __kept: number }).__kept = 42; });
+      const kept = () => page.evaluate(() => (window as unknown as { __kept?: number }).__kept);
+      const hist = await page.evaluate(() => history.length);
+      // Count the box's own requests: typing is debounced, not one per key.
+      const live: string[] = [];
+      page.on('request', (r) => {
+        if (r.headers()['hx-target'] === 'asks-search-region') live.push(r.url());
+      });
+
+      const words = agent.toUpperCase();
+      await box(page).click();
+      await box(page).pressSequentially(words, { delay: 25 });
+      const results = page.locator('[data-asks-search-result]');
+      await expect(results).toHaveCount(4);
+      const got = await results.evaluateAll((els) => els.map((e) => e.getAttribute('data-ask-id')).sort());
+      expect(got).toEqual([ids.answered, ids.deploy, ids.freetext, ids.rotate].map(String).sort());
+      await expect(page.locator('[data-asks-search-count]')).toHaveText(/^4 results\s*Clear$/);
+      await expect(page.locator('[data-asks-tabs]')).toBeHidden();
+      // The address says the search (a reload or a link keeps it), with no
+      // new history entry per keystroke.
+      await expect(page).toHaveURL(`${origin}/attention?q=${encodeURIComponent(words)}`);
+      expect(await page.evaluate(() => history.length)).toBe(hist);
+      expect(await kept(), 'the page navigated').toBe(42);
+      await expect(box(page)).toBeFocused();
+      expect(await box(page).evaluate((e: HTMLInputElement) => [e.value, e.selectionStart])).toEqual([words, words.length]);
+      expect(live.length, `requests while typing ${words.length} keys: ${live.join(' ')}`).toBeGreaterThanOrEqual(1);
+      expect(live.length, `requests while typing ${words.length} keys: ${live.join(' ')}`).toBeLessThanOrEqual(3);
+      await noSideways(page);
+
+      // An id is LISTED, never jumped to (typing 12 on the way to 123 must
+      // not open ask 12): the page stays the Asks page.
+      await box(page).fill(String(ids.rotate));
+      await expect(page).toHaveURL(`${origin}/attention?q=${ids.rotate}`);
+      await expect(page.locator(`#search-ask-${ids.rotate}`)).toBeVisible();
+      await expect(page.locator('[data-asks-search-count]')).toHaveText(/^1 result\s*Clear$/);
+      expect(await kept(), 'the page navigated').toBe(42);
+      await expect(box(page)).toBeFocused();
+
+      // Emptied: the page as it was, with no reload.
+      await box(page).fill('');
+      await expect(page).toHaveURL(`${origin}/attention`);
+      await expect(page.locator('[data-asks-search-result]')).toHaveCount(0);
+      await expect(page.locator('[data-asks-tabs]')).toBeVisible();
+      await expect(page.locator(`#ask-${ids.rotate}`)).toBeVisible();
+      expect(await kept(), 'the page navigated').toBe(42);
+      await expect(box(page)).toBeFocused();
+
+      // Enter on an exact id still opens that ask (the form's own submit) —
+      // after the typing has already listed it — and Back comes to the page,
+      // not round to the ask again.
+      await box(page).fill(String(ids.rotate));
+      await expect(page).toHaveURL(`${origin}/attention?q=${ids.rotate}`);
+      await expect(page.locator(`#search-ask-${ids.rotate}`)).toBeVisible();
+      await box(page).press('Enter');
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.rotate}`);
+      await page.goBack();
+      await expect(page).toHaveURL(`${origin}/attention`);
+      await expect(page.locator('[data-asks-tabs]')).toBeVisible();
+    });
+
+    test('a result opened from a typed search comes Back to that search', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      const words = agent.toUpperCase();
+      await box(page).fill(words);
+      await expect(page.locator('[data-asks-search-result]')).toHaveCount(4);
+      await page.locator(`#search-ask-${ids.rotate} [data-asks-search-open]`).click();
+      await expect(page).toHaveURL(`${origin}/attention/asks/${ids.rotate}`);
+      await page.goBack();
+      await expect(page).toHaveURL(`${origin}/attention?q=${encodeURIComponent(words)}`);
+      await expect(page.locator('[data-asks-search-result]')).toHaveCount(4);
+      // The box says what the results are for.
+      await expect(box(page)).toHaveValue(words);
+      await expect(page.locator('[data-asks-tabs]')).toBeHidden();
+    });
+
+    test('a slow earlier search never lands over a newer one, and the box shows it is searching', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      const slow = 'noon works';
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      // Hold the FIRST live request (the slow one) until released.
+      await page.route(
+        (u) => u.pathname === '/attention' && u.searchParams.get('q') === slow,
+        async (route) => {
+          await held;
+          try { await route.continue(); } catch { /* aborted by the newer search */ }
+        },
+      );
+      const first = page.waitForRequest((r) => r.headers()['hx-target'] === 'asks-search-region' && new URL(r.url()).searchParams.get('q') === slow);
+      await box(page).fill(slow);
+      await first;
+      // In flight: the spinner shows in the box.
+      await expect(page.locator('[data-asks-search-spinner]')).toHaveCSS('opacity', '1');
+      // The newer search lands while the slow one is still held.
+      await box(page).fill(agent.toUpperCase());
+      await expect(page.locator('[data-asks-search-result]')).toHaveCount(4, { timeout: 2_000 });
+      await expect(page.locator('[data-asks-search-spinner]')).toHaveCSS('opacity', '0');
+      release();
+      // The slow answer, released, does not replace it.
+      await page.waitForTimeout(800);
+      await expect(page.locator('[data-asks-search-result]')).toHaveCount(4);
+      await expect(page.locator(`#search-draft-${ids.draft}`)).toHaveCount(0);
+      await expect(page).toHaveURL(`${origin}/attention?q=${encodeURIComponent(agent.toUpperCase())}`);
+    });
+
     test('the id copies at a tap or a key, and never expands its card', async ({ page, context }) => {
       await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
       await signIn(page, origin);
@@ -213,5 +331,13 @@ test.describe('no script', () => {
     await expect(page.locator(`#ask-${ids.rotate}`).getByRole('button', { name: /Copy/ })).toHaveCount(0);
     await page.goto(`${origin}/attention?q=${ids.rotate}`);
     await expect(page).toHaveURL(`${origin}/attention/asks/${ids.rotate}`);
+    // Enter submits the box: the results, and the page's tabs hidden under
+    // them (the stylesheet, not a script).
+    await page.goto(origin + '/attention');
+    await box(page).fill(agent.toUpperCase());
+    await box(page).press('Enter');
+    await expect(page).toHaveURL(`${origin}/attention?q=${encodeURIComponent(agent.toUpperCase())}`);
+    await expect(page.locator('[data-asks-search-result]')).toHaveCount(4);
+    await expect(page.locator('[data-asks-tabs]')).toBeHidden();
   });
 });

@@ -170,12 +170,23 @@ dismissed, expired, notices too — and your plugin drafts. The
 search is the page's own query, `/attention?q=…`, so a search is a link and
 **Back** leaves it; an empty box is the page as before.
 
+It **searches as you type**: there is no Search button. A moment after you
+stop typing (300 ms) the results replace the page in place, without
+reloading it; the box keeps your cursor, a spinner shows in it while a
+search is in flight, and the address follows what you typed (without a
+history entry per key). Emptying the box, or its clear button, brings the
+page back. Typing never takes you anywhere: an id you type is **listed**
+like any other result (typing `12` on the way to `123` does not open ask 12).
+**Enter** submits the search, and that is what goes straight to the one thing
+an id names (below). Without JavaScript, Enter is the whole search.
+
 - **An id** — `859`, `#859`, `ask 859`, `Ask #859` (what the copy button
   copies), `draft 484`, `Draft #484` — is looked up **by id only**, never as
   text. A bare number is either kind's: the ask with that id and the draft
   with that id. `draft 484` finds the draft **and every step-up card that
-  confirms it**. When an id finds exactly one thing, the page goes straight
-  to it: the ask's page, or the draft's card on the Drafts tab.
+  confirms it**. When a submitted id (Enter, or a `/attention?q=…` link)
+  finds exactly one thing, the page goes straight to it: the ask's page, or
+  the draft's card on the Drafts tab.
 - **An id finds anything you can already open** there: an ask whose page
   opens for you (your own — the ask page opens no one else's, a team's
   included), and any draft the Drafts tab shows you, a team's draft you read

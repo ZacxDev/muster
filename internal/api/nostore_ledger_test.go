@@ -85,6 +85,7 @@ var noStoreLiterals = map[string]string{
 	"handleAttentionBadge":      "the Asks badge",
 	"handleAttentionItems":      "the Asks list",
 	"handleAttentionAnswered":   "the Asks page's Answered feed",
+	"writeAsksSearchLive":       "the Asks search box's results as you type",
 	"asksCardFailed":            "an Asks card's refusal fragment",
 	"handleAttentionOpen":       "an ask opened from a push",
 	"handleAttentionSummary":    "the attention summary a status bar polls",
