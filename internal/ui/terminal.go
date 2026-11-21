@@ -303,6 +303,9 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
+				// The foot (key bar, composer, switcher) is hidden until it is
+				// whole: see termFootHead.
+				termFootHead(),
 				docHead(v.Nav.Feat.Brand),
 				TitleEl(g.Text(terminalDocTitle(v))),
 				UserMarker(v.Nav.Feat),
@@ -441,6 +444,9 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				// No composer (an offline host): the bar is the column's foot on
 				// its own.
 				g.If(v.Composer == nil, terminalSwitcher(v.Switcher)),
+				// The foot is whole: shown (termFootHead). BEFORE the first
+				// <script src>, so a fetch never holds it hidden.
+				termFootReveal(),
 				floatingMenuScript(),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
@@ -451,6 +457,44 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 			),
 		),
 	)
+}
+
+// termFootPendingAttr is on <html> while the Terminal view's foot — the key
+// bar and the composer or session switcher below it — is not yet whole.
+const termFootPendingAttr = "data-term-foot-pending"
+
+// termFootHead hides the Terminal view's foot until its last block is parsed
+// (termFootReveal).
+//
+// 🔴 THE FOOT IS NOT SHOWN HALF-PARSED. The column is header, terminal
+// (flex-1), key bar, composer: the key bar sits on the composer, so a frame
+// painted after the bar is parsed but before the composer is draws the bar at
+// the bottom of the screen, and the composer then pushes it up by its whole
+// height. The parser yields anywhere under load — no <script src> needed
+// (TestTheViewPagesPaintWholeBeforeAnyScript keeps those out already) — and
+// MEASURED at 1280×800 with the CPU throttled 4× (cls.spec "the session views
+// with a live preview"): nav#term-keys painted at y=727 (the viewport's foot),
+// then at y=596.5 once the 130.5px composer was parsed — a 0.01861 layout
+// shift, the value CI's flake reported on main. A composer painted part-parsed
+// grows upward the same way (its own top moves: #mv-compose 106→130.5px tall,
+// 0.00486).
+//
+// visibility, not display: the hidden foot is laid out, so the terminal above
+// it is sized against its real height from the first paint, and a box shown
+// where it already is moves nothing (an element becoming visible is not a
+// layout shift). The attribute is set by script, so a page without script
+// never hides the foot.
+func termFootHead() g.Node {
+	return g.Group{
+		StyleEl(g.Raw(`html[` + termFootPendingAttr + `] :is(#term-keys, #mv-compose, [` + switcherRoomAttr + `]) { visibility: hidden; }`)),
+		Script(g.Raw(`document.documentElement.setAttribute('` + termFootPendingAttr + `', '');`)),
+	}
+}
+
+// termFootReveal shows the foot termFootHead hid: drawn right after its last
+// block, so everything of it is parsed when it runs.
+func termFootReveal() g.Node {
+	return Script(g.Raw(`document.documentElement.removeAttribute('` + termFootPendingAttr + `');`))
 }
 
 // terminalOnlyLabel leads the Terminal view's terminal-only line.
