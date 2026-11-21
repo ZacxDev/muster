@@ -177,8 +177,11 @@ const (
 // (no `messages`) and asks for what only `messages` may: routing the notice to
 // the chief (route_to_chief), or a task reference (its queued writes are
 // collected on /plugin/v1/task-writes, a messages route). "" otherwise.
+//
+// 🔴 A SERVER app is held to it WHATEVER ITS ROW'S CAPABILITIES SAY: it has
+// no person's chief to route to and no reference queue to collect.
 func pluginTasksOnlyRefusal(p plugins.Plugin, in pluginTaskIn) string {
-	if p.Has(plugins.CapMessages) {
+	if p.Has(plugins.CapMessages) && !p.IsServer() {
 		return ""
 	}
 	switch {
@@ -237,6 +240,11 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if p.IsServer() {
+		// Through this app's own ledger only (plugin_server.go).
+		s.handleServerAppTask(w, r, p, in)
+		return
+	}
 	if in.Reference != nil {
 		s.handlePluginReference(w, r, p, in)
 		return

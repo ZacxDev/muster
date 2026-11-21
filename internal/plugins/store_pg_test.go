@@ -34,7 +34,7 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool, string) {
 		ON CONFLICT (id) DO NOTHING`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = NULL WHERE id IN (2, 3)`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = now() WHERE id = 4`)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages, plugin_reply_drafts, session_routes, attention_asks, task_ref_writes, plugin_handoffs, routing_rules, plugin_chief_instructions`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages, plugin_reply_drafts, session_routes, attention_asks, task_ref_writes, plugin_handoffs, routing_rules, plugin_chief_instructions, plugin_server_users, plugin_server_tasks`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'plg-%'`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'plugin.%'`)
 	return NewPG(pool), pool, dsn
@@ -71,7 +71,7 @@ func TestATokenIsShownOnceAndOnlyItsHashIsStored(t *testing.T) {
 	if !TokenShapeOK(tok) || !strings.HasPrefix(tok, "mpl_") {
 		t.Fatalf("minted token %q is not mpl_-shaped", tok)
 	}
-	if p.OwnerID != 2 || p.Name != "example-inbox" || p.DataScope != "example-inbox" {
+	if p.ownerID != 2 || p.Name != "example-inbox" || p.DataScope != "example-inbox" {
 		t.Fatalf("plugin = %+v", p)
 	}
 	var row string
@@ -82,7 +82,7 @@ func TestATokenIsShownOnceAndOnlyItsHashIsStored(t *testing.T) {
 		t.Fatalf("the stored row carries the token or lacks its hash: %s", row)
 	}
 	got, err := s.Authenticate(authz.System(context.Background()), tok)
-	if err != nil || got.ID != p.ID || got.OwnerID != 2 || got.LastSeenAt == nil {
+	if err != nil || got.ID != p.ID || got.ownerID != 2 || got.LastSeenAt == nil {
 		t.Fatalf("Authenticate = %+v, %v", got, err)
 	}
 	var audits int

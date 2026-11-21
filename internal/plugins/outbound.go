@@ -339,7 +339,11 @@ func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, offic
 	}
 	// The subject names the plugin too: external_id is unique per plugin
 	// only, so two plugins bound to one officer must never share an item.
-	id, err := s.officers.EnqueueTx(ctx, tx, p.OwnerID, OfficerItem{Officer: officer, Kind: "plugin." + kind,
+	owner, ok := p.PersonalOwner()
+	if !ok {
+		return Message{}, ErrOfficerUnavailable
+	}
+	id, err := s.officers.EnqueueTx(ctx, tx, owner, OfficerItem{Officer: officer, Kind: "plugin." + kind,
 		SubjectKey: "plugin:" + strconv.FormatInt(p.ID, 10) + ":" + m.ExternalID, Payload: payload})
 	if err != nil {
 		return Message{}, err
@@ -387,7 +391,11 @@ func (s *PGStore) SetDeliverTo(ctx context.Context, id int64, deliverTo string) 
 			return nil
 		}
 		if deliverTo != "" {
-			if err := s.officerDefined(ctx, cur.OwnerID, OfficerOf(deliverTo)); err != nil {
+			owner, ok := cur.PersonalOwner()
+			if !ok {
+				return invalid("a server app cannot be bound to an officer")
+			}
+			if err := s.officerDefined(ctx, owner, OfficerOf(deliverTo)); err != nil {
 				return err
 			}
 			if !slices.Contains(cur.Capabilities, CapMessages) {

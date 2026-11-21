@@ -161,9 +161,13 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		refused(http.StatusNotFound, PluginHandoffNoWindow)
 		return
 	}
+	// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field. A
+	// server app's code records it (the grant's cutoffs are compared with it).
+	signedIn, _ := stepup.AuthTime(r.Context())
 	code, p, err := s.ext.Plugins.MintHandoff(mctx, in.Plugin, plugins.HandoffIn{
-		Target: handoff,
-		// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field.
+		Target:     handoff,
+		SignedInAt: signedIn,
+		// 🔴 SERVER-DERIVED: the session's own step-up state, never a field.
 		SteppedUp: stepup.Fresh(r.Context(), s.stepUpNow()),
 		// The plugin's link is re-checked against the CURRENT allowlist.
 		Origins: s.ext.PluginOrigins,
@@ -175,6 +179,12 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		return
 	case errors.Is(err, plugins.ErrViewerOriginRetired):
 		refused(http.StatusForbidden, PluginHandoffOriginRetired)
+		return
+	case errors.Is(err, plugins.ErrSignInUnknown):
+		// A server app's code must carry the sign-in it can be revoked by.
+		metrics.PluginHandoffs.WithLabelValues(purpose, "refused").Inc()
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyReauthRequired,
+			"detail": "this session records no sign-in time; sign in again to open this app"})
 		return
 	case errors.Is(err, plugins.ErrHandoffRateLimited):
 		metrics.PluginHandoffs.WithLabelValues(purpose, "rate_limited").Inc()
@@ -255,6 +265,12 @@ func (s *Server) handlePluginHandoffRedeem(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	p := pluginFromContext(r.Context())
+	if p.IsServer() {
+		// A server app's: the pairwise subject and display name, and the grant
+		// (plugin_server.go). Run with no request principal.
+		s.redeemServerHandoff(w, r, p, strings.TrimSpace(in.Code))
+		return
+	}
 	h, err := s.ext.Plugins.RedeemHandoff(r.Context(), p.ID, strings.TrimSpace(in.Code), s.now())
 	switch {
 	case err == nil:

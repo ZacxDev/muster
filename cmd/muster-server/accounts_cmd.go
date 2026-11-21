@@ -28,10 +28,13 @@ import (
 //	muster-server user disable <id>      disabled_at + GoTrue ban, and the
 //	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
+//	muster-server app install|rotate|uninstall|list
+//	                                     server-installed apps (app_cmd.go)
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server invite --claim-admin\n"+
-			"       muster-server user disable|enable <user-id>")
+			"       muster-server user disable|enable <user-id>\n"+
+			"       muster-server app install|rotate|uninstall|list …")
 		return 2
 	}
 	cfg, err := loadConfig(getenv)
@@ -44,6 +47,9 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		return 1
 	}
 	switch {
+	case len(args) >= 1 && args[0] == "app":
+		// Server-installed apps (app_cmd.go).
+		return runAppCommand(ctx, cfg, args[1:], stdout, stderr)
 	case len(args) == 2 && args[0] == "invite" && args[1] == "--claim-admin":
 		if !cfg.goTrueConfigured() {
 			fmt.Fprintf(stderr, "%s and %s are not set: a claim link would lead to a page that cannot "+

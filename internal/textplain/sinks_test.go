@@ -149,7 +149,10 @@ var uiExempt = map[string]exemption{
 	// mint (plugins.ValidAppLabel: 1-24 letters, digits, spaces and - . & ').
 	// Title would REWRITE a valid label ("1. Calls" and "- Calls" both draw as
 	// "Calls"), so it is drawn exactly as stored, through g.Text/g.Attr.
-	"app_page.go AppPage v.Label":         {4, whyAppLabel},
+	// AppPage's reads 5 and 6 (meetings PR 1h.2) are a server app's Android
+	// card sentences (AppServerCardLine, AppServerFallbackLine): the same label,
+	// validated by the same ValidAppLabel at install (plugins.InstallServerApp).
+	"app_page.go AppPage v.Label":         {6, whyAppLabel},
 	"app_page.go appTabLinks a.Label":     {1, whyAppLabel},
 	"mirror_ask.go askForm o.Description": {2, whyOption},
 	// The chief's question card (owner_ask.go): an option is sent verbatim as the

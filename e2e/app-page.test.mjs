@@ -42,11 +42,15 @@ function el(tag, attrs = {}) {
   return e;
 }
 
-function world({ app = false, ref = null, aliveStatus = 204, mintStatus = 200, visible = 'visible' } = {}) {
+function world({ app = false, messages, server = false, ref = null, aliveStatus = 204, mintStatus = 200, visible = 'visible' } = {}) {
   const main = el('main', {
     id: 'app-main', 'data-plugin': '7', 'data-mint': '/plugin-handoffs', 'data-alive': '/ui/apps/7/alive',
     'data-poll': '30', 'data-removed': 'This app was removed.', ...(ref ? { 'data-ref': ref } : {}),
+    ...(server ? { 'data-app-server': '' } : {}),
   });
+  const extCard = el('div', { 'data-app-card-external': '', hidden: '' });
+  const copyCard = el('div', { 'data-app-card-copy': '', hidden: '' });
+  const address = el('p', { 'data-app-address': '' });
   const frame = el('iframe', { 'data-app-frame': '', sandbox: 'allow-scripts allow-same-origin', allow: 'camera https://w.meet.example.test', title: "Tom's & Jerry's" });
   const card = el('div', { 'data-app-card': '', hidden: '' });
   const status = el('p', { id: 'app-status', hidden: '' });
@@ -57,7 +61,10 @@ function world({ app = false, ref = null, aliveStatus = 204, mintStatus = 200, v
       while (current && current.removed) current = current.replacedBy;
       return current;
     }
-    if (sel === '[data-app-card]') return card.removed ? null : card;
+    if (sel === '[data-app-card]') return server || card.removed ? null : card;
+    if (sel === '[data-app-card-external]') return server && !extCard.removed ? extCard : null;
+    if (sel === '[data-app-card-copy]') return server && !copyCard.removed ? copyCard : null;
+    if (sel === '[data-app-address]') return server ? address : null;
     return null;
   };
   const listeners = {};
@@ -67,7 +74,7 @@ function world({ app = false, ref = null, aliveStatus = 204, mintStatus = 200, v
   const doc = {
     readyState: 'complete', visibilityState: visible,
     getElementById: (id) => (id === 'app-main' ? main : id === 'app-status' ? status : null),
-    querySelector: (sel) => (sel === '[data-app-newtab]' ? newtab : null),
+    querySelector: (sel) => (sel === '[data-app-newtab]' && !server ? newtab : null),
     createElement: (tag) => el(tag),
     addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); },
   };
@@ -81,8 +88,10 @@ function world({ app = false, ref = null, aliveStatus = 204, mintStatus = 200, v
     if (url === '/ui/apps/7/alive') return { status: aliveStatus, ok: aliveStatus === 204, type: 'basic', headers: { get: () => '' } };
     throw new Error('unexpected fetch ' + url);
   };
-  const window = { location: { assign: (u) => { assigned = u; } }, open: () => null };
-  if (app) window.musterApp = {};
+  const posted = [];
+  const window = { location: { origin: 'https://muster.example.test', assign: (u) => { assigned = u; } }, open: () => null };
+  if (app) window.musterApp = { postMessage: (m) => posted.push(m) };
+  if (messages !== undefined) window.musterAppMessages = messages;
   const sandbox = {
     window, document: doc, fetch, Number, JSON, Error,
     setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
@@ -91,7 +100,7 @@ function world({ app = false, ref = null, aliveStatus = 204, mintStatus = 200, v
   vm.runInNewContext(m[1], sandbox);
   const settle = () => new Promise((r) => setTimeout(r, 0));
   return {
-    main, frame, card, status, newtab, fetches, intervals, doc, settle,
+    main, frame, card, status, newtab, fetches, intervals, doc, settle, extCard, copyCard, address, posted,
     current: () => main.querySelector('[data-app-frame]'),
     assigned: () => assigned,
     tick: async () => { for (const i of intervals) if (!i.cleared) i.fn(); await settle(); await settle(); },
@@ -180,4 +189,64 @@ test('in the Android app no frame is loaded: the card is shown and Open navigate
   await w.click(open);
   assert.equal(w.fetches.filter((f) => f.url === '/plugin-handoffs').length, 1, 'Open did not mint at tap time');
   assert.equal(w.assigned(), ENTRY, 'Open did not navigate the top level to the minted URL');
+});
+
+// A SERVER app's page in the Android app (core PR 1h.2; muster-android A1):
+// the detection is window.musterAppMessages listing 'open-external', never a
+// version string. Three apps: none (a desktop browser), one too old to list
+// open-external, and one that lists it.
+const PAGE = 'https://muster.example.test/apps/7';
+
+test('a server app with no Android app frames the plugin as a desktop browser does', async () => {
+  const w = world({ server: true });
+  await w.settle(); await w.settle();
+  assert.equal(w.fetches.filter((f) => f.url === '/plugin-handoffs').length, 1, 'no mint at load');
+  assert.ok(w.current() && w.current() !== w.frame, 'the frame was not loaded');
+  assert.equal(w.extCard.hidden, true);
+  assert.equal(w.copyCard.hidden, true);
+  assert.equal(w.posted.length, 0);
+});
+
+test('a server app in an app too old for open-external shows the copy-link card and never navigates', async () => {
+  for (const messages of [undefined, ['pair', 'back-claim'], 'open-external']) {
+    const w = world({ server: true, app: true, messages });
+    await w.settle(); await w.settle();
+    assert.equal(w.copyCard.hidden, false, `copy-link card not shown (musterAppMessages ${JSON.stringify(messages)})`);
+    assert.equal(w.extCard.hidden, true, `the Open card is shown without open-external (${JSON.stringify(messages)})`);
+    assert.equal(w.address.textContent, PAGE);
+    await w.click(el('button', { 'data-app-external': '' }));
+    for (let i = 0; i < 3; i++) await w.tick();
+    assert.equal(w.posted.length, 0, 'it posted to an app that did not list open-external');
+    assert.equal(w.fetches.filter((f) => f.url === '/plugin-handoffs').length, 0, 'it minted');
+    assert.equal(w.assigned(), null, 'it navigated (the loop the card exists to prevent)');
+    assert.equal(w.current(), null, 'the frame is still drawn in the app');
+  }
+});
+
+test("a server app in an app that lists open-external: Open posts exactly one open-external with this page's URL, mints nothing, navigates nothing", async () => {
+  const w = world({ server: true, app: true, messages: ['pair', 'open-notification-settings', 'back-claim', 'touch-start', 'open-external'] });
+  await w.settle(); await w.settle();
+  assert.equal(w.extCard.hidden, false, 'the Open card is not shown');
+  assert.equal(w.copyCard.hidden, true);
+  await w.click(el('button', { 'data-app-external': '' }));
+  assert.deepEqual(w.posted.map((m) => JSON.parse(m)), [{ type: 'open-external', url: PAGE }]);
+  assert.equal(w.fetches.filter((f) => f.url === '/plugin-handoffs').length, 0, 'Open minted a code');
+  for (let i = 0; i < 3; i++) await w.tick();
+  assert.equal(w.assigned(), null, 'Open navigated the WebView');
+});
+
+test("a server app's open-external carries exactly ?ref=<ref>, raw, and nothing else", async () => {
+  const w = world({ server: true, app: true, ref: 'm-AB_9', messages: ['open-external'] });
+  await w.settle(); await w.settle();
+  await w.click(el('button', { 'data-app-external': '' }));
+  assert.deepEqual(w.posted.map((m) => JSON.parse(m)), [{ type: 'open-external', url: PAGE + '?ref=m-AB_9' }]);
+});
+
+test('a personal app plugin in an app that lists open-external keeps its own card (Open mints and navigates)', async () => {
+  const w = world({ app: true, messages: ['open-external'] });
+  await w.settle(); await w.settle();
+  assert.equal(w.card.hidden, false);
+  await w.click(el('button', { 'data-app-open': '' }));
+  assert.equal(w.posted.length, 0);
+  assert.equal(w.assigned(), ENTRY);
 });

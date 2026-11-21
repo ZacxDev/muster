@@ -327,13 +327,16 @@ func declineStaleProposalsTx(ctx context.Context, tx pgx.Tx, owner int64) error 
 	return nil
 }
 
-// ruleWriter is ctx's owner for a rule write, refusing a plugin's principal.
+// ruleWriter is ctx's owner for a rule write, refusing a plugin's principal:
+// a person's own plugin AND a server app acting for a person
+// (authz.IsPluginVia), which would otherwise write that person's routing
+// rules.
 func ruleWriter(ctx context.Context) (int64, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
 		return 0, errors.New("plugins: a routing rule needs a user principal")
 	}
-	if p.Via == authz.ViaPlugin {
+	if authz.IsPluginVia(p.Via) {
 		return 0, ErrRulePlugin
 	}
 	return p.UserID, nil

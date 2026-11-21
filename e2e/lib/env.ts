@@ -554,10 +554,18 @@ export const knockPushSinkPort = port + 477;
 // blocks above.
 export const pagesPhonePort = port + 478;
 export const pagesPhoneConnectPort = port + 479;
+// tests/plugin-server-app.spec.ts: a server-installed app (core PR 1h.2) — its
+// own gotrue-mode server (main and browser listeners), its own GoTrue, and the
+// stub app plugin behind the TLS edge (+480 to +484: clear of the blocks above).
+export const serverAppMainPort = port + 480;
+export const serverAppBrowserPort = port + 481;
+export const serverAppGotruePort = Number(process.env.MUSTER_E2E_SERVERAPP_GOTRUE_PORT ?? port + 482);
+export const serverAppStubPort = port + 483;
+export const serverAppEdgePort = port + 484;
 // tests/asks-search.spec.ts: the Asks page's search box and the ids on its
 // cards — its own server (plugins and task routing on, for the fixture's
-// draft and task). +480: clear of the blocks above.
-export const asksSearchPort = port + 480;
+// draft and task). +485: clear of the blocks above.
+export const asksSearchPort = port + 485;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

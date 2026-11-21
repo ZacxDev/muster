@@ -134,6 +134,10 @@ var personalOwned = []string{
 	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "pins", "plugin_chief_instructions", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
+	// 0172: a server app's grants and the tasks it filed, per person. A team
+	// never owns one (a server app never acts as a team), so not in 0127's
+	// list: a member's principal reads no other member's.
+	"plugin_server_users", "plugin_server_tasks",
 	// 0144: a chief's OpenRouter sessions' spend; the chief is personal.
 	"chief_session_llm_usage", "chief_session_llm_reservations",
 	// 0147: the fleet digest's marks; a team's sessions are not in an

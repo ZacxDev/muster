@@ -249,6 +249,192 @@ No other field is accepted: a body with any other (a guest's `name`, a
 - A team's token is refused, as on every route but the hand-off redeem and
   `/self`.
 
+### Server apps
+
+A **server app** is an `app` plugin an ADMIN installs once for the whole
+server: every signed-in person gets its tab, with no per-person token and no
+plugin restart per person
+([design](design/meetings.md#core-seam-server-installed-app-plugins)). The
+schema is migration `0172`.
+
+- **The row.** A `plugins` row with `scope = 'server'` and **no owner**,
+  holding `app` and optionally `tasks` (**Files tasks**), data scope `none`.
+  Never `messages`, `viewer`, `draft_checks` or `chief_extension`: those act
+  on one person's chief, and a server app has no person. At most **5** live
+  server apps per server, apart from each person's own 5 `app` plugins. One
+  live server app per name. Never paired.
+- **Installing, rotating, uninstalling** is an admin's, on `/admin/apps` or
+  with `muster-server app install|rotate|uninstall|list` (install and rotate
+  need a fresh sign-in on the page; the command line prints the token once on
+  stdout). Audited `plugin.server.installed`, `.rotated` and `.uninstalled`.
+  **Rotate** keeps the row, its subjects and its grants and kills the old
+  token at once, which ends every live call until the plugin is redeployed
+  with the new token. **Uninstall** is final: the row is revoked and, in the
+  same transaction, every grant, every ledgered task (the tasks themselves
+  stay in each person's list) and every unspent code is deleted; every knock
+  still out is withdrawn; the token is `401` everywhere.
+- **A personal app plugin at a server app's entry URL** is refused at mint
+  ("this server already offers <label> to everyone"), so one person does not
+  get two tabs into one plugin under two identities.
+
+**`/admin/apps`** (an admin's page, also on a password-mode server; drawn
+only while plugins are on and `MUSTER_PLUGIN_ORIGINS` is set) lists each
+installed app: its label, icon, origin, entry URL, what it may do, who
+installed it and when, when it was last seen, and how many people it may act
+for now (a count, never names). The install form takes a name, a tab label,
+an icon, an origin from `MUSTER_PLUGIN_ORIGINS`, an entry URL under it and
+**Files tasks**; Install and **Rotate token** ask "Confirm it's you" in place
+on a stale sign-in, and the token is shown once. **Uninstall** needs no fresh
+sign-in. On a full server (5 apps) the form is not drawn.
+
+**`muster-server app`** does the same from a shell, for a pipeline:
+
+```
+muster-server app install --name <slug> --label <tab label> --icon <key> \
+    --origin <one of MUSTER_PLUGIN_ORIGINS> --entry <https URL> [--tasks]
+muster-server app rotate <id>
+muster-server app uninstall <id>
+muster-server app list
+```
+
+`install` and `rotate` print the token, and only the token, on stdout. It is
+audited as the command line (no user). ⚠ An uninstall from the command line
+cannot withdraw the knocks still out (which knocks are out is a running
+server's memory): uninstall from `/admin/apps` to withdraw them.
+
+**The tab for every person.** Every signed-in person gets each live server
+app's tab, server apps first (oldest install first), then their own app
+plugins: at most 5 + 5. A team's acting principal gets none, and a person who
+hid the app gets none. Its page, `/apps/{id}`, frames the plugin as a personal
+app's does, with two differences: **no New tab** (a server app's `/enter`
+refuses a top-level load), and **in the Android app** the card asks the app
+to open muster's own `/apps/{id}` (with `?ref=` when the page has one) in the
+system browser, through the bridge's `open-external` message, which the app
+lists in `window.musterAppMessages`. An app that does not list it gets a card
+with the page's address and **Copy link**, and nothing navigates.
+
+**Account → Apps** lists every server app with what it may do ("can show its
+page in muster; can notify you; can file tasks for you; it learns your
+display name when you open it") and until when it may act for you. **Hide**
+removes the tab, ends the grant at once, makes the mint and the redeem `404`
+and an open page's alive poll `404` (its frame goes). **Show** brings the tab
+back; the app may act for you again only once you open its tab.
+
+**The token acts as nobody.** It is the same `mpl_` shape and opens
+`/plugin/v1/*` only. The door, not the row, decides what it is served: a
+route the table below does not serve is `403` whatever the row's
+capabilities say.
+
+| route | served to a server token | acts as |
+|---|---|---|
+| `GET /plugin/v1/self` | yes | nobody |
+| `POST /plugin/v1/handoffs/redeem` | yes, for codes minted for this app | nobody; records the grant |
+| `POST /plugin/v1/owners/check` | yes (a personal token is `403`) | nobody |
+| `POST /plugin/v1/notify`, `DELETE /plugin/v1/notify/{ref}` | yes, with `Muster-Act-For` | the person the subject names |
+| `POST /plugin/v1/tasks` | yes if installed with Files tasks, with `Muster-Act-For` | the same |
+| every other `/plugin/v1` route | no, `403` | — |
+
+**`GET /plugin/v1/self`** names no person:
+
+```json
+{"plugin_id": 9, "plugin_name": "meetings", "scope": "server",
+ "owner_id": null, "owner_login": null, "owner_kind": "server",
+ "capabilities": ["app", "tasks"], "deliver_to": null, "act_for_hours": 8}
+```
+
+**Learning a person: the redeem.** The app learns a person only from a
+hand-off code THAT PERSON'S browser minted on muster's `/apps/<id>` page (a
+session that records no sign-in time is asked to sign in again, `401`). A
+code lives 60 s and is spent once. The redeem answers:
+
+```json
+{"owner": {"subject": "AAECAwQFBgcICQoLDA0ODw", "display_name": "Ada"},
+ "scope": "server", "target": {"app": {}}, "purpose": "app",
+ "stepped_up": true, "minted_at": "2000-01-02T03:04:05Z",
+ "act_until": "2000-01-02T11:04:05Z"}
+```
+
+- **`subject`** is exactly **22 base64url characters** (16 random bytes, no
+  padding). It is **pairwise**: one person has a different subject under each
+  server app, so two apps cannot join their records on it. It is stable for
+  the life of the install (a Rotate keeps it; an uninstall ends it). It is
+  never derived from muster's user id. Key your data on it.
+- **`display_name`** is the account's display name, or `""` when it has
+  none (ask the person). No user id and no email are ever sent.
+- The redeem records a **grant**: for 8 hours from the latest redeem
+  (`act_until`) the app may knock and file tasks for that person, and nobody
+  else. The person is re-checked on the redeem itself: hidden, disabled, or
+  a code minted by a session a later Sign out everywhere ended is the same
+  `404` as an unknown code, and the code is spent all the same.
+  A redeem writes no audit row; it is counted in
+  `muster_plugin_server_grants_total{outcome}` (`granted`, `not_found`).
+
+**Acting for a person: `Muster-Act-For: <subject>`.** On the act-for routes
+the header names the person; the request then runs as that person, under
+their row-level security. Exactly one header on an act-for route; missing or
+twice is `400`, and so is the header on any other route. On a **personal**
+token the header is `400` on every route. A subject whose grant is not live
+is `404 {"error": "no such person for this app"}`, one body for every reason
+(unknown, another app's, expired, hidden, disabled, signed out everywhere
+since the sign-in, a retired origin).
+
+- A grant ends early on Hide (Account → Apps), a disable, Sign out
+  everywhere or the session cutoff, compared with the sign-in of the session
+  that minted the code, never with the redeem's time. A sign-out in one
+  browser does not end it.
+- **A server app learns nothing of a person's push setup.** Its knock caps
+  are spent first, and a person who turned "An app needs you" off, or has no
+  device, is answered `202 {"queued": true, …}` exactly as one who has both
+  (the knock is dropped and logged). A personal app plugin, its owner's own,
+  keeps the `204`.
+- A knock goes to the person the subject names, never the admin who
+  installed the app. The knock caps are per `(app, person)`: 30 an hour each,
+  under a per-app ceiling of **600 knocks an hour**; one person's knocks can
+  be neither withdrawn nor throttled through another's.
+
+**`POST /plugin/v1/owners/check`** tells the app which of the people it holds
+it may still act for.
+
+```
+POST /plugin/v1/owners/check   {"subjects": ["<subject>", ...]}
+200 {"states": {"<subject>": "live" | "expired" | "revoked"}}
+```
+
+- 1 to **200** subjects, each the subject shape; more, none or a malformed
+  one is `400`. The body may be pretty-printed (up to 16 KiB is read). 60 calls a minute per app (`429` with `Retry-After`).
+- **Exactly one entry per subject asked about, and no other.** A subject the
+  app never redeemed is `revoked`, as any ended one is, so the answer cannot
+  tell "never seen" from "ended".
+- **`live`**: the app may act for the person now.
+- **`expired`**: ONLY the 8-hour clock ran out and nothing else is wrong.
+  The person's next visit to the tab renews it. Keep their open meeting.
+- **`revoked`**: anything else: hidden, disabled, a team, signed out
+  everywhere (or cut off) since the sign-in, the app uninstalled or its
+  origin retired, or no grant. End that person's sessions.
+- 🔴 **Precedence: `revoked` wins over `expired`.** When any other condition
+  fails the answer is `revoked` even if the clock ran out too. (Hide sets
+  `act_until` to now, so an expiry-first answer would report a hidden person
+  as `expired`, and their meetings would stay open.) The state is computed by
+  the same check the act-for door uses, so the two cannot disagree.
+- Act-for refuses both `expired` and `revoked`.
+
+**Tasks for a server app.** `POST /plugin/v1/tasks` acting for a person
+finds tasks **only through the app's own ledger** (`plugin_server_tasks`):
+`(this app, this person, key)`. A task the person or another plugin tagged
+with the same key is never found, commented on or revealed: a bare comment
+on such a key answers `200 {"id": null, "created": false, "commented":
+false}`, byte for byte the answer for a key no task carries. `create` files
+a new task and ledgers it (re-pointing the ledger when the earlier one was
+completed, dismissed or merged away). `route_to_chief` and `reference` are
+`400`, as on a `tasks`-only token. Each `(app, person)` may make **60** task
+writes an hour (a create or a comment) and each app **600**; past either,
+`429` with `Retry-After`. A repeat answered from the stored row spends
+nothing. No task a server app files starts an agent.
+
+**Liveness.** Poll `/self` (a `401` means the app was uninstalled or
+rotated away: end every session) and `owners/check` every 60 s for the
+subjects with a live session.
+
 ### Viewer hand-off
 
 How a viewer plugin learns, without a sign-in of its own, that a browser

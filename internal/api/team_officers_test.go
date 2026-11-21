@@ -199,3 +199,7 @@ func TestTheDatabaseApproverRefusalIsA403(t *testing.T) {
 
 // pgErrWithHint is a Postgres error with code and hint, as pgx returns one.
 func pgErrWithHint(code, hint string) error { return &pgconn.PgError{Code: code, Hint: hint} }
+
+// VisibleServerApps: this fake has no server apps (every page's app tabs read
+// it since core PR 1h.2).
+func (draftOnlyStore) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }

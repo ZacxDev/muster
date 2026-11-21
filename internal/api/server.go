@@ -415,6 +415,11 @@ type Server struct {
 	// appNotifies is the cap on an `app` plugin's knock notifications
 	// (plugin_notify.go): per (plugin, ref) and per plugin.
 	appNotifies appNotifyLimit
+	// serverTasks is a server app's task-write caps (plugin_server.go):
+	// per (app, person) and per app.
+	serverTasks serverTaskLimit
+	// ownersChecks is a server app's POST /plugin/v1/owners/check cap.
+	ownersChecks ownersCheckLimit
 	// pushOffLogged: the "push is not configured" drop has been logged once
 	// (logPushOff). On a server with no push at all every notification is
 	// dropped, so it is said once rather than once per notification.
@@ -516,6 +521,10 @@ type Server struct {
 	// and it exists so principal_test.go can observe the principal at the
 	// hand-off without running the handler.
 	principalProbe func(*http.Request)
+	// serverNobodyProbe, when set (tests only), sees each request a server
+	// app's acts-as-nobody route hands on (admitServerPlugin with no subject),
+	// which carries NO principal, so principalProbe does not see it.
+	serverNobodyProbe func(*http.Request)
 
 	// sessionUserOverride, when set, names the user a valid browser session
 	// acts as (principal.go's sessionUserID). TEST-ONLY until PR 4's GoTrue

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log"
 	"sort"
@@ -153,3 +154,7 @@ type rulesPluginStore struct {
 	plugins.Store
 	ruleStore
 }
+
+// VisibleServerApps: this fake has no server apps (every page's app tabs read
+// it since core PR 1h.2).
+func (rulesPluginStore) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }

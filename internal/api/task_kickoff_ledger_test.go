@@ -131,7 +131,7 @@ var expectedToolAnswerBuilders = map[string]bool{
 // Body, Title or Comments, and why that is not a plugin task's text laundered
 // out of its CreatedBy.
 var expectedNoteLiterals = map[string]string{
-	"createTaskOnce":   "files a task from its creator's own input, with the creator's CreatedBy (a plugin's is CreatedByPlugin)",
+	"taskWant":         "builds the task createTaskOnce and a server app's ledgered create file, from the creator's own input, with the creator's CreatedBy (a plugin's is CreatedByPlugin)",
 	"handleNoteCreate": "the owner's new-task form: the owner's own text",
 }
 

@@ -133,7 +133,9 @@ func (s *Server) autostartPluginTask(ctx context.Context, p plugins.Plugin, n no
 // ledger. It answers the agent, or why none was started (the owner's words).
 func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plugins.Plugin, cfg plugins.Autostart, n notes.Note) (agents.Agent, string) {
 	owner := n.OwnerID
-	if p.OwnerTeam || owner != p.OwnerID {
+	// A server app is unreachable here (no `messages`, so no auto-start; and
+	// serverPluginRoutes serves none of its routes): refused all the same.
+	if plugOwner, ok := p.PersonalOwner(); p.OwnerTeam || !ok || owner != plugOwner {
 		return agents.Agent{}, autostartTeam
 	}
 	// The deployment's own kill switch (MUSTER_PLUGIN_AUTOSTART), before

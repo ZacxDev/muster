@@ -28,7 +28,7 @@ import { APP_ENTRY, APP_ZONE, AppStub, appStubArgs } from '../lib/appstub';
 // changes the golden, and this spec then fails until the route is classified:
 // a new page cannot ship unmeasured by being forgotten.
 //
-type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in' | 'app';
+type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in' | 'app' | 'app-plain';
 // `ready` is what the page is FOR, asserted visible after the measurement: a
 // page that failed to draw its content shifts nothing, and must not pass as
 // still. (The share sheet once did exactly that: opened empty, measured 0.)
@@ -117,6 +117,11 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // shifts a phone context flags as recent input; a positive control at each
   // size shows a shift after the swap reads above the bar.
   'GET /apps/{id}': { where: 'app', url: 'APP', ready: `[data-app-frame][src^="${APP_ENTRY}?muster_code="]` },
+  // Server-installed apps (core PR 1h.2): served only with plugins and
+  // MUSTER_PLUGIN_ORIGINS on, so measured on the app server (password mode,
+  // its operator an admin) with the plain measure().
+  'GET /admin/apps': { where: 'app-plain', url: '/admin/apps', ready: '#admin-app-install' },
+  'GET /account/apps': { where: 'app-plain', url: '/account/apps', ready: ':is(#account-apps li, #account-apps-none)' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   // The morning report is off on every server here (404); its page's layout
@@ -1058,6 +1063,36 @@ test.describe("the app tab's page", () => {
       }
     }).observe(document, { subtree: true, childList: true });
   })()`;
+
+  test(`the server-app pages shift less than ${BAR}, at both sizes`, async () => {
+    test.setTimeout(90_000);
+    const browser = await chromium.launch();
+    const bad: string[] = [];
+    let measured = 0;
+    try {
+      for (const vp of viewports) {
+        const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
+        try {
+          const page = await ctx.newPage();
+          await signIn(page, aorigin);
+          await page.addInitScript(clsInit);
+          for (const [route, p] of Object.entries(PAGES)) {
+            if (p.where !== 'app-plain') continue;
+            const r = await measure(page, aorigin + p.url, p.ready);
+            measured++;
+            console.log(`[cls ${vp.name}] ${route} ${r.total}`);
+            if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
+          }
+        } finally {
+          await ctx.close();
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+    expect(measured, 'positive control: the server-app pages were measured at both sizes').toBe(4);
+    expect(bad).toEqual([]);
+  });
 
   test(`GET /apps/{id} with its frame loaded shifts less than ${BAR}, at both sizes`, async () => {
     test.setTimeout(120_000);

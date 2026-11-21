@@ -74,23 +74,45 @@ func (s *Server) liveAppPlugins(ctx context.Context) []plugins.Plugin {
 		s.logger.Printf("plugins: list for the app tabs: %v", err)
 		return nil
 	}
+	// 🔴 SERVER APPS FIRST (core PR 1h.2): every live server app the PERSON
+	// has not hidden, oldest install first — none for a team's acting
+	// principal (VisibleServerApps answers none) — then the person's own.
+	servers, err := s.ext.Plugins.VisibleServerApps(ctx)
+	if err != nil {
+		s.logger.Printf("plugins: list the server apps for the app tabs: %v", err)
+		servers = nil
+	}
 	var out []plugins.Plugin
+	for _, p := range servers {
+		if p.IsServer() && appTabDrawable(s.ext.PluginOrigins, p) {
+			out = append(out, p)
+		}
+	}
+	var mine []plugins.Plugin
 	for _, p := range all {
-		if p.RevokedAt != nil || !p.Has(plugins.CapApp) || p.OwnerTeam || p.OwnerID != owner ||
-			p.AppLabel == nil || p.AppIcon == nil || p.Origin == nil || p.EntryURL == nil {
+		// The principal's own PERSONAL app plugins (a server app's tab is its
+		// own arm, core PR 1h.2).
+		if o, ok := p.PersonalOwner(); !ok || p.OwnerTeam || o != owner || !appTabDrawable(s.ext.PluginOrigins, p) {
 			continue
 		}
-		if _, err := plugins.ValidViewerLink(s.ext.PluginOrigins, *p.Origin, *p.EntryURL); err != nil {
-			continue
-		}
-		if appOrigin(*p.EntryURL) == "" {
-			continue
-		}
-		out = append(out, p)
+		mine = append(mine, p)
 	}
 	// The store lists newest first; the sidebar is oldest first.
-	slices.Reverse(out)
-	return out
+	slices.Reverse(mine)
+	return append(out, mine...)
+}
+
+// appTabDrawable is the tab's own rules for one row, personal or server: live,
+// holding `app`, with a label and icon, and an origin and entry URL the
+// CURRENT origins still allow, the entry's exact origin parseable.
+func appTabDrawable(origins []plugins.OriginPattern, p plugins.Plugin) bool {
+	if p.RevokedAt != nil || !p.Has(plugins.CapApp) || p.AppLabel == nil || p.AppIcon == nil || p.Origin == nil || p.EntryURL == nil {
+		return false
+	}
+	if _, err := plugins.ValidViewerLink(origins, *p.Origin, *p.EntryURL); err != nil {
+		return false
+	}
+	return appOrigin(*p.EntryURL) != ""
 }
 
 // liveAppsKey carries one request's liveAppPlugins (withLiveApps).
@@ -171,6 +193,10 @@ func (s *Server) handleAppPage(w http.ResponseWriter, r *http.Request) {
 		Origin:   origin,
 		Ref:      ref,
 		MintPath: pluginHandoffsPath,
+		// A server app: no New tab, and in the Android app the card opens
+		// muster's own page in the system browser (open-external), never the
+		// plugin's URL top level (its /enter refuses that).
+		Server: p.IsServer(),
 	}
 	h := w.Header()
 	h.Set("Content-Security-Policy", contentSecurityPolicy("'none'", origin))

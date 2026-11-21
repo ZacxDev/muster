@@ -143,13 +143,18 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// A plugin claimed or settled queued writes: owner is the authenticated
 		// plugin row's OwnerID, and the claim and the result reach only that
 		// plugin's writes, on that owner's references.
-		"(*Server).handlePluginTaskWritesClaim → broadcastTo(p.OwnerID)",
-		"(*Server).handlePluginTaskWriteResult → broadcastTo(p.OwnerID)",
+		"(*Server).handlePluginTaskWritesClaim → broadcastTo(messagesOwner(p))",
+		"(*Server).handlePluginTaskWriteResult → broadcastTo(messagesOwner(p))",
 		// The plugin task route's comment on an existing task (plugin_tasks.go),
 		// once on the create path (the task existed) and once on the comment-only
 		// path: the request's principal is the plugin token's owner (authz.ViaPlugin).
 		"(*Server).handlePluginTask → broadcast(ctx)",
 		"(*Server).handlePluginTask → broadcast(ctx)",
+		// A SERVER app's comment on a task it filed (plugin_server.go), on the
+		// comment-only path and on the create path: the request's principal is
+		// the person the act-for grant names (authz.ViaServerPlugin).
+		"(*Server).handleServerAppTask → broadcast(ctx)",
+		"(*Server).handleServerAppTask → broadcast(ctx)",
 		"(*Server).handleAPITaskEdit → broadcast(r.Context())",
 		"(*Server).handleAgentBlocked → broadcast(r.Context())",
 		// The pod's live work counts (agent_work.go): the relay agent's request.

@@ -83,7 +83,7 @@ func (p *gtPlugins) Message(_ context.Context, id int64) (plugins.Message, error
 }
 
 func (p *gtPlugins) Plugin(_ context.Context, id int64) (plugins.Plugin, error) {
-	return plugins.Plugin{ID: id, OwnerID: gtOwner, Label: "Example inbox"}, nil
+	return plugins.Plugin{ID: id, Label: "Example inbox"}.OwnedBy(gtOwner), nil
 }
 
 type gatedFakeFixture struct {
@@ -312,3 +312,7 @@ func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 		}
 	}
 }
+
+// VisibleServerApps: this fake has no server apps (every page's app tabs read
+// it since core PR 1h.2).
+func (*gtPlugins) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }

@@ -812,6 +812,76 @@ func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note, c *Co
 	return n, created, commented, nil
 }
 
+// FileOnceByLedger: see the Store interface.
+func (s *PGStore) FileOnceByLedger(ctx context.Context, l TaskLedger, n *Note, c *Comment) (Note, bool, bool, bool, error) {
+	key := l.TaskKey()
+	if k := NormalizeTag(key); k == "" || k != key {
+		return Note{}, false, false, false, fmt.Errorf("notes: ledger key %q is not a normalized tag", key)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Note{}, false, false, false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, l.LockKey()); err != nil {
+		return Note{}, false, false, false, err
+	}
+	id, ledgered, err := l.Find(ctx, tx)
+	if err != nil {
+		return Note{}, false, false, false, err
+	}
+	var cur Note
+	open := false
+	if ledgered {
+		// THE OPEN TASK by the personal path's own rule (openOnly): live, not
+		// complete, not merged away. A ledgered task that is none of those
+		// behaves exactly as a key no task carries.
+		// And the CALLER's OWN task (never one a team shares with them): the
+		// ledger is keyed on one person.
+		err := scanNote(tx.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE id = $1 AND `+openOnly("$2")+`
+			AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint`,
+			id, supersededPattern), &cur)
+		switch {
+		case err == nil:
+			open = true
+		case !errors.Is(err, pgx.ErrNoRows):
+			return Note{}, false, false, false, err
+		}
+	}
+	created := false
+	if !open {
+		if n == nil {
+			return Note{}, false, false, false, nil
+		}
+		want := *n
+		want.Tags = MergeTags(want.Tags, []string{key})
+		if err := scanNote(tx.QueryRow(ctx, `
+			INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			RETURNING `+noteCols,
+			want.Directory, want.Title, want.Body, want.Model, want.Repo, want.RepoBranch, want.Tags, want.SourceType, want.SourceSessionID,
+			want.CreatedBy), &cur); err != nil {
+			return Note{}, false, false, false, err
+		}
+		if err := l.Record(ctx, tx, cur.ID); err != nil {
+			return Note{}, false, false, false, err
+		}
+		created = true
+	}
+	commented := false
+	if c != nil {
+		cc := *c
+		cc.NoteID = cur.ID
+		if commented, err = addCommentOnceTx(ctx, tx, cc); err != nil {
+			return Note{}, false, false, false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Note{}, false, false, false, err
+	}
+	return cur, true, created, commented, nil
+}
+
 // FindLiveByTag: see the Store interface.
 func (s *PGStore) FindLiveByTag(ctx context.Context, key string) (Note, bool, error) {
 	return findLiveByTag(ctx, s.pool, key)
