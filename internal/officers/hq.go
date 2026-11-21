@@ -466,6 +466,10 @@ type Completion struct {
 	AttributedPRsJSON json.RawMessage `json:"-"`
 	AttributionJSON   json.RawMessage `json:"-"`
 	TicketsJSON       json.RawMessage `json:"-"`
+	// AskJSON is an instance's `ask` argument ({kind, ref}: the single thing
+	// an escalation asks a person to do), sent to HQ AS SENT under the same
+	// rules: HQ owns the kinds and validates both, and empty sends no key.
+	AskJSON json.RawMessage `json:"-"`
 	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
@@ -604,6 +608,7 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 		"attributed_prs": done.AttributedPRsJSON,
 		"attribution":    done.AttributionJSON,
 		"tickets":        done.TicketsJSON,
+		"ask":            done.AskJSON,
 	} {
 		if raw = bytes.TrimSpace(raw); len(raw) > 0 {
 			body[key] = raw
