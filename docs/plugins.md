@@ -196,10 +196,10 @@ classes, icons and a small script at `/ui-kit/v1/` ([ui-kit.md](ui-kit.md)),
 carrying the server's [theme](ui-kit.md#the-theme). Link them live from the
 muster server, not a copy, and the page follows an admin's theme change on its
 next load. If your page sets a Content-Security-Policy, it must admit muster's
-origin for the kit: `style-src` (kit.css), `script-src` (kit.js), `img-src`
-(icons drawn through CSS, brand images) and `connect-src` (kit.js reads
-icons.svg). The read is answered with CORS only for an https origin under
-`MUSTER_PLUGIN_ORIGINS`. muster's own page around the frame needs no change
+origin for the kit: `style-src` (kit.css), `script-src` (kit.js) and
+`img-src` (brand images). The kit needs no CORS and no `connect-src`: kit.js
+carries its icons, so any origin can use it, in `MUSTER_PLUGIN_ORIGINS` or
+not. muster's own page around the frame needs no change
 for this: the frame's document is yours, and so is its policy.
 
 ### `POST /plugin/v1/notify`: a knock notification

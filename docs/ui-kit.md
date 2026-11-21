@@ -47,22 +47,21 @@ signed in or not, and muster reads no session and no cookie to serve it.
 | `Content-Type` | `text/css; charset=utf-8`, `image/svg+xml`, `text/javascript; charset=utf-8` |
 | `ETag` | the first 16 hex digits of a sha256 over the response body. The theme is part of `kit.css` and `theme.css`, so a theme change is a new ETag |
 | `Cache-Control` | `?v=<the current etag>`: `public, max-age=31536000, immutable`. No `v`, or any other `v`: `no-cache` (the current bytes, revalidated every time; the ETag answers that with a `304`) |
-| `Access-Control-Allow-Origin` | the request's `Origin`, only when it is an `https` origin under the server's `MUSTER_PLUGIN_ORIGINS` (exact host or wildcard zone, no port). Absent for every other origin |
-| `Vary` | `Origin`, always |
 | `Cross-Origin-Resource-Policy` | `cross-origin`, so a page that sets `Cross-Origin-Embedder-Policy: require-corp` can still load it |
 | `X-Content-Type-Options` | `nosniff` |
 
 A plugin links the files unversioned, so every load revalidates and a new theme
 shows at once. muster's own pages link the versioned URL.
 
-**Why CORS is an allowlist.** A `<link rel="stylesheet">` and a `<script src>`
-need no CORS header, so any page can *draw* the kit. Reading it from script
-does: `kit.js` fetches `icons.svg` to put the sprite in the page (a browser
-will not draw `<use href>` from another origin). That read is granted only to
-the server's plugin origins, as the rest of muster grants other origins
-nothing. The kit is not secret (the theme is also in
-[`GET /api/instance`](branding.md#the-instance-document)); the allowlist keeps
-muster from answering arbitrary sites' scripts.
+**No CORS, on purpose.** A `<link rel="stylesheet">` and a `<script src>`
+need no CORS header, so any page can use the kit, whether or not its origin
+is in the server's `MUSTER_PLUGIN_ORIGINS`. Nothing in the kit has to be read
+from script: `kit.js` carries the icon sprite inside itself and puts it in
+the page (a browser will not draw `<use href>` from another origin, so a
+separate `icons.svg` would need CORS). muster sends no
+`Access-Control-Allow-Origin` for the kit, to anyone. `icons.svg` is still
+served, for a page on muster's own origin or a tool that wants the sprite as
+a file.
 
 ### Your page's Content-Security-Policy
 
@@ -70,13 +69,13 @@ If your page sets a CSP, add muster's origin to:
 
 - `style-src` (kit.css),
 - `script-src` (kit.js),
-- `img-src` (icons drawn through CSS, and the [brand images](branding.md)),
-- `connect-src` (kit.js reads icons.svg).
+- `img-src` (the [brand images](branding.md)).
+
+`kit.js` makes no request, so `connect-src` needs nothing for the kit.
 
 ```
 Content-Security-Policy: default-src 'self'; style-src 'self' https://muster.example.test;
-  script-src 'self' https://muster.example.test; img-src 'self' https://muster.example.test;
-  connect-src 'self' https://muster.example.test
+  script-src 'self' https://muster.example.test; img-src 'self' https://muster.example.test
 ```
 
 ## Tokens
@@ -146,6 +145,31 @@ Every class is prefixed `mu-`. A modifier is `--name`; a part is `__name`. Every
 control draws its focus ring (`--mu-focus`) on `:focus-visible`, and is at least
 44 × 44 px except where a `--sm` modifier says otherwise.
 
+### Matching muster's own
+
+The kit draws what muster's own pages draw. muster has several button styles;
+the kit matches the family its account, admin and sign-in pages share, which
+is also the most used one. These pairs are **locked by a browser test**
+(`e2e/tests/ui-kit-parity.spec.ts`, at a phone's size and a desktop's): the
+computed font size, line height, weight, padding, corner radius, border,
+ring, colours and height must be equal, and the test fails when either side
+changes.
+
+| kit | muster's own |
+|---|---|
+| primary button, `mu-btn--primary` | the Account page's **Sign out** (`rounded-md bg-accent px-3 py-2 text-base font-semibold`) |
+| secondary button, `mu-btn--secondary` | the branding section's **Reset logo** (`rounded-md bg-bg px-3 py-2 text-base font-semibold ring-1 ring-inset ring-edge`) |
+| text field, `mu-input` | the branding section's **Display name** field (`rounded-md bg-bg px-3 py-2 text-base ring-1 ring-inset ring-edge`) |
+| card, `mu-card` | an Account page section (`rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line`) |
+| icon button, `mu-icon-btn` | the sidebar's **Search sessions** button (`h-11 w-11 rounded-lg text-muted`) |
+
+Matched by value but not by the browser test (muster draws its own only in
+places the test cannot open): `mu-chip--<status>` (muster's status chip:
+`rounded-full px-2.5 py-1 text-xs font-semibold`, the status colours and a
+40% ring) and `mu-menu__item` (muster's header menu item: `rounded-lg px-3
+text-sm font-medium`, `s2` on hover). The kit's other components have no muster
+equivalent yet.
+
 ### Base
 
 | class | what it is |
@@ -160,12 +184,12 @@ control draws its focus ring (`--mu-focus`) on `:focus-visible`, and is at least
 |---|---|
 | `mu-btn` | the base button: a label, optionally a leading `mu-icon` |
 | `mu-btn--primary` | `accent` fill, `on-accent` label: the one main action |
-| `mu-btn--secondary` | `s2` fill, `edge` outline |
+| `mu-btn--secondary` | `bg` fill, `edge` outline |
 | `mu-btn--ghost` | no fill until hovered |
 | `mu-btn--danger` | `danger` fill, `on-danger` label |
 | `mu-btn--sm` | a compact button (32 px high, for dense rows only) |
 | `mu-btn--block` | full width |
-| `mu-icon-btn` | **an icon button**: one `mu-icon`, no visible text, round. **It must carry an `aria-label`**; `kit.js` shows that label (or `data-mu-tooltip`, when set) as its tooltip, and warns in the console about one without a label |
+| `mu-icon-btn` | **an icon button**: one `mu-icon`, no visible text: 44 px square with `--mu-radius-md` corners, no fill and `muted` until hovered (as muster's own sidebar icon buttons). **It must carry an `aria-label`**; `kit.js` shows that label (or `data-mu-tooltip`, when set) as its tooltip, and warns in the console about one without a label |
 | `mu-icon-btn--danger` | a `danger` icon button (leave the call) |
 | `mu-icon-btn--lg` | a 56 px icon button (a call's main controls) |
 | `mu-toggle` | **a toggle button**: a `mu-btn` or `mu-icon-btn` that also carries `aria-pressed="true"` or `"false"`. Pressed draws the `s3` fill and an `accent` ring. With `data-mu-toggle`, `kit.js` flips it on click |
@@ -192,7 +216,7 @@ A status must never be told by colour alone: put the word (or an icon whose
 
 | class | what it is |
 |---|---|
-| `mu-card` | an `s1` panel with a `line` hairline and `--mu-radius-lg` corners |
+| `mu-card` | a panel on `s1` at 70%, a `line` border and ring, `--mu-radius-lg` corners (muster's own section card) |
 | `mu-card--raised` | the card on `s2` |
 | `mu-card__title` | the card's heading |
 | `mu-card__body` | the card's text |
@@ -332,13 +356,13 @@ or `MusterKit.icon("mic")`. An icon is decoration (`aria-hidden`): the button's
 
 `kit.js` defines one global, `window.MusterKit`, and wires the `data-mu-*`
 attributes below in the document when it loads (and in any element you pass to
-`scan`). It uses no framework and makes one request: `icons.svg`, from its own
-origin.
+`scan`). It uses no framework and makes no request: the icon sprite is inside
+it.
 
 | member | what it does |
 |---|---|
 | `MusterKit.version` | the kit version, `"1.<minor>.<patch>"` |
-| `MusterKit.ready` | a Promise that settles once the icon sprite is in the page (it resolves even if the fetch fails; icons then draw nothing) |
+| `MusterKit.ready` | a Promise that resolves once the icon sprite is in the page |
 | `MusterKit.icon(name)` | a new `<svg class="mu-icon" aria-hidden="true">` drawing `name` |
 | `MusterKit.tooltip(el, text?)` | shows `text` (default: `el`'s `data-mu-tooltip`, else its `aria-label`) as a tooltip on hover and on keyboard focus, hidden on Escape, blur and leave. Returns a function that removes it. Every `mu-icon-btn` and every `[data-mu-tooltip]` gets one automatically. The tooltip does not replace the accessible name |
 | `MusterKit.toggle(el, pressed?)` | sets `el`'s `aria-pressed` to `pressed`, or flips it, and dispatches a bubbling `mu-toggle` event whose `detail.pressed` is the new state. Returns the new state. A click on a `[data-mu-toggle]` does this |
@@ -376,7 +400,8 @@ The surfaces stay because the phone's status bar and the installed app's
 colour are muster's `bg` and are read before any stylesheet.
 
 **An accent colour** (`#RRGGBB`) replaces the preset's accent. muster derives
-`on-accent` (a dark or a white label, whichever reads better on it) and
+`on-accent` (the accent darkened to a near-black label, which for any accent
+that passes the check is the better-reading one) and
 `focus` (the accent, lighter) itself, then checks the whole theme against the
 contrast table above. **A theme that fails any pair is refused at save**, with
 the failing pairs named; nothing is stored.
