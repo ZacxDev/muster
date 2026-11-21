@@ -119,7 +119,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		heading = askClosedState(a.Status)
 	case a.StepUp != nil:
 		// A step-up card is muster's own: its action is the heading.
-		heading = textplain.Title(a.StepUp.Title)
+		heading = textplain.Title(stepUpTitleText(a.StepUp))
 	case notice:
 		heading = source + noticePushTitleSuffix
 	}
@@ -161,7 +161,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
 <div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2">` + where + `<time datetime="` +
-		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p></div>
+		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>` + ui.AskIDChipHTML(a.ID) + `</div>
 ` + officerNoteLabelHTML(a.Context) + askQuestionHTML(a) + asksCardContextRow(inner, info) + askPageMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
@@ -192,6 +192,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
+	// The header's id chip (ui/ask_id.go): plain text until this runs.
+	b.WriteString(ui.IDCopyScriptHTML())
 
 	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading}
 	if a.Status == attention.Open && !notice && a.StepUp == nil {

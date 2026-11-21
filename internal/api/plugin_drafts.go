@@ -938,8 +938,8 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	}
 	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", draftKindLabel(d)),
-		`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+esc(flows.VisibleEscape(who))+`</span>`, age) + `
+` + ui.AsksCardTopHTML(ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", draftKindLabel(d)),
+		`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+esc(flows.VisibleEscape(who))+`</span>`, age), ui.DraftIDChipHTML(d.ID)) + `
 `)
 	pills := []string{
 		`<span class="` + ui.AsksPillClass + `" data-draft-plugin>` + esc(c.PluginLabel) + `</span>`,

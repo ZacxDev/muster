@@ -18,16 +18,15 @@ import "strings"
 // private `likeEscape` inside the agents package and was promoted when a second
 // searcher needed exactly the same predicate.
 //
-// ⚠ IT HAS EXACTLY ONE CALLER IN THIS REPOSITORY TODAY —
-// agents.PGStore.SearchSessions. The second upstream caller was notes'
-// directory search, which was NOT carried across (see the carve note in
-// internal/notes/pgstore.go). One caller is not a reason to inline it back:
-// the next searcher is the case this function exists for, and the cost of
-// keeping it is one file.
+// Its callers: agents.PGStore.SearchSessions, and the Asks page's search —
+// attention.PGStore.Search and plugins.PGStore.SearchDraftCards. (Notes'
+// directory search, an upstream caller, was NOT carried across: see the carve
+// note in internal/notes/pgstore.go.)
 //
-// Behaviour is covered twice on purpose — directly by TestLikeEscape here, and
-// from the caller's side by the agents package's pgstore_search_test.go, which
-// drives it through real SQL.
+// Behaviour is covered directly by TestLikeEscape here, and from each
+// caller's side through real SQL: the agents package's
+// pgstore_search_test.go, attention's search_pg_test.go and plugins'
+// drafts_search_pg_test.go.
 func LikeEscape(q string) string {
 	q = strings.ReplaceAll(q, `\`, `\\`)
 	q = strings.ReplaceAll(q, "%", `\%`)

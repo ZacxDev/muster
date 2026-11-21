@@ -16,14 +16,14 @@ import (
 // stepUpPostCard is a draft card on venue platform (target kind target) as
 // Clean stores it.
 //
-// Its title is the one muster gives that card: "Post to <venue>? · #9" for an
-// outbound draft, "Send this reply on <venue>? · #9" for a reply draft (no
+// Its title is the one muster gives that card: "Post to <venue>? · Draft #9" for an
+// outbound draft, "Send this reply on <venue>? · Draft #9" for a reply draft (no
 // platform).
 func stepUpPostCard(t *testing.T, platform, venue, target, handle, body string, media int) attention.Ask {
 	t.Helper()
-	title := "Post to " + venue + "? · #9"
+	title := "Post to " + venue + "? · Draft #9"
 	if platform == "" {
-		title = "Send this reply on " + venue + "? · #9"
+		title = "Send this reply on " + venue + "? · Draft #9"
 	}
 	c := &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: title, Why: "Marketing: launch", Asker: "main:1",
 		Preview: body, Venue: venue, Platform: platform, Target: target, Handle: handle, DraftID: 9, Details: "D"}
@@ -259,13 +259,13 @@ func TestLookAlikeLettersAreFlaggedOnTheStepUpPreview(t *testing.T) {
 // RED at 037fe5724: every such card read "Reply to a message", neutral logo.
 func TestAnOldDraftCardStillSaysItsVenue(t *testing.T) {
 	cases := []struct{ title, venue, logo, kind string }{
-		{"Post to X? · #9", "X", "x", "New post"},
+		{"Post to X? · Draft #9", "X", "x", "New post"},
 		{"Post to X?", "X", "x", "New post"},
-		{"Reply on X? · #9", "X", "x", "Reply"},
+		{"Reply on X? · Draft #9", "X", "x", "Reply"},
 		{"Send a DM on X?", "X", "x", "Direct message"},
-		{"Post to Reddit? · #9", "Reddit", "reddit", "New post"},
-		{"Send this reply on X? · #9", "X", "other", "Reply to a message"},
-		{"Reject this draft? · #9", "X", "other", "Reply to a message"},
+		{"Post to Reddit? · Draft #9", "Reddit", "reddit", "New post"},
+		{"Send this reply on X? · Draft #9", "X", "other", "Reply to a message"},
+		{"Reject this draft? · Draft #9", "X", "other", "Reply to a message"},
 	}
 	for _, c := range cases {
 		a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: c.title, Why: "Marketing: launch", Asker: "main:1",
@@ -277,7 +277,7 @@ func TestAnOldDraftCardStillSaysItsVenue(t *testing.T) {
 		}
 	}
 	// An old X post's card is a thread like a new one's.
-	a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · #9", Why: "W", Preview: "First.\n---8<---\nSecond.", Venue: "X", DraftID: 9, Details: "D"})
+	a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · Draft #9", Why: "W", Preview: "First.\n---8<---\nSecond.", Venue: "X", DraftID: 9, Details: "D"})
 	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-post-kind>Thread · 2 posts</span>`) || strings.Contains(page, "8&lt;") {
 		t.Errorf("an old X thread's card:\n%s", page)
 	}

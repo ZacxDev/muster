@@ -32,7 +32,7 @@ import (
 // The card's parts (synthetic): an X post of two paragraphs and one image,
 // for draft 41 (the fixture's draft id; the spec serves its medium).
 const (
-	Title   = "Post to X? · #41"
+	Title   = "Post to X? · Draft #41"
 	Why     = "Marketing: rebrand announcement"
 	Asker   = "work:1"
 	Preview = "Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>\n\nA second paragraph."

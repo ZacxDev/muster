@@ -51,8 +51,8 @@ func TestAStepUpCardsPageOffersNoBrowserAnswer(t *testing.T) {
 	a.Owner, a.CreatedAt = 1, time.Now()
 	s := whereServer(t, a)
 	body := askPageBody(t, s, a, askPagePath(a.ID))
-	if got := askPageH1(body); got != "Post to X? · #41" {
-		t.Errorf("the heading %q, want %q", got, "Post to X? · #41")
+	if got := askPageH1(body); got != "Post to X? · Draft #41" {
+		t.Errorf("the heading %q, want %q", got, "Post to X? · Draft #41")
 	}
 	for _, want := range []string{
 		`<p class="break-words text-base text-fg2" data-ask-stepup-phone>Confirm this on your phone.</p>`,

@@ -115,6 +115,24 @@ func AsksKindBadge(kind, label string) string {
 		`" data-asks-badge="` + html.EscapeString(kind) + `">` + html.EscapeString(label) + `</span>`
 }
 
+// AsksCardTopClass is a card's top row when its head (the feed card's
+// toggle, a fixed card's head) shares it with the card's id chip
+// (AskIDChipHTML): the head takes the row, the chip ends it. 🔴 THE CHIP
+// OVERHANGS THE ROW BY 4px EACH WAY (-my-1), as the toggle's own -m-1 does:
+// a 44px chip beside a 36px-tall toggle made every card 8px taller, and the
+// phone's "2.5 cards above the fold" (e2e asks-feed) fell to 2.26.
+const AsksCardTopClass = "flex min-w-0 items-center gap-1 [&>:first-child]:min-w-0 [&>:first-child]:flex-1 [&>[data-id-copy]]:-my-1"
+
+// AsksCardTopHTML is a card's top row: head (its toggle), then chip (its id
+// chip), side by side — the chip OUTSIDE the toggle, since a button cannot
+// hold a button. With no chip it is head as it is.
+func AsksCardTopHTML(head, chip string) string {
+	if chip == "" {
+		return head
+	}
+	return `<div class="` + AsksCardTopClass + `" data-asks-top>` + head + chip + `</div>`
+}
+
 // AsksCardToggleLabel is a card head's accessible NAME: what the toggle does.
 // Its visible words (who, how long) are its description (aria-describedby),
 // so the head never reads as another control saying the card's words.

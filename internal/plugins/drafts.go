@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/flows"
 )
@@ -772,7 +773,7 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 // what the Asks page draws for a just-decided draft that DraftCards' cut
 // left out. ErrNotFound for none (or another owner's: row-level security).
 func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
-	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, id, 1)
+	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, 1, id)
 	if err != nil {
 		return DraftCard{}, err
 	}
@@ -782,19 +783,51 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
+// SearchDraftCards is the caller's OWN drafts (the Asks page's search box)
+// with id draftID (0: none), or whose text contains text ("" none:
+// case-insensitive, a plain substring — % _ and \ are themselves) among those
+// created at or after textSince, newest first, at most limit (≤ 0 or over
+// 200: 100).
+//
+// 🔴 OWN, NAMED IN THE QUERY: plugin_reply_drafts is team-shared (0127: a
+// team's operator reads the team's drafts), so row-level security alone would
+// list a team's drafts as the caller's.
+func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text string, textSince time.Time, limit int) ([]DraftCard, error) {
+	text = strings.TrimSpace(text)
+	if draftID <= 0 && text == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	pattern := ""
+	if text != "" {
+		pattern = "%" + db.LikeEscape(text) + "%"
+	}
+	cards, err := s.draftCards(ctx, `WHERE d.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		   AND (($1::bigint > 0 AND d.id = $1) OR ($2::text <> '' AND d.created_at >= $3 AND d.body ILIKE $2 ESCAPE '\'))
+		 ORDER BY d.id DESC LIMIT $4`, limit, draftID, pattern, textSince, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Newest first (draftCards puts the pending ones first).
+	sort.SliceStable(cards, func(i, j int) bool { return cards[i].Draft.ID > cards[j].Draft.ID })
+	return cards, nil
+}
+
 // draftCards is DraftCards' and DraftCard's two queries — the reply drafts
 // (each with its message) and the outbound drafts (outbound.go: its plugin,
 // and the human reply it answers) — tail their WHERE / ORDER BY / LIMIT,
 // merged in DraftCards' order and cut to limit.
-func (s *PGStore) draftCards(ctx context.Context, tail string, arg any, limit int) ([]DraftCard, error) {
+func (s *PGStore) draftCards(ctx context.Context, tail string, limit int, args ...any) ([]DraftCard, error) {
 	if err := s.sweep(ctx); err != nil {
 		return nil, err
 	}
-	out, err := s.replyDraftCards(ctx, tail, arg)
+	out, err := s.replyDraftCards(ctx, tail, args...)
 	if err != nil {
 		return nil, err
 	}
-	outbound, err := s.outboundDraftCards(ctx, tail, arg)
+	outbound, err := s.outboundDraftCards(ctx, tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -812,7 +845,7 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, arg any, limit in
 	return out, nil
 }
 
-func (s *PGStore) replyDraftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
+func (s *PGStore) replyDraftCards(ctx context.Context, tail string, args ...any) ([]DraftCard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
 		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
@@ -821,7 +854,7 @@ func (s *PGStore) replyDraftCards(ctx context.Context, tail string, arg any) ([]
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
 		  LEFT JOIN session_routes r ON r.route_id = d.route_id
-		 `+tail, arg)
+		 `+tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -846,11 +879,11 @@ func (s *PGStore) replyDraftCards(ctx context.Context, tail string, arg any) ([]
 // outboundDraftCards is the outbound half of draftCards: each card's plugin,
 // and — for a reply target — the human reply its plugin delivered with that
 // venue and thread (OutboundReplyTo), when one arrived.
-func (s *PGStore) outboundDraftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
+func (s *PGStore) outboundDraftCards(ctx context.Context, tail string, args ...any) ([]DraftCard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, p.name, p.label
 		  FROM plugin_reply_drafts d
 		  JOIN plugins p ON p.id = d.plugin_id
-		 `+outboundTail(tail), arg)
+		 `+outboundTail(tail), args...)
 	if err != nil {
 		return nil, err
 	}

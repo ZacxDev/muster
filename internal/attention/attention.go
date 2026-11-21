@@ -656,6 +656,10 @@ type Store interface {
 	// dispatched agent's instructions this way. That risk was stated and
 	// accepted; the kickoff names where the answer came from.
 	AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error)
+
+	// Search is the caller's OWN asks (never a team's it can also read, never
+	// one put to the chief) matching q, newest first (search.go).
+	Search(ctx context.Context, q Search) ([]Ask, error)
 }
 
 // PGStore is Store on Postgres.

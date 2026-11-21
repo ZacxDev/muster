@@ -56,7 +56,7 @@ func itemLi(t *testing.T, out, key string) string {
 	return li[:strings.Index(li, "</li>")+len("</li>")]
 }
 
-var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
+var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*(?:<div class="[^"]*" data-asks-top>)?<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
 
 // TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
 // order questions, notices, waiting sessions, tasks to route; each card opens

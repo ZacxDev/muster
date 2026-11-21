@@ -445,13 +445,33 @@ func (s *Server) stepUpDraftCard(ctx context.Context, args string, card *attenti
 }
 
 // stepUpWithDraftID is a draft card's title with the id of the draft the
-// confirm acts on: "Post to X? · #484" (the operator: "do show the id in the
-// title"). id 0 (none named) leaves it as it is.
+// confirm acts on, LABELLED: "Post to X? · Draft #484" (the operator: "do
+// show the id in the title"; and ids are always labelled, so a draft's never
+// reads as an ask's: ui.DraftIDLabel). id 0 (none named) leaves it as it is.
 func stepUpWithDraftID(title string, id int64) string {
 	if id <= 0 {
 		return title
 	}
-	return title + " · #" + strconv.FormatInt(id, 10)
+	return title + stepUpDraftSuffix(id)
+}
+
+// stepUpDraftSuffix is what stepUpWithDraftID adds: " · Draft #484".
+func stepUpDraftSuffix(id int64) string { return " · " + ui.DraftIDLabel(id) }
+
+// stepUpLegacyDraftSuffix is the suffix a card filed before draft ids were
+// labelled carries in its stored title: " · #484".
+func stepUpLegacyDraftSuffix(id int64) string { return " · #" + strconv.FormatInt(id, 10) }
+
+// stepUpTitleText is step-up card c's title as every face draws it: a card
+// stored with the old bare suffix (" · #484") reads with the labelled one
+// (" · Draft #484"), so no card on the page names a draft by a bare number.
+func stepUpTitleText(c *attention.StepUpCard) string {
+	if c.DraftID > 0 {
+		if t, ok := strings.CutSuffix(c.Title, stepUpLegacyDraftSuffix(c.DraftID)); ok {
+			return t + stepUpDraftSuffix(c.DraftID)
+		}
+	}
+	return c.Title
 }
 
 // stepUpDraftChanged reports whether draft d is NOT what a decision naming
@@ -548,7 +568,7 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<div class="flex min-w-0 flex-col gap-3" data-stepup-card data-tool="` + esc(c.Tool) + `">
-<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>` + esc(textplain.Title(c.Title)) + `</h2>
+<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>` + esc(textplain.Title(stepUpTitleText(c))) + `</h2>
 <p class="break-words text-base text-fg" data-stepup-why>` + esc(c.Why) + `</p>
 `)
 	if c.About != "" {
@@ -643,7 +663,7 @@ func stepUpWithVenue(c *attention.StepUpCard) *attention.StepUpCard {
 	if c.Platform != "" || c.Target != "" || c.DraftID <= 0 || c.Changed || c.Venue == "" {
 		return c
 	}
-	title := strings.TrimSuffix(c.Title, " · #"+strconv.FormatInt(c.DraftID, 10))
+	title := strings.TrimSuffix(stepUpTitleText(c), stepUpDraftSuffix(c.DraftID))
 	for _, kind := range stepUpOutboundKinds {
 		if title == stepUpOutboundTitle(kind, c.Venue) {
 			cc := *c
@@ -821,7 +841,7 @@ func stepUpFeedHTML(c *attention.StepUpCard) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<div class="` + ui.StepUpFeedClass + `" data-attention-text data-stepup-feed>
-<p class="` + ui.StepUpFeedTitleClass + `" data-stepup-title>` + esc(textplain.Title(c.Title)) + `</p>
+<p class="` + ui.StepUpFeedTitleClass + `" data-stepup-title>` + esc(textplain.Title(stepUpTitleText(c))) + `</p>
 <p class="` + ui.StepUpFeedLineClass + `" data-stepup-why>` + esc(c.Why) + `</p>
 `)
 	if c.About != "" {

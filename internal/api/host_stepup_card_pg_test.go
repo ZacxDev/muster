@@ -123,7 +123,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 	if c == nil {
 		t.Fatalf("the card has no parts: %q", a.Question)
 	}
-	title := "Post to X? · #" + strconv.FormatInt(r.draft.ID, 10)
+	title := "Post to X? · Draft #" + strconv.FormatInt(r.draft.ID, 10)
 	if c.Title != title || c.Platform != "x" || c.Target != "post" || c.Handle != "" || c.Why != "Marketing: rebrand announcement" || c.About != "Asked by work:2" || c.Venue != "X" || c.Preview != body || c.Changed ||
 		c.DraftID != r.draft.ID || c.Tool != pluginDraftDecideTool {
 		t.Fatalf("the card's parts: %+v", c)
@@ -201,7 +201,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 func TestAChangedDraftsStepUpCardSaysRefuse(t *testing.T) {
 	const body = "The real post."
 	r := newStepUpDraftRig(t, body)
-	question := "This draft changed since it was asked · #" + strconv.FormatInt(r.draft.ID, 10) + "\nRefuse: the draft no longer matches what the session asked you to decide.\nAsked by work:2"
+	question := "This draft changed since it was asked · Draft #" + strconv.FormatInt(r.draft.ID, 10) + "\nRefuse: the draft no longer matches what the session asked you to decide.\nAsked by work:2"
 	for name, args := range map[string]map[string]any{
 		"another body":  {"decision": "approve", "body_sha256": sha("Another post."), "media_sha256": []string{sha("launch/hero-1")}},
 		"another media": {"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/other")}},
@@ -230,7 +230,7 @@ func TestARejectStepUpCardSaysSoPlainly(t *testing.T) {
 	const body = "A post to reject."
 	r := newStepUpDraftRig(t, body)
 	a := r.decideCard(t, map[string]any{"decision": "reject", "body_sha256": sha(body), "reason": "wrong tone"})
-	question := "Reject this draft? · #" + strconv.FormatInt(r.draft.ID, 10) + "\nReject this draft: wrong tone\nAsked by work:2\n\nA post to reject.\n\nWith 1 image"
+	question := "Reject this draft? · Draft #" + strconv.FormatInt(r.draft.ID, 10) + "\nReject this draft: wrong tone\nAsked by work:2\n\nA post to reject.\n\nWith 1 image"
 	if a.Question != question {
 		t.Fatalf("the reject card:\n%q\nwant\n%q", a.Question, question)
 	}
@@ -276,7 +276,7 @@ func TestAStepUpCardCutsALongRejectReason(t *testing.T) {
 	if a.StepUp == nil || a.StepUp.Why != want || len([]rune(a.StepUp.Why)) != 300 {
 		t.Fatalf("the reject card's why (%d runes): %+v", len([]rune(a.StepUp.Why)), a.StepUp)
 	}
-	if !strings.HasPrefix(a.Question, "Reject this draft? · #"+strconv.FormatInt(r.draft.ID, 10)+"\n"+want+"\nAsked by work:2\n\n") {
+	if !strings.HasPrefix(a.Question, "Reject this draft? · Draft #"+strconv.FormatInt(r.draft.ID, 10)+"\n"+want+"\nAsked by work:2\n\n") {
 		t.Fatalf("the reject card's question:\n%q", a.Question)
 	}
 }
@@ -334,7 +334,7 @@ func TestAStepUpCardCutsALongPluginLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := strings.Repeat("L", 63) + "…"
-	if a.StepUp == nil || a.StepUp.Venue != want || len([]rune(a.StepUp.Venue)) != 64 || a.StepUp.Title != "Send this reply on "+label+"? · #"+strconv.FormatInt(id, 10) {
+	if a.StepUp == nil || a.StepUp.Venue != want || len([]rune(a.StepUp.Venue)) != 64 || a.StepUp.Title != "Send this reply on "+label+"? · Draft #"+strconv.FormatInt(id, 10) {
 		t.Fatalf("the reply card: %+v", a.StepUp)
 	}
 }

@@ -346,7 +346,7 @@ as **payload v2**:
   with the phone's step-up key, whose prompt shows the card's text
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
   Its title is the card's action, with the draft's id on a draft card
-  (*Post to X? · #484*). Its body is the card's why and the start of the post
+  (*Post to X? · Draft #484*). Its body is the card's why and the start of the post
   or summary. It has no options line, and it never carries the machine, the
   session, a hash, a media type or size, or the call's arguments
   ([what a card shows](mirroring.md#what-a-card-shows)). A

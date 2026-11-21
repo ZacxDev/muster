@@ -229,10 +229,16 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	if kind != "question" {
 		badge = ui.AsksKindBadge(kind, label)
 	}
-	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false"` + controls + ` aria-label="` + ui.AsksCardToggleLabel +
+	head := `<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false"` + controls + ` aria-label="` + ui.AsksCardToggleLabel +
 		`" aria-describedby="` + esc(it.Key) + `-who" data-asks-toggle>` +
-		badge + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
-`)
+		badge + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>`
+	// AN ASK'S ID ("Ask #859", ui.AskIDChipHTML) ends the top row, OUTSIDE the
+	// toggle (a button cannot hold a button): a tap on it copies the id and
+	// never expands the card.
+	if it.AskID > 0 && (it.Kind == attentionKindAsk || it.Kind == attentionKindNotice) {
+		head = ui.AsksCardTopHTML(head, ui.AskIDChipHTML(it.AskID))
+	}
+	b.WriteString(head + "\n")
 	// THE QUESTION (what a waiting session waits on: its pending call).
 	switch {
 	case (it.Kind == attentionKindSession || it.Kind == attentionKindQuestion) && it.openCode == nil:
@@ -604,9 +610,9 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// THE ANSWER WENT is a pill (answerDeliveryPill); the sentence that says
 	// it in full is the expanded card's.
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" aria-label="` + ui.AsksCardToggleLabel +
-		`" aria-describedby="` + key + `-who" data-asks-toggle>` +
-		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
+` + ui.AsksCardTopHTML(`<button type="button" class="`+ui.AsksCardHeadClass+`" aria-expanded="false" aria-controls="`+asksCardMoreID(key)+`" aria-label="`+ui.AsksCardToggleLabel+
+		`" aria-describedby="`+key+`-who" data-asks-toggle>`+
+		`<span id="`+key+`-who" class="`+ui.AsksCardWhoClass+`"><span class="`+ui.AsksTitleClass+`"`+titleAttrs+`>`+esc(who)+`</span>`+age+`</span>`+ui.AsksCardChevron+`</button>`, ui.AskIDChipHTML(a.ID)) + `
 <p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(a.Question) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
 ` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `

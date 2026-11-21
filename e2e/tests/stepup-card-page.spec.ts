@@ -61,7 +61,7 @@ test.describe('phone 390×844', () => {
     const card = page.locator('[data-stepup-card]');
     await expect(card).toBeVisible();
 
-    await expect(card.locator('[data-stepup-title]')).toHaveText('Post to X? · #41');
+    await expect(card.locator('[data-stepup-title]')).toHaveText('Post to X? · Draft #41');
     await expect(card.locator('[data-stepup-why]')).toHaveText('Marketing: rebrand announcement');
     await expect(card.locator('[data-stepup-asker]')).toHaveText('Asked by work:1');
     // The post, as X shows it: X's logo and name, what it is, the text, the image.
@@ -104,7 +104,7 @@ test.describe('phone 390×844', () => {
     // 🔴 THE BROWSER CANNOT ANSWER IT (errHostDecisionNeedsPhone): no
     // Confirm/Refuse, no answer box, no mic — one line says where it is
     // answered — and it is headed by its action, never "step-up is asking".
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Post to X? · #41');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Post to X? · Draft #41');
     await expect(page.locator('[data-ask-stepup-phone]')).toHaveText('Confirm this on your phone.');
     await expect(page.locator('[data-ask-option]')).toHaveCount(0);
     await expect(page.locator('#ask-input, #ask-send')).toHaveCount(0);
@@ -155,7 +155,7 @@ for (const vp of [
       await expect(card).toBeVisible();
       // The feed draws the card's title (with the id) and a compact mock of
       // the post: X's logo, its text, its image as a thumbnail.
-      await expect(card.locator('[data-stepup-title]')).toHaveText('Post to X? · #41');
+      await expect(card.locator('[data-stepup-title]')).toHaveText('Post to X? · Draft #41');
       await expect(card.locator('[data-stepup-post] svg[data-venue-logo="x"]')).toBeVisible();
       await expect(card.locator('[data-stepup-preview-text]')).toHaveText(
         'Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>\n\nA second paragraph.');
