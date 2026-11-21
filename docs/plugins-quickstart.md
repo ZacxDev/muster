@@ -272,8 +272,9 @@ Reference: [Delivery to your chief](plugins.md#delivery-to-your-chief),
 ## 5. Approve the draft
 
 Open the Asks page's **Drafts** tab, `$MUSTER/attention?tab=drafts`. The card
-quotes the message, and shows the reply **exactly as it will be sent**, every
-character that is not plain ASCII spelled out. Press **Approve and send**. It
+quotes the message, and shows the reply **exactly as it will be sent**, drawn
+as the post reads, with every hidden or bidi character marked by a visible
+flag (`U+202E`). Press **Approve and send**. It
 needs a recent sign-in: from the last 12 hours by default, a window the
 server's `MUSTER_STEPUP_WINDOW` can change
 ([configuration.md](configuration.md#muster-server-sign-in-and-machine-credentials)). An

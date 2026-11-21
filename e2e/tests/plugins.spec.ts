@@ -233,8 +233,8 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   const c = page.locator('#asks-drafts-pending').locator(`#draft-${draftID}`);
   await expect(c).toBeVisible();
   await expect(c).toHaveAttribute('data-draft-status', 'pending');
-  await expect(c.locator('[data-draft-original-body]')).toHaveText('Are you free at noon? <b>bold</b>');
-  await expect(c.locator('[data-draft-body]')).toHaveText('Yes, noon works.');
+  await expect(c.locator('[data-draft-original] [data-draft-quote-body]')).toHaveText('Are you free at noon? <b>bold</b>');
+  await expect(c.locator('[data-draft-text] [data-stepup-preview-text]')).toHaveText('Yes, noon works.');
   await expect(c.locator('[data-draft-text]')).toHaveAttribute('data-runes', '16');
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'no horizontal scroll at 390px').toBeLessThanOrEqual(cw);
@@ -389,13 +389,13 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     const aID = (JSON.parse(ra.text) as { draft_id: number }).draft_id;
     await dp.goto(browserURL + '/attention?tab=drafts');
     const pendA = dp.locator('#asks-drafts-pending').locator(`#draft-${aID}`);
-    await expect(pendA.locator('[data-draft-body]')).toHaveText('Draft A: Friday at three.');
+    await expect(pendA.locator('[data-draft-text] [data-stepup-preview-text]')).toHaveText('Draft A: Friday at three.');
     await expect(dp.getByTestId('drafts-changed')).toBeHidden();
     const rb = await mcpCall('reply_draft', { message_id: m2ID, body: 'Draft B: Saturday instead.' });
     expect(rb.isError, rb.text).toBe(false);
     const bID = (JSON.parse(rb.text) as { draft_id: number }).draft_id;
     await expect(dp.getByTestId('drafts-changed'), 'the changed line arrives live').toBeVisible({ timeout: 15_000 });
-    await expect(pendA.locator('[data-draft-body]'), 'A stays as it was seen').toHaveText('Draft A: Friday at three.');
+    await expect(pendA.locator('[data-draft-text] [data-stepup-preview-text]'), 'A stays as it was seen').toHaveText('Draft A: Friday at three.');
     await expect(dp.locator('#asks-drafts-pending').locator(`#draft-${bID}`), 'B is not drawn into the list').toHaveCount(0);
     await expect(dp.locator(`#draft-${aID}`), 'one element per draft id').toHaveCount(1);
     const refused = dp.waitForResponse((r) => r.url().endsWith(`/plugins/drafts/${aID}/approve`) && r.request().method() === 'POST');

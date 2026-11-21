@@ -132,7 +132,8 @@ func TestTheUsageTotalsAndDaysArePlain(t *testing.T) {
 // TestADraftCardNamesItsOfficer (U-25): an officer's outbound draft is headed
 // by the officer's display name — "Your officer" without one (main's
 // officerWords rule: never its id, not even in words) — never its agent's
-// slug; its target reads "New post on X", not "Outbound · x · New post"; its
+// slug; its preview's head reads "X" over "New post" (the step-up card's
+// venue preview), not "Outbound · x · New post"; its
 // Attention line is "New post on X by <the same name>".
 func TestADraftCardNamesItsOfficer(t *testing.T) {
 	officer, venue, plugin := "marketing:acme", "x", int64(3)
@@ -146,7 +147,7 @@ func TestADraftCardNamesItsOfficer(t *testing.T) {
 		h := draftCardHTMLAt(card, plainDay.Add(time.Hour))
 		for _, want := range []string{
 			`data-draft-agent>` + c.head + `</span>`,
-			`data-draft-outbound-what>New post on X</span>`,
+			`data-stepup-venue>X</span>`, `data-stepup-post-kind>New post</span>`,
 		} {
 			if !strings.Contains(h, want) {
 				t.Errorf("display %q: the draft card has no %s\n%s", c.display, want, h)

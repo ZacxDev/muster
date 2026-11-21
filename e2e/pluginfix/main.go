@@ -550,6 +550,37 @@ func run(args []string) error {
 			return fmt.Errorf("draft: %w", err)
 		}
 		fmt.Println(draftID)
+	case "outbound":
+		// outbound <owner-id> <agent-name> <plugin-name> <venue> <body> [media-ref]:
+		// a PENDING outbound post draft (no message) by officer marketing:acme,
+		// with its one medium uploaded (a 1×1 PNG's facts; the bytes are never
+		// read here — a browser spec serves /plugins/drafts/<id>/media/0 itself).
+		owner, err := num(1)
+		if err != nil || (len(args) != 6 && len(args) != 7) {
+			return fmt.Errorf("usage: outbound <owner-id> <agent-name> <plugin-name> <venue> <body> [media-ref]")
+		}
+		var agentID int64
+		if err := conn.QueryRow(ctx, `SELECT id FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]).Scan(&agentID); err != nil {
+			return fmt.Errorf("agent %s: %w", args[2], err)
+		}
+		var pluginID, draftID int64
+		if err := conn.QueryRow(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
+			VALUES ($1, $2, $2, 'e2e-fixture-' || $2 || '-' || gen_random_uuid()::text, $2) RETURNING id`, owner, args[3]).Scan(&pluginID); err != nil {
+			return fmt.Errorf("plugin: %w", err)
+		}
+		refs, media := []string{}, "[]"
+		if len(args) == 7 {
+			refs = []string{args[6]}
+			m, _ := json.Marshal([]map[string]any{{"ref": args[6], "sha256": strings.Repeat("0a", 32), "content_type": "image/png", "size": 70,
+				"key": "e2e/" + args[6], "uploaded_at": time.Now().UTC()}})
+			media = string(m)
+		}
+		if err := conn.QueryRow(ctx, `INSERT INTO plugin_reply_drafts (owner_id, agent_id, agent_name, body, expires_at, plugin_id, venue, target_kind, officer, media_refs, media)
+			VALUES ($1, $2, $3, $4, now() + interval '1 hour', $5, $6, 'post', 'marketing:acme', $7, $8::jsonb) RETURNING id`,
+			owner, agentID, args[2], args[5], pluginID, args[4], refs, media).Scan(&draftID); err != nil {
+			return fmt.Errorf("outbound draft: %w", err)
+		}
+		fmt.Println(draftID)
 	case "rmplugin":
 		owner, err := num(1)
 		if err != nil || len(args) != 3 {

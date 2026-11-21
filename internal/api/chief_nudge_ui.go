@@ -97,11 +97,11 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 	var b strings.Builder
 	b.WriteString(`<li id="nudge-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
 		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
-<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="break-words text-sm font-semibold text-fg" data-nudge-session>` +
-		esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span>
-<span class="` + ui.AsksSubClass + `"><span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) + `</span> · <time datetime="` +
-		d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span></div>
-<span class="` + ui.AsksPillClass + `" data-nudge-mode>` + mode + `</span></div>
+` + ui.AsksHeadHTML(ui.AsksHead{Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-nudge-session>`+
+		esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host))+`</span>`,
+		`<span data-nudge-decision>`+esc(nudgeDecisionLabel(d.Decision))+`</span> · <time datetime="`+
+			d.DecidedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(d.DecidedAt)))+`</time>`),
+		End: `<span class="` + ui.AsksPillClass + `" data-nudge-mode>` + mode + `</span>`}) + `
 `)
 	switch {
 	case d.Message != "":
@@ -109,14 +109,14 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		if d.Mode == chiefnudge.ModeLive {
 			label = "Message: "
 		}
-		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-message>` + label + esc(d.Message) + `</p>
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-message>` + label + askTextHTML(d.Message) + `</p>
 `)
 	case d.Question != "":
 		q := d.Question
 		if len(d.Options) > 0 {
 			q += "\nOptions: " + strings.Join(d.Options, " · ")
 		}
-		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + esc(q) + `</p>
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + askTextHTML(q) + `</p>
 `)
 	}
 	out := nudgeOutcomeLabel(d.Outcome)
@@ -151,9 +151,9 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 `)
 	}
 	if more.Len() > 0 {
-		b.WriteString(`<details class="` + ui.AsksDetailsClass + `" data-nudge-more><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>
-<div class="` + ui.AsksDetailsBodyClass + `">` + more.String() + `</div></details>
-`)
+		// THE card's Details fold (stepUpDetailsHTML), as a draft's and a
+		// step-up card's.
+		b.WriteString(stepUpDetailsHTML(`<div class="` + ui.AsksDetailsBodyClass + ` pb-2" data-nudge-more>` + more.String() + `</div>`))
 	}
 	b.WriteString("</li>\n")
 	return b.String()

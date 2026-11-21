@@ -160,8 +160,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
-<div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2">` + where + `<time datetime="` +
-		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>` + ui.AskIDChipHTML(a.ID) + `</div>
+` + ui.AsksHeadHTML(ui.AsksHead{Badge: ui.AsksKindBadge(kind, label), Who: askPageWhoHTML(where, `<time datetime="`+
+		a.CreatedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.CreatedAt)))+`</time>`), Chip: ui.AskIDChipHTML(a.ID)}) + `
 ` + officerNoteLabelHTML(a.Context) + askQuestionHTML(a) + asksCardContextRow(inner, info) + askPageMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
@@ -204,6 +204,19 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
 
+// askPageWhoHTML is the ask page card's head lines, as the Open card's are
+// (ui.AsksWhoHTML): who asked and where (where, already HTML, its trailing
+// " · " dropped) on the title line, and how long ago (age) under it — so the
+// age is never the part a phone's width cuts off. With no where, the age
+// alone.
+func askPageWhoHTML(where, age string) string {
+	where = strings.TrimSuffix(where, " · ")
+	if where == "" {
+		return `<span class="` + ui.AsksSubClass + `">` + age + `</span>`
+	}
+	return ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+` font-normal text-fg2" data-ask-place>`+where+`</span>`, age)
+}
+
 // askQuestionHTML is the ask page's question: a step-up card's parts
 // (stepUpCardHTML) when it has them, else its question as filed — which is how
 // a card filed before 0171 still renders.
@@ -211,7 +224,7 @@ func askQuestionHTML(a attention.Ask) string {
 	if a.StepUp != nil {
 		return stepUpCardHTML(a.StepUp)
 	}
-	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + html.EscapeString(a.Question) + "</p>\n"
+	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + askTextHTML(a.Question) + "</p>\n"
 }
 
 // The ask page's own words and classes.
@@ -299,7 +312,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 <p class="text-base font-semibold text-fg">` + esc(state) + `</p>
 `)
 		if a.Answer != "" {
-			b.WriteString(`<p class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + esc(a.Answer) + `</p>
+			b.WriteString(`<p class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</p>
 `)
 		}
 		if a.Status == attention.Answered {

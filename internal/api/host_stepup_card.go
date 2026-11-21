@@ -417,31 +417,48 @@ func (s *Server) stepUpDraftCard(ctx context.Context, args string, card *attenti
 		card.Title, card.Why, card.Changed = stepUpWithDraftID(stepUpChangedTitle, in.ID), stepUpChangedWhy, true
 		return
 	}
-	venue := dc.PluginLabel
-	if d.IsOutbound() {
-		venue = venueName(d.VenueText())
-		t := d.Target()
-		card.Platform, card.Target, card.Handle = d.VenueText(), t.Kind, t.Handle
-	}
-	card.Venue = venue
+	post := draftPostCard(dc)
+	card.Venue, card.Platform, card.Target, card.Handle = post.Venue, post.Platform, post.Target, post.Handle
 	card.Why = s.stepUpDraftWhy(ctx, d, card.Why)
-	card.Title = stepUpWithDraftID(stepUpDraftTitle(d, venue), in.ID)
+	card.Title = stepUpWithDraftID(stepUpDraftTitle(d, post.Venue), in.ID)
 	if !approve {
 		card.Title, card.Why = stepUpWithDraftID(stepUpRejectTitle, in.ID), stepUpRejectWhy
 		if r := strings.TrimSpace(in.Reason); r != "" {
 			card.Why += ": " + r
 		}
 	}
-	card.Preview = d.Body
-	if card.Preview == "" && d.IsOutbound() {
-		// A follow or a like has no body: what it does, in words.
-		card.Preview = stepUpTargetWords(d.Target())
+	card.Preview, card.Media = post.Preview, post.Media
+}
+
+// draftPostCard is draft dc as the post its step-up card previews: its
+// venue (an outbound draft's, named; a reply draft's plugin label), platform,
+// target and handle, its text — a bodiless follow or like in words — and its
+// uploaded media. 🔴 THE ONE WAY A DRAFT BECOMES A PREVIEW: the step-up card
+// (stepUpDraftCard) and the Drafts tab's card (draftCardHTMLIn) both draw
+// stepUpPostHTML over it, so the two faces of one draft cannot disagree.
+func draftPostCard(dc plugins.DraftCard) *attention.StepUpCard {
+	d := dc.Draft
+	card := &attention.StepUpCard{DraftID: d.ID, Venue: dc.PluginLabel, Preview: d.Body}
+	if d.IsOutbound() {
+		t := d.Target()
+		card.Venue = venueName(d.VenueText())
+		card.Platform, card.Target, card.Handle = d.VenueText(), t.Kind, t.Handle
+		if card.Target == "" {
+			// No target kind stored: a new post (outboundAttentionText's
+			// reading too).
+			card.Target = plugins.TargetPost
+		}
+		if card.Preview == "" {
+			// A follow or a like has no body: what it does, in words.
+			card.Preview = stepUpTargetWords(t)
+		}
 	}
 	for i, ref := range d.MediaRefs {
 		if m, ok := d.MediaFor(ref); ok {
 			card.Media = append(card.Media, attention.StepUpMedium{N: i, Ref: ref, Type: m.ContentType, SHA256: m.SHA256})
 		}
 	}
+	return card
 }
 
 // stepUpWithDraftID is a draft card's title with the id of the draft the
@@ -593,21 +610,18 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 `)
 		b.WriteString(stepUpNotesHTML(c, ui.StepUpNoteClass))
 	}
-	b.WriteString(`<details class="rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line" data-stepup-details>
-<summary class="flex min-h-[44px] cursor-pointer items-center justify-between gap-2 text-sm font-semibold text-fg2" data-stepup-details-toggle>Details` + ui.AsksCardChevron + `</summary>
-<p class="whitespace-pre-wrap break-words pb-2 text-sm text-fg2" data-stepup-details-text>` + esc(c.Details) + `</p>
-</details>
-`)
+	b.WriteString(stepUpDetailsHTML(`<p class="` + ui.StepUpDetailsTextClass + `" data-stepup-details-text>` + esc(c.Details) + `</p>`))
 	return b.String()
 }
 
 // stepUpParagraphs is untrusted text t as the paragraphs a post reads as (a
-// blank line between two), each line break inside one kept. Every line goes
-// through fence.Sanitize first (CleanStepUp did already: this is the
-// renderer's own guarantee, for any card however it was stored), so a bidi,
-// control or invisible code point is U+FFFD and cannot reorder the text, a tab
-// is a space and a lone carriage return a line break — nothing is ever
-// spelled out as \n, \t or \r. Not yet escaped.
+// blank line between two), each line break inside one kept: a tab is a space
+// and a lone carriage return a line break — nothing is ever spelled out as
+// \n, \t or \r. Not yet escaped, and a bidi, control or invisible code point
+// is still in it: 🔴 IT MUST BE DRAWN THROUGH stepUpMarkedHTML (or
+// stepUpHiddenHTML), which draws each such code point as a visible flag and
+// never writes the character itself — so it can neither reorder the text nor
+// pass unseen. A line holding only hidden characters is not blank.
 func stepUpParagraphs(t string) []string {
 	t = strings.ReplaceAll(strings.ReplaceAll(t, "\r\n", "\n"), "\r", "\n")
 	var paras, cur []string
@@ -618,8 +632,8 @@ func stepUpParagraphs(t string) []string {
 		}
 	}
 	for _, l := range strings.Split(t, "\n") {
-		l = strings.TrimRight(fence.Sanitize(l), " ")
-		if strings.TrimSpace(l) == "" {
+		l = strings.TrimRight(strings.ReplaceAll(l, "\t", " "), " ")
+		if strings.TrimFunc(l, stepUpSpace) == "" {
 			flush()
 			continue
 		}
@@ -683,11 +697,31 @@ func stepUpNotesHTML(c *attention.StepUpCard, cls string) string {
 		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-excerpt>` + html.EscapeString(c.Excerpt) + `</p>
 `)
 	}
-	if stepUpLookalikeIn(strings.Join(stepUpParagraphs(c.Preview), "\n")) {
+	text := strings.Join(stepUpParagraphs(c.Preview), "\n")
+	if stepUpLookalikeIn(text) {
 		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-lookalike-note>` + stepUpLookalikeNote + `</p>
 `)
 	}
+	if stepUpHiddenIn(text) {
+		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-hidden-note>` + stepUpHiddenNote + `</p>
+`)
+	}
 	return b.String()
+}
+
+// stepUpDetailsHTML is THE folded Details of an Asks card — the step-up
+// card's boilerplate, a draft's media facts and references — collapsed, its
+// summary "Details" with the card chevron; inner is its content, already
+// HTML. "" for no content.
+func stepUpDetailsHTML(inner string) string {
+	if inner == "" {
+		return ""
+	}
+	return `<details class="` + ui.StepUpDetailsClass + `" data-stepup-details>
+<summary class="` + ui.StepUpDetailsSummaryClass + `" data-stepup-details-toggle>Details` + ui.AsksCardChevron + `</summary>
+` + inner + `
+</details>
+`
 }
 
 // stepUpPostKind is the line under a post preview's venue: what the draft

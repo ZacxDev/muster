@@ -1089,11 +1089,15 @@ post whose media you cannot see. A `sendable: false` verdict needs no media.
 
 #### What you approve
 
-The outbound draft's card on the Drafts tab shows the venue and target
-(for a reply target, the human reply muster received with that `thread`,
-escaped and labelled untrusted; or a line saying none arrived), the exact body
-spelled out as for every draft, and every uploaded image rendered and every
-video playable, each with its ref and SHA-256.
+The outbound draft's card on the Drafts tab shows the post as its venue shows
+it, the same preview as its step-up card: the venue's logo and name, what the
+draft does there ("New post", "Reply", "Direct message to @…"), the exact
+body as paragraphs (every hidden or bidi character a visible flag, every
+look-alike word highlighted, as for every draft), and every uploaded image
+rendered and every video playable. For a reply target, the human reply muster
+received with that `thread` is quoted above it, escaped and labelled
+untrusted, or a line says none arrived. The target, the reason it was drafted
+and each medium's ref, type, size and SHA-256 are under **Details**.
 
 🔴 **Approval binds the body and every medium.** The card's **Approve and
 send** posts the body's SHA-256 and the ordered list of the media's SHA-256
@@ -2631,9 +2635,13 @@ Each draft is a card on the Asks page's Drafts tab (`/attention?tab=drafts`; dec
 
 - The message it answers, from the outside sender, is shown escaped as a
   quote, labelled untrusted.
-- The reply is shown **exactly as it will be sent**: printable ASCII as itself,
-  and every other character spelled out (`\u{e9}` for é, `\n` for a new line),
-  with its length in characters. Nothing invisible can ride along.
+- The reply is shown **exactly as it will be sent**, through the same post
+  preview as its step-up card: its paragraphs and line breaks as they are,
+  é as é and an emoji as an emoji. Nothing invisible can ride along: each
+  hidden, control or bidi character is drawn in its place as a visible flag
+  naming it (`U+202E`), never as the character itself, and the card says it
+  holds some; a word with look-alike letters is highlighted. Its length in
+  characters is on the card (`data-runes`).
 - **Approve and send** needs a sign-in from the last 12 hours (the
   [step-up window](decisions.md#step-up-twelve-hours-per-browser-session),
   `MUSTER_STEPUP_WINDOW`). If yours is older, the page asks you to confirm with

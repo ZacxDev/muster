@@ -510,9 +510,9 @@ func (s *Server) chatCardHTML(ctx context.Context, sc officerScope, c builtin.Ch
 			break
 		}
 		d := card.Draft
-		b.WriteString(outboundCardHTML(card))
-		b.WriteString(`<div class="rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge"><p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-chat-card-body>` +
-			esc(flows.VisibleEscape(d.Body)) + `</p></div>`)
+		// The draft as the Asks page's draft card draws it: the post's
+		// preview (stepUpPostHTML over draftPostCard) and its Details.
+		b.WriteString(`<div class="flex min-w-0 flex-col gap-2" data-chat-card-body>` + stepUpPostHTML(draftPostCard(card), false) + stepUpDetailsHTML(draftDetailsHTML(card)) + `</div>`)
 		switch {
 		case plugins.DraftBodySHA256(d.Body) != c.BodySHA256 || strings.Join(d.MediaSHA256(), ",") != strings.Join(c.MediaSHA256, ","):
 			state = "It changed since this card was drawn, so it cannot be approved here: ask it for a new card."

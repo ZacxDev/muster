@@ -79,6 +79,20 @@ const (
 	// danger tint with a wavy underline, so it reads as flagged in light and
 	// dark alike.
 	StepUpLookalikeClass = "rounded-sm bg-danger/15 text-fg underline decoration-danger decoration-wavy underline-offset-2"
+	// StepUpHiddenClass is the visible flag drawn IN PLACE OF a hidden code
+	// point (internal/api stepUpHiddenHTML: a bidi control, a zero-width or
+	// other invisible character, a control character): a small danger-tinted
+	// tag naming it ("U+202E"), never the character itself.
+	StepUpHiddenClass = "mx-px inline-block rounded-sm bg-danger/15 px-1 align-baseline font-mono text-[11px] font-semibold leading-tight text-fg ring-1 ring-inset ring-danger/60"
+	// StepUpDetailsClass / StepUpDetailsSummaryClass / StepUpDetailsTextClass
+	// are a card's folded Details (the step-up card's boilerplate, a draft's
+	// media facts and references): one fold, on every card that has one.
+	StepUpDetailsClass        = "rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line"
+	StepUpDetailsSummaryClass = "flex min-h-[44px] cursor-pointer items-center justify-between gap-2 text-sm font-semibold text-fg2"
+	StepUpDetailsTextClass    = "whitespace-pre-wrap break-words pb-2 text-sm text-fg2"
+	// StepUpDetailsFactClass is one line of a fold's list of facts (a
+	// medium's type, size and SHA-256), which may break anywhere.
+	StepUpDetailsFactClass = "break-all font-mono text-xs text-fg2"
 )
 
 // VenueLogoFallback is the key of the neutral glyph (a speech bubble).

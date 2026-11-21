@@ -118,18 +118,21 @@ for (const vp of [
       await expect(card).toBeVisible();
       // The fixture is the card the issue reports: the expiry line and a
       // multi-line body (positive controls on the fixture itself). The card
-      // draws a newline as a real line break (visibleLines), never a spelled
-      // `\n`; the count of real newlines is the ONLY check here that the body
-      // has them, and the spelled-marker count proves none is escaped.
+      // draws the reply as its post (the step-up card's venue preview): its
+      // blank line a paragraph break, its other newline a real line break,
+      // never a spelled `\n`; the paragraph and newline counts are the ONLY
+      // check here that the body has them, and the spelled-marker count
+      // proves none is escaped.
       // The data-runes check compares the card's length with the fixture's
       // own, so it shows the whole body arrived but cannot see newlines (a
       // space in place of each would pass it).
       // The expiry is its own pill, relative ("expires in 1d"), never a UTC stamp.
       await expect(card.locator('[data-draft-expiry]')).toHaveText(/^expires in \d+[mhd]$/);
       await expect(card).not.toContainText('UTC');
-      const body = card.locator('[data-draft-body]');
+      const body = card.locator('[data-draft-text] [data-stepup-preview-text]');
+      await expect(body.locator('p'), 'the reply is its two paragraphs').toHaveCount(2);
       const text = (await body.textContent())!;
-      expect(text.split('\n').length - 1, 'the reply shows its three newlines').toBe(3);
+      expect(text.split('\n').length - 1, 'the second paragraph keeps its line break').toBe(1);
       expect(text.split('\\n').length - 1, 'no newline is spelled out as \\n').toBe(0);
       await expect(card.locator('[data-draft-text]')).toHaveAttribute('data-runes', String(Array.from(BODY).length));
 
@@ -143,6 +146,97 @@ for (const vp of [
       // The reason box is a usable field, not squeezed shut.
       const reason = await card.locator('[data-draft-reason-input]').boundingBox();
       expect(reason!.width, 'the reason box is wide enough to type in').toBeGreaterThanOrEqual(120);
+      await noSidewaysScroll(page);
+    });
+  });
+}
+
+// THE DRAFTS TAB DRAWS EACH DRAFT AS ITS POST (the operator: "the other tabs
+// in the Asks page still don't have the updated UI"), at a phone and a
+// desktop, and with no script: a draft card is the Open card's head (the
+// shared head, the draft's id chip on its top row) over the step-up card's
+// venue preview — the venue's logo, the text as paragraphs, the image — its
+// media facts folded under Details (closed), and its own decision. A reply
+// draft keeps the message it answers, quoted and marked untrusted. Its text is
+// never spelled out: an em dash and an emoji are themselves, and a
+// right-to-left override is a visible flag naming it — the character itself
+// is never in the page.
+// 🔴 RED at the branch base: a "POST"/"REPLY DRAFT" chip, a "New post on X"
+// label and the text in one plain box with every non-ASCII character spelled
+// (\u{2014}, \u{1f389}, \u{202e}).
+const RLO = String.fromCodePoint(0x202e);
+const PREVIEW_REPLY = `Thanks — noon works 🎉\n\nPay ${RLO}gro.live later.`;
+const PREVIEW_POST = 'Big news: acme is now acme-two 🎉\nRead more on the blog.\n\nA second paragraph — with a dash.';
+const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgaGD4DwAChAGAkdXSbQAAAABJRU5ErkJggg==', 'base64');
+
+async function expectThePost(page: Page, id: string, venueLogo: string, media: number) {
+  const card = page.locator(`[data-draft-id="${id}"]`);
+  await expect(card).toBeVisible();
+  const top = card.locator(':scope > [data-asks-top]');
+  await expect(top.locator(':scope > [data-asks-head]')).toHaveCount(1);
+  await expect(top.locator(':scope > [data-id-copy]')).toContainText(`Draft #${id}`);
+  await expect(card.locator('[data-asks-badge]'), 'no kind chip').toHaveCount(0);
+  const post = card.locator('[data-draft-text] article[data-stepup-post]');
+  await expect(post).toBeVisible();
+  await expect(post.locator(`[data-stepup-logo] svg[data-venue-logo="${venueLogo}"]`)).toBeVisible();
+  await expect(post.locator('[data-stepup-preview-text] p')).toHaveCount(2);
+  await expect(post.locator('[data-stepup-media] img')).toHaveCount(media);
+  if (media > 0) {
+    await expect(post.locator('[data-stepup-media] img').first()).toBeVisible();
+    const details = card.locator('details[data-stepup-details]');
+    await expect(details).not.toHaveAttribute('open');
+    await expect(details.locator('[data-draft-medium-facts]')).toBeHidden();
+  }
+  // The preview sits inside the card: nothing of it overflows sideways.
+  const fit = await card.evaluate((c) => {
+    const cb = c.getBoundingClientRect();
+    const a = c.querySelector('[data-stepup-post]')!.getBoundingClientRect();
+    return { left: a.left - cb.left, right: cb.right - a.right };
+  });
+  expect(fit.left, 'the preview starts inside the card').toBeGreaterThanOrEqual(0);
+  expect(fit.right, 'the preview ends inside the card').toBeGreaterThanOrEqual(0);
+  const face = await card.innerText();
+  for (const never of ['\\u{', '\\n', 'New post on', 'image/png']) {
+    expect(face, `the draft card shows ${never}`).not.toContain(never);
+  }
+  expect(await card.innerHTML(), 'the override itself is never in the page').not.toContain(RLO);
+  await expect(card.locator('[data-draft-approve]')).toBeVisible();
+  await expect(card.locator('[data-draft-reject]')).toBeVisible();
+  return card;
+}
+
+for (const vp of [
+  { name: 'phone 390×844', key: 'phone', js: true, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', key: 'desktop', js: true, use: { viewport: { width: 1440, height: 900 } } },
+  { name: 'phone 390×844, no script', key: 'nojs', js: false, use: { viewport: { width: 390, height: 844 }, javaScriptEnabled: false } },
+]) {
+  test.describe(`the venue preview, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('the Drafts tab draws each draft as its post, with its own decision', async ({ page }) => {
+      const reply = `e2e-draftpost-r-${vp.key}-${stamp}`;
+      const x = `e2e-draftpost-x-${vp.key}-${stamp}`;
+      plugins.push(reply, x);
+      const replyID = fix('draft', '1', agentName, reply, PREVIEW_REPLY);
+      const postID = fix('outbound', '1', agentName, x, 'x', PREVIEW_POST, 'launch/hero-1.png');
+      await page.route(/\/plugins\/drafts\/\d+\/media\/\d+$/, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: pngBytes }));
+      await signIn(page, origin);
+      await page.goto(`${origin}/attention?tab=drafts`);
+
+      const r = await expectThePost(page, replyID, 'other', 0);
+      await expect(r.locator('[data-draft-original] [data-draft-untrusted]')).toBeVisible();
+      const flag = r.locator('mark[data-stepup-hidden="U+202E"]');
+      await expect(flag).toBeVisible();
+      await expect(flag).toHaveText('U+202E');
+      await expect(r.locator('[data-stepup-hidden-note]')).toBeVisible();
+      await expect(r.locator('[data-stepup-preview-text] p').first()).toHaveText('Thanks — noon works 🎉');
+
+      const p = await expectThePost(page, postID, 'x', 1);
+      await expect(p.locator('[data-stepup-venue]')).toHaveText('X');
+      await expect(p.locator('[data-stepup-post-kind]')).toHaveText('New post');
+      // Details opens on a tap, with or without script (a native <details>).
+      await p.locator('[data-stepup-details-toggle]').click();
+      await expect(p.locator('[data-draft-medium-facts]')).toBeVisible();
+      await expect(p.locator('[data-draft-medium-facts]')).toContainText('image/png');
       await noSidewaysScroll(page);
     });
   });
