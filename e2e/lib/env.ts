@@ -549,11 +549,23 @@ export const clsAppEdgePort = port + 475;
 // (e2e/pushsink), through which that server reaches the sink's TLS endpoint.
 export const knockPushPort = port + 476;
 export const knockPushSinkPort = port + 477;
+<<<<<<< HEAD
 // tests/pages-phone.spec.ts: a markdown page read on a phone — its own server
 // (pages on, a link key, so +479 its connect listener). +478: clear of the
 // blocks above.
 export const pagesPhonePort = port + 478;
 export const pagesPhoneConnectPort = port + 479;
+||||||| parent of 73bf476b2 (e2e: the two-person server app spec, cls for /admin/apps and /account/apps; docs for the surfaces)
+=======
+// tests/plugin-server-app.spec.ts: a server-installed app (core PR 1h.2) — its
+// own gotrue-mode server (main and browser listeners), its own GoTrue, and the
+// stub app plugin behind the TLS edge (+478 to +482: clear of the blocks above).
+export const serverAppMainPort = port + 478;
+export const serverAppBrowserPort = port + 479;
+export const serverAppGotruePort = Number(process.env.MUSTER_E2E_SERVERAPP_GOTRUE_PORT ?? port + 480);
+export const serverAppStubPort = port + 481;
+export const serverAppEdgePort = port + 482;
+>>>>>>> 73bf476b2 (e2e: the two-person server app spec, cls for /admin/apps and /account/apps; docs for the surfaces)
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

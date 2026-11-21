@@ -266,10 +266,7 @@ schema is migration `0172`.
 - **Installing, rotating, uninstalling** is an admin's, on `/admin/apps` or
   with `muster-server app install|rotate|uninstall|list` (install and rotate
   need a fresh sign-in on the page; the command line prints the token once on
-  stdout). ⚠ Those two surfaces, the tab for every person and Account → Apps
-  (Hide/Show) are core PR 1h.2 and are not in this release yet: the store,
-  the token's door, the redeem, act-for, `owners/check` and uninstall's
-  cleanup below are. Audited `plugin.server.installed`, `.rotated` and `.uninstalled`.
+  stdout). Audited `plugin.server.installed`, `.rotated` and `.uninstalled`.
   **Rotate** keeps the row, its subjects and its grants and kills the old
   token at once, which ends every live call until the plugin is redeployed
   with the new token. **Uninstall** is final: the row is revoked and, in the
@@ -279,6 +276,49 @@ schema is migration `0172`.
 - **A personal app plugin at a server app's entry URL** is refused at mint
   ("this server already offers <label> to everyone"), so one person does not
   get two tabs into one plugin under two identities.
+
+**`/admin/apps`** (an admin's page, also on a password-mode server; drawn
+only while plugins are on and `MUSTER_PLUGIN_ORIGINS` is set) lists each
+installed app: its label, icon, origin, entry URL, what it may do, who
+installed it and when, when it was last seen, and how many people it may act
+for now (a count, never names). The install form takes a name, a tab label,
+an icon, an origin from `MUSTER_PLUGIN_ORIGINS`, an entry URL under it and
+**Files tasks**; Install and **Rotate token** ask "Confirm it's you" in place
+on a stale sign-in, and the token is shown once. **Uninstall** needs no fresh
+sign-in. On a full server (5 apps) the form is not drawn.
+
+**`muster-server app`** does the same from a shell, for a pipeline:
+
+```
+muster-server app install --name <slug> --label <tab label> --icon <key> \
+    --origin <one of MUSTER_PLUGIN_ORIGINS> --entry <https URL> [--tasks]
+muster-server app rotate <id>
+muster-server app uninstall <id>
+muster-server app list
+```
+
+`install` and `rotate` print the token, and only the token, on stdout. It is
+audited as the command line (no user). ⚠ An uninstall from the command line
+cannot withdraw the knocks still out (which knocks are out is a running
+server's memory): uninstall from `/admin/apps` to withdraw them.
+
+**The tab for every person.** Every signed-in person gets each live server
+app's tab, server apps first (oldest install first), then their own app
+plugins: at most 5 + 5. A team's acting principal gets none, and a person who
+hid the app gets none. Its page, `/apps/{id}`, frames the plugin as a personal
+app's does, with two differences: **no New tab** (a server app's `/enter`
+refuses a top-level load), and **in the Android app** the card asks the app
+to open muster's own `/apps/{id}` (with `?ref=` when the page has one) in the
+system browser, through the bridge's `open-external` message, which the app
+lists in `window.musterAppMessages`. An app that does not list it gets a card
+with the page's address and **Copy link**, and nothing navigates.
+
+**Account → Apps** lists every server app with what it may do ("can show its
+page in muster; can notify you; can file tasks for you; it learns your
+display name when you open it") and until when it may act for you. **Hide**
+removes the tab, ends the grant at once, makes the mint and the redeem `404`
+and an open page's alive poll `404` (its frame goes). **Show** brings the tab
+back; the app may act for you again only once you open its tab.
 
 **The token acts as nobody.** It is the same `mpl_` shape and opens
 `/plugin/v1/*` only. The door, not the row, decides what it is served: a
