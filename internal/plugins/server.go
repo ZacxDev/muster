@@ -80,9 +80,14 @@ func newSubject() (string, error) {
 
 // serverGrantLive is THE ONE PREDICATE "may server app $1 act, at $2, for the
 // person this grant row names" (g = plugin_server_users, p = plugins, u =
-// users). One line per gate, so a mutation sweep drops each alone.
-// LiveServerGrants is its ONLY reader (internal/api
-// TestTheServerGrantGateIsOneFunction pins that from the Go AST).
+// users): serverGrantInTime AND serverGrantStanding, over a row the statement
+// has already keyed on the app (LiveServerGrants' WHERE g.plugin_id = $1, the
+// one place the app is matched, so dropping it is one mutant). One
+// line per gate, so a mutation sweep drops each alone. LiveServerGrants is its
+// ONLY reader (internal/api TestTheServerGrantGateIsOneFunction pins that from
+// the Go AST); it evaluates the two halves apart, so an owners/check can tell
+// a grant that only ran out of time (expired) from one that was ended
+// (revoked) — from the SAME lines the act-for door passes on.
 //
 // 🔴 THE CUTOFFS ARE COMPARED WITH THE SIGN-IN THAT MINTED THE CODE (signin_at,
 // copied from the code at the redeem), never with the redeem's time or now():
@@ -91,38 +96,74 @@ func newSubject() (string, error) {
 // code's sign-in time is before the cutoff, and is refused here on every call
 // whatever any process remembers. Whole seconds, at-or-before refused: the
 // paired-device rule (internal/devices LiveSQL).
-const serverGrantLive = `g.plugin_id = $1
-  AND g.act_until > $2
-  AND g.hidden_at IS NULL
+const serverGrantLive = `(` + serverGrantInTime + `) AND (` + serverGrantStanding + `)`
+
+// serverGrantInTime is the grant's clock: a redeem in the last
+// ServerActFor (fork 3). False alone is EXPIRED, not revoked.
+const serverGrantInTime = `g.act_until > $2`
+
+// serverGrantStanding is everything else that must hold for the grant to
+// act: anything false here is REVOKED.
+const serverGrantStanding = `g.hidden_at IS NULL
   AND g.signin_at IS NOT NULL
   AND p.revoked_at IS NULL AND p.scope = 'server'
   AND u.id IN (` + users.EnabledPersonIDs + `)
   AND (u.signed_out_at IS NULL OR floor(extract(epoch FROM g.signin_at)) > floor(extract(epoch FROM u.signed_out_at)))
   AND (u.sessions_not_before IS NULL OR floor(extract(epoch FROM g.signin_at)) > floor(extract(epoch FROM u.sessions_not_before)))`
 
-// LiveServerGrants is THE GATE on a server app acting for a person: of
-// subjects, the ones whose grant under app passes serverGrantLive at now,
-// each with the person it names. Both consumers call it — the act-for door
-// with one subject, POST /plugin/v1/owners/check with up to MaxOwnersCheck —
-// so the two can never disagree about who is live.
+// GrantState is what LiveServerGrants says of one subject.
+type GrantState string
+
+const (
+	// GrantLive: the app may act for the person now (serverGrantLive).
+	GrantLive GrantState = "live"
+	// GrantExpired: the grant's ServerActFor ran out and NOTHING ELSE is
+	// wrong; the person's next visit to the tab renews it. The plugin keeps
+	// that person's open meeting.
+	GrantExpired GrantState = "expired"
+	// GrantRevoked: anything else — no such grant under this app, hidden,
+	// disabled, signed out everywhere (or cut off) since the sign-in, not a
+	// person, the app gone, or its origin retired. The plugin ends that
+	// person's sessions. Never says which.
+	GrantRevoked GrantState = "revoked"
+)
+
+// ServerGrant is one subject's answer: its state, and for GrantLive alone
+// the person it names (0 otherwise, so no caller can act on another state).
+type ServerGrant struct {
+	State GrantState
+	Owner int64
+}
+
+// LiveServerGrants is THE GATE on a server app acting for a person: every
+// one of subjects, with its state under app at now and, when live, the
+// person it names. Both consumers call it — the act-for door with one subject
+// (acting only on GrantLive), POST /plugin/v1/owners/check with up to
+// MaxOwnersCheck — so the two can never disagree about who is live.
 //
 // It first checks app's origin and entry URL against the deployment's
-// CURRENT origins (ValidViewerLink): a retired origin answers no subject at
-// all. A personal plugin answers none. One statement, under authz.System
-// (the person is learned from the row, as the token is in Authenticate),
-// keyed on the AUTHENTICATED app's id and never on anything else the request
-// says.
-func (s *PGStore) LiveServerGrants(ctx context.Context, app Plugin, origins []OriginPattern, subjects []string, now time.Time) (map[string]int64, error) {
-	out := map[string]int64{}
+// CURRENT origins (ValidViewerLink): a retired origin answers every subject
+// GrantRevoked. A personal plugin answers every subject GrantRevoked too. One
+// statement, under authz.System (the person is learned from the row, as the
+// token is in Authenticate), keyed on the AUTHENTICATED app's id and never on
+// anything else the request says, computing serverGrantInTime and
+// serverGrantStanding per row: live is both, expired is standing alone.
+func (s *PGStore) LiveServerGrants(ctx context.Context, app Plugin, origins []OriginPattern, subjects []string, now time.Time) (map[string]ServerGrant, error) {
+	out := make(map[string]ServerGrant, len(subjects))
+	for _, sub := range subjects {
+		out[sub] = ServerGrant{State: GrantRevoked}
+	}
 	if !app.IsServer() || app.Origin == nil || app.EntryURL == nil || len(subjects) == 0 {
 		return out, nil
 	}
 	if _, err := ValidViewerLink(origins, *app.Origin, *app.EntryURL); err != nil {
 		return out, nil
 	}
-	rows, err := s.pool.Query(authz.System(ctx), `SELECT g.subject, g.owner_id FROM plugin_server_users g
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT g.subject, g.owner_id,
+		       coalesce((`+serverGrantLive+`), false), coalesce((`+serverGrantStanding+`), false)
+		  FROM plugin_server_users g
 		  JOIN plugins p ON p.id = g.plugin_id JOIN users u ON u.id = g.owner_id
-		 WHERE g.subject = ANY ($3::text[]) AND `+serverGrantLive, app.ID, now, subjects)
+		 WHERE g.plugin_id = $1 AND g.subject = ANY ($3::text[])`, app.ID, now, subjects)
 	if err != nil {
 		return nil, err
 	}
@@ -130,10 +171,16 @@ func (s *PGStore) LiveServerGrants(ctx context.Context, app Plugin, origins []Or
 	for rows.Next() {
 		var sub string
 		var owner int64
-		if err := rows.Scan(&sub, &owner); err != nil {
+		var live, standing bool
+		if err := rows.Scan(&sub, &owner, &live, &standing); err != nil {
 			return nil, err
 		}
-		out[sub] = owner
+		switch {
+		case live:
+			out[sub] = ServerGrant{State: GrantLive, Owner: owner}
+		case standing:
+			out[sub] = ServerGrant{State: GrantExpired}
+		}
 	}
 	return out, rows.Err()
 }
@@ -145,8 +192,9 @@ func (s *PGStore) LiveServerGrants(ctx context.Context, app Plugin, origins []Or
 // OWNED BY minter, the person, taken from the request before the
 // transaction. Refused ErrNotFound unless the minter is a PERSON (never a
 // team's acting principal), the app is live and has `app`, and the person has
-// not hidden it; ErrViewerOriginRetired for a retired origin;
-// ErrSignInUnknown for a session with no sign-in time.
+// not hidden it, and its origin still passes the CURRENT origins (a retired
+// one is the same ErrNotFound); ErrSignInUnknown for a session with no
+// sign-in time.
 func (s *PGStore) mintServerHandoff(ctx context.Context, minter authz.Principal, pluginID int64, in HandoffIn, now time.Time, h handoffRow) (Plugin, error) {
 	if minter.Team || minter.Via == authz.ViaSystem || minter.UserID <= 0 {
 		return Plugin{}, ErrNotFound
@@ -171,8 +219,10 @@ func (s *PGStore) mintServerHandoff(ctx context.Context, minter authz.Principal,
 		if hidden || p.Origin == nil || p.EntryURL == nil {
 			return ErrNotFound
 		}
+		// A retired origin is the same 404 as no app (the design's mint arm):
+		// a person cannot act on "revoke it and mint another".
 		if _, err := ValidViewerLink(in.Origins, *p.Origin, *p.EntryURL); err != nil {
-			return ErrViewerOriginRetired
+			return ErrNotFound
 		}
 		if in.SignedInAt.IsZero() {
 			return ErrSignInUnknown

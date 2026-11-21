@@ -128,6 +128,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - host_jobs, host_job_runs (0166, scheduled host jobs and their runs).
 //   - officer_pr_queue (0169, a draft officer's creates the open cap held back).
 //   - officer_auto_restarts (0170, the wake loop's auto-restart record per officer, day and instance).
+//   - plugin_server_users, plugin_server_tasks (0172, a server app's grants and the tasks it filed, per person).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -164,7 +165,8 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"page_assets", "page_version_assets",
 	"host_jobs", "host_job_runs",
 	"officer_pr_queue",
-	"officer_auto_restarts"}
+	"officer_auto_restarts",
+	"plugin_server_users", "plugin_server_tasks"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -370,6 +372,16 @@ var wantForeignKeys = []string{
 	// 0141: a plugin's chief section is its owner's, for one of their plugins,
 	// and goes with the plugin row.
 	"plugin_chief_instructions|plugin_chief_instructions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0172: a server app's code names it (plugin_id is then NULL, so the
+	// composite FK above skips it); its installer is bookkeeping only; its
+	// grants and task ledger go with the person, the app and the task.
+	"plugin_handoffs|plugin_handoffs_server_plugin_id_fkey|FOREIGN KEY (server_plugin_id) REFERENCES plugins(id) ON DELETE CASCADE",
+	"plugins|plugins_installed_by_fkey|FOREIGN KEY (installed_by) REFERENCES users(id)",
+	"plugin_server_users|plugin_server_users_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
+	"plugin_server_users|plugin_server_users_plugin_id_fkey|FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE",
+	"plugin_server_tasks|plugin_server_tasks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
+	"plugin_server_tasks|plugin_server_tasks_plugin_id_fkey|FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE",
+	"plugin_server_tasks|plugin_server_tasks_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"plugin_chief_instructions|plugin_chief_instructions_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	// 0107: a rule is its owner's, for one of their plugins; the telemetry
 	// rows name nothing but their owner (a row outlives what it counted).

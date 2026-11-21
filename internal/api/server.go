@@ -521,6 +521,10 @@ type Server struct {
 	// and it exists so principal_test.go can observe the principal at the
 	// hand-off without running the handler.
 	principalProbe func(*http.Request)
+	// serverNobodyProbe, when set (tests only), sees each request a server
+	// app's acts-as-nobody route hands on (admitServerPlugin with no subject),
+	// which carries NO principal, so principalProbe does not see it.
+	serverNobodyProbe func(*http.Request)
 
 	// sessionUserOverride, when set, names the user a valid browser session
 	// acts as (principal.go's sessionUserID). TEST-ONLY until PR 4's GoTrue

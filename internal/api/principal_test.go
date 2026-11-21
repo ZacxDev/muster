@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
@@ -47,6 +48,11 @@ const (
 	// pPluginToken is shaped like a minted plugin token (plugins.TokenShapeOK);
 	// principalPlugins resolves it to user 1.
 	pPluginToken = "mpl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// pServerPluginToken is a SERVER app's token (migration 0172), and
+	// pServerSubject the subject its act-for header names; principalPlugins
+	// resolves the subject to a live grant of user 1.
+	pServerPluginToken = "mpl_SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS"
+	pServerSubject     = "c3ViamVjdC1mb3ItdGVzdA"
 	// A mirror host token's shape (mirror.TokenShapeOK): mmt_ + 43 base64url.
 	pMirrorToken = "mmt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	// A paired device's credential (devices.ShapeOK): mdv_ + 43 base64url;
@@ -56,6 +62,14 @@ const (
 	// principalPages resolves it to a link of user 1's.
 	pPageToken = "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
 )
+
+// serverNobodyRoutes are served ONLY to a server app's token and act as
+// NOBODY: no request principal at all (admitServerPlugin with no subject).
+// They are bearer routes, not public ones; TestServerAppNobodyRoutesCarryNoPrincipal
+// drives them.
+var serverNobodyRoutes = []string{
+	"POST /plugin/v1/owners/check",
+}
 
 // publicRoutes are served with no credential and therefore no Principal.
 var publicRoutes = []string{
@@ -722,6 +736,14 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/notify",
 		"DELETE /plugin/v1/notify/{ref}",
 	},
+	// A SERVER app's token acting for one person (Muster-Act-For, core PR
+	// 1h): the act-for routes alone. Its other served routes act as NOBODY
+	// and carry no principal (serverNobodyRoutes).
+	authz.ViaServerPlugin: {
+		"POST /plugin/v1/notify",
+		"DELETE /plugin/v1/notify/{ref}",
+		"POST /plugin/v1/tasks",
+	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
 		"GET /agent/task",
@@ -781,7 +803,24 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 			// Every capability, so the probe reaches every plugin route's handler.
 			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension, plugins.CapApp}}.OwnedBy(authz.OperatorUserID), nil
 	}
+	if tok == pServerPluginToken {
+		origin, entry := "https://*.plugin.example.test", "https://app.plugin.example.test/enter"
+		return plugins.Plugin{ID: 11, Name: "principal-server", Scope: plugins.ScopeServer, Origin: &origin, EntryURL: &entry,
+			Capabilities: []plugins.Capability{plugins.CapApp, plugins.CapTasks}}, nil
+	}
 	return plugins.Plugin{}, plugins.ErrBadToken
+}
+
+// LiveServerGrants answers the one test subject live, as user 1.
+func (principalPlugins) LiveServerGrants(_ context.Context, app plugins.Plugin, _ []plugins.OriginPattern, subjects []string, _ time.Time) (map[string]plugins.ServerGrant, error) {
+	out := map[string]plugins.ServerGrant{}
+	for _, s := range subjects {
+		out[s] = plugins.ServerGrant{State: plugins.GrantRevoked}
+		if s == pServerSubject && app.ID == 11 {
+			out[s] = plugins.ServerGrant{State: plugins.GrantLive, Owner: authz.OperatorUserID}
+		}
+	}
+	return out, nil
 }
 
 // principalDevices resolves the one test device credential to user 1.
@@ -913,6 +952,9 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pRunnerToken)
 	case authz.ViaPlugin:
 		req.Header.Set("Authorization", "Bearer "+pPluginToken)
+	case authz.ViaServerPlugin:
+		req.Header.Set("Authorization", "Bearer "+pServerPluginToken)
+		req.Header.Set(MusterActForHeader, pServerSubject)
 	case authz.ViaMirrorHost:
 		req.Header.Set("Authorization", "Bearer "+pMirrorToken)
 	case authz.ViaDevice:
@@ -936,6 +978,9 @@ func TestEveryRouteIsClassifiedForItsPrincipal(t *testing.T) {
 		for _, r := range rs {
 			classified[r] = true
 		}
+	}
+	for _, r := range serverNobodyRoutes {
+		classified[r] = true
 	}
 	var unclassified, stale []string
 	for r := range golden {
@@ -1014,7 +1059,7 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 	// the table it is checking: every non-public route must have been driven
 	// at least once (the classification test pins that the table and the
 	// golden agree; this pins that the loop actually ran them).
-	if nonPublic := len(readGolden(t)) - len(publicRoutes); checked < nonPublic || nonPublic < 90 {
+	if nonPublic := len(readGolden(t)) - len(publicRoutes) - len(serverNobodyRoutes); checked < nonPublic || nonPublic < 90 {
 		t.Fatalf("drove %d route/door pairs; the golden has %d non-public routes", checked, nonPublic)
 	}
 }

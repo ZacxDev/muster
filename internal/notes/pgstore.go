@@ -836,7 +836,10 @@ func (s *PGStore) FileOnceByLedger(ctx context.Context, l TaskLedger, n *Note, c
 		// THE OPEN TASK by the personal path's own rule (openOnly): live, not
 		// complete, not merged away. A ledgered task that is none of those
 		// behaves exactly as a key no task carries.
-		err := scanNote(tx.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE id = $1 AND `+openOnly("$2"),
+		// And the CALLER's OWN task (never one a team shares with them): the
+		// ledger is keyed on one person.
+		err := scanNote(tx.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE id = $1 AND `+openOnly("$2")+`
+			AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint`,
 			id, supersededPattern), &cur)
 		switch {
 		case err == nil:

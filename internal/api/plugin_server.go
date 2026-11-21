@@ -141,8 +141,8 @@ func (s *Server) admitServerPlugin(w http.ResponseWriter, r *http.Request, next 
 			s.refuseDeviceTokenElsewhere(w, r, nobody.Via) {
 			return
 		}
-		if s.principalProbe != nil {
-			s.principalProbe(r)
+		if s.serverNobodyProbe != nil {
+			s.serverNobodyProbe(r)
 		}
 		next(w, r)
 		return
@@ -157,11 +157,13 @@ func (s *Server) admitServerPlugin(w http.ResponseWriter, r *http.Request, next 
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check who this app acts for"})
 		return
 	}
-	owner, ok := live[subject]
-	if !ok {
+	// LIVE ONLY: expired and revoked are the same 404 here.
+	g := live[subject]
+	if g.State != plugins.GrantLive || g.Owner <= 0 {
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": ServerActForNotFound})
 		return
 	}
+	owner := g.Owner
 	// The principal comes from THE ROW, never from the header. serverGrantLive
 	// admits only an enabled person; a team here would be a bug, and admit
 	// refuses it (403) before any handler.
@@ -210,10 +212,15 @@ const (
 )
 
 // handlePluginOwnersCheck is POST /plugin/v1/owners/check {"subjects": [...]}
-// → {"live": [...]}: the subset of the subjects it was sent whose grant passes
-// THE gate now (LiveServerGrants, the act-for door's own). It can say nothing
-// about a subject the plugin did not already hold. 1 to MaxOwnersCheck
-// subjects, each a subject's shape; ownersCheckPerMinute calls a minute per app.
+// → {"states": {"<subject>": "<state>"}}: EVERY subject it was sent, once,
+// and no other, with its state under THE gate now
+// (LiveServerGrants, the act-for door's own): "live" (the app may act for the
+// person), "expired" (the grant only ran out of time: the person's next visit
+// renews it, and the plugin keeps their open meeting) or "revoked" (anything
+// else: the plugin ends their sessions). One word for every state, and never
+// why a subject is revoked. It says nothing about a subject the
+// plugin did not already hold beyond "revoked". 1 to MaxOwnersCheck subjects,
+// each a subject's shape; ownersCheckPerMinute calls a minute per app.
 func (s *Server) handlePluginOwnersCheck(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
 	var in struct {
@@ -243,13 +250,18 @@ func (s *Server) handlePluginOwnersCheck(w http.ResponseWriter, r *http.Request)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the subjects"})
 		return
 	}
-	live, seen := []string{}, map[string]bool{}
+	// One entry per subject asked about, and no other: a subject this app
+	// never redeemed is "revoked", as any revoked one is, so the answer cannot
+	// tell "never seen" from "ended".
+	states := make(map[string]plugins.GrantState, len(in.Subjects))
 	for _, sub := range in.Subjects {
-		if _, ok := got[sub]; ok && !seen[sub] {
-			live, seen[sub] = append(live, sub), true
+		st := got[sub].State
+		if st != plugins.GrantLive && st != plugins.GrantExpired {
+			st = plugins.GrantRevoked
 		}
+		states[sub] = st
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"live": live})
+	s.writeJSON(w, http.StatusOK, map[string]any{"states": states})
 }
 
 // ownersCheckLimit is ownersCheckPerMinute per app, a sliding minute.

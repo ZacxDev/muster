@@ -387,6 +387,7 @@ POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages
 POST /plugin/v1/messages/{id}/owner-answered
 POST /plugin/v1/notify
+POST /plugin/v1/owners/check
 POST /plugin/v1/pair
 POST /plugin/v1/task-writes/claim
 POST /plugin/v1/task-writes/{id}/result

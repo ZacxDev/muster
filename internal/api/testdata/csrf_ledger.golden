@@ -63,6 +63,7 @@ bearer-only POST /plugin/v1/handoffs/redeem
 bearer-only POST /plugin/v1/messages
 bearer-only POST /plugin/v1/messages/{id}/owner-answered
 bearer-only POST /plugin/v1/notify
+bearer-only POST /plugin/v1/owners/check
 bearer-only POST /plugin/v1/task-writes/claim
 bearer-only POST /plugin/v1/task-writes/{id}/result
 bearer-only POST /plugin/v1/tasks

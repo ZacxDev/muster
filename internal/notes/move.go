@@ -52,6 +52,9 @@ var MoveRefusals = map[string]MoveRefusal{
 	"plugin_messages.task_id": {Reason: "a plugin message is linked to it"},
 	"session_routes.task_id":  {Reason: "a session route is linked to it", Live: "state IN ('routed', 'answered')"},
 	"task_ref_writes.note_id": {Reason: "writes are queued for its plugin"},
+	// A server app filed it for this person (migration 0172): moved to a
+	// team, the app's ledger would name a task every member reads.
+	"plugin_server_tasks.task_id": {Reason: "an app this server offers filed it for you"},
 }
 
 // AskDeliveriesFinished is THE CLOSED SET of an ask's delivery states that

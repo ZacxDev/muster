@@ -629,6 +629,9 @@ var isolationClasses = map[string]routeClass{
 	// a ref in the token's own plugin's tag, and push to the token's owner.
 	"POST /plugin/v1/notify":         classPlugin,
 	"DELETE /plugin/v1/notify/{ref}": classPlugin,
+	// A server app's owners/check (plugin_server.go): it names subjects, which
+	// the app's own id confines; answered for no one else's.
+	"POST /plugin/v1/owners/check": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.

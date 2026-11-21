@@ -304,6 +304,28 @@ var (
 		// mints acting AS that owner (the WithPrincipal ledger below).
 		"internal/api.(*Server).handlePairRequest",
 		"internal/plugins.(*PGStore).RedeemPair",
+		// SERVER-INSTALLED APP PLUGINS (migration 0172, core PR 1h): a server
+		// app's row has NO OWNER, so row-level security shows it to no
+		// principal and every read of it is an explicit System read keyed on
+		// the app's own id. The hand-off mint's server arm (the code row is
+		// written naming the minting PERSON, taken from the request first) and
+		// fork 9's "does a live server app already have this entry URL" read
+		// (on its own connection, or the person's RLS would see none and allow
+		// every mint); the redeem (the code is how the person is LEARNED, as
+		// the token is in pluginFor; the grant written naming that person);
+		// THE gate LiveServerGrants (one statement over the app's grant rows,
+		// keyed on the authenticated app's id, answering subjects and the
+		// person each names); the admin's install, rotate and uninstall (a row
+		// with no owner, audited as the actor); and a person's Hide/Show
+		// (the grant row written naming the principal's own id).
+		"internal/plugins.(*PGStore).mintServerHandoff",
+		"internal/plugins.(*PGStore).serverAppAtEntry",
+		"internal/plugins.(*PGStore).RedeemServerHandoff",
+		"internal/plugins.(*PGStore).LiveServerGrants",
+		"internal/plugins.(*PGStore).InstallServerApp",
+		"internal/plugins.(*PGStore).RotateServerApp",
+		"internal/plugins.(*PGStore).UninstallServerApp",
+		"internal/plugins.(*PGStore).SetServerAppHidden",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
@@ -509,6 +531,7 @@ var (
 		"internal/api.(*Server).requireRelayAgent",
 		"internal/api.(*Server).requireMirrorHostToken", // mirror host tokens: POST /mirror/mcp
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
+		"internal/api.(*Server).admitServerPlugin",      // a server app acting for a person (0172): the act-for routes
 		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0039): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requirePageLink",        // a page's share link (0116): /s/{token}/*
@@ -518,8 +541,8 @@ var (
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaHostJob", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"From", "IsAdmin", "IsPluginVia", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaHostJob", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaServerPlugin", "ViaService",
 		"ViaSession", "ViaSystem", "ViaTeamAdmin", "ViaToken", "WithPrincipal",
 	}
 )

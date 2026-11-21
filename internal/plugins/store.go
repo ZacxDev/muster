@@ -38,9 +38,10 @@ type Store interface {
 	// RedeemServerHandoff spends a code minted for server app app and records
 	// its person's grant, answering the pairwise subject and display name.
 	RedeemServerHandoff(ctx context.Context, app Plugin, code string, now time.Time) (ServerHandoff, error)
-	// LiveServerGrants is THE gate: of subjects, those whose grant under app
-	// is live at now (serverGrantLive), each with its person.
-	LiveServerGrants(ctx context.Context, app Plugin, origins []OriginPattern, subjects []string, now time.Time) (map[string]int64, error)
+	// LiveServerGrants is THE gate: every one of subjects with its state
+	// under app at now (live, expired or revoked; serverGrantLive), and for a
+	// live one its person.
+	LiveServerGrants(ctx context.Context, app Plugin, origins []OriginPattern, subjects []string, now time.Time) (map[string]ServerGrant, error)
 	// InstallServerApp, RotateServerApp and UninstallServerApp are an admin's
 	// (the caller gates who); each is audited as by.
 	InstallServerApp(ctx context.Context, in ServerAppIn, by users.Actor) (string, Plugin, error)

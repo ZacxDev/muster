@@ -34,6 +34,10 @@ var actsAsTeam = map[Via]bool{
 	// preview of a team session reads the team's plugins and writes its
 	// hand-off as the team (teamPreviewPrincipal).
 	ViaPlugin: true,
+	// A SERVER APP acting for one person (core PR 1h): NOT a team door. The
+	// grant names a person (serverGrantLive admits persons only), and a
+	// server app never acts as a team.
+	ViaServerPlugin: false,
 	// A TEAM HOST'S SEND QUEUE (team sharing 2b.4): the dispatcher probes and
 	// pastes into a team host's window as the team; who may still send is
 	// the row's queued_by, checked at delivery (internal/api).
