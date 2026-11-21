@@ -30,6 +30,17 @@ const (
 	PasskeyDeviceFailedNote = "This device could not use a passkey. Try again, or sign in with your password."
 )
 
+// The sign-in page's words for where a passkey sign-in has got to, in
+// #passkey-signin-status (a polite live region): the browser's passkey sheet
+// is open, muster is checking what it returned, and the sign-in is done and
+// the app is loading. Without them the page sat unchanged while the check
+// ran and the next page loaded, and read as stuck.
+const (
+	PasskeyWaitingNote   = "Waiting for your passkey\u2026"
+	PasskeyVerifyingNote = "Checking your passkey\u2026"
+	PasskeySigningInNote = "Signed in. Opening muster\u2026"
+)
+
 // jsStr is s as a JavaScript string literal.
 func jsStr(s string) string {
 	b, _ := json.Marshal(s)
@@ -83,6 +94,7 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
   if (!btn) { return; }
   if (!mpkSupported()) { btn.hidden = true; if (phone) { phone.hidden = true; } return; }
   var path = '` + passkeySignInOptionsPath + `', notUsed = ` + jsStr(PasskeyNotUsedNote) + `, failed = ` + jsStr(PasskeyDeviceFailedNote) + `;
+  var waiting = ` + jsStr(PasskeyWaitingNote) + `, verifying = ` + jsStr(PasskeyVerifyingNote) + `, signingIn = ` + jsStr(PasskeySigningInNote) + `;
   var pre = mpkPrefetch(path), cond = null, busy = false, left = false;
   function lock(on) { busy = on; btn.disabled = on; if (phone) { phone.disabled = on; } }
   // toBuf is a COPY of options with its binary fields decoded: autofill and
@@ -104,8 +116,9 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
   // finish verifies cred (from options o) and signs in; false when refused.
   async function finish(o, rpId, cred) {
     var next = (document.querySelector('input[name=next]') || {}).value || '/';
+    mpkSay(msg, verifying);
     var v = await mpkPost('` + passkeySignInVerifyPath + `', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred), next: next });
-    if (v.ok) { left = true; location.assign(v.data.redirect || '/'); return true; }
+    if (v.ok) { left = true; mpkSay(msg, signingIn); location.assign(v.data.redirect || '/'); return true; }
     if (v.data.credential_unknown) { signalUnknown(rpId, cred.id); }
     mpkSay(msg, v.data.error || 'That passkey was not accepted.');
     return false;
@@ -143,7 +156,8 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
         try {
           await finish(o, rpId, cred);
         } finally {
-          lock(false);
+          // Signed in: the buttons stay locked while the next page loads.
+          if (!left) { lock(false); }
           if (!left && !pre) { pre = mpkPrefetch(path); } // for the button
         }
       } catch (e) {
@@ -167,6 +181,7 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
       var rpId = o.data.options.rpId, pk = toBuf(o.data.options);
       if (hints) { pk.hints = hints; }
       if (c && c.done) { await Promise.race([c.done, new Promise(function (r) { setTimeout(r, 300); })]); }
+      mpkSay(msg, waiting);
       var cred = await navigator.credentials.get({ publicKey: pk });
       // Only a verify spends the challenge: a sheet dismissed before this
       // point leaves it for the next ceremony (no new options request).
@@ -175,8 +190,9 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
     } catch (e) {
       mpkSay(msg, mpkCancelled(e) ? notUsed : failed);
     } finally {
-      lock(false);
+      // Signed in: the buttons stay locked while the next page loads.
       if (!left) {
+        lock(false);
         if (!mpkFresh(pre)) { pre = mpkPrefetch(path); }
         startAutofill();
       }
@@ -189,12 +205,23 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
   // no other) rather than leave it pending while the form posts.
   var pwForm = (document.getElementById('muster-password') || {}).form;
   if (pwForm) {
-    pwForm.addEventListener('submit', function () {
+    pwForm.addEventListener('submit', function (e) {
+      if (e.defaultPrevented) { return; }
       var c = cond;
       cond = null; left = true;
       if (c) { c.ac.abort(); }
+      // The form is signing in (signInProgressJS): no passkey ceremony now.
+      lock(true);
     });
   }
+  // Back to a page that was restored from the back/forward cache after a
+  // sign-in left it: it comes back locked, saying it is signing in.
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted || !left) { return; }
+    left = false; lock(false); mpkSay(msg, '');
+    if (!mpkFresh(pre)) { pre = mpkPrefetch(path); }
+    startAutofill();
+  });
   startAutofill();
 })();
 `

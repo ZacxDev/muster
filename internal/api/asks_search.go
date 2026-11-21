@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"html"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -26,14 +28,18 @@ import (
 // lists what matches, each result linking to its ask's
 // page (a draft: its card on the Drafts tab). The query is the page's ?q=,
 // so a search is a link and Back works; an empty one is the page as before.
+// It searches AS YOU TYPE (operator decision: debounced, no Search button):
+// the box's own htmx request gets the results alone (writeAsksSearchLive),
+// swapped in place; Enter is still the form's submit.
 //
 //   - AN ID ("859", "#859", "ask 859", "Ask #859", "draft 484") is looked up
 //     by id ONLY — never as text, so the number in some question cannot get
 //     between the owner and the ask an agent named. A bare number is either
 //     kind's: the ask with that id and the draft with that id (and the
 //     step-up cards that confirm it). "draft N" is the draft and its step-up
-//     cards. When an id finds exactly ONE thing, the page goes straight to it
-//     (303, so the search is not a history entry Back would bounce off).
+//     cards. When an id SUBMITTED (Enter, a link) finds exactly ONE thing,
+//     the page goes straight to it (303, so the search is not a history
+//     entry Back would bounce off). Typed, it is only listed.
 //   - ANYTHING ELSE is text: a case-insensitive substring of the question,
 //     the why line, an option, the answer, who asked, a step-up card's title,
 //     why and post, and a draft's text. % _ and \ are themselves, never
@@ -296,6 +302,39 @@ func draftSearchCardHTML(c plugins.DraftCard, now time.Time) string {
 `)
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// asksSearchLive reports whether r is the search box's own live request (the
+// field's debounced htmx GET, ui/asks_search.go): htmx names the element it
+// will swap in HX-Target, and only the box targets the results region. A
+// boosted navigation (HX-Request too, but no such target) is a navigation, and
+// keeps the id redirect.
+func asksSearchLive(r *http.Request) bool {
+	return r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-Target") == ui.AsksSearchRegionID
+}
+
+// writeAsksSearchLive answers the live request: the results region's contents
+// alone — empty for an empty box, which shows the page again — and the address
+// the page should now show (HX-Replace-Url: typing adds no history entry).
+//
+// 🔴 NEVER THE ID REDIRECT (operator decision): typing never navigates away.
+// An id is listed like any other result (typing 12 on the way to 123 must not
+// open ask 12); only a real submit (Enter) goes straight to the one ask.
+func (s *Server) writeAsksSearchLive(w http.ResponseWriter, r *http.Request) {
+	raw, q, ok := asksSearchRequest(r)
+	to := attentionPath
+	if ok {
+		to += "?" + asksSearchParam + "=" + url.QueryEscape(raw)
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("HX-Replace-Url", to)
+	w.WriteHeader(http.StatusOK)
+	if !ok {
+		return
+	}
+	_, _ = io.WriteString(w, asksSearchHTML(raw, s.searchAsks(r.Context(), q), s.now()))
 }
 
 // asksSearchRequest is the page request's search, ok false for none (no ?q=,
