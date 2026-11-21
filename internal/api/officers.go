@@ -2177,7 +2177,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// 🔴 REFUSED, NEVER DROPPED, on a builtin officer: it is not offered
 		// them, and its backend would complete the item without them.
 		if !completeTakesHQFields(o) {
-			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets, "ask": in.Ask} {
+			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets} {
 				if len(bytes.TrimSpace(raw)) > 0 {
 					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution, tickets or asks): complete without it", f, o.ID), true
 				}
