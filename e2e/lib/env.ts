@@ -566,6 +566,9 @@ export const serverAppEdgePort = port + 484;
 // cards — its own server (plugins and task routing on, for the fixture's
 // draft and task). +485: clear of the blocks above.
 export const asksSearchPort = port + 485;
+// tests/signin-progress.spec.ts: its own password-mode server, so its refused
+// and accepted sign-ins are charged to a budget of their own (lib/server.ts).
+export const signinProgressPort = port + 486;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

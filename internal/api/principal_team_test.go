@@ -167,6 +167,7 @@ var publicRouteTeamGuard = map[string]string{
 	"GET /favicon.ico":                      guardNoIdentity,
 	"GET /health":                           guardNoIdentity,
 	"GET /login":                            guardNoIdentity,
+	"POST /auth/clear-caches":               guardNoIdentity,
 	"GET /manifest.webmanifest":             guardNoIdentity,
 	"GET /.well-known/assetlinks.json":      guardNoIdentity,
 	"GET /api/device/web":                   guardNoIdentity,

@@ -75,6 +75,36 @@ Supabase auth server.
   verify naming a challenge it does not hold is refused without asking
   GoTrue.
 
+### What happens when you sign in (both modes)
+
+- **The sign-in page shows progress.** After you tap Sign in, the button is
+  disabled and shows a spinner and "Signing in…", and a screen reader hears
+  "Signing in…". It stays that way until the app's page replaces it. A wrong
+  password draws the page again, with the form enabled. The passkey buttons
+  say where a passkey sign-in has got to: "Waiting for your passkey…" while
+  the browser's passkey sheet is open, "Checking your passkey…" while muster
+  checks it, and "Signed in. Opening muster…" once it has. Without JavaScript
+  the form still works, without the progress.
+- **The browser's caches are cleared on the sign-in page, not on the sign-in.**
+  Every sign-in page (sign-in, the admin claim, an invite, a password reset)
+  asks muster for `Clear-Site-Data: "cache"` in the background
+  (`POST /auth/clear-caches`, same-origin only) while you type. That drops
+  any page the previous session left in this browser's caches, so Back cannot
+  show it to the next person. The case it covers is a session that ended
+  without a sign-out: it expired, or was ended on another device. The sign-in
+  itself sends no `Clear-Site-Data`. A browser does not follow a redirect
+  that carries one until the clear has finished, and Chromium's clear reads
+  through the browser's whole disk cache (every site's), so a sign-in that
+  carried it took longer the bigger your cache was. Measured in Chromium:
+  350–500 ms with 20,000 cached entries, and 10.7 s for the first clear after
+  the browser started.
+- **Signing out still sends `Clear-Site-Data: "cache"` on its own response**,
+  so the sign-in page only appears once the caches are gone.
+- ⚠ Browsers honour `Clear-Site-Data` only on a secure origin (HTTPS, or
+  localhost). On plain HTTP, a page restored with Back checks with the server
+  and reloads if a different person is now signed in
+  ([sending-and-step-up.md](sending-and-step-up.md)).
+
 ### Cookie names
 
 muster's browser cookies are `muster_session` (password mode), `muster_at` and

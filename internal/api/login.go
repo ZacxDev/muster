@@ -131,6 +131,7 @@ func (s *Server) registerLoginRoutes(mux Mux) {
 	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("POST /auth/clear-caches", s.handleClearCaches)
 	s.registerAccountRoutes(mux)
 }
 
@@ -189,7 +190,6 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clearSiteCaches(w)
 	s.setPasswordSessionCookie(w, r)
 	s.setKnownDeviceCookie(w, r)
 	s.logger.Printf("login: a browser session was issued")
@@ -301,11 +301,30 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // clearSiteCaches asks the browser to drop everything it CACHED for this
-// origin — the HTTP cache and the back/forward cache — on the response that
-// ends a session or starts one. The agent page, the Rendered view and the
-// terminals are cacheable (viewDocument), so without it Back after a sign-out
-// could show one of them from a cache to whoever holds the device next, and
-// Back after the next person signs in could show them the last one's.
+// origin — the HTTP cache and the back/forward cache. The agent page, the
+// Rendered view and the terminals are cacheable (viewDocument), so without it
+// Back after a sign-out could show one of them from a cache to whoever holds
+// the device next, and Back after the next person signs in could show them
+// the last one's. Two kinds of response send it:
+//
+//   - a SIGN-OUT (handleLogout, handleGoTrueLogout), on the redirect itself:
+//     the person handing the device on waits for it, and the sign-in page
+//     only draws once the caches are gone;
+//   - the sign-in pages' background request (handleClearCaches, which every
+//     writeAuthDocument page starts: clearCachesHTML), for the session that
+//     ended WITHOUT a sign-out (it expired, or was ended on another device).
+//
+// 🔴 NEVER ON A SIGN-IN RESPONSE. A browser does not follow a redirect that
+// carries Clear-Site-Data until the whole clear has finished, and Chromium's
+// clear walks EVERY entry in the browser's disk cache, every site's, to find
+// this origin's — so its cost grows with the size of the person's cache, not
+// with muster's. Measured in Chromium 153 between the sign-in's 303 arriving
+// and the browser requesting its Location: 1–2 ms with an almost empty cache,
+// 100–140 ms with 5,000 entries, 350–500 ms with 20,000, and 10.7 s for the
+// first clear after the browser started with those 20,000 — all of it with
+// the sign-in page still on screen. The sign-in page's own request clears the
+// same caches while the person types, so nothing waits on it
+// (TestNoSignInWaitsOnClearingTheCaches).
 //
 // 🔴 "cache" ONLY, NEVER "storage". "storage" also unregisters the service
 // worker (and with it this device's push subscription) and empties IndexedDB,
@@ -328,6 +347,43 @@ func clearSiteCaches(w http.ResponseWriter) {
 	w.Header().Set("Clear-Site-Data", `"cache"`)
 }
 
+// clearCachesPath is the sign-in pages' background cache clear
+// (handleClearCaches). Spelled once; the route literal in registerLoginRoutes
+// is pinned to it (TestTheClearCachesPathMatchesItsRoute).
+const clearCachesPath = "/auth/clear-caches"
+
+// handleClearCaches answers the sign-in pages' background request with
+// Clear-Site-Data: "cache" (clearSiteCaches): the clear a sign-in response used
+// to carry, moved to where nobody waits for it. It reads no cookie and writes
+// no state on the server; the only effect is in the asking browser, on this
+// origin's caches.
+//
+// Same-origin only, so another site cannot make a visitor's browser drop
+// muster's caches (a nuisance, not a leak: the next page load refetches).
+func (s *Server) handleClearCaches(w http.ResponseWriter, r *http.Request) {
+	if !s.isSameOrigin(r) {
+		s.refuseCrossOrigin(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	clearSiteCaches(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// clearCachesHTML is the inline script every writeAuthDocument page carries:
+// it asks handleClearCaches to clear this origin's caches, in the background.
+// A sign-in starts on one of these pages, so the previous session's cached
+// pages are dropped while the person types — and the sign-in's own redirect
+// carries no Clear-Site-Data for the browser to wait on (clearSiteCaches).
+//
+// keepalive, so a sign-in submitted before the answer lands (a password
+// manager that fills and submits at once) does not cancel it. Measured in
+// Chromium: the clear still ran, and still evicted the earlier page from the
+// back/forward cache, with the page navigated away the moment it was sent.
+func clearCachesHTML() string {
+	return `<script>try{fetch('` + clearCachesPath + `',{method:'POST',keepalive:true,credentials:'same-origin'}).catch(function(){})}catch(e){}</script>`
+}
+
 // renderLoginPage writes the whole document. Hand-written rather than composed,
 // for the independence reason at the top of this file.
 func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem string) {
@@ -340,7 +396,7 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
-</form>`
+</form>` + signInProgressJS
 	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
@@ -367,8 +423,9 @@ func problemNode(problem string) string {
 // Every such page deletes the mirrored views' snapshots in this browser
 // (ui.SnapPurgeHTML): a sign-out lands here, and so does any sign-in, so one
 // user's cached conversations never outlive their session on a shared device.
-// They also keep a server switcher hand-off (#muster-from) across the sign-in
-// (ui.ServerHandoffKeepHTML).
+// For the same reason each starts the background cache clear
+// (clearCachesHTML). They also keep a server switcher hand-off (#muster-from)
+// across the sign-in (ui.ServerHandoffKeepHTML).
 func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
@@ -382,6 +439,7 @@ func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, i
 <title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">
 ` + ui.SnapPurgeHTML() + `
+` + clearCachesHTML() + `
 ` + ui.ServerHandoffKeepHTML() + `
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">

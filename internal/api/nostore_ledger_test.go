@@ -63,6 +63,7 @@ var noStoreLiterals = map[string]string{
 	"handleAccountDevicesLive":  "the paired devices, live",
 	"handleDeviceConfig":        "a paired phone's config",
 	"handleDeviceWeb":           "the Android shell's sign-in origins, re-read on every shell open",
+	"handleClearCaches":         "the sign-in pages' background Clear-Site-Data answer: an instruction to this browser, never a copy to keep",
 	"handleDeviceChallenge":     "a signed action's one-time nonce",
 	"handleDoctor":              "`muster doctor`'s report: live state (which hosts are connected now)",
 	"handleDriftDismiss":        "the drift offer's Keep answered in place: an action's answer, never to be replayed",

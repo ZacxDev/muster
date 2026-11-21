@@ -384,7 +384,13 @@ test('autofill signs in; a button or the password form aborts a pending autofill
   expect(modalAt, 'a modal request followed').toBeGreaterThan(abortAt);
   expect(ev[modalAt].conditionalPending, 'no conditional request was pending when the modal one began').toBe(false);
   expect(ev[modalAt].hints, 'the plain button sends no hints').toBeNull();
-  expect(rec.statuses.filter((t) => t !== ''), 'the abort showed nothing').toEqual([]);
+  // The abort showed nothing of its own: the status said only where the
+  // button's sign-in had got to, in order (passkeySignInJS's stage notes).
+  expect(rec.statuses.filter((t) => t !== ''), 'the abort showed nothing; the stages showed in order').toEqual([
+    'Waiting for your passkey…',
+    'Checking your passkey…',
+    'Signed in. Opening muster…',
+  ]);
 
   // 3. THE PHONE BUTTON: the same request, with hints ['hybrid'].
   await signOut(mp);
