@@ -766,14 +766,14 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, limit, limit)
+	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, draftsPendingFirst, limit, limit)
 }
 
 // DraftCard is one of the principal's drafts as a card (after a sweep):
 // what the Asks page draws for a just-decided draft that DraftCards' cut
 // left out. ErrNotFound for none (or another owner's: row-level security).
 func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
-	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, 1, id)
+	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, draftsPendingFirst, 1, id)
 	if err != nil {
 		return DraftCard{}, err
 	}
@@ -783,14 +783,18 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
-// SearchDraftCards is the caller's OWN drafts (the Asks page's search box)
-// with id draftID (0: none), or whose text contains text ("" none:
-// case-insensitive, a plain substring — % _ and \ are themselves) whatever
-// their age, newest first, at most limit (≤ 0 or over 200: 100).
+// SearchDraftCards is the Asks page's search box over drafts: the draft with
+// id draftID (0: none), or the caller's OWN drafts whose text contains text
+// ("" none: case-insensitive, a plain substring — % _ and \ are themselves)
+// whatever their age, newest first, at most limit (≤ 0 or over 200: 100).
 //
-// 🔴 OWN, NAMED IN THE QUERY: plugin_reply_drafts is team-shared (0127: a
-// team's operator reads the team's drafts), so row-level security alone would
-// list a team's drafts as the caller's.
+// 🔴 TWO REACHES (operator decision). AN ID finds any draft the caller can
+// already open — row-level security, exactly what DraftCard (the Drafts tab's
+// ?draft= card, where the search sends it) reads — so a team's draft whose id
+// chip a member sees is found by that id; another owner's reads as a missing
+// one. TEXT is the caller's OWN drafts, named in the query: plugin_reply_drafts
+// is team-shared (0127: a team's operator reads the team's drafts), so
+// row-level security alone would list a team's drafts as the caller's.
 func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text string, limit int) ([]DraftCard, error) {
 	text = strings.TrimSpace(text)
 	if draftID <= 0 && text == "" {
@@ -803,22 +807,32 @@ func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text stri
 	if text != "" {
 		pattern = "%" + db.LikeEscape(text) + "%"
 	}
-	cards, err := s.draftCards(ctx, `WHERE d.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
-		   AND (($1::bigint > 0 AND d.id = $1) OR ($2::text <> '' AND d.body ILIKE $2 ESCAPE '\'))
-		 ORDER BY d.id DESC LIMIT $3`, limit, draftID, pattern, limit)
-	if err != nil {
-		return nil, err
-	}
-	// Newest first (draftCards puts the pending ones first).
-	sort.SliceStable(cards, func(i, j int) bool { return cards[i].Draft.ID > cards[j].Draft.ID })
-	return cards, nil
+	// The whole condition in one pair of parentheses: outboundTail ANDs its
+	// own condition onto it.
+	return s.draftCards(ctx, `WHERE (($1::bigint > 0 AND d.id = $1)
+		     OR ($2::text <> '' AND d.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		         AND d.body ILIKE $2 ESCAPE '\'))
+		 ORDER BY d.id DESC LIMIT $3`, draftsNewestFirst, limit, draftID, pattern, limit)
 }
+
+// draftOrder is how draftCards orders the merged cards BEFORE it cuts them to
+// the limit — so the cut keeps what that order puts first.
+type draftOrder int
+
+const (
+	// draftsPendingFirst: every pending draft, then the newest others (the
+	// Drafts tab: what awaits a decision is never cut).
+	draftsPendingFirst draftOrder = iota
+	// draftsNewestFirst: by id, newest first, whatever the status (a search:
+	// "the newest" when it is cut means the newest).
+	draftsNewestFirst
+)
 
 // draftCards is DraftCards' and DraftCard's two queries — the reply drafts
 // (each with its message) and the outbound drafts (outbound.go: its plugin,
 // and the human reply it answers) — tail their WHERE / ORDER BY / LIMIT,
-// merged in DraftCards' order and cut to limit.
-func (s *PGStore) draftCards(ctx context.Context, tail string, limit int, args ...any) ([]DraftCard, error) {
+// merged in order and cut to limit.
+func (s *PGStore) draftCards(ctx context.Context, tail string, order draftOrder, limit int, args ...any) ([]DraftCard, error) {
 	if err := s.sweep(ctx); err != nil {
 		return nil, err
 	}
@@ -833,7 +847,7 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, limit int, args .
 	out = append(out, outbound...)
 	sort.SliceStable(out, func(i, j int) bool {
 		pi, pj := out[i].Draft.Status == DraftPending, out[j].Draft.Status == DraftPending
-		if pi != pj {
+		if order == draftsPendingFirst && pi != pj {
 			return pi
 		}
 		return out[i].Draft.ID > out[j].Draft.ID

@@ -145,7 +145,6 @@ for (const vp of [
       await page.goto(origin + '/attention');
       const cardEl = page.locator(`#ask-${ids.deploy}`);
       await expect(cardEl).toHaveAttribute('data-expanded', 'false');
-      // By its hook, not its name: while it says Copied its name says so too.
       const chip = cardEl.locator('button[data-id-copy]');
       await expect(chip).toHaveCount(1);
       await expect(chip).toHaveAccessibleName(`Copy Ask #${ids.deploy}`);
@@ -157,8 +156,17 @@ for (const vp of [
       await cardEl.locator('[data-asks-toggle]').click();
       await expect(cardEl).toHaveAttribute('data-expanded', 'false');
 
+      // The copy is announced in ONE polite live region, there before the
+      // copy (a region added with its words is not reliably read out).
+      const said = page.locator('[data-id-copy-status]');
+      await expect(said).toHaveCount(1);
+      await expect(said).toHaveAttribute('aria-live', 'polite');
+      await expect(said).toHaveText('');
       await chip.click();
       await expect(chip).toHaveText('Copied');
+      await expect(said).toHaveText(`Copied Ask #${ids.deploy}`);
+      // The focused button keeps its name while it says Copied.
+      await expect(chip).toHaveAccessibleName(`Copy Ask #${ids.deploy}`);
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`Ask #${ids.deploy}`);
       await expect(cardEl).toHaveAttribute('data-expanded', 'false');
       await expect(chip).toHaveText(`Ask #${ids.deploy}`, { timeout: 5_000 });

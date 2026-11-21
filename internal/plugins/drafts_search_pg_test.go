@@ -74,12 +74,14 @@ func TestSearchDraftCardsFindsADraftOfAnyAge(t *testing.T) {
 	}
 }
 
-// TestSearchDraftCardsIsTheOwnersOwnOnly: a team's operator reads the team's
-// drafts (the control proves the card is READABLE to them through row-level
-// security), yet their search lists only their own — never the team's, by
-// text or by id, and never another owner's. RED with the query's owner
-// condition removed: the team's draft is listed.
-func TestSearchDraftCardsIsTheOwnersOwnOnly(t *testing.T) {
+// TestSearchDraftCardsTextIsOwnIdIsWhatTheCallerCanOpen: a team's operator
+// reads the team's drafts (the control proves the card is READABLE to them
+// through row-level security). Their TEXT search lists only their own — never
+// the team's, never another owner's: RED with the text branch's owner
+// condition removed. An ID finds any draft they can open (operator decision):
+// the team's by its id — RED at 2244c0e1, where an id was the owner's own
+// only — but another owner's still none, as an id nobody has.
+func TestSearchDraftCardsTextIsOwnIdIsWhatTheCallerCanOpen(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	ctx := context.Background()
 	dbtest.OwnerExec(t, dsn, `SELECT setval(pg_get_serial_sequence('public.users', 'id'), (SELECT max(id) FROM public.users))`)
@@ -150,10 +152,71 @@ func TestSearchDraftCardsIsTheOwnersOwnOnly(t *testing.T) {
 	if got := draftSearchIDs(t, s, me, 0, "gannet"); !slices.Equal(got, []int64{mine.ID}) {
 		t.Errorf("the member's search by text: %v, want only their own %d (not the team's %d or another owner's %d)", got, mine.ID, teams.ID, others.ID)
 	}
-	for _, id := range []int64{teams.ID, others.ID} {
+	if got := draftSearchIDs(t, s, me, teams.ID, ""); !slices.Equal(got, []int64{teams.ID}) {
+		t.Errorf("the member's search for the team's draft %d by id: %v, want it (they can open it)", teams.ID, got)
+	}
+	for _, id := range []int64{others.ID, others.ID + 1_000_000} {
 		if got := draftSearchIDs(t, s, me, id, ""); len(got) != 0 {
-			t.Errorf("the member's search for draft %d: %v, want none", id, got)
+			t.Errorf("the member's search for draft %d (another owner's, or nobody's): %v, want none", id, got)
 		}
+	}
+}
+
+// TestSearchDraftCardsCutKeepsTheNewest: with more matches than the limit, the
+// search keeps the NEWEST, whatever their status — an older pending draft
+// never pushes out a newer decided one. The reply and outbound drafts are two
+// queries merged and then cut, so the fixture spans both: a pending reply
+// draft (oldest) and two rejected outbound drafts (newer). RED while the merge
+// put pending first before the cut: [pending, newest] instead of the two
+// newest.
+func TestSearchDraftCardsCutKeepsTheNewest(t *testing.T) {
+	w := newDraftWorld(t)
+	pending := w.file(t, w.m, "the plover note, pending")
+	var outbound []int64
+	for _, ext := range []string{"m-2", "m-3"} {
+		d := w.file(t, w.delivered(t, ext, false), "the plover note, "+ext)
+		if got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{}); err != nil || got.Status != DraftRejected {
+			t.Fatalf("reject %d: %+v %v", d.ID, got, err)
+		}
+		// An outbound draft: no message, its plugin, an officer, a venue and
+		// a post target (plugin_reply_drafts_outbound_shape).
+		dbtest.OwnerExec(t, w.dsn, `SET session_replication_role = replica;
+			UPDATE plugin_reply_drafts SET message_id = NULL, plugin_id = `+strconv.FormatInt(w.p.ID, 10)+`,
+			       officer = 'marketing', venue = 'example', target_kind = 'post' WHERE id = `+strconv.FormatInt(d.ID, 10))
+		outbound = append(outbound, d.ID)
+	}
+	newest := []int64{outbound[1], outbound[0]}
+	// Control, whatever the order: uncut, all three match — the two outbound
+	// drafts and the pending reply draft, the oldest.
+	all, err := w.s.SearchDraftCards(session(2), 0, "plover", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	var outboundSeen, pendingSeen int
+	for _, c := range all {
+		ids = append(ids, c.Draft.ID)
+		if c.Draft.MessageID == 0 {
+			outboundSeen++
+		}
+		if c.Draft.ID == pending.ID && c.Draft.Status == DraftPending {
+			pendingSeen++
+		}
+	}
+	sorted := slices.Sorted(slices.Values(ids))
+	if !slices.Equal(sorted, []int64{pending.ID, outbound[0], outbound[1]}) || outboundSeen != 2 || pendingSeen != 1 {
+		t.Fatalf("control: %v (%d outbound, %d pending), want the pending %d and the outbound %v", ids, outboundSeen, pendingSeen, pending.ID, outbound)
+	}
+	cut, err := w.s.SearchDraftCards(session(2), 0, "plover", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids = ids[:0]
+	for _, c := range cut {
+		ids = append(ids, c.Draft.ID)
+	}
+	if !slices.Equal(ids, newest) {
+		t.Errorf("cut to 2: %v, want the two newest %v (not the older pending %d)", ids, newest, pending.ID)
 	}
 }
 
