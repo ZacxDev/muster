@@ -53,7 +53,7 @@ const signedInProbe = '/api/push/vapid-public-key';
 test('sign in on http://localhost and stay signed in', async ({ page, context }) => {
   await page.goto(`${url}/login`);
   await page.locator('#muster-password').fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page).not.toHaveURL(/\/login/);
   const session = (await context.cookies(url)).find((c) => c.name === 'muster_session');
   expect(session, 'no session cookie was kept').toBeTruthy();
@@ -69,7 +69,7 @@ test('sign in on http://localhost and stay signed in', async ({ page, context })
 test('a wrong password does not sign in', async ({ page }) => {
   await page.goto(`${url}/login`);
   await page.locator('#muster-password').fill(`not-${password}`);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByText('That password is not right.')).toBeVisible();
   // The same probe as above, from a browser that holds no session: sent to
   // sign in (a navigation without a session is redirected to /login).
