@@ -33,7 +33,11 @@ import (
 //     it was markdown (markdownRenderOpts);
 //   - a YouTube link carrying a start or an end (t=, start=, end=) has its clip
 //     range after its anchor, small and muted ("2:00–2:45": askClip). No
-//     network call, no thumbnail: the range is read from the URL alone.
+//     network call, no thumbnail: the range is read from the URL alone;
+//   - 🔴 a link whose words are not its address ([text](url)), and any link
+//     with a user part (https://good.example@evil.example), has the host it
+//     really opens after it, as small and muted ("(evil.example)": linkHost):
+//     its words alone could name somewhere else.
 //
 // 🔴 THE MACHINE TAG `[watch:<video id>#<n>] ` that starts a watch
 // officer's question is drawn AS WRITTEN (askWatchTag): the officer reads it
@@ -179,6 +183,24 @@ func (o mdOpts) clip(href string) string {
 		return ""
 	}
 	return askClip(html.UnescapeString(href))
+}
+
+// AskLinkHostClass is a link's real host, after its anchor (linkHost).
+const AskLinkHostClass = AskClipClass
+
+// linkHost is the host link href really opens, drawn after its anchor when
+// its words (text: the link's label, escaped as href is) are not exactly its
+// address, or its address carries a user part ("good.example@" before the
+// real host): ask text's, "" for any other render and any other link.
+func (o mdOpts) linkHost(href, text string) string {
+	if !o.ask {
+		return ""
+	}
+	p, err := url.Parse(html.UnescapeString(href))
+	if err != nil || p.Hostname() == "" || (text == href && p.User == nil) {
+		return ""
+	}
+	return `<span class="` + AskLinkHostClass + `" data-ask-link-host>(` + mdEscape(strings.ToLower(p.Hostname())) + `)</span>`
 }
 
 // askClip is the clip range of link u, "" for none: a youtube.com/watch,

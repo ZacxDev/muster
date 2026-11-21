@@ -82,7 +82,7 @@ func TestTheLogNeverSaysTheHeadersOpenWord(t *testing.T) {
 		"How it ended": regexp.MustCompile(`(?s)data-count="open">(.*?)</div>`).FindStringSubmatch(askLogSummaryHTML(sum, asklog.DefaultTextTTL))[1],
 		"the filter":   regexp.MustCompile(`<option value="open"[^>]*>([^<]*)</option>`).FindStringSubmatch(askLogFormHTML(url.Values{}))[1],
 		"a row's badge": regexp.MustCompile(`data-asklog-outcome>([^<]*)<`).FindStringSubmatch(
-			askLogCardHTML(asklog.Ask{ID: 23, Kind: asklog.KindPlainText, Question: "Merge it?", AskedAt: glanceNow.Add(-time.Hour)}, glanceNow, asklog.DefaultTextTTL))[1],
+			askLogCardHTML(asklog.Ask{ID: 23, Kind: asklog.KindPlainText, Question: "Merge it?", AskedAt: glanceNow.Add(-time.Hour)}, glanceNow, asklog.DefaultTextTTL, ""))[1],
 	}
 	for where, html := range surfaces {
 		words := visibleWords(html)

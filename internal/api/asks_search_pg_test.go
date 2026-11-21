@@ -305,6 +305,13 @@ func TestEveryAskCardShowsItsLabelledId(t *testing.T) {
 	if got := chipsIn(liByID(page, "answered-"+an)); strings.Join(got, ",") != "Ask #"+an+"|ask|"+an+"|Ask #"+an {
 		t.Errorf("the Answered card's chip: %v", got)
 	}
+	// Each card's head is the link to its own ask's page (askHasPage: the
+	// reader's own asks), on the Open feed and the Answered tab alike.
+	for key, id := range map[string]string{"ask-" + on: on, "answered-" + an: an} {
+		if li := liByID(page, key); !regexp.MustCompile(`<a href="/attention/asks/` + id + `" class="[^"]*" data-asks-head data-asks-card-link>`).MatchString(li) {
+			t.Errorf("%s's head is not the link to its page:\n%s", key, li)
+		}
+	}
 	if got := chipsIn(liByID(page, "draft-"+dn)); strings.Join(got, ",") != "Draft #"+dn+"|draft|"+dn+"|Draft #"+dn {
 		t.Errorf("the draft card's chip: %v", got)
 	}

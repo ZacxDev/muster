@@ -301,10 +301,16 @@ for (const vp of [
       await page.goto(`${origin}/attention?tab=answered`);
       const card = page.locator(`#answered-${id}`);
       await expect(card).toBeVisible();
-      // The head: the top row's first child is the shared toggle head, the id
-      // chip after it.
+      // The head: the top row's first child is the shared head — the link to
+      // the ask's page — then the chevron, a toggle of its own, then the id
+      // chip.
       const top = card.locator(':scope > [data-asks-top]');
-      await expect(top.locator(':scope > [data-asks-head][data-asks-toggle]')).toHaveCount(1);
+      const head = top.locator(':scope > [data-asks-head][data-asks-card-link]');
+      await expect(head).toHaveCount(1);
+      await expect(head).toHaveAttribute('href', `/attention/asks/${id}`);
+      await expect(top.locator(':scope > :first-child')).toHaveAttribute('data-asks-card-link', '');
+      await expect(top.locator(':scope > button[data-asks-toggle]')).toHaveCount(1);
+      await expect(head.locator('[data-asks-toggle]')).toHaveCount(0);
       await expect(top.locator(':scope > [data-id-copy]')).toContainText(`Ask #${id}`);
       // The body: the Open card's step-up body, the venue preview.
       const post = card.locator('[data-stepup-feed] [data-stepup-post]');

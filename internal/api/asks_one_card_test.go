@@ -114,7 +114,7 @@ func TestEveryAsksListItemIsACard(t *testing.T) {
 	b.WriteString(draftListHTML(nil, draftsPendingEmpty))
 	b.WriteString(outreachBatchCardHTML(batchGroup{id: "b1"}))
 	b.WriteString(chiefNudgeCardHTML(chiefnudge.Decision{ID: 3, Decision: "nudge", Mode: chiefnudge.ModeShadow, DecidedAt: now.Add(-time.Minute), Title: "Billing"}, now))
-	b.WriteString(askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, Question: "Ship it?", AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL))
+	b.WriteString(askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, Question: "Ship it?", AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL, ""))
 	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 2, Top: []asklog.TopQuestion{{Norm: "ship it", Count: 2}}}, asklog.DefaultTextTTL))
 	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 1}, asklog.DefaultTextTTL))
 	stray, cards := asksStrayItems(t, b.String())

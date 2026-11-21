@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -51,7 +53,7 @@ func TestAskTextIsLinkedOnEveryAsksSurface(t *testing.T) {
 		{"answered card", answeredFeedHTML([]attention.Ask{answered}, []attentionItem{askItem(answered)}, now, nil), "data-attention-text", "data-attention-answer-text"},
 		{"ask page", askQuestionHTML(open), "data-ask-question", ""},
 		{"ask page answered", askLiveHTML(answered, askItem(answered)), "", "data-ask-answer"},
-		{"log row", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: askLinkFixture, AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL), "data-asklog-question", ""},
+		{"log row", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: askLinkFixture, AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL, ""), "data-asklog-question", ""},
 		{"search result", askSearchCardHTML(answered, now), "data-asks-search-text", "data-asks-search-answer"},
 	}
 	for _, s := range surfaces {
@@ -111,6 +113,72 @@ func TestAQuotedMessageAndACommandAreNotMarkdown(t *testing.T) {
 	}
 }
 
+// paged is items as the reader user 1 reads them: each ask's page set where
+// they may open it (withAskPages, askHasPage).
+func paged(items ...attentionItem) []attentionItem {
+	withAskPages(asUser(1), items)
+	return items
+}
+
+// TestOnlyAnAskTheReaderMayOpenHasAPage: an ask's or a notice's card links
+// to its page only where handleAskPage would draw it for the reader
+// (askHasPage, the one rule): their own ask — never one a session put to the
+// chief, never another owner's (a team's), never with no reader; and no other
+// kind of item has one.
+func TestOnlyAnAskTheReaderMayOpenHasAPage(t *testing.T) {
+	own := attention.Ask{ID: 7, Owner: 1, Question: "q"}
+	chief, team := own, own
+	chief.ID, chief.ToChief = 8, true
+	team.ID, team.Owner = 9, 2
+	notice := askItem(attention.Ask{ID: 10, Owner: 1})
+	notice.Kind = attentionKindNotice
+	items := []attentionItem{askItem(own), askItem(chief), askItem(team), notice, {Kind: attentionKindSession, AskID: 11, owner: 1}}
+	withAskPages(asUser(1), items)
+	got := []string{}
+	for _, it := range items {
+		got = append(got, it.page)
+	}
+	if want := []string{"/attention/asks/7", "", "", "/attention/asks/10", ""}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("pages %q, want %q", got, want)
+	}
+	// No reader (a system context): no page at all.
+	none := []attentionItem{askItem(own)}
+	withAskPages(context.Background(), none)
+	if none[0].page != "" {
+		t.Errorf("a page with no reader: %q", none[0].page)
+	}
+	// The ask page's own gate is the same rule.
+	for _, c := range []struct {
+		a    attention.Ask
+		want bool
+	}{{own, true}, {chief, false}, {team, false}} {
+		if askHasPage(c.a, 1) != c.want {
+			t.Errorf("askHasPage(%d) = %v", c.a.ID, !c.want)
+		}
+	}
+}
+
+// TestADraftSearchResultOpensItsCard: a draft's search result is its card's
+// link too — to the draft's card on the Drafts tab (draftFocusLink), there
+// being no draft page — one link, holding no control.
+func TestADraftSearchResultOpensItsCard(t *testing.T) {
+	c := plugins.DraftCard{Draft: plugins.Draft{ID: 484, AgentName: "e2e", Body: "Yes, noon works.", Status: plugins.DraftPending, CreatedAt: designNow}}
+	cards := cardsOf(t, draftSearchCardHTML(c, designNow))
+	if len(cards) != 1 {
+		t.Fatalf("%d cards", len(cards))
+	}
+	links := cardLinks(cards[0])
+	if len(links) != 1 {
+		t.Fatalf("%d card links", len(links))
+	}
+	if href, _ := links[0].attr("href"); href != draftFocusLink(484) || links[0].Data != "a" {
+		t.Errorf("the result links to %q, want %q", href, draftFocusLink(484))
+	}
+	if s := interactiveIn(links[0]); s != "" {
+		t.Errorf("the link holds a %s", s)
+	}
+}
+
 // cardLinks is every element of card carrying data-asks-card-link.
 func cardLinks(card asksNode) []asksNode { return card.all("data-asks-card-link") }
 
@@ -155,9 +223,9 @@ func TestACardWithAPageIsOneLinkToIt(t *testing.T) {
 		view, frag, href string
 		toggle           bool
 	}{
-		{"open", askFeedCardHTML(askItem(open), now), "/attention/asks/41", true},
-		{"answered", answeredFeedHTML([]attention.Ask{answered}, []attentionItem{askItem(answered)}, now, nil), "/attention/asks/42", true},
-		{"log", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: "Ship it?", AskedAt: now}, now, asklog.DefaultTextTTL), "/attention/asks/41", false},
+		{"open", askFeedCardHTML(paged(askItem(open))[0], now), "/attention/asks/41", true},
+		{"answered", answeredFeedHTML([]attention.Ask{answered}, paged(askItem(answered)), now, nil), "/attention/asks/42", true},
+		{"log", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: "Ship it?", AskedAt: now}, now, asklog.DefaultTextTTL, askPagePath(41)), "/attention/asks/41", false},
 		{"search", askSearchCardHTML(answered, now), "/attention/asks/42", false},
 	}
 	for _, c := range withPage {
@@ -215,13 +283,16 @@ func TestACardWithAPageIsOneLinkToIt(t *testing.T) {
 	}
 
 	// No page of its own: no card link, the head is the toggle as before.
-	watched := askItem(open)
+	// A team's ask the reader only watches: its owner is not the reader.
+	team := open
+	team.Owner = 2
+	watched := paged(askItem(team))[0]
 	watched.watchOnly = TeamAskViewerNote
 	without := map[string]string{
-		"to the chief": answeredFeedHTML([]attention.Ask{toChief}, []attentionItem{askItem(toChief)}, now, nil),
+		"to the chief": answeredFeedHTML([]attention.Ask{toChief}, paged(askItem(toChief)), now, nil),
 		"watched":      askFeedCardHTML(watched, now),
 		"session":      askFeedCardHTML(attentionItem{Kind: attentionKindSession, Key: "s-1", Text: "Continue?", Since: now}, now),
-		"log in chat":  askLogCardHTML(asklog.Ask{ID: 10, Kind: asklog.KindPlainText, Question: "Go?", AskedAt: now}, now, asklog.DefaultTextTTL),
+		"log in chat":  askLogCardHTML(asklog.Ask{ID: 10, Kind: asklog.KindPlainText, Question: "Go?", AskedAt: now}, now, asklog.DefaultTextTTL, ""),
 	}
 	for view, frag := range without {
 		cards := cardsOf(t, frag)

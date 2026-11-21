@@ -174,7 +174,7 @@ func taskCardParts(text string) (title, rest string) {
 
 // askFeedCardHTML is ONE item's card on the Asks page's Open feed (the
 // component: ui/asks_card.go). An ask's or a notice's head is the link to its
-// page (askFeedCardHref), its chevron the expand; any other card's head is the
+// page (attentionItem.page, askHasPage), its chevron the expand; any other card's head is the
 // expand. The way to the session is the footer's "View in session", at the
 // card's bottom whether it is expanded or not.
 func askFeedCardHTML(it attentionItem, now time.Time) string {
@@ -237,7 +237,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	if it.AskID > 0 && (it.Kind == attentionKindAsk || it.Kind == attentionKindNotice) {
 		chip = ui.AskIDChipHTML(it.AskID)
 	}
-	b.WriteString(ui.AsksHeadHTML(ui.AsksHead{ID: it.Key, Badge: badge, Who: who, Toggle: true, More: moreID, Chip: chip, Href: askFeedCardHref(it)}) + "\n")
+	b.WriteString(ui.AsksHeadHTML(ui.AsksHead{ID: it.Key, Badge: badge, Who: who, Toggle: true, More: moreID, Chip: chip, Href: it.page}) + "\n")
 	// THE QUESTION (what a waiting session waits on: its pending call).
 	b.WriteString(askCardQuestionHTML(it, text))
 	// THE FOOTER's links: View in session, the task.
@@ -340,17 +340,6 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	}
 	b.WriteString("</li>\n")
 	return b.String()
-}
-
-// askFeedCardHref is the page an Open card opens (ui.AsksHead.Href): an ask's
-// or a notice's own page, "" for any other card — and for a team's ask the
-// reader only watches (watchOnly), whose page is its owner's alone
-// (handleAskPage).
-func askFeedCardHref(it attentionItem) string {
-	if it.AskID <= 0 || it.watchOnly != "" || (it.Kind != attentionKindAsk && it.Kind != attentionKindNotice) {
-		return ""
-	}
-	return askPagePath(it.AskID)
 }
 
 // askCardQuestionHTML is THE body of an ask's card — what it asks, or what a
@@ -634,7 +623,7 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// THE OPEN CARD'S HEAD AND BODY (ui.AsksHeadHTML, askCardQuestionHTML):
 	// a step-up card answered is still drawn as its post's preview.
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID), Href: answeredCardHref(a)}) + `
+` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID), Href: it.page}) + `
 ` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<div class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 ` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `
 `)
@@ -647,15 +636,6 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 </li>
 `)
 	return b.String()
-}
-
-// answeredCardHref is the page an Answered card opens: its ask's, "" for a
-// session's question to the chief, which has none (handleAskPage).
-func answeredCardHref(a attention.Ask) string {
-	if a.ToChief || a.ID <= 0 {
-		return ""
-	}
-	return askPagePath(a.ID)
 }
 
 // answerDeliveryPill is where an answer went, in a pill's few words
@@ -707,6 +687,7 @@ func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts 
 		items[i] = askItem(a, hosts...)
 	}
 	s.withNames(ctx, items)
+	withAskPages(ctx, items)
 	return items
 }
 

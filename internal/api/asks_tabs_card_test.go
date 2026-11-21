@@ -360,7 +360,7 @@ func TestTheAnsweredTabDrawsTheOpenCard(t *testing.T) {
 // data-asks-head, no top row).
 func TestTheLogAndNudgesRowsDrawTheOpenHead(t *testing.T) {
 	now := designNow
-	log := askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: "Ship it\u200b?\nTonight", AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL)
+	log := askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: "Ship it\u200b?\nTonight", AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL, "")
 	cards := cardsOf(t, log)
 	if len(cards) != 1 {
 		t.Fatalf("%d log cards", len(cards))

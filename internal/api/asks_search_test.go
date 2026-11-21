@@ -80,15 +80,15 @@ func TestAStepUpTitleNamesItsDraftLabelled(t *testing.T) {
 // no muster ask and no chip.
 func TestALogCardShowsItsAsksIdOnlyWhenItHasOne(t *testing.T) {
 	now := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
-	agent := askLogCardHTML(asklog.Ask{ID: 17, Kind: asklog.KindAttention, SourceRef: "859", Question: "Go?", AskedAt: now}, now, time.Hour)
+	agent := askLogCardHTML(asklog.Ask{ID: 17, Kind: asklog.KindAttention, SourceRef: "859", Question: "Go?", AskedAt: now}, now, time.Hour, "")
 	if got := chipsIn(agent); strings.Join(got, ",") != "Ask #859|ask|859|Ask #859" {
 		t.Errorf("an agent's question's chips: %v", got)
 	}
-	chat := askLogCardHTML(asklog.Ask{ID: 18, Kind: asklog.KindPlainText, SourceRef: "", Question: "Go?", AskedAt: now}, now, time.Hour)
+	chat := askLogCardHTML(asklog.Ask{ID: 18, Kind: asklog.KindPlainText, SourceRef: "", Question: "Go?", AskedAt: now}, now, time.Hour, "")
 	if got := chipsIn(chat); len(got) != 0 {
 		t.Errorf("a question in chat's chips: %v, want none", got)
 	}
-	bad := askLogCardHTML(asklog.Ask{ID: 19, Kind: asklog.KindAttention, SourceRef: "x1", Question: "Go?", AskedAt: now}, now, time.Hour)
+	bad := askLogCardHTML(asklog.Ask{ID: 19, Kind: asklog.KindAttention, SourceRef: "x1", Question: "Go?", AskedAt: now}, now, time.Hour, "")
 	if got := chipsIn(bad); len(got) != 0 {
 		t.Errorf("an unreadable ref's chips: %v, want none", got)
 	}

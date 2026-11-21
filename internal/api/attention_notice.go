@@ -147,7 +147,7 @@ func (s *Server) noticeItemNow(ctx context.Context, a attention.Ask) attentionIt
 func noticeItem(a attention.Ask, ds map[int64]chiefnudge.Decision, hosts []mirror.HostView) attentionItem {
 	key := attentionAskKey(a.ID)
 	it := attentionItem{Key: key, Kind: attentionKindNotice, Source: shownAskLabel(a), OfficerID: officerAskID(a), Text: a.Question, Since: a.CreatedAt,
-		Link: attentionPath + "#" + key, AskID: a.ID, systemAsk: true}
+		Link: attentionPath + "#" + key, AskID: a.ID, systemAsk: true, owner: a.Owner, toChief: a.ToChief}
 	if it.Source == "" {
 		it.Source = chiefNudgeAskLabel
 	}

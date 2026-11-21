@@ -83,7 +83,7 @@ func TestALogRowSaysWhereInWords(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.a.ID, c.a.Kind, c.a.Runtime, c.a.AskedAt = 7, asklog.KindPlainText, asklog.RuntimeClaudeCode, now.Add(-15*time.Minute)
-			out := askLogCardHTML(c.a, now, 30*24*time.Hour)
+			out := askLogCardHTML(c.a, now, 30*24*time.Hour, "")
 			i := strings.Index(out, `data-asklog-sub`)
 			if i < 0 {
 				t.Fatalf("no sub line:\n%s", out)

@@ -67,19 +67,19 @@ func TestTheContextLineSaysWhoseWordsItIsAndEscapesThem(t *testing.T) {
 		want string
 	}{
 		{"agent", AskWhy{Text: `deploy <b>blocked</b> & waiting`},
-			`<p class="` + AskWhyClass + `" data-ask-why="agent"><span class="font-semibold">Why:</span> deploy &lt;b&gt;blocked&lt;/b&gt; &amp; waiting</p>`},
+			`<div class="` + AskWhyClass + `" data-ask-why="agent"><span class="font-semibold">Why:</span> deploy &lt;b&gt;blocked&lt;/b&gt; &amp; waiting</div>`},
 		{"fallback both", AskWhy{Focus: "Fix <the> build", Last: `I'll "wait"`},
-			`<p class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Working on:</span> Fix &lt;the&gt; build · <span class="font-semibold">Last said:</span> I&#39;ll &#34;wait&#34;</p>`},
+			`<div class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Working on:</span> Fix &lt;the&gt; build · <span class="font-semibold">Last said:</span> I&#39;ll &#34;wait&#34;</div>`},
 		{"fallback focus only", AskWhy{Focus: "Fix the build"},
-			`<p class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Working on:</span> Fix the build</p>`},
+			`<div class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Working on:</span> Fix the build</div>`},
 		{"fallback last only", AskWhy{Last: "done"},
-			`<p class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Last said:</span> done</p>`},
+			`<div class="` + AskWhyClass + `" data-ask-why="session"><span class="font-semibold">Last said:</span> done</div>`},
 		{"agent wins", AskWhy{Text: "mine", Focus: "theirs", Last: "theirs"},
-			`<p class="` + AskWhyClass + `" data-ask-why="agent"><span class="font-semibold">Why:</span> mine</p>`},
+			`<div class="` + AskWhyClass + `" data-ask-why="agent"><span class="font-semibold">Why:</span> mine</div>`},
 		{"none", AskWhy{}, ""},
 	}
 	for _, c := range cases {
-		if got := AskContextLine(c.in); got != c.want {
+		if got := AskContextInline(c.in); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
 		}
 	}

@@ -32,16 +32,16 @@ func designItems() []attentionItem {
 	since := designNow.Add(-9 * time.Minute)
 	win := mirror.Place{Code: "fern:1", Host: "atlas"}
 	return []attentionItem{
-		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Source: "deploy-bot", Text: "Deploy now?", Options: []string{"Deploy now", "Wait"}, Since: since,
+		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, page: "/attention/asks/1", Source: "deploy-bot", Text: "Deploy now?", Options: []string{"Deploy now", "Wait"}, Since: since,
 			sessionLink: "/agents/deploy-bot", taskID: 42, suggestions: []string{"Deploy, then post the link"}},
-		{Key: "ask-2", Kind: attentionKindAsk, AskID: 2, Source: "deploy-bot", Text: "Rotate the key?", Since: since},
+		{Key: "ask-2", Kind: attentionKindAsk, AskID: 2, page: "/attention/asks/2", Source: "deploy-bot", Text: "Rotate the key?", Since: since},
 		{Key: "session-aaaaaaaaaaaaaaaa", Kind: attentionKindQuestion, Source: "tmux fern:2 @ atlas", target: "tmux fern:2 @ atlas",
 			at: mirror.Place{Code: "fern:2", Host: "atlas"}, Text: "Which database?\nPick one.", Link: "/mirror/view?host=atlas&session=fern&window=%402", Since: since},
 		{Key: "session-bbbbbbbbbbbbbbbb", Kind: attentionKindSession, Source: "tmux fern:1 @ atlas", target: "tmux fern:1 @ atlas", at: win,
 			Text: "Bash: npm test", Detail: "Running the tests.", Link: "/mirror/view?host=atlas&session=fern&window=%401", Since: since},
 		{Key: "task-3", Kind: attentionKindTask, Source: "your chief has not routed it", Text: "Task #3: route it", Link: "/tasks/3", Since: since},
 		{Key: "draft-4", Kind: attentionKindPlugin, Source: "Example inbox", Text: "someone: hi", Link: draftLink(4), Since: since},
-		{Key: "ask-5", Kind: attentionKindNotice, AskID: 5, Source: "tmux fern:3 @ atlas", Text: "Waiting on you?", Since: since,
+		{Key: "ask-5", Kind: attentionKindNotice, AskID: 5, page: "/attention/asks/5", Source: "tmux fern:3 @ atlas", Text: "Waiting on you?", Since: since,
 			sessionLink: "/mirror/view?host=atlas&session=fern&window=%403"},
 	}
 }

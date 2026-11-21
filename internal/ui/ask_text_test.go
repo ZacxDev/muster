@@ -11,6 +11,46 @@ import (
 // attributes every rendered link carries (href already escaped).
 func askAnchor(href, label string) string { return mdAnchor(href, label) }
 
+// askHost is the real-host label drawn after a link whose words are not its
+// address (linkHost).
+func askHost(host string) string {
+	return `<span class="` + AskLinkHostClass + `" data-ask-link-host>(` + host + `)</span>`
+}
+
+// TestAskTextNamesTheHostADeceptiveLinkOpens: a link whose words are not its
+// address — words that are another address, words that are not one, an
+// address with a user part — has the host it really opens after it; a bare
+// URL (its words ARE its address) has none.
+//
+// RED at the previous head (5ec49bc): such a link was drawn as its words
+// alone, so "[https://good.example](https://evil.example)" read as a link to
+// good.example.
+func TestAskTextNamesTheHostADeceptiveLinkOpens(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"[https://good.example](https://evil.example/x)",
+			askAnchor("https://evil.example/x", "https://good.example") + askHost("evil.example")},
+		{"https://good.example@evil.example/login",
+			askAnchor("https://good.example@evil.example/login", "https://good.example@evil.example/login") + askHost("evil.example")},
+		{"[sign in](https://good.example@EVIL.example/)",
+			askAnchor("https://good.example@EVIL.example/", "sign in") + askHost("evil.example")},
+		// Its words are its address: nothing more to say.
+		{"https://good.example/path", askAnchor("https://good.example/path", "https://good.example/path")},
+		{"[https://good.example/a](https://good.example/a)", askAnchor("https://good.example/a", "https://good.example/a")},
+	} {
+		if got := AskTextHTML(c.in); got != c.want {
+			t.Errorf("%q:\n got  %s\nwant %s", c.in, got, c.want)
+		}
+	}
+	// A host holding a hidden code point is no link at all (the hidden rule).
+	if got := AskTextHTML("[ok](https://ev\u202eil.example/)"); strings.Contains(got, "<a ") || strings.Contains(got, "data-ask-link-host") {
+		t.Errorf("a host with U+202E: %s", got)
+	}
+	// The chat's renderer draws no host label: ask text's alone.
+	if got := markdownHTML("[x](https://evil.example)"); strings.Contains(got, "data-ask-link-host") {
+		t.Errorf("the chat drew a host label: %s", got)
+	}
+}
+
 // TestAskTextLinksABareURL: a bare http(s) URL in ask text is a link, with the
 // attributes every rendered link has (mdAnchor: target, rel, class).
 //
@@ -23,7 +63,7 @@ func TestAskTextLinksABareURL(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 	got = AskTextHTML("Is [the clip](https://example.com/v) **really** it?")
-	want = "Is " + askAnchor("https://example.com/v", "the clip") + " <strong>really</strong> it?"
+	want = "Is " + askAnchor("https://example.com/v", "the clip") + askHost("example.com") + " <strong>really</strong> it?"
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
@@ -105,7 +145,7 @@ func TestAskTextFlagsHiddenCodePoints(t *testing.T) {
 	}
 
 	got = AskTextHTML("[see\u200bthis](https://example.com/ok)")
-	want := askAnchor("https://example.com/ok", "see"+hiddenFlag('\u200b')+"this")
+	want := askAnchor("https://example.com/ok", "see"+hiddenFlag('\u200b')+"this") + askHost("example.com")
 	if got != want {
 		t.Errorf("a hidden code point in a link's text:\n got  %s\nwant %s", got, want)
 	}
@@ -177,7 +217,7 @@ func TestAskTextClipRange(t *testing.T) {
 	}
 	// A markdown link's range is after its anchor too.
 	got := AskTextHTML("[the clip](https://youtu.be/abc?start=120&end=165) — does it hold?")
-	want := askAnchor("https://youtu.be/abc?start=120&amp;end=165", "the clip") + clip("2:00–2:45") + " — does it hold?"
+	want := askAnchor("https://youtu.be/abc?start=120&amp;end=165", "the clip") + clip("2:00–2:45") + askHost("youtu.be") + " — does it hold?"
 	if got != want {
 		t.Errorf("markdown link:\n got  %s\nwant %s", got, want)
 	}

@@ -211,15 +211,10 @@ func (o mdOpts) esc(s string) string {
 	return mdEscape(s)
 }
 
-// mdInlineWith is mdInline, linking the mentions mc resolves (mentions.go).
-// They are matched AFTER code spans, links and bare URLs are vaulted, so none
-// of those is looked inside, and BEFORE emphasis, which then sees each link
-// only as a placeholder. A nil mc links none.
-func mdInlineWith(escaped string, mc *mentionCtx) string {
-	return mdInlineOpts(escaped, mdOpts{mc: mc})
-}
-
-// mdInlineOpts is mdInline as render o draws it.
+// mdInlineOpts is mdInline as render o draws it, linking the mentions o.mc
+// resolves (mentions.go). They are matched AFTER code spans, links and bare
+// URLs are vaulted, so none of those is looked inside, and BEFORE emphasis,
+// which then sees each link only as a placeholder. A nil o.mc links none.
 func mdInlineOpts(escaped string, o mdOpts) string {
 	mc := o.mc
 	// Defence in depth: mdEscape already strips NUL from all author text, but this
@@ -296,7 +291,7 @@ func mdAutolink(escaped string, v *mdVault, o mdOpts) string {
 		if strings.Contains(m, askHiddenSep) {
 			return m + trail
 		}
-		return v.stash(mdAnchor(m, m)+o.clip(m)) + trail
+		return v.stash(mdAnchor(m, m)+o.clip(m)+o.linkHost(m, m)) + trail
 	})
 }
 
@@ -443,7 +438,7 @@ func mdLinkify(escaped string, v *mdVault, o mdOpts) string {
 			// text's token) → leave the literal markdown text (inert).
 			return m
 		}
-		return v.stash(mdAnchor(href, mdEmphasis(text)) + o.clip(href))
+		return v.stash(mdAnchor(href, mdEmphasis(text)) + o.clip(href) + o.linkHost(href, text))
 	})
 }
 

@@ -85,14 +85,12 @@ func askMediaStrip(files []AskFile, thumb, img string) string {
 	return out + `</div>`
 }
 
-// AskContextLine is why an ask is here, one muted line: the agent's own words
-// ("Why: …", data-ask-why="agent"), or muster's fallback — the session's focus
-// and what it last said (data-ask-why="session"). "" for none.
-func AskContextLine(w AskWhy) string { return askContext(w, "p", AskWhyClass) }
-
-// AskContextInline is AskContextLine as a block <span>, for a card that is one
-// link whose lines are spans (a held question's row).
-func AskContextInline(w AskWhy) string { return askContext(w, "span", "block "+AskWhyClass) }
+// AskContextInline is why an ask is here, one muted line: the agent's own
+// words ("Why: …", data-ask-why="agent", ask text: AskTextHTML), or muster's
+// fallback — the session's focus and what it last said
+// (data-ask-why="session"). "" for none. A <div>: the agent's words are
+// markdown, so they may hold a block (a list), which no <span> or <p> may.
+func AskContextInline(w AskWhy) string { return askContext(w, "div", AskWhyClass) }
 
 func askContext(w AskWhy, tag, class string) string {
 	esc := html.EscapeString
