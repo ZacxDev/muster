@@ -67,7 +67,7 @@ func (s *Server) draftRetryScheduled(p plugins.Plugin, d plugins.Draft) {
 	}
 	s.goNotify(messagesOwner(p), push.EventPlugin, RouterNotification{
 		Type: "plugin", ID: strconv.FormatInt(next.ID, 10), Title: DraftRetryingPushTitle,
-		Body: draftRetryPushBody(p.Label, "could not send it "+timesText(d.Attempt)+"; it keeps trying on its own until it expires.", d.Detail),
+		Body: draftRetryPushBody(p.Label, "could not send it "+timesText(d.Attempt)+"; it keeps trying on its own, up to "+strconv.Itoa(plugins.MaxAutoAttempts)+" times.", d.Detail),
 		Tag:  draftTag(next.ChainRoot()), Data: map[string]string{"url": draftLink(next.ID)},
 	}, nil)
 }
@@ -75,7 +75,7 @@ func (s *Server) draftRetryScheduled(p plugins.Plugin, d plugins.Draft) {
 // The reasons a retry chain stopped, as its push says them.
 const (
 	retryEndedExpired   = "and stopped: it expired unsent."
-	retryEndedExhausted = "and stopped retrying on its own. Retry it on its card when what blocks it is cleared."
+	retryEndedExhausted = "and stopped retrying: its officer redrafts it unless you retry it right away."
 )
 
 // notifyRetryChainEnded pushes owner once: retry chain d (its last attempt)

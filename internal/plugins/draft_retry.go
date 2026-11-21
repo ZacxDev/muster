@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// RETRY CHAINS (migration 0174; docs/plugins.md "Retries"): the owner approves
+// RETRY CHAINS (migration 0175; docs/plugins.md "Retries"): the owner approves
 // an outbound draft ONCE, and a send that failed for a cause that clears by
 // itself is tried again without asking them again.
 //
@@ -26,7 +26,7 @@ import (
 // approval covers it: the bytes are identical), retry_of naming the chain's
 // ROOT, attempt n+1, not_before now + RetryBackoff(n). The claim skips it
 // until then (ClaimDraft), and re-checks its binding like any other
-// (BindingHolds) before it hands it out. 0174's trigger refuses, in Postgres,
+// (BindingHolds) before it hands it out. 0175's trigger refuses, in Postgres,
 // a successor that is not exactly that, or that follows anything but a
 // failed attempt whose plugin asserted nothing was sent.
 //
@@ -38,7 +38,7 @@ import (
 // results are recorded exactly as before.
 //
 // ONE LIVE ATTEMPT PER CHAIN: at most one successor is pending or approved
-// (0174's plugin_reply_drafts_retry_one_live), and one successor per attempt
+// (0175's plugin_reply_drafts_retry_one_live), and one successor per attempt
 // number (plugin_reply_drafts_retry_attempt).
 //
 // THE OFFICER'S ITEM SETTLES ONCE, with the chain's final outcome: while a

@@ -1381,15 +1381,17 @@ one approval covers it) — that the plugin can claim from `not_before`:
 **At most 6 automatic attempts** (the first and five retries): after the
 sixth fails the draft stops retrying on its own, so it never hammers a
 venue's security check for days, and you are pushed once, with the plugin's
-last word. A manual retry (below) is still open and starts a fresh budget of
-6. Retries also stop at the first draft's expiry (7 days after it was
+last word. The draft then goes back to its officer, which redrafts it **unless
+you retry it right away**: a manual retry (below) is open only until the
+officer picks up its follow-up (usually within a minute or so), and one made
+in time starts a fresh budget of 6. Retries also stop at the first draft's expiry (7 days after it was
 written): a backoff that would end past it files nothing, and the chain ends
 with that failure.
 
 - 🔴 **At most once still holds.** The failed attempt is settled `failed` as
   before and its claim is never cleared; nothing is offered twice. An attempt
   follows **only** a failure whose plugin said nothing was sent — Postgres
-  refuses any other (migration 0174's trigger) — and at most one attempt of a
+  refuses any other (migration 0175's trigger) — and at most one attempt of a
   chain is approved at a time. The claim re-checks the binding of each
   attempt as of any draft.
 - **One card.** The Asks page shows a retrying draft as one card, its latest

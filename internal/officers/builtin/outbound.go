@@ -155,6 +155,16 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 	// owner retried it by hand in the moment between its failure and this
 	// settlement): it is not over, so nothing goes back to the officer and its
 	// item is left to that attempt.
+	//
+	// 🔴 THE FAILED DRAFT'S ROW IS LOCKED FIRST, the lock a manual retry
+	// takes on the chain's latest attempt (plugins.PGStore.RetryDraft): the
+	// two serialise on it, so either the retry sees this follow-up (and
+	// closes it) or this settlement sees the retry's attempt (and files
+	// none) — never an open follow-up beside a live attempt. Draft row, then
+	// items: the retry's order too.
+	if _, err := tx.Exec(ctx, `SELECT id FROM plugin_reply_drafts WHERE id = $2 AND owner_id = $1 FOR UPDATE`, owner, e.Draft); err != nil {
+		return out, err
+	}
 	var live bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts n, plugin_reply_drafts d
 		WHERE d.id = $2 AND d.owner_id = $1 AND n.owner_id = $1 AND n.id > d.id AND n.retry_of = coalesce(d.retry_of, d.id)

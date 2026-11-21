@@ -1,4 +1,4 @@
--- muster 0174 — AN APPROVED OUTBOUND DRAFT RETRIES ON ITS OWN (internal/plugins
+-- muster 0175 — AN APPROVED OUTBOUND DRAFT RETRIES ON ITS OWN (internal/plugins
 -- drafts.go "RETRY CHAINS"; docs/plugins.md "Retries").
 --
 -- The owner approves an outbound draft ONCE. When its plugin reports the send
@@ -45,7 +45,7 @@
 -- No row-level security change: the columns ride on 0016's table and 0127's
 -- team policies. Every statement is idempotent.
 --
--- Must apply after its predecessor, 0173_instance_theme (the contiguity
+-- Must apply after its predecessor, 0174_signin_requests (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. An older image never reads the columns, and its claim ignores
@@ -62,7 +62,7 @@
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS retry_of, DROP COLUMN IF EXISTS attempt,
 --       DROP COLUMN IF EXISTS not_before, DROP COLUMN IF EXISTS nothing_sent, DROP COLUMN IF EXISTS auto_from,
 --       DROP COLUMN IF EXISTS retry_last_detail;
---   DELETE FROM schema_migrations WHERE version = 174;
+--   DELETE FROM schema_migrations WHERE version = 175;
 
 SET LOCAL lock_timeout = '3s';
 

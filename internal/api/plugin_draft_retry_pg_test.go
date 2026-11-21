@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -632,5 +633,61 @@ func TestALateSettlementOfARetriedFailureFilesNoFollowUp(t *testing.T) {
 	}
 	if st, _, _, _ := w.itemRow(item); st != officers.StatusWaiting {
 		t.Fatalf("the item after the late settlement: %s; want still waiting on the retry", st)
+	}
+}
+
+// TestASettlementAndAManualRetryNeverLeaveBothTheFollowUpAndTheAttempt: the
+// failure's settlement (builtin.DraftEndedTx, in its own transaction after
+// the result's) and the owner's manual retry race. The settlement is held
+// open mid-way while RetryDraft runs; whichever wins, the outcome is NEVER an
+// open draft.refused follow-up beside a live attempt (the officer would
+// redraft what the retry sends). Both lock the failed draft's row.
+func TestASettlementAndAManualRetryNeverLeaveBothTheFollowUpAndTheAttempt(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	_, id := w.approvedForItem("race:1")
+	w.claimed(id)
+	d, _, err := w.ps.FinishDraft(w.ctx, w.plugin.ID, id, plugins.DraftResult{Detail: "wrong account; nothing sent", NothingSent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := w.f.pool.Begin(w.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := w.store.DraftEndedTx(w.ctx, tx, 1, draftEndFor(d, *d.Officer, "", settledByPlugin, plugins.RefusalText(d.Detail), nil), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.ps.RetryDraft(w.ctx, id, plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser})
+		done <- err
+	}()
+	// Give the retry time to run (or block) while the settlement is open.
+	time.Sleep(500 * time.Millisecond)
+	if err := tx.Commit(w.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var retryErr error
+	select {
+	case retryErr = <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the manual retry never finished")
+	}
+	follow, _, hasFollow := w.refusedItemOf(id)
+	openFollow := false
+	if hasFollow {
+		st, _, _, _ := w.itemRow(follow)
+		openFollow = st == officers.StatusOpen
+	}
+	live := false
+	for _, n := range w.successors(id) {
+		live = live || n.Status == plugins.DraftApproved
+	}
+	if openFollow && live {
+		t.Fatalf("an OPEN follow-up (item %d) beside a live attempt (retry err %v): the officer would redraft what the retry sends", follow, retryErr)
+	}
+	if !live && retryErr == nil {
+		t.Fatal("the retry reported success and filed no live attempt")
 	}
 }

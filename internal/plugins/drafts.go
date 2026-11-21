@@ -164,7 +164,7 @@ type Draft struct {
 	// draftDeciderRefusal refuses a person approving a team draft they
 	// caused; 0130's draft_approver trigger refuses it again.
 	RequestedByUser *int64 `json:"-"`
-	// A RETRY CHAIN's (migration 0174, see "RETRY CHAINS" below): RetryOf is
+	// A RETRY CHAIN's (migration 0175, see "RETRY CHAINS" below): RetryOf is
 	// a successor's chain root (nil on a root and on every other draft),
 	// Attempt its number in the chain (1 on a root), NotBefore when a
 	// successor may first be claimed, RetryLastDetail the detail of the
@@ -354,7 +354,7 @@ func (c Claim) MarshalJSON() ([]byte, error) {
 
 // DraftResult is what a plugin reports after trying to send a claimed draft.
 //
-// NothingSent and Transient (migration 0174) are meaningful only with OK
+// NothingSent and Transient (migration 0175) are meaningful only with OK
 // false, and an old plugin sends neither: its result is recorded exactly as
 // before. NothingSent is the plugin's assertion that NOTHING reached the
 // venue (it refused before any submit, or the post is provably absent) —
