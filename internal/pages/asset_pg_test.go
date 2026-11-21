@@ -230,3 +230,65 @@ func TestAPagesAssetsAreCappedUnderItsLock(t *testing.T) {
 		t.Fatalf("room at 100 MiB: %d %v", room, err)
 	}
 }
+
+// TestAGalleryShowsOnlyItsOwnPagesImages: a gallery's items are the version's
+// asset references like any other — another page's asset or a missing one
+// refuses the version, naming it — and each must be an IMAGE: a video of the
+// page's own refuses it too. A gallery of the page's own images is recorded,
+// and its version serves them.
+func TestAGalleryShowsOnlyItsOwnPagesImages(t *testing.T) {
+	s, _ := pgStore(t)
+	two := asUser(2)
+	b, n := blocksOf(t, qBlocks)
+	p, _, err := s.Create(two, agentA, "P", b, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _, err := s.Create(two, agentA, "Q", b, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := addAsset(t, s, 2, agentA, p.ID, 1, 10, "image/png")
+	w := addAsset(t, s, 2, agentA, p.ID, 2, 10, "image/webp")
+	clip := addAsset(t, s, 2, agentA, p.ID, 3, 10, "video/mp4")
+	foreign := addAsset(t, s, 2, agentA, q.ID, 4, 10, "image/png")
+	gallery := func(refs ...string) ([]Block, int) {
+		items := make([]string, len(refs))
+		for i, r := range refs {
+			items[i] = `{"asset":"` + r + `","caption":"c` + fmt.Sprint(i) + `"}`
+		}
+		return blocksOf(t, `[{"type":"gallery","id":"g","items":[`+strings.Join(items, ",")+`],"pick":{}}]`)
+	}
+	for _, c := range []struct {
+		name string
+		refs []string
+		want string
+	}{
+		{"another page's image", []string{x.Ref(), foreign.Ref()}, foreign.Ref() + " is not an asset of this page"},
+		{"no such asset", []string{"asset:" + assetID(99)}, "asset:" + assetID(99) + " is not an asset of this page"},
+		{"a video of its own", []string{x.Ref(), clip.Ref()}, clip.Ref() + " is a video; a gallery shows images"},
+	} {
+		bl, bn := gallery(c.refs...)
+		if _, _, err := s.AddVersion(two, agentA, p.ID, "P", bl, bn); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want ErrInvalid containing %q", c.name, err, c.want)
+		}
+	}
+	// The same video in a markdown block is fine: only a gallery needs images.
+	md, mn := mdBlocks(t, "![clip]("+clip.Ref()+")")
+	if _, _, err := s.AddVersion(two, agentA, p.ID, "P", md, mn); err != nil {
+		t.Fatalf("control: a video in markdown: %v", err)
+	}
+	good, gn := gallery(x.Ref(), w.Ref(), x.Ref())
+	_, v, err := s.AddVersion(two, agentA, p.ID, "P", good, gn)
+	if err != nil {
+		t.Fatalf("a gallery of its own page's images: %v", err)
+	}
+	list, err := s.VersionAssets(two, p.ID, v.Version)
+	if err != nil || len(list) != 2 || list[0].PublicID != x.PublicID || list[1].PublicID != w.PublicID {
+		t.Fatalf("the gallery's version serves %+v (%v), want its two images once each", list, err)
+	}
+	// And an image a gallery uses is kept while the version refers to it.
+	if _, err := s.DeleteAsset(two, agentA, p.ID, w.PublicID); !errors.Is(err, ErrAssetInUse) {
+		t.Errorf("deleting an image a gallery uses: %v", err)
+	}
+}

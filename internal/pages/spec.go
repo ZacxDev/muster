@@ -21,6 +21,14 @@ const (
 	BlockUpload   = "upload"
 	BlockApproval = "approval"
 	BlockHTML     = "html"
+	BlockGallery  = "gallery"
+)
+
+// A gallery's layouts (Block.Layout): a grid of thumbnails (the default), or
+// one image per row.
+const (
+	GalleryGrid = "grid"
+	GalleryRows = "rows"
 )
 
 // CustomComponent is the component a custom script's muster.submit and
@@ -49,6 +57,11 @@ const (
 	maxTextRunes     = 1000
 	maxTextareaRunes = 8000
 	maxSubmitLabel   = 60
+	// MaxGalleryItems bounds a gallery's items; maxCaptionRunes and
+	// maxGroupRunes an item's caption and group heading.
+	MaxGalleryItems = 200
+	maxCaptionRunes = 120
+	maxGroupRunes   = 80
 )
 
 // Block is one block of a version. Which fields a block reads depends on its
@@ -79,7 +92,35 @@ type Block struct {
 	SubmitLabel string `json:"submit_label,omitempty"`
 	// Comment: an approval also takes a comment.
 	Comment bool `json:"comment,omitempty"`
+	// Items are a gallery's images, in order.
+	Items []GalleryItem `json:"items,omitempty"`
+	// Pick, when set, lets a gallery's viewer pick items and save the picks.
+	Pick *GalleryPick `json:"pick,omitempty"`
+	// Layout is a gallery's layout: GalleryGrid ("" too) or GalleryRows.
+	Layout string `json:"layout,omitempty"`
 }
+
+// GalleryItem is one image of a gallery: an asset of the page's (asset:<id>),
+// its caption (its alt text and its name in a pick) and the group it is
+// headed under.
+type GalleryItem struct {
+	Asset   string `json:"asset"`
+	Caption string `json:"caption,omitempty"`
+	Group   string `json:"group,omitempty"`
+}
+
+// GalleryPick is how a gallery's items are picked: several (Multiple nil or
+// true) or one, at least one when Required, saved by a button reading
+// SubmitLabel ("Save" when empty).
+type GalleryPick struct {
+	Multiple    *bool  `json:"multiple,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+	SubmitLabel string `json:"submit_label,omitempty"`
+}
+
+// PicksSeveral reports whether p picks several items (the default) rather
+// than one.
+func (p *GalleryPick) PicksSeveral() bool { return p != nil && (p.Multiple == nil || *p.Multiple) }
 
 // Field is one form field.
 type Field struct {
@@ -94,6 +135,8 @@ var (
 	componentIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 	fieldNamePattern   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 	datePattern        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	// galleryAssetPattern is a gallery item's asset: exactly a reference.
+	galleryAssetPattern = regexp.MustCompile(`^asset:[A-Za-z0-9_-]{22}$`)
 )
 
 // ValidComponent reports whether s is shaped like a component id (0116's CHECK
@@ -189,7 +232,7 @@ func Validate(blocks []Block) ([]Block, int, error) {
 // component reports whether a block of type t is a component (has an id).
 func component(t string) bool {
 	switch t {
-	case BlockQuestion, BlockChoice, BlockForm, BlockUpload, BlockApproval:
+	case BlockQuestion, BlockChoice, BlockForm, BlockUpload, BlockApproval, BlockGallery:
 		return true
 	}
 	return false
@@ -205,9 +248,9 @@ func validateBlock(b *Block) error {
 		return invalid("submit_label is longer than %d characters", maxSubmitLabel)
 	}
 	switch b.Type {
-	case BlockMarkdown, BlockQuestion, BlockChoice, BlockForm, BlockUpload, BlockApproval, BlockHTML:
+	case BlockMarkdown, BlockQuestion, BlockChoice, BlockForm, BlockUpload, BlockApproval, BlockHTML, BlockGallery:
 	default:
-		return invalid("unknown block type %q (want markdown, question, choice, form, upload, approval or html)", b.Type)
+		return invalid("unknown block type %q (want markdown, question, choice, form, upload, approval, html or gallery)", b.Type)
 	}
 	if component(b.Type) {
 		switch {
@@ -240,6 +283,9 @@ func validateBlock(b *Block) error {
 		"submit_label": b.SubmitLabel != "",
 		"comment":      b.Comment,
 		"label":        b.Label != "",
+		"items":        len(b.Items) > 0,
+		"pick":         b.Pick != nil,
+		"layout":       b.Layout != "",
 	}
 	reads := map[string][]string{
 		BlockMarkdown: {"text"},
@@ -249,8 +295,9 @@ func validateBlock(b *Block) error {
 		BlockForm:     {"label", "fields", "submit_label"},
 		BlockUpload:   {"label", "multiple", "submit_label"},
 		BlockApproval: {"label", "comment"},
+		BlockGallery:  {"label", "items", "pick", "layout"},
 	}[b.Type]
-	for _, name := range []string{"text", "html", "required", "multiline", "options", "multiple", "fields", "submit_label", "comment", "label"} {
+	for _, name := range []string{"text", "html", "required", "multiline", "options", "multiple", "fields", "submit_label", "comment", "label", "items", "pick", "layout"} {
 		if !contains(reads, name) {
 			if err := unread(name, checks[name]); err != nil {
 				return err
@@ -285,6 +332,8 @@ func validateBlock(b *Block) error {
 			return err
 		}
 		b.Options = opts
+	case BlockGallery:
+		return validateGallery(b)
 	case BlockForm:
 		if len(b.Fields) == 0 {
 			return invalid("a form needs fields")
@@ -302,6 +351,48 @@ func validateBlock(b *Block) error {
 				return invalid("field name %q is used twice", f.Name)
 			}
 			names[f.Name] = true
+		}
+	}
+	return nil
+}
+
+// validateGallery checks a gallery's items (1 to MaxGalleryItems, each an
+// asset reference — that it is one of the page's own is the store's check,
+// AssetRefs — with a one-line caption and group), its layout and its pick.
+func validateGallery(b *Block) error {
+	switch {
+	case len(b.Items) == 0:
+		return invalid("a gallery needs items")
+	case len(b.Items) > MaxGalleryItems:
+		return invalid("a gallery has at most %d items", MaxGalleryItems)
+	}
+	for i := range b.Items {
+		it := &b.Items[i]
+		it.Asset = strings.TrimSpace(it.Asset)
+		it.Caption = strings.TrimSpace(it.Caption)
+		it.Group = strings.TrimSpace(it.Group)
+		switch {
+		case !galleryAssetPattern.MatchString(it.Asset):
+			return invalid("item %d: asset %q is not an asset reference (asset:<id>, as page_asset_upload returned it)", i+1, cutRunes(it.Asset, 40))
+		case utf8.RuneCountInString(it.Caption) > maxCaptionRunes:
+			return invalid("item %d: the caption is longer than %d characters", i+1, maxCaptionRunes)
+		case !plainLine(it.Caption):
+			return invalid("item %d: the caption holds a control or text-direction character", i+1)
+		case utf8.RuneCountInString(it.Group) > maxGroupRunes:
+			return invalid("item %d: the group is longer than %d characters", i+1, maxGroupRunes)
+		case !plainLine(it.Group):
+			return invalid("item %d: the group holds a control or text-direction character", i+1)
+		}
+	}
+	switch b.Layout {
+	case "", GalleryGrid, GalleryRows:
+	default:
+		return invalid("layout %q is not grid or rows", b.Layout)
+	}
+	if b.Pick != nil {
+		b.Pick.SubmitLabel = strings.TrimSpace(b.Pick.SubmitLabel)
+		if utf8.RuneCountInString(b.Pick.SubmitLabel) > maxSubmitLabel {
+			return invalid("pick.submit_label is longer than %d characters", maxSubmitLabel)
 		}
 	}
 	return nil
@@ -510,8 +601,72 @@ func CheckSubmit(blocks []Block, component string, data json.RawMessage) (json.R
 		return json.Marshal(in)
 	case BlockUpload:
 		return nil, invalid("%q is an upload: send a file", component)
+	case BlockGallery:
+		return checkGalleryPicks(b, dec)
 	}
 	return nil, invalid("%q takes no submit", component)
+}
+
+// GalleryPicked is one picked item of a gallery as a submit sends it and as
+// it is stored: the item's index in the block (from 0), its asset and its
+// caption (none when the item has none).
+type GalleryPicked struct {
+	Index   int    `json:"index"`
+	Asset   string `json:"asset"`
+	Caption string `json:"caption,omitempty"`
+}
+
+// checkGalleryPicks checks a gallery's {picks} — each an item of the block,
+// named by its index AND its asset (and its caption, if sent) so a pick saved
+// against one version cannot silently land on another item — and returns
+// them as stored: in the block's order, each with the item's own asset and
+// caption.
+func checkGalleryPicks(b Block, dec *json.Decoder) (json.RawMessage, error) {
+	if b.Pick == nil {
+		return nil, invalid("this gallery takes no picks")
+	}
+	var in struct {
+		Picks []struct {
+			Index   *int    `json:"index"`
+			Asset   string  `json:"asset"`
+			Caption *string `json:"caption"`
+		} `json:"picks"`
+	}
+	if err := dec.Decode(&in); err != nil {
+		return nil, invalid("a gallery sends {picks: [{index, asset, caption?}]}")
+	}
+	seen := map[int]bool{}
+	for _, p := range in.Picks {
+		if p.Index == nil || *p.Index < 0 || *p.Index >= len(b.Items) {
+			return nil, invalid("a pick's index is not one of the gallery's %d items", len(b.Items))
+		}
+		it := b.Items[*p.Index]
+		if p.Asset != it.Asset {
+			return nil, invalid("item %d's asset is not %q", *p.Index, cutRunes(p.Asset, 40))
+		}
+		if p.Caption != nil && *p.Caption != it.Caption {
+			return nil, invalid("item %d's caption is not the one sent", *p.Index)
+		}
+		if seen[*p.Index] {
+			return nil, invalid("item %d is picked twice", *p.Index)
+		}
+		seen[*p.Index] = true
+	}
+	if !b.Pick.PicksSeveral() && len(seen) > 1 {
+		return nil, invalid("pick one")
+	}
+	if b.Pick.Required && len(seen) == 0 {
+		return nil, invalid("a pick is required")
+	}
+	out := struct {
+		Picks []GalleryPicked `json:"picks"`
+	}{Picks: []GalleryPicked{}}
+	for i, it := range b.Items {
+		if seen[i] {
+			out.Picks = append(out.Picks, GalleryPicked{Index: i, Asset: it.Asset, Caption: it.Caption})
+		}
+	}
+	return json.Marshal(out)
 }
 
 func fieldNamed(fields []Field, name string) bool {

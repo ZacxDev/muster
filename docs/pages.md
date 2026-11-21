@@ -70,12 +70,50 @@ naming it.
 | `upload` | `id`, `label`, `multiple`, `submit_label` | files |
 | `approval` | `id`, `label`, `comment` | `{decision: approve\|decline, comment?}` |
 | `html` | `html` (≤ 256 KiB) | anything its script sends |
+| `gallery` | `id`, `label`, `items` (1 to 200: `asset`, `caption`, `group`), `pick` (`multiple`, `required`, `submit_label`), `layout` | with `pick`: `{picks: [{index, asset, caption}]}` ([below](#gallery)) |
 
 A component's `id` is a letter followed by up to 63 letters, digits, `_` or
 `-`, unique on the page; `custom` is reserved. muster checks every submit
 against the version it answers — a link's, the **current** version; yours,
 the version your view shows — and stores it normalised (a form's
 number as a number, a missing optional field as empty).
+
+### Gallery
+
+Many images to compare and pick from, on a phone:
+
+```json
+{"type": "gallery", "id": "logo", "label": "Pick the logos to keep",
+ "items": [{"asset": "asset:<id>", "caption": "1a", "group": "Round 1"},
+           {"asset": "asset:<id>", "caption": "1b", "group": "Round 1"}],
+ "pick": {"multiple": true, "required": true, "submit_label": "Save picks"},
+ "layout": "grid"}
+```
+
+- Each item's `asset` is one of the page's own image [assets](#images-and-video)
+  (`asset:<id>`; a video, another page's asset or a missing one refuses the
+  version). `caption` is one line of at most 120 characters: the image's alt
+  text and its name on its buttons ("Open 1a full size", "Pick 1a") and in a
+  pick. A heading is drawn wherever an item's `group` differs from the item
+  before it, so keep a group's items together. `layout` is `grid`
+  (thumbnails, the default) or `rows` (one image per row).
+- A tap on a thumbnail opens it **full size**: swipe (or the arrows and ← / →
+  on a desktop) to move through every item of the gallery, pinch or
+  double-tap to zoom (drag to pan; swiping waits until you zoom back out).
+  The counter ("7 / 24") and the caption are shown. **Back closes the viewer**
+  and stays on the page, as do ×, Esc and a tap beside the image.
+- With `pick`, each image has a **Pick** button, under it and in the viewer:
+  a tap toggles it at once and sends nothing. The bar under the gallery says
+  how many are picked, and its **Save** sends them in one submit — in your own
+  view after muster's *Send as you?*, recorded as yours (`by_owner`), like
+  every other component. `multiple: false` keeps one pick (a new pick replaces
+  it); `required` refuses an empty Save. Unsaved picks survive a reload (per
+  browser tab and page version); after a Save the bar says *Saved*, and a
+  change can be saved again (each Save is its own response).
+- A Save is stored as `{"picks": [{"index": 0, "asset": "asset:<id>",
+  "caption": "1a"}]}`: `index` counts from 0 in the items' order, picks in
+  that order. Very many picks with long captions can pass a submit's 32 KiB
+  and are refused.
 
 ### The SDK
 
@@ -742,7 +780,7 @@ means a push service accepted it, not that the device showed it.
 |---|---|
 | pages per owner | 200 |
 | versions per page | 100 (a page muster makes for a [scheduled host job](host-jobs.md#the-page) keeps its newest 100 instead: the oldest version nothing references is dropped) |
-| a version | 512 KiB, 100 blocks; an `html` block 256 KiB; a `markdown` block 64 KiB |
+| a version | 512 KiB, 100 blocks; an `html` block 256 KiB; a `markdown` block 64 KiB; a `gallery` 200 items, each caption 120 characters |
 | pending and live links per page | 10 |
 | a submit's data | 32 KiB |
 | responses per link | 1000, files included |

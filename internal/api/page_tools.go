@@ -93,6 +93,11 @@ func pageBlocksSchema() map[string]any {
 			"{type:\"form\", id, label?, fields:[{name, label?, type, required?, options?}], submit_label?} — typed fields; " +
 			"{type:\"upload\", id, label, multiple?, submit_label?} — the viewer sends files; " +
 			"{type:\"approval\", id, label, comment?} — Approve / Decline, optionally with a comment; " +
+			"{type:\"gallery\", id, label?, items:[{asset, caption?, group?}], pick?:{multiple?, required?, submit_label?}, layout?} — up to " +
+			strconv.Itoa(pages.MaxGalleryItems) + " images (each item's asset is an asset:<id> ref of this page's, an image) shown as thumbnails that open full size " +
+			"(swipe or arrows through them, pinch to zoom, Back closes); items with a group are headed by it (keep a group's items together); layout \"grid\" (default) or \"rows\". " +
+			"With pick the viewer taps Pick on the images they choose (multiple defaults to true; false picks one) and saves them once; page_responses then has " +
+			"{picks:[{index, asset, caption}]} (index from 0, in the items' order). Captions are one line, at most 120 characters: write one per item, it is the image's name on its buttons and in the response; " +
 			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
 			"Component ids are a letter then letters, digits, _ or -, unique on the page. An image or video at full size is an asset: attach the file with " +
@@ -104,7 +109,7 @@ func pageBlocksSchema() map[string]any {
 			"and a long URL linked once rather than repeated (the result's phone_notes names a block to change).",
 		"items": map[string]any{"type": "object", "required": []string{"type"},
 			"properties": map[string]any{
-				"type":         map[string]any{"type": "string", "enum": []string{pages.BlockMarkdown, pages.BlockQuestion, pages.BlockChoice, pages.BlockForm, pages.BlockUpload, pages.BlockApproval, pages.BlockHTML}},
+				"type":         map[string]any{"type": "string", "enum": []string{pages.BlockMarkdown, pages.BlockQuestion, pages.BlockChoice, pages.BlockForm, pages.BlockUpload, pages.BlockApproval, pages.BlockHTML, pages.BlockGallery}},
 				"id":           strProp("A component's id (every type but markdown and html)."),
 				"label":        strProp("The component's label or question."),
 				"text":         strProp("A markdown block's text."),
@@ -116,6 +121,20 @@ func pageBlocksSchema() map[string]any {
 				"fields":       map[string]any{"type": "array", "items": field},
 				"submit_label": strProp("The component's button text."),
 				"comment":      map[string]any{"type": "boolean"},
+				"items": map[string]any{"type": "array", "maxItems": pages.MaxGalleryItems, "description": "A gallery's images, in order.",
+					"items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"asset"},
+						"properties": map[string]any{
+							"asset":   strProp("The image: its asset:<id> ref, as page_asset_upload returned it for this page."),
+							"caption": strProp("Its one-line caption (at most 120 characters): its alt text and its name."),
+							"group":   strProp("The heading it is shown under."),
+						}}},
+				"pick": map[string]any{"type": "object", "additionalProperties": false, "description": "A gallery's picking: omit it for a gallery to look at only.",
+					"properties": map[string]any{
+						"multiple":     map[string]any{"type": "boolean", "description": "Several picks (the default) or one."},
+						"required":     map[string]any{"type": "boolean", "description": "At least one pick to save."},
+						"submit_label": strProp("The save button's text (\"Save\")."),
+					}},
+				"layout": map[string]any{"type": "string", "enum": []string{pages.GalleryGrid, pages.GalleryRows}, "description": "A gallery's layout."},
 			}}}
 }
 

@@ -446,7 +446,7 @@ func TestBlockOutputIsValidatedAndAnInvalidOneFailsTheRun(t *testing.T) {
 	if len(ns) != 1 {
 		t.Fatalf("%d Attention items for one invalid run; want exactly 1", len(ns))
 	}
-	want := "Job blocks on " + f.host + " ran, but its output is not a valid page, so the page was not changed: block 2 (marquee): unknown block type \"marquee\" (want markdown, question, choice, form, upload, approval or html).\n\nIts stderr was empty."
+	want := "Job blocks on " + f.host + " ran, but its output is not a valid page, so the page was not changed: block 2 (marquee): unknown block type \"marquee\" (want markdown, question, choice, form, upload, approval, html or gallery).\n\nIts stderr was empty."
 	if ns[0].Question != want || ns[0].Kind != attention.KindNotice || ns[0].Status != attention.Open {
 		t.Fatalf("the item:\n%q (%s, %s)\nwant:\n%q (an open notice)", ns[0].Question, ns[0].Kind, ns[0].Status, want)
 	}

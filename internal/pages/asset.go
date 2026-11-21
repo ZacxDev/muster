@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -117,8 +118,9 @@ var ErrAssetInUse = errors.New("pages: a version of the page refers to this asse
 // is text, left alone.
 var assetRefPattern = regexp.MustCompile(`asset:([A-Za-z0-9_-]+)`)
 
-// AssetRefs is every asset the blocks refer to — in a markdown block's text
-// or an html block's markup — each once, in first-seen order.
+// AssetRefs is every asset the blocks refer to — in a markdown block's text,
+// an html block's markup or a gallery's items — each once, in first-seen
+// order.
 func AssetRefs(blocks []Block) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -129,6 +131,14 @@ func AssetRefs(blocks []Block) []string {
 			s = b.Text
 		case BlockHTML:
 			s = b.HTML
+		case BlockGallery:
+			for _, it := range b.Items {
+				if id := strings.TrimPrefix(it.Asset, AssetScheme); len(id) == 22 && !seen[id] {
+					seen[id] = true
+					out = append(out, id)
+				}
+			}
+			continue
 		default:
 			continue
 		}
@@ -137,6 +147,21 @@ func AssetRefs(blocks []Block) []string {
 				seen[id] = true
 				out = append(out, id)
 			}
+		}
+	}
+	return out
+}
+
+// GalleryAssets is every asset the blocks' galleries show, each once: the
+// ones that must be images (a gallery draws each item as an <img>).
+func GalleryAssets(blocks []Block) map[string]bool {
+	out := map[string]bool{}
+	for _, b := range blocks {
+		if b.Type != BlockGallery {
+			continue
+		}
+		for _, it := range b.Items {
+			out[strings.TrimPrefix(it.Asset, AssetScheme)] = true
 		}
 	}
 	return out
