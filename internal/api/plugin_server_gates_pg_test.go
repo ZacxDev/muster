@@ -235,7 +235,26 @@ func TestACodeMintedBeforeASignOutIsRefusedAfterIt(t *testing.T) {
 		t.Errorf("the grant's signin_at is %v; want the minting session's sign-in %v, never the redeem's time", stored, s0)
 	}
 
-	// The whole-second boundary, on the redeem and on act-for.
+	// The whole-second boundary on ACT-FOR: a live grant whose person signs
+	// out everywhere in the same second as the grant's sign-in is ended; one a
+	// second before it is not.
+	for name, c := range map[string]struct {
+		cut  time.Duration
+		want int
+	}{
+		"act-for, a sign-out in the sign-in's second": {cut: 500 * time.Millisecond, want: http.StatusNotFound},
+		"act-for, a sign-out a second before":         {cut: -time.Second, want: http.StatusAccepted},
+	} {
+		uid := f.person("Edge act "+strconv.Itoa(int(c.cut/time.Millisecond)), "member", "")
+		f.device(uid)
+		sub := f.open(uid, f.app.ID, f.tok)
+		f.exec(`UPDATE users SET signed_out_at = $2 WHERE id = $1`, uid, s0.Truncate(time.Second).Add(c.cut))
+		if rec := f.knock(f.tok, sub, "edge"); rec.Code != c.want {
+			t.Errorf("%s: %d; want %d", name, rec.Code, c.want)
+		}
+	}
+
+	// The whole-second boundary, on the redeem.
 	for name, c := range map[string]struct {
 		cut  time.Duration
 		want int

@@ -415,3 +415,24 @@ type noSignInPlugins struct{ *countingPlugins }
 func (noSignInPlugins) MintHandoff(context.Context, int64, plugins.HandoffIn, time.Time) (string, plugins.Plugin, error) {
 	return "", plugins.Plugin{}, plugins.ErrSignInUnknown
 }
+
+// TestAServerAppMayNotRouteToTheChiefWhateverItsRowSays: route_to_chief and a
+// reference are messages powers; a server app is refused both even with a row
+// that holds `messages` past its CHECK, and a personal messages token is not
+// (the control).
+func TestAServerAppMayNotRouteToTheChiefWhateverItsRowSays(t *testing.T) {
+	all := []plugins.Capability{plugins.CapMessages, plugins.CapTasks, plugins.CapApp}
+	server := plugins.Plugin{Scope: plugins.ScopeServer, Capabilities: all}
+	personal := plugins.Plugin{Capabilities: all}.OwnedBy(5)
+	for name, in := range map[string]pluginTaskIn{
+		"route_to_chief": {RouteToChief: true},
+		"reference":      {Reference: &pluginRefIn{}},
+	} {
+		if pluginTasksOnlyRefusal(server, in) == "" {
+			t.Errorf("a server app with every capability may send %s", name)
+		}
+		if pluginTasksOnlyRefusal(personal, in) != "" {
+			t.Errorf("CONTROL a personal messages token is refused %s", name)
+		}
+	}
+}
