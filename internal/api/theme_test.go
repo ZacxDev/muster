@@ -266,6 +266,42 @@ func kitSetsNoCookieOnAPrefixedDeployment(t *testing.T) {
 	}
 }
 
+// TestTheInstanceThemeIsTheSameForEveryone: /api/instance's theme field is
+// the server's, not a caller's — the document is byte-identical for nobody,
+// the admin who saved the theme and a member, and it still grants no other
+// origin a read (the server switcher's cross-origin surface is unchanged).
+func TestTheInstanceThemeIsTheSameForEveryone(t *testing.T) {
+	_, h, _, cookie := themeServer(t)
+	if rec := putTheme(h, who{cookie: cookie}, "ember", "#7fd0ff"); rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
+	}
+	var bodies []string
+	for _, as := range []struct{ cookie, member bool }{{false, false}, {true, false}, {true, true}} {
+		req := httptest.NewRequest(http.MethodGet, InstancePath, nil)
+		req.Header.Set("Origin", "https://other.example.net")
+		if as.cookie {
+			req.AddCookie(cookie)
+		}
+		if as.member {
+			req.Header.Set(testMemberHeader, "2")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatalf("/api/instance: %d, ACAO %q", rec.Code, rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+		bodies = append(bodies, rec.Body.String())
+	}
+	if bodies[0] != bodies[1] || bodies[0] != bodies[2] {
+		t.Errorf("/api/instance differs by caller:\n%s\n%s\n%s", bodies[0], bodies[1], bodies[2])
+	}
+	// Control: the saved theme really is in it, so equal bodies are not three
+	// copies of an empty field.
+	if !strings.Contains(bodies[0], `"preset":"ember","accent":"#7FD0FF"`) {
+		t.Errorf("control: the saved theme is not in the document: %s", bodies[0])
+	}
+}
+
 // TestAStoredThemeTheImageRejectsDrawsTheDefault: a row this image cannot
 // accept — a preset it does not know (written by a later image, then rolled
 // back) or colours that fail the contrast table — draws the DEFAULT theme

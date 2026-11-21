@@ -146,6 +146,12 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /brand/logo.png': 'image (the instance logo)',
   'GET /brand/icon-192.png': 'image (the instance logo\'s icon)',
   'GET /brand/icon-512.png': 'image (the instance logo\'s icon)',
+  // The plugin UI kit (docs/ui-kit.md): files a plugin's own page links, never
+  // a document muster renders.
+  'GET /ui-kit/v1/kit.css': 'a stylesheet (the UI kit, for plugins\' pages)',
+  'GET /ui-kit/v1/theme.css': 'a stylesheet (the server\'s theme tokens)',
+  'GET /ui-kit/v1/icons.svg': 'an image sprite (the UI kit\'s icons)',
+  'GET /ui-kit/v1/kit.js': 'a script (the UI kit\'s behaviours)',
   'GET /health': 'JSON',
   'GET /readyz': 'JSON',
   'GET /manifest.webmanifest': 'JSON',

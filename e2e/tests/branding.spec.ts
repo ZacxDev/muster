@@ -311,7 +311,15 @@ test.describe('the admin', () => {
     await expect(page.locator('header a[aria-label="muster home"] img[data-brand-mark]').first()).toBeVisible();
     const after = await (await page.request.get(origin + '/manifest.webmanifest')).json();
     expect(after.icons.map((i: { src: string }) => i.src)).toContain('/static/icons/maskable-512.png');
-    expect(await (await page.request.get(origin + '/api/instance')).json()).toEqual({ name: null, logo: null });
+    // The whole document, deliberately: nothing set is no name, no logo, and
+    // the default theme (docs/ui-kit.md#the-theme: brass, no accent, theme.css
+    // versioned by its own etag).
+    const reset = await (await page.request.get(origin + '/api/instance')).json();
+    expect(reset.theme?.etag).toMatch(/^[0-9a-f]{16}$/);
+    expect(reset).toEqual({
+      name: null, logo: null,
+      theme: { preset: 'brass', accent: null, etag: reset.theme.etag, css: '/ui-kit/v1/theme.css?v=' + reset.theme.etag },
+    });
   });
 
   // A WIDE logo (6:1) on a 375 px phone: the logo shrinks inside the server

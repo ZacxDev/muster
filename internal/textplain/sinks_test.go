@@ -228,12 +228,15 @@ var apiExempt = map[string]exemption{
 	"team_dispatch.go Server.personName u.DisplayName": {2, whyPerson},
 	// The 2nd: the card's capabilities ⓘ is labelled with it ("What <label>
 	// may do, exactly"), the same name the card heads with.
-	"plugins.go Server.renderPluginsPage p.Label":              {2, "a plugin's configured label (its name), not a title"},
-	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
-	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
-	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to ui.PageShareQuietButton and ui.PageLinkMenu, which plain it once (pageCardTitle)"},
-	"pages.go pageResponseHTML l.Label":                        {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
-	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
+	"plugins.go Server.renderPluginsPage p.Label":       {2, "a plugin's configured label (its name), not a title"},
+	"plugin_pairing.go Server.pairSectionHTML p.Label":  {1, "a pairing request's label (the plugin's name to be), not a title"},
+	"pages.go Server.renderPageDetail p.Creator.Label":  {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"pages.go Server.renderPageDetail p.Title":          {2, "passed RAW to ui.PageShareQuietButton and ui.PageLinkMenu, which plain it once (pageCardTitle)"},
+	"pages.go pageResponseHTML l.Label":                 {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
+	"push_routes.go Server.pushPreferencesForm e.Label": {1, whyStatic},
+	// Account → Theme's preset <select> (theme.go): a preset's label is
+	// muster's own compiled-in words (internal/theme Presets), escaped.
+	"theme.go Server.accountThemeSection p.Label":              {1, whyStatic},
 	"features.go featureSheet f.Description":                   {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
 	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},

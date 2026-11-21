@@ -417,7 +417,13 @@ for (const vp of VIEWPORTS) {
       // square mark in a 28 px logo slot, not the horizontal lockup, so the
       // button is the mark and its chevron alone.
       const inst = await (await page.request.get(A + '/api/instance')).json();
-      expect(inst).toEqual({ name: null, logo: null });
+      // The whole document, deliberately: no name, no logo, and the default
+      // theme (docs/ui-kit.md#the-theme) — server-wide, nothing per-user.
+      expect(inst.theme?.etag).toMatch(/^[0-9a-f]{16}$/);
+      expect(inst).toEqual({
+        name: null, logo: null,
+        theme: { preset: 'brass', accent: null, etag: inst.theme.etag, css: '/ui-kit/v1/theme.css?v=' + inst.theme.etag },
+      });
       const mark = toggle.locator('img[data-server-mark]');
       await expect(mark).toBeVisible();
       expect(await mark.getAttribute('src')).toMatch(/^\/static\/icons\/favicon\.svg\?v=/);
