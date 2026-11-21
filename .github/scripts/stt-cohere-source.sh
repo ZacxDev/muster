@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Decide whether a release tag must BUILD muster-stt-cohere or may RETAG the
-# previous release's image. Used by the `image-stt-cohere` job in
+# Decide whether a release tag must BUILD an image built from one directory
+# (muster-stt-cohere by default) or may RETAG the previous release's image.
+# Used by the `image-stt-cohere` and `image-stt-nemotron` jobs in
 # .github/workflows/ci.yml; tested by tests/stt-cohere-source-test.sh.
 #
-#   stt-cohere-source.sh <commit> <this-tag>     prints `build` or `retag <prev-tag>`
+#   stt-cohere-source.sh <commit> <this-tag> [<dir>]   prints `build` or `retag <prev-tag>`
+#
+# <dir> defaults to images/stt-cohere; images/stt-nemotron is the other user.
 #
 # `retag <prev>` when, and only when, all of these hold:
 #   * <prev> is the highest strict-semver `vX.Y.Z` tag reachable from <commit>
 #     other than <this-tag> (pre-release spellings such as v1.2.3-rc1 ignored);
-#   * `git diff --quiet <prev> <commit> -- images/stt-cohere/` says the
+#   * `git diff --quiet <prev> <commit> -- <dir>/` says the
 #     directory is byte-identical. A <prev> that predates the directory reads
 #     as CHANGED (added files), so it builds — measured by the test's first
 #     case. (The diff would read "unchanged" only if the directory were absent
@@ -21,9 +24,9 @@
 # moving archive. Retagging keeps a release that changed nothing here on the
 # exact bytes the previous one shipped.
 set -euo pipefail
-[ $# -eq 2 ] || { echo "usage: $0 <commit> <this-tag>" >&2; exit 2; }
+[ $# -eq 2 ] || [ $# -eq 3 ] || { echo "usage: $0 <commit> <this-tag> [<dir>]" >&2; exit 2; }
 commit="$1"; this="$2"
-dir=images/stt-cohere
+dir="${3:-images/stt-cohere}"
 prev="$(git tag --merged "$commit" --sort=-v:refname |
   grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF "$this" | head -n 1 || true)"
 if [ -z "$prev" ]; then echo build; exit 0; fi

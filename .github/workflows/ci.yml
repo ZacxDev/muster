@@ -1439,6 +1439,8 @@ jobs:
   #   tests/compose-default-image.sh                  (the published default, as a clone runs it)
   #   python3 images/stt-cohere/test_app.py           (needs fastapi, httpx,
   #                                                    python-multipart, numpy, ffmpeg)
+  #   python3 images/stt-nemotron/test_app.py         (needs fastapi, httpx,
+  #                                                    numpy, uvicorn, websockets)
   #
   # 🔴 THE SAME SCRIPT THE `release` JOB RUNS, WITH A PLACEHOLDER VERSION. It
   # builds every asset, refuses an asset set that differs from the contract by
@@ -1449,7 +1451,7 @@ jobs:
   # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`): "every pull request"
   # above means every run of one that is ready for review.
   release-dry-run:
-    name: release dry run (assets + compose + stt-cohere contract)
+    name: release dry run (assets + compose + stt-cohere and stt-nemotron contracts)
     needs: main-verdict
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
@@ -1635,6 +1637,19 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
           python -m pip install --quiet fastapi httpx python-multipart numpy
           python images/stt-cohere/test_app.py
+
+      # The streaming server's protocol, auth, capacity (503 before the
+      # upgrade, from a real uvicorn too) and flush semantics, model stubbed.
+      # unittest exits non-zero on any failure or error.
+      # 🔴 The server packages at the IMAGE'S OWN PINS, not the latest: the
+      # 503 is an ASGI denial response, and an older uvicorn's websockets-sansio
+      # sent it with Content-Length twice, which the client cannot parse
+      # (measured with uvicorn 0.51 + websockets 17.0.1; the pins, uvicorn
+      # 0.54 + websockets 17.4, are clean).
+      - name: stt-nemotron speaks its streaming protocol (model stubbed)
+        run: |
+          python -m pip install --quiet httpx $(grep -E '^(fastapi|starlette|uvicorn|websockets|numpy)==' images/stt-nemotron/requirements.txt)
+          python images/stt-nemotron/test_app.py
 
   # ---------------------------------------------------------------------------
   # THE HELM CHART (charts/muster; docs/kubernetes.md).
@@ -2312,6 +2327,167 @@ jobs:
         env:
           GHCR_REVISION: ${{ github.sha }}
         run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
+
+      # Only an image this run pushed (see image-muster): a retag is the
+      # previous release's image, attested when it was built.
+      - name: attest the image's build provenance
+        if: ${{ steps.push.outputs.pushed == 'yes' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.tag.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ---------------------------------------------------------------------------
+  # THE STREAMING STT SERVER IMAGE (ghcr.io/<owner>/muster-stt-nemotron:<X.Y.Z>),
+  # live meeting captions (images/stt-nemotron/README.md).
+  #
+  # 🔴 ON A vX.Y.Z TAG ONLY, NEVER A PULL REQUEST OR `main`. The image is a CUDA
+  # PyTorch base plus NeMo — about 9 GB unpacked — so building it on
+  # every run would cost minutes and most of a hosted runner's disk for a file
+  # that changes rarely. Its CODE is gated on every run instead: the
+  # `release-dry-run` job runs images/stt-nemotron/test_app.py against app.py
+  # with the model stubbed. linux/amd64 only (the base has no arm64 build).
+  # Never overwritten: a version already published from THIS commit is kept
+  # (a re-run is a no-op), one from any other commit fails the job.
+  #
+  # ⚠ A RE-RUN STILL REBUILDS BEFORE IT FINDS THE IMAGE PRESENT. Accepted: the
+  # probe is in ghcr-push.sh, which is the one place that decision lives.
+  #
+  # 🔴 NOT A GATE OF THE `release` JOB, unlike image-stt-cohere: muster's
+  # release docker-compose.yml does not name this image (the meetings
+  # plugin's compose fragment does), so a failure here must not hold back a
+  # muster release. It fails loudly on its own.
+  #
+  # The model weights are NOT in the image (fetched on first start), so the
+  # smoke test below cannot load the model; it checks imports and pins.
+  #
+  # Local: docker build -t muster-stt-nemotron images/stt-nemotron
+  image-stt-nemotron:
+    name: stt-nemotron image (GHCR, tags only)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish-gate.result == 'success' }}
+    needs: publish-gate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-stt-nemotron-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      # build-provenance attestation of the pushed image (see its last step)
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      # Full history and tags: the build-or-retag decision diffs against the
+      # previous release tag.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: the tag this run publishes
+        id: tag
+        run: |
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>"
+            exit 1
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-nemotron" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-nemotron:$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # 🔴 REBUILT ONLY WHEN images/stt-nemotron/ CHANGED. Every live release is
+      # tagged, and most change nothing here; a rebuild would re-resolve apt's
+      # ffmpeg against a moving archive and spend most of a runner's disk for
+      # an image that should be byte-identical. So: retag the previous
+      # release's image when the directory is unchanged since that tag AND that
+      # image exists; otherwise build. (stt-cohere-source.sh decides from git;
+      # tests/stt-cohere-source-test.sh covers it.)
+      - name: build, or retag the previous release's image?
+        id: src
+        run: |
+          d="$(.github/scripts/stt-cohere-source.sh "$GITHUB_SHA" "$GITHUB_REF_NAME" images/stt-nemotron)"
+          echo "decision from git: $d"
+          mode=build
+          if [[ "$d" == retag\ * ]]; then
+            prev="${d#retag }"
+            src="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-nemotron:${prev#v}"
+            if [ "$(.github/scripts/ghcr-push.sh probe "$src")" = present ]; then
+              mode=retag
+              echo "src=$src" >> "$GITHUB_OUTPUT"
+            else
+              echo "previous image $src is not published; building"
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "stt-nemotron: $mode"
+
+      - name: retag (images/stt-nemotron unchanged since the previous release)
+        if: ${{ steps.src.outputs.mode == 'retag' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh retag '${{ steps.src.outputs.src }}' '${{ steps.tag.outputs.ref }}'
+
+      # The base image alone is several GB; a hosted runner starts with too
+      # little free disk for it plus the pip layer. These are preinstalled
+      # toolchains this job never uses.
+      - name: free disk space
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: docker build
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t 'muster-stt-nemotron:${{ steps.tag.outputs.version }}' images/stt-nemotron
+
+      # The image's own dependencies resolve and import without a GPU or the
+      # weights, the server modules parse, and pip installed EXACTLY the
+      # pinned set (an extra such as nemo_toolkit[asr] is compared by name).
+      - name: smoke the image (imports, the NeMo streaming pipeline, the pins)
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker run --rm --entrypoint sh 'muster-stt-nemotron:${{ steps.tag.outputs.version }}' -euc '
+            python -c "import fastapi, uvicorn, websockets, numpy, nemo; from nemo.collections.asr.inference.factory.cache_aware_pipeline_builder import CacheAwarePipelineBuilder; print(nemo.__version__)"
+            python -c "import ast; [ast.parse(open(f).read()) for f in (\"/app/app.py\", \"/app/nemo_engine.py\")]"
+            python - <<PY
+          import re, subprocess
+          frozen = {l.split("==")[0].lower().replace("_", "-"): l.split("==")[1]
+                    for l in subprocess.run(["python", "-m", "pip", "freeze"], capture_output=True, text=True).stdout.split() if "==" in l}
+          bad = []
+          for l in open("/app/requirements.txt"):
+              l = l.strip()
+              if not l or l.startswith("#"):
+                  continue
+              n, v = l.split("==")
+              n = re.sub(r"\[.*\]$", "", n).lower().replace("_", "-")
+              if frozen.get(n) != v:
+                  bad.append((l, frozen.get(n)))
+          assert not bad, bad
+          print("pins: all", sum(1 for l in open("/app/requirements.txt") if "==" in l), "installed as pinned")
+          PY
+          '
+
+      - name: push
+        id: push
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh push 'muster-stt-nemotron:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
 
       # Only an image this run pushed (see image-muster): a retag is the
       # previous release's image, attested when it was built.
