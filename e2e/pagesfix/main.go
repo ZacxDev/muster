@@ -7,6 +7,11 @@
 //	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=<base64 32 bytes> \
 //	  go run ./e2e/pagesfix seed <owner>    prints the pages as JSON
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix clear <owner>
+//	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=… \
+//	  go run ./e2e/pagesfix phone <owner>    the phone page (pages-phone.spec.ts), {page, token}
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix phone-clear <owner>
+//
+// phone and phone-clear touch only the page titled PhoneTitle.
 //
 // The pages (all synthetic), each made by a mirrored session ("Release
 // helper" on host "laptop"), times set back so each reads as a real age:
@@ -56,8 +61,8 @@ func run(args []string) error {
 	if err := e2edb.Check(dsn); err != nil {
 		return err
 	}
-	if len(args) != 2 || (args[0] != "seed" && args[0] != "clear") {
-		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner>")
+	if len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear") {
+		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -77,7 +82,12 @@ func run(args []string) error {
 	// AS the owner, never the system scope: row-level security confines the
 	// seed to that owner's rows.
 	as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
-	if _, err := pool.Exec(as, `DELETE FROM pages`); err != nil || args[0] == "clear" {
+	if strings.HasPrefix(args[0], "phone") {
+		// Only the phone page: every other page of the owner's is left alone.
+		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, PhoneTitle); err != nil || args[0] == "phone-clear" {
+			return err
+		}
+	} else if _, err := pool.Exec(as, `DELETE FROM pages`); err != nil || args[0] == "clear" {
 		return err
 	}
 	// The server's link key, so the share links made here are its own.
@@ -88,6 +98,9 @@ func run(args []string) error {
 	st, err := pages.NewPG(pool).WithLinkKey(key)
 	if err != nil {
 		return err
+	}
+	if args[0] == "phone" {
+		return phone(as, st)
 	}
 	out, err := seed(as, st)
 	if err != nil {
@@ -218,4 +231,49 @@ func seed(ctx context.Context, st *pages.PGStore) (seeded, error) {
 		out.order[i], out.order[j] = out.order[j], out.order[i]
 	}
 	return out, nil
+}
+
+// PhoneTitle is the phone page's title (e2e/tests/pages-phone.spec.ts).
+const PhoneTitle = "Phone check"
+
+// PhonePNG is a real 2x2 PNG, base64 (the pages spec's).
+const PhonePNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8AAQv8ZYAwAQ84H+VjtZqAAAAAASUVORK5CYII="
+
+// phoneBlocks is the phone page: the shapes that made a page published on a
+// server with uploads off unreadable on a phone — a long paragraph ending in
+// one unbroken run wider than the screen, a long inline-code URL, a 9-column
+// table and an inline data: image in markdown.
+func phoneBlocks() []pages.Block {
+	row := func(cells ...string) string { return "| " + strings.Join(cells, " | ") + " |" }
+	table := strings.Join([]string{
+		row("Service", "Region", "Status", "Owner", "Latency", "Errors", "Version", "Window", "Notes"),
+		row("---", "---", "---", "---", "---", "---", "---", "---", "---"),
+		row("web", "east", "healthy", "team a", "120ms", "0.1%", "v1.2.3", "Mon", "steady"),
+		row("api", "west", "degraded", "team b", "480ms", "2.4%", "v1.2.2", "Tue", "watch it"),
+	}, "\n")
+	text := "# Phone check\n\n" +
+		"This paragraph runs long on purpose, the way a status report does when it explains every step that was taken, " +
+		"and it ends in one unbroken run: " + strings.Repeat("unbroken", 16) + ".\n\n" +
+		"The dashboard is `https://dashboard.example.com/services/web/regions/east/latency?window=7d&percentile=p99&compare=previous`.\n\n" +
+		table + "\n\n" +
+		"![status chart](data:image/png;base64," + PhonePNG + ")"
+	return []pages.Block{{Type: pages.BlockMarkdown, Text: text}}
+}
+
+// phone publishes the phone page with a live link and prints {page, token}.
+func phone(ctx context.Context, st *pages.PGStore) error {
+	cr := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-session", Label: "Release helper"}
+	blocks, size, err := pages.Validate(phoneBlocks())
+	if err != nil {
+		return err
+	}
+	p, _, err := st.Create(ctx, cr, PhoneTitle, blocks, size)
+	if err != nil {
+		return err
+	}
+	l, _, err := st.ShareLink(ctx, p.ID, "you", false)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"page": p.ID, "token": l.Token})
 }
