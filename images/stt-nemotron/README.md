@@ -73,7 +73,10 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
   only when it is non-empty. `text` is the **whole segment so far** (it
   replaces the previous partial; it is not a delta). `end_ms` is how far the
   model has decoded, a multiple of 560 ms, so up to ~560 ms behind the audio
-  sent. Partials are never sent for a segment whose samples are all one value
+  sent. The newest 80 ms frame is not counted when deciding whether the
+  segment is still one value, so when a constant (silent) segment first
+  varies in that frame, the partial for that step is skipped and the words
+  arrive with the next step (~1120 ms behind). Partials are never sent for a segment whose samples are all one value
   (below). The `end_ms` of a partial sent just before `end` may include up to
   80 ms of the last frame's padding; a `final`'s never does.
 - **`final`**: exactly **one per `flush` and one per `end`**, in order, even
