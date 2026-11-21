@@ -116,7 +116,7 @@ func TestTheWholeFlowAndItsAudit(t *testing.T) {
 	if s := r.state(t, binding); s != StateApproved {
 		t.Fatalf("after approve: %s", s)
 	}
-	got, err := r.s.Redeem(context.Background(), code, binding)
+	got, err := r.s.Redeem(context.Background(), code, binding, true)
 	if err != nil || got.ApprovedBy != r.uid || got.State != StateRedeemed {
 		t.Fatalf("redeem: %+v %v", got, err)
 	}
@@ -155,7 +155,7 @@ func TestRedeemIsSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = r.s.Redeem(context.Background(), code, binding)
+			_, errs[i] = r.s.Redeem(context.Background(), code, binding, true)
 		}(i)
 	}
 	wg.Wait()
@@ -171,7 +171,7 @@ func TestRedeemIsSingleUse(t *testing.T) {
 	if ok != 1 {
 		t.Fatalf("%d of %d concurrent redeems succeeded; want exactly 1", ok, len(errs))
 	}
-	if _, err := r.s.Redeem(context.Background(), code, binding); !errors.Is(err, ErrNotFound) {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a later redeem: %v; want ErrNotFound", err)
 	}
 }
@@ -185,14 +185,14 @@ func TestRedeemNeedsThisRequestsBinding(t *testing.T) {
 	_, other := r.start(t)
 	r.approve(t, code)
 	for name, b := range map[string]string{"none": "", "another request's": other, "malformed": "not-a-binding", "the code itself": code} {
-		if _, err := r.s.Redeem(context.Background(), code, b); !errors.Is(err, ErrNotFound) {
+		if _, err := r.s.Redeem(context.Background(), code, b, true); !errors.Is(err, ErrNotFound) {
 			t.Errorf("redeem with %s binding: %v; want ErrNotFound", name, err)
 		}
 	}
 	if s := r.state(t, binding); s != StateApproved {
 		t.Fatalf("after the refused redeems: %s; want still approved", s)
 	}
-	if _, err := r.s.Redeem(context.Background(), code, binding); err != nil {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); err != nil {
 		t.Fatalf("the right browser's redeem: %v", err)
 	}
 }
@@ -224,14 +224,14 @@ func TestExpiry(t *testing.T) {
 	if s := r.state(t, binding); s != StateExpired {
 		t.Fatalf("approved then expired: status %s", s)
 	}
-	if _, err := r.s.Redeem(context.Background(), code, binding); !errors.Is(err, ErrNotFound) {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("redeem after expiry: %v; want ErrNotFound", err)
 	}
 	// The other side of the boundary: a second left, it redeems.
 	code, binding = r.start(t)
 	r.approve(t, code)
 	r.exec(t, `UPDATE signin_requests SET expires_at = now() + interval '1 second' WHERE code_sha256 = $1`, hash(code))
-	if _, err := r.s.Redeem(context.Background(), code, binding); err != nil {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); err != nil {
 		t.Fatalf("redeem a second before expiry: %v", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestDenyAndDecideOnce(t *testing.T) {
 	if s := r.state(t, binding); s != StateDenied {
 		t.Fatalf("status: %s", s)
 	}
-	if _, err := r.s.Redeem(context.Background(), code, binding); !errors.Is(err, ErrDenied) {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); !errors.Is(err, ErrDenied) {
 		t.Fatalf("redeem a denial: %v; want ErrDenied", err)
 	}
 	if _, err := r.s.Decide(context.Background(), code, true, r.actor(), time.Now()); !errors.Is(err, ErrNotFound) {
@@ -265,11 +265,11 @@ func TestDenyAndDecideOnce(t *testing.T) {
 func TestRedeemBeforeApproval(t *testing.T) {
 	r := newRig(t)
 	code, binding := r.start(t)
-	if _, err := r.s.Redeem(context.Background(), code, binding); !errors.Is(err, ErrNotApproved) {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); !errors.Is(err, ErrNotApproved) {
 		t.Fatalf("redeem a pending request: %v; want ErrNotApproved", err)
 	}
 	r.approve(t, code)
-	if _, err := r.s.Redeem(context.Background(), code, binding); err != nil {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); err != nil {
 		t.Fatalf("redeem once approved: %v", err)
 	}
 }
@@ -300,14 +300,22 @@ func TestAnApprovalDiesWithTheApproversSession(t *testing.T) {
 		} else {
 			r.exec(t, q, r.uid)
 		}
-		if _, err := r.s.Redeem(context.Background(), code, binding); !errors.Is(err, ErrApproverEnded) {
+		if _, err := r.s.Redeem(context.Background(), code, binding, true); !errors.Is(err, ErrApproverEnded) {
 			t.Errorf("%s: redeem %v; want ErrApproverEnded", name, err)
 		}
 		r.exec(t, reset, r.uid)
 	}
+	// Without the account rules (password mode: no users row ends the
+	// operator's session), the same moved cutoff and sign-out do not refuse.
 	code, binding := approved()
+	r.exec(t, `UPDATE users SET sessions_not_before = now(), signed_out_at = now() WHERE id = $1`, r.uid)
+	if _, err := r.s.Redeem(context.Background(), code, binding, false); err != nil {
+		t.Fatalf("without the account rules, a cutoff after the approving sign-in: %v", err)
+	}
+	r.exec(t, reset, r.uid)
+	code, binding = approved()
 	r.exec(t, `UPDATE users SET sessions_not_before = $2 WHERE id = $1`, r.uid, signin.Add(-time.Minute))
-	if _, err := r.s.Redeem(context.Background(), code, binding); err != nil {
+	if _, err := r.s.Redeem(context.Background(), code, binding, true); err != nil {
 		t.Fatalf("control, a cutoff before the approving sign-in: %v", err)
 	}
 }

@@ -90,7 +90,7 @@ func appSignInJS() string {
   function poll(mine) {
     timer = setTimeout(function () {
       timer = 0;
-      fetch('/login/app/status', { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'application/json' } }).then(json).then(function (res) {
+      fetch('/login/app/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(json).then(function (res) {
         if (mine !== gen) { return; }
         if (!res.ok) { backoff(res); poll(mine); return; }
         var st = res.j.state;

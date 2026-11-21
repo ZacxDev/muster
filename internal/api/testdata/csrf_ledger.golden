@@ -271,9 +271,12 @@ unauthenticated POST /auth/claim
 unauthenticated POST /auth/clear-caches
 unauthenticated POST /auth/passkey/options
 unauthenticated POST /auth/passkey/verify
+unauthenticated POST /auth/qr
 unauthenticated POST /auth/reset
 unauthenticated POST /invite
 unauthenticated POST /login
+unauthenticated POST /login/app
+unauthenticated POST /login/app/redeem
 unauthenticated POST /logout
 unauthenticated POST /mirror/ask
 unauthenticated POST /plugin/v1/pair

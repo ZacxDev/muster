@@ -30,7 +30,8 @@
 // approval whose approver is disabled, or whose approving session's sign-in is
 // at or before the approver's session cutoff (users.sessions_not_before) or
 // latest Sign out everywhere (users.signed_out_at) — the rule a paired phone is
-// held to (devices.LiveSQL), in whole seconds.
+// held to (devices.LiveSQL), in whole seconds. Where the account rules govern
+// sessions, that is (Redeem's accountRules: gotrue mode, not password mode).
 //
 // The table has no owner (a request is anonymous until it is approved), so
 // every query runs under authz.System through this package's one helper, sys
@@ -124,7 +125,7 @@ type Store interface {
 	Status(ctx context.Context, binding string) (Request, error)
 	Open(ctx context.Context, code string) (Request, error)
 	Decide(ctx context.Context, code string, approve bool, by users.Actor, signinAt time.Time) (Request, error)
-	Redeem(ctx context.Context, code, binding string) (Request, error)
+	Redeem(ctx context.Context, code, binding string, accountRules bool) (Request, error)
 }
 
 // PGStore is Store over Postgres (migration 0173).
@@ -310,7 +311,15 @@ func (s *PGStore) Decide(ctx context.Context, code string, approve bool, by user
 // re-checking the approver, as a device pairing does: a disable, a reset or a
 // Sign out everywhere that commits first is seen, and one that comes after
 // meets a session issued after it (which it then ends).
-func (s *PGStore) Redeem(ctx context.Context, code, binding string) (Request, error) {
+//
+// accountRules says whether the approver's account rules govern sessions on
+// this server: true in gotrue mode. False in password mode, where the one
+// operator session is a stateless cookie that no users row ends (no Sign out
+// everywhere, no cutoff), so a cutoff column another mode once stamped on
+// user 1 must not refuse it. Measured: the CI e2e leg that also runs the
+// gotrue specs left user 1 signed out everywhere, and a password-mode
+// approval from the still-valid operator session was refused.
+func (s *PGStore) Redeem(ctx context.Context, code, binding string, accountRules bool) (Request, error) {
 	var r Request
 	if !CodeShapeOK(code) || !BindingShapeOK(binding) {
 		return r, ErrNotFound
@@ -355,17 +364,19 @@ func (s *PGStore) Redeem(ctx context.Context, code, binding string) (Request, er
 		if r.ApprovedBy != approver || signin == nil {
 			return ErrNotFound // changed between the two reads: never redeem it
 		}
-		var live bool
-		if err := tx.QueryRow(ctx, `SELECT disabled_at IS NULL
-				AND (sessions_not_before IS NULL OR floor(extract(epoch FROM $2::timestamptz)) > floor(extract(epoch FROM sessions_not_before)))
-				AND (signed_out_at IS NULL OR floor(extract(epoch FROM $2::timestamptz)) > floor(extract(epoch FROM signed_out_at)))
-			FROM users WHERE id = $1 AND id IN (`+users.PersonIDs+`)`, approver, *signin).Scan(&live); errors.Is(err, pgx.ErrNoRows) {
-			return ErrApproverEnded
-		} else if err != nil {
-			return err
-		}
-		if !live {
-			return ErrApproverEnded
+		if accountRules {
+			var live bool
+			if err := tx.QueryRow(ctx, `SELECT disabled_at IS NULL
+					AND (sessions_not_before IS NULL OR floor(extract(epoch FROM $2::timestamptz)) > floor(extract(epoch FROM sessions_not_before)))
+					AND (signed_out_at IS NULL OR floor(extract(epoch FROM $2::timestamptz)) > floor(extract(epoch FROM signed_out_at)))
+				FROM users WHERE id = $1 AND id IN (`+users.PersonIDs+`)`, approver, *signin).Scan(&live); errors.Is(err, pgx.ErrNoRows) {
+				return ErrApproverEnded
+			} else if err != nil {
+				return err
+			}
+			if !live {
+				return ErrApproverEnded
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE signin_requests SET state = 'redeemed', redeemed_at = now() WHERE id = $1`, r.ID); err != nil {
 			return err

@@ -294,7 +294,11 @@ or one this flow issued, cannot approve.
 **An approval dies with its session.** The redeem holds the approver's
 credentials lock and refuses when the approver is disabled, or when the
 approving session's sign-in is at or before the account's session cutoff or
-latest Sign out everywhere. That is the rule a paired phone is held to.
+latest Sign out everywhere. That is the rule a paired phone is held to. It
+applies in gotrue mode only: a password-mode session is a stateless cookie no
+users row ends, so the account columns are not read there (a gotrue spec in
+the same CI leg had left user 1 signed out everywhere, and the first version
+refused a valid password-mode approval because of it).
 
 **Throttles**, all per client address:
 

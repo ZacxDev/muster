@@ -224,7 +224,7 @@
       # here with the value nix printed for the first fetch that actually
       # succeeded, and the `nix` CI job added with this change is what will
       # contradict it next time.
-      goVendorHash = "sha256-pYq4WvLB7b0qIzW9/+D9LuBLk1IQuPCUV1FgeWIuuAA=";
+      goVendorHash = "sha256-nAI1kR6CHWAB64p9H+hS54FCvs30HYlXvNpGIeeBbrU=";
 
       # goCheckPhase builds a check phase for one of this flake's Go
       # derivations. `testPaths` is the package pattern `go test` is given.

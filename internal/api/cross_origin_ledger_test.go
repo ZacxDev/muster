@@ -46,10 +46,15 @@ var unauthenticatedWriteReasons = map[string]string{
 	"POST /auth/passkey/options": "passkey sign-in, like POST /login; same-origin checked in the handler",
 	"POST /auth/passkey/verify":  "passkey sign-in, like POST /login; same-origin checked in the handler",
 	"POST /auth/clear-caches":    "the sign-in pages' background Clear-Site-Data; reads no cookie, writes nothing; same-origin checked in the handler",
-	"POST /plugin/v1/pair":       "a plugin with no token asks to pair; it only waits for its owner's approval",
-	"POST /mirror/ask":           "the mirror plugin authenticates its own host token; no cookie is read",
-	"POST /api/device/pair":      "the single-use pairing code is the authority; no cookie is read",
-	"/llm/":                      "refused 404 before any credential is read",
+	"POST /login/app":            "sign in with the muster app: a signed-out browser starts a request; same-origin checked in the handler",
+	"POST /login/app/redeem": "sign in with the muster app: the requesting browser spends an approval with its binding cookie; " +
+		"same-origin checked in the handler",
+	"POST /auth/qr": "sign in with the muster app, the phone: a signed-out phone is only shown a sign-in link; a signed-in " +
+		"one goes through requireSession and requireSameOrigin (requireOperatorWrite) before anything is read or written",
+	"POST /plugin/v1/pair":  "a plugin with no token asks to pair; it only waits for its owner's approval",
+	"POST /mirror/ask":      "the mirror plugin authenticates its own host token; no cookie is read",
+	"POST /api/device/pair": "the single-use pairing code is the authority; no cookie is read",
+	"/llm/":                 "refused 404 before any credential is read",
 }
 
 func isPublicForTest(p string) bool {

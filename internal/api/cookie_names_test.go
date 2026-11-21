@@ -337,11 +337,13 @@ func TestAPrefixedDeploymentRefusesALoopbackHTTPSignIn(t *testing.T) {
 func TestCookieLiteralsAndSignInCallersAreLedgered(t *testing.T) {
 	wantLiterals := []string{
 		"clearGoTrueCookies", "clearPushDeviceCookie", "expireLegacyCookies", "handleLogout",
-		"setGoTrueCookies", "setKnownDeviceCookie", "setPasswordSessionCookie", "setPushDeviceCookie",
+		"setAppSignInCookie", "setGoTrueCookies", "setGoTrueKnownDevice", "setKnownDeviceCookie",
+		"setPasswordSessionCookie", "setPushDeviceCookie",
 	}
 	wantCallers := []string{
 		"confirmGoTrue",             // POST /auth/confirm
 		"confirmOperatorPassword",   // POST /auth/confirm
+		"handleAppSignInRedeem",     // POST /login/app/redeem
 		"handleClaimSubmit",         // POST /auth/claim
 		"handleGoTrueLoginPage",     // GET /login: refreshes a session the request carries
 		"handleGoTrueLoginSubmit",   // POST /login
