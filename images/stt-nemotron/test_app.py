@@ -96,6 +96,7 @@ def load_app(token=TOKEN, engine=None, **env):
     os.environ["STT_MAX_STREAMS"] = str(env.get("max_streams", MAX))
     os.environ["STT_RETRY_AFTER"] = str(env.get("retry", RETRY))
     os.environ["STT_MAX_BACKLOG_SECONDS"] = str(env.get("backlog", 30))
+    os.environ["STT_IDLE_SECONDS"] = str(env.get("idle", 300))
     sys.path.insert(0, str(HERE))
     try:
         sys.modules.pop("app", None)
@@ -367,6 +368,16 @@ class FlushTest(Base):
         self.assertEqual(final, [{"type": "final", "text": f"{WORD}1 {WORD}2", "start_ms": 0, "end_ms": n * 1000 // 16000}])
         self.assertEqual(code, 1000)
 
+    def test_end_samples_true_is_bad_end_even_where_1_is_in_range(self):
+        # After ONE frame the valid range is 1..1280, so `true` (== 1 in
+        # Python) passes the range check: only the bool check refuses it.
+        with self.connect() as ws:
+            ws.send_bytes(frames(tone(FRAME))[0])
+            ws.send_text(json.dumps({"type": "end", "samples": True}))
+            msgs, code = until_close(ws)
+        self.assertEqual(code, 1003)
+        self.assertEqual(msgs[-1]["code"], "bad_end")
+
     def test_end_samples_outside_the_last_frame_is_bad_end(self):
         n = FRAME * 3
         for samples in (n + 1, n - FRAME, -1, "3840", True, None):
@@ -386,13 +397,18 @@ class ConstantSignalTest(Base):
             for f in frames(dead):
                 ws.send_bytes(f)
             ws.send_text('{"type": "flush"}')
-            final = next_of(ws, "final")
+            # EVERY message up to and including the flush's final: the
+            # partials this rule suppresses would arrive BEFORE the final.
+            before = []
+            while not before or before[-1]["type"] != "final":
+                before.append(json.loads(ws.receive_text()))
             ws.send_text(json.dumps({"type": "end", "samples": 2 * CHUNK}))
-            msgs, _ = until_close(ws)
+            after, _ = until_close(ws)
         # The stub "decoded" two words; the server must drop them.
-        self.assertEqual(self.eng.batches and sum(self.eng.batches) >= 2, True)
-        self.assertEqual(final["text"], "")
-        self.assertEqual([m for m in msgs if m["type"] == "partial"], [])
+        self.assertGreaterEqual(sum(self.eng.batches), 2, "control: the stub never stepped")
+        self.assertEqual([m for m in before + after if m["type"] == "partial"], [],
+                         "a dead (constant) stream produced partials")
+        self.assertEqual(before[-1]["text"], "")
 
     def test_a_constant_stream_with_a_zero_padded_last_frame_still_yields_no_text(self):
         n = CHUNK + 300
@@ -466,6 +482,34 @@ class BacklogTest(Base):
             gate.set()
         self.assertEqual(code, 1013)
         self.assertEqual(msgs[-1]["code"], "overloaded")
+
+
+class IdleTest(Base):
+    env = {"idle": 0.5}
+
+    def test_silent_peers_are_closed_and_their_slots_freed(self):
+        # Fill every slot with a peer that sends a frame and then goes silent
+        # WITHOUT closing (as a dead peer behind a lost connection does).
+        conns = [self.connect() for _ in range(MAX)]
+        socks = [c.__enter__() for c in conns]
+        try:
+            for ws in socks:
+                ws.send_bytes(frames(tone(FRAME))[0])
+            self.assertEqual(self.client.get("/readyz").json()["streams"], MAX)
+            deadline = time.time() + 5
+            while self.client.get("/readyz").json()["streams"] and time.time() < deadline:
+                time.sleep(0.05)
+            held = self.client.get("/readyz").json()["streams"]
+            self.assertEqual(held, 0, f"silent peers still hold {held} of {MAX} slots after 5 s")
+            with self.connect() as ws:  # a new stream is accepted
+                ws.send_text(json.dumps({"type": "end", "samples": 0}))
+                _, code = until_close(ws)
+            self.assertEqual(code, 1000)
+            msgs, code = until_close(socks[0])
+            self.assertEqual((msgs[-1]["code"], code), ("idle", 1001))
+        finally:
+            for c in conns:
+                c.__exit__(None, None, None)
 
 
 class StepFailureTest(Base):
@@ -633,6 +677,46 @@ class BenchmarkedConfigTest(unittest.TestCase):
                     os.environ[k] = v
         self.assertEqual(fetched, [1], "the pinned, hash-checked download must always be used")
         self.assertEqual(built, [("/fixture/pinned-9d1.nemo", 5, [70, 6], "bfloat16")])
+
+
+class EngineSlotTest(BenchmarkedConfigTest):
+    """nemo_engine's slot bookkeeping against a fake NeMo pipeline."""
+
+    test_the_constants_are_the_benchmarked_values = None
+    test_environment_cannot_change_model_context_or_precision = None
+
+    def test_a_failed_last_step_still_frees_the_slots_on_close(self):
+        ne = self.load_engine_module()
+        ne.torch = types.SimpleNamespace(from_numpy=lambda a: a)
+        ne.Frame = lambda **k: types.SimpleNamespace(**k)
+        ne.ASRRequestOptions = lambda: None
+        freed, deleted = [], []
+
+        class Pipe:
+            bufferer = types.SimpleNamespace(streamidx2slotidx={}, free_slots=lambda ids: freed.append(("feat", ids)))
+            context_manager = types.SimpleNamespace(streamidx2slotidx={}, _reset_slots=lambda ids: freed.append(("cache", ids)))
+
+            def init_state(self, sid, opts):
+                return types.SimpleNamespace(tokens=[])
+
+            def transcribe_step(self, frames):
+                raise RuntimeError("fixture: the last step failed")
+
+            def delete_state(self, sid):
+                deleted.append(sid)
+
+        eng = object.__new__(ne.NemotronEngine)
+        eng.pipeline, eng.chunk, eng._next = Pipe(), CHUNK, 0
+        es = eng.new_stream()
+        es.frames, es.state = 1, types.SimpleNamespace(tokens=[])  # one step already ran
+        eng.pipeline.context_manager.streamidx2slotidx[es.sid] = 6
+        eng.push(es, np.full(300, 0.1, np.float32))
+        self.assertTrue(eng.runnable(es, True), "control: the last step is due")
+        with self.assertRaisesRegex(RuntimeError, "fixture"):
+            eng.step([es], [True])
+        eng.close(es)
+        self.assertEqual((freed, deleted), ([("cache", [6])], [es.sid]),
+                         "a stream whose last step failed kept its NeMo slot")
 
 
 class RequirementsArePinnedTest(unittest.TestCase):

@@ -102,11 +102,13 @@ Each error is one `error` frame, then a close:
 | `bad_message` | 1003 | a text frame that is not valid JSON or not `flush`/`end` |
 | `bad_end` | 1003 | `end.samples` not an integer within the last frame (above) |
 | `overloaded` | 1013 | this stream's undecoded audio passed `STT_MAX_BACKLOG_SECONDS` (default 30): the GPU is not keeping up |
+| `idle` | 1001 | no frame of any kind for `STT_IDLE_SECONDS` (default 30): the peer is gone or stuck. Its slot is freed. Keep sending frames (silence included) to keep a stream open |
 | `internal` | 1011 | the model step failed |
 
 None of these is expected in normal operation; the plugin treats each as a
 mid-stream drop (reconnect, then fall back). The server sends **no pings**
-(and requires no pongs); detect a dead peer by your own read loop. Messages
+(and requires no pongs); detect a dead peer by your own read loop. The server
+detects one by silence: no frame for `STT_IDLE_SECONDS` closes the stream (`idle`, above). Messages
 over 64 KiB are refused by the websocket layer (uvicorn's `ws_max_size`;
 configured, not tested here).
 
@@ -127,6 +129,7 @@ The server listens only after the model has loaded.
 | `STT_MAX_STREAMS` | 8 | concurrent streams, and the batch size and slot count inside NeMo |
 | `STT_RETRY_AFTER` | 30 | seconds, in the capacity `503` |
 | `STT_MAX_BACKLOG_SECONDS` | 30 | undecoded audio one stream may queue |
+| `STT_IDLE_SECONDS` | 30 | a stream with no frame for this long is closed 1001 and frees its slot |
 | `STT_PORT` | 8000 | |
 | `HF_HOME` | `/models` | where the weights are cached: mount a volume |
 

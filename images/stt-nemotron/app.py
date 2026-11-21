@@ -20,6 +20,8 @@ Environment:
   STT_RETRY_AFTER          seconds in that Retry-After (default 30)
   STT_MAX_BACKLOG_SECONDS  undecoded audio one stream may queue before it is
                            closed 1013 (default 30)
+  STT_IDLE_SECONDS         a stream that sends nothing for this long is closed
+                           1001 and frees its slot (default 30)
   STT_PORT                 listen port (default 8000)
 
 The model, its attention context (70,6: 560 ms chunks) and its precision
@@ -51,6 +53,12 @@ API_TOKEN = os.environ.get("STT_API_TOKEN", "")
 MAX_STREAMS = int(os.environ.get("STT_MAX_STREAMS", "8"))
 RETRY_AFTER = int(os.environ.get("STT_RETRY_AFTER", "30"))
 MAX_BACKLOG_SECONDS = float(os.environ.get("STT_MAX_BACKLOG_SECONDS", "30"))
+# 🔴 A PEER THAT GOES SILENT IS CLOSED. Pings are off (the design), so a dead
+# peer that never sent FIN/RST would otherwise wait in receive() forever and
+# hold its slot: eight of them and every new stream is refused while /readyz
+# says ready. The plugin's track egress sends a frame every 80 ms, silence
+# included, so a live stream is never idle this long.
+IDLE_SECONDS = float(os.environ.get("STT_IDLE_SECONDS", "30"))
 
 # 🔴 THE WIRE FORMAT. The model's own rate must equal it or the server refuses
 # to start (check_sample_rate): a mismatch would not error anywhere, it would
@@ -61,6 +69,7 @@ FRAME_BYTES = FRAME_SAMPLES * 2  # S16LE
 
 # Websocket close codes (RFC 6455).
 CLOSE_NORMAL = 1000
+CLOSE_GOING_AWAY = 1001  # idle: no frame for STT_IDLE_SECONDS
 CLOSE_UNSUPPORTED = 1003  # bad_frame, bad_message, bad_end
 CLOSE_INTERNAL = 1011  # the model step failed
 CLOSE_TRY_AGAIN = 1013  # overloaded: this stream's backlog passed the cap
@@ -419,7 +428,11 @@ async def _serve(ws: WebSocket):
     ended = False
     try:
         while not ended:
-            msg = await ws.receive()
+            try:
+                msg = await asyncio.wait_for(ws.receive(), IDLE_SECONDS)
+            except asyncio.TimeoutError:
+                await _fail(ws, "idle", f"no frame for {IDLE_SECONDS:g}s", CLOSE_GOING_AWAY)
+                return
             if msg["type"] == "websocket.disconnect":
                 return
             if sender.done():
@@ -459,8 +472,13 @@ async def _serve(ws: WebSocket):
             else:
                 await _fail(ws, "bad_message", 'a text frame must be {"type": "flush"} or {"type": "end", "samples": N}')
                 return
-        await sender  # the final for `end`, then the normal close
-        sender = None
+        # The final for `end`, then the normal close. Bounded too: a sender
+        # stuck writing to a dead peer must not hold the slot.
+        try:
+            await asyncio.wait_for(asyncio.shield(sender), IDLE_SECONDS)
+            sender = None
+        except asyncio.TimeoutError:
+            return
     except WebSocketDisconnect:
         return
     finally:
@@ -482,9 +500,18 @@ async def _send_loop(ws: WebSocket, st: Stream):
 
 
 async def _fail(ws: WebSocket, code: str, message: str, close_code: int = CLOSE_UNSUPPORTED):
+    """Error frame, then close; bounded, since the peer may be dead (the
+    caller's `finally` frees the slot whatever happens here)."""
     log.warning("closing a stream: %s (%s)", code, message)
-    await ws.send_text(json.dumps({"type": "error", "code": code, "message": message}))
-    await ws.close(close_code)
+
+    async def go():
+        await ws.send_text(json.dumps({"type": "error", "code": code, "message": message}))
+        await ws.close(close_code)
+
+    try:
+        await asyncio.wait_for(go(), 5)
+    except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
+        pass
 
 
 def server_config() -> dict:

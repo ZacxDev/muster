@@ -208,7 +208,7 @@ class NemotronEngine:
 
     def step(self, states, ending) -> None:
         p = self.pipeline
-        frames = []
+        frames, lasts = [], []
         for es, end in zip(states, ending):
             last = end and es.buf.size <= self.chunk
             take = es.buf[: self.chunk]
@@ -229,8 +229,7 @@ class NemotronEngine:
             ))
             es.buf = es.buf[n:]
             es.frames += 1
-            if last:
-                es.finished = True
+            lasts.append(last)
         for es, fr in zip(states, frames):
             if fr.is_last:
                 # 🔴 NeMo treats is_last as an end of utterance and CLEARS the
@@ -239,8 +238,12 @@ class NemotronEngine:
                 # empty). Keep them; the state object is discarded afterwards.
                 es.state.cleanup_after_eou = _keep_tokens
         p.transcribe_step(frames)
-        for es in states:
+        # Only now: if the last step raises, the stream is NOT finished, so
+        # close() still frees its NeMo slots (else one leaks per failure).
+        for es, last in zip(states, lasts):
             es.decoded = es.frames * self.chunk
+            if last:
+                es.finished = True
 
     def segment_text(self, es) -> str:
         if es.state is None:
