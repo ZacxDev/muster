@@ -409,12 +409,14 @@ func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, emai
 			"Sign in with your email and new password in a moment.")
 		return
 	}
-	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+	u, problem, code := s.admitFreshSession(r.Context(), sess)
+	if problem != "" {
 		s.renderNotice(w, r, code, "Your account is ready, but sign-in failed", problem)
 		return
 	}
 	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
+	s.setGoTrueKnownDevice(w, u.ID)
 	http.Redirect(w, r, safeReturnTo(dest), http.StatusSeeOther)
 }
 
@@ -668,12 +670,14 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 			_ = s.gt.Client.Logout(r.Context(), ip, sess.AccessToken, gotrue.ScopeLocal)
 			continue
 		}
-		if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+		admitted, problem, code := s.admitFreshSession(r.Context(), sess)
+		if problem != "" {
 			s.renderNotice(w, r, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
 			return
 		}
 		clearSiteCaches(w)
 		s.setGoTrueCookies(w, sess)
+		s.setGoTrueKnownDevice(w, admitted.ID)
 		// To /account, which says the reset revoked the user's API tokens
 		// (accounts PR 6) and what happened to the passkeys, rather than
 		// straight to the board.

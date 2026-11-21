@@ -219,6 +219,10 @@ var pgBackedPackages = []string{
 	// tags", "a tag is one row in any case" and "an agent's tags die with it"
 	// are claims about row-level security, a unique index and a cascade.
 	"internal/sessiontags",
+	// Sign in with the muster app (signin_requests, migration 0173). "A code
+	// redeems once, only with its browser's binding, and not past its expiry"
+	// are claims about conditional updates and row locks.
+	"internal/signinreq",
 	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
 	// read or flip your toggle" is a claim about row-level security.
 	"internal/suggest",

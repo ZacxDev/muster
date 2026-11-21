@@ -59,6 +59,8 @@ var noStoreLiterals = map[string]string{
 	"writeDocumentHeaders":      "the header set of both document writers",
 	"handleAppAlive":            "an app tab's alive poll: whether the plugin is live now",
 	"handleAccountApps":         "Account → Apps: whether each server app may act for you now",
+	"handleAppSignInStart":      "sign in with the muster app: a fresh single-use code and its QR",
+	"handleAppSignInStatus":     "sign in with the muster app: the request's state now",
 	"renderAdminApps":           "/admin/apps: a server app's token shown once, and the live-grant counts",
 	"handleAccountDevicesLive":  "the paired devices, live",
 	"handleDeviceConfig":        "a paired phone's config",

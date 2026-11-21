@@ -92,6 +92,16 @@ var publicRoutes = []string{
 	// being anonymous (browser listener + same-origin only).
 	"POST /auth/passkey/options",
 	"POST /auth/passkey/verify",
+	// Sign in with the muster app (signin_app.go): a signed-out browser starts
+	// a request, polls it by its binding cookie and redeems the approval; the
+	// phone's page only moves the code out of the fragment. POST /auth/qr
+	// shows a signed-out phone a sign-in link and hands a signed-in one to
+	// requireOperatorWrite.
+	"POST /login/app",
+	"GET /login/app/status",
+	"POST /login/app/redeem",
+	"GET /auth/qr",
+	"POST /auth/qr",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",

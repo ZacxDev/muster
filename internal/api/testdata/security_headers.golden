@@ -86,6 +86,7 @@ GET /attention/items	csp1	pp2
 GET /attention/log	csp1	pp2
 GET /attention/open/{key}	csp1	pp2
 GET /auth/claim	csp1	pp2
+GET /auth/qr	csp1	pp2
 GET /auth/reset	csp1	pp2
 GET /brand/icon-192.png	csp5	pp2
 GET /brand/icon-512.png	csp5	pp2
@@ -98,6 +99,7 @@ GET /flows	csp1	pp2
 GET /health	csp1	pp2
 GET /invite	csp1	pp2
 GET /login	csp1	pp2
+GET /login/app/status	csp1	pp2
 GET /manifest.webmanifest	csp1	pp2
 GET /mirror/connect	csp1	pp2
 GET /mirror/host	csp1	pp2

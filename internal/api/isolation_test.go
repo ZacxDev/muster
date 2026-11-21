@@ -194,6 +194,11 @@ var isolationClasses = map[string]routeClass{
 	// names a passkey by id (param: A's passkey id).
 	"POST /auth/passkey/options": classPublic,
 	"POST /auth/passkey/verify":  classPublic,
+	"POST /login/app":            classPublic,
+	"GET /login/app/status":      classPublic,
+	"POST /login/app/redeem":     classPublic,
+	"GET /auth/qr":               classPublic,
+	"POST /auth/qr":              classPublic,
 	"GET /account/passkeys":      classList,
 	// The feature registry's page: server configuration, the same for every user.
 	"GET /account/features":              classList,

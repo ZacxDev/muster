@@ -78,8 +78,10 @@ Supabase auth server.
 ### Cookie names
 
 muster's browser cookies are `muster_session` (password mode), `muster_at` and
-`muster_rt` (gotrue mode), `muster_device` (the known-device cookie) and
-`muster_push_device` (which Web Push subscription is this browser's). Every
+`muster_rt` (gotrue mode), `muster_device` (the known-device cookie),
+`muster_push_device` (which Web Push subscription is this browser's) and
+`muster_signin_app` (a [sign-in with the muster app](#sign-in-with-the-muster-app)
+in progress). Every
 one is `HttpOnly`, `Path=/` and has no `Domain`, so it goes back only to the
 host that set it.
 
@@ -653,6 +655,83 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
 
 Passkey autofill (conditional mediation) is not available in a WebView; the
 buttons are.
+
+## Sign in with the muster app
+
+The sign-in page, in both modes, has a third way in: **Sign in with the muster
+app**. It shows a QR code. Scan it with a phone that is already signed in to
+muster (the installed app, or a browser), check what is asking, tap
+**Approve**, and the browser is signed in as you. The research and the threat
+model are in [design/qr-sign-in.md](design/qr-sign-in.md).
+
+- **It needs the database.** With no store the option is not shown, and its
+  routes answer 404.
+- **The code works once, for 2 minutes.** The page polls every 2 seconds and
+  says where things are: waiting for the scan, scanned (approve on your phone),
+  approved (signing you in). It also says when the code is denied or expired,
+  with **Get a new code**. A link under the code opens the same page on a phone
+  with no camera.
+- **Only the browser that asked can use the approval.** Starting a sign-in sets
+  `muster_signin_app` (HttpOnly, `SameSite=Strict`, 2 minutes) on that
+  browser. The approval is spent only with the code **and** that cookie, so a
+  code seen on a screen, in a photo or in a log signs nothing in. It is spent
+  once, and the cookie is cleared.
+- **The phone must be signed in, on a known device.** The QR opens
+  `<public>/auth/qr#<code>`. The code is in the fragment, so it never reaches a
+  server log.
+  - A phone that is not signed in is asked to sign in first and comes back to
+    the request.
+  - A signed-in browser that is not a known device is refused: one that never
+    signed in with a credential there, such as a copied session or a browser
+    this flow signed in. Sign out on it and sign in with your password or
+    passkey once.
+  - In password mode the known device is the `muster_device` cookie
+    ([above](#password-the-default)). gotrue mode now sets `muster_device` too,
+    on every sign-in with a password, passkey, claim, invite or reset link. It
+    is signed with a key derived from `MUSTER_GOTRUE_JWT_SECRET` and your user
+    id, so it vouches only for you. A phone that signed in before this release
+    has none until it signs in again.
+- **What the phone shows.** The requesting browser ("Chrome on Windows"), its
+  address, the phone's own address, and how long the code has left. Approve only
+  a sign-in you started yourself, on a screen in front of you. If someone sent
+  you the code or asked you to scan it, tap **Deny**: that is how a QR sign-in
+  is phished. muster has no geolocation, so it shows no place.
+- **What you are signed in as.** In password mode, the operator. In gotrue mode,
+  the person who approved. muster asks GoTrue for a single-use sign-in token
+  for that person through its admin API and exchanges it at once, server-side.
+  It checks that the session GoTrue returns is that person's (amr `otp`).
+  ⚠ GoTrue keeps one such token per user, shared with the password-reset link,
+  so signing in this way **ends a reset link** an admin handed you and you have
+  not used yet. Ask for a new one.
+- **An approval dies with its session** (gotrue mode). If the account is
+  disabled, reset, or signed out everywhere after the approval, the redeem is
+  refused. Password mode has no such revocation for its one stateless session,
+  so none applies to an approval either. A session
+  issued this way is an ordinary session: Sign out and Sign out everywhere end
+  it.
+- **Logged.** Each approval, denial and sign-in is in the audit log
+  (`signin.app.approve`, `signin.app.deny`, `signin.app.redeem`, as the
+  approver, with the requester's address and browser) and in the server log.
+- **Throttles**, per client address:
+  - 10 new codes a minute, and 300 a minute across the server;
+  - 10 failed look-ups or redeems a minute (a live code is never refused for
+    its address);
+  - 90 status polls a minute, after which the page is told to slow down.
+- **Refused from another origin.** Starting, approving and redeeming are POSTs
+  checked like every sign-in. In gotrue mode they are served on the browser
+  listener only.
+- **The Android app** does not open the link itself yet: the phone's browser
+  or the installed web app does.
+  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app) says what the
+  app needs.
+
+| route | what it does |
+|---|---|
+| `POST /login/app` | Starts a sign-in: sets the browser's binding cookie, answers `{code, url, svg, expires_in, interval}`. |
+| `GET /login/app/status` | The request's state by the cookie: `pending`, `scanned`, `approved`, `denied`, `redeemed` or `expired`, with `interval`. Too fast: 429 `slow_down`. |
+| `POST /login/app/redeem` | `code` and `next`, with the cookie: sets the session and answers `{redirect}`. |
+| `GET /auth/qr` | The phone's page: moves `#<code>` into a form and posts it. |
+| `POST /auth/qr` | `step=open` (the details), `step=approve` or `step=deny`, with `token`. |
 
 ## Cross-origin writes
 

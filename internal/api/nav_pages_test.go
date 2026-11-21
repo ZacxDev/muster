@@ -33,6 +33,7 @@ var apiNavWriters = []string{
 	"renderFeatureOff",             // a route whose feature is off, as a page (always signed in)
 	"handleAccountTeams",           // /account/teams (your teams, each one's notify switch)
 	"handleAccountApps",            // /account/apps (the server's apps, Hide and Show)
+	"handleAppSignInDecide",        // POST /auth/qr signed in (sign in with the muster app: approve or deny)
 	"renderAccountTokens",          // /account/tokens
 	"renderCredentials",            // /account/credentials
 	"renderAccountPasskeys",        // /account/passkeys
@@ -68,8 +69,11 @@ var apiBareWriters = map[string]string{
 	"renderGoTrueLogin": "the GoTrue sign-in form: shown to someone who is not signed in",
 	"renderClaimForm":   "the admin-claim form: its reader has no account yet",
 	"handleInvitePage":  "the invite page: its reader has no account yet",
-	"renderInviteForm":  "the create-your-account form an invite opens: no account yet",
-	"renderResetForm":   "the set-a-new-password form a reset link opens: its reader cannot sign in",
+	"handleAppSignInPhonePage": "the page a sign-in QR opens: it only moves the code from the fragment into a form " +
+		"and posts it, signed in or not (the POST decides)",
+	"appSignInSignInPrompt": "the phone that opened a sign-in QR has no session: a link to sign in and come back",
+	"renderInviteForm":      "the create-your-account form an invite opens: no account yet",
+	"renderResetForm":       "the set-a-new-password form a reset link opens: its reader cannot sign in",
 	"renderNotice": "a one-message notice, when its reader has NO browser session — a refused or expired " +
 		"link, a sign-in that is not configured, a sign-out that did not finish (its session is already revoked): " +
 		"every nav link would answer with the sign-in form. A signed-in reader's notice has the nav " +
@@ -408,6 +412,7 @@ var apiNavSecret = map[string]bool{
 	"renderTeamPage":               false, // members, roles and activity; no secret shown or taken
 	"handleAccountTeams":           false, // your teams, roles and notify switches; no secret shown or taken
 	"handleAccountApps":            false, // the server's apps and your own state under each; no secret shown or taken
+	"handleAppSignInDecide":        true,  // carries a sign-in code in its Approve / Deny forms
 	"renderTeamOfficers":           false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
 	"renderTeamChief":              false, // the team chief's status and account name; no secret shown or taken
 	"renderTeamConnectors":         false, // agent names, connector names, repositories; the App's token is never shown or taken
