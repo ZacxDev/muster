@@ -189,6 +189,16 @@ func TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn(t *testing.T) {
 		t.Fatalf("the shown token: %+v %v", p, err)
 	}
 	list := f.get(f.admin, adminAppsPath).Body.String()
+	// The two gated forms confirm IN PLACE: each is marked data-step-up-form
+	// and the page draws the confirm dialog (stepUpFormsHTML).
+	for _, want := range []string{`action="/admin/apps" class="`, `/rotate" data-step-up-form`, "musterStepUpForms", "window.musterStepUp"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("/admin/apps lacks %q (its gated forms cannot confirm in place)", want)
+		}
+	}
+	if !regexp.MustCompile(`<form method="POST" action="/admin/apps" class="[^"]*" data-step-up-form`).MatchString(list) {
+		t.Errorf("the install form is not marked data-step-up-form")
+	}
 	if !strings.Contains(list, `data-server-app="`+strconv.FormatInt(id, 10)+`"`) || strings.Contains(list, "minted-server-app-token") {
 		t.Errorf("the list after the install: the app listed %v, the token shown again %v",
 			strings.Contains(list, `data-server-app="`+strconv.FormatInt(id, 10)+`"`), strings.Contains(list, "minted-server-app-token"))

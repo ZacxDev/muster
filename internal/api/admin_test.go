@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -164,6 +165,10 @@ func TestDisablingAMemberEndsItsStreams(t *testing.T) {
 // refusal is a fact about the role, not a malformed request.
 func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	w := newIsoWorld(t)
+	// /admin/apps is served only with MUSTER_PLUGIN_ORIGINS set (before any
+	// credential is read): set it, so the walk reaches its admin check.
+	w.srv.ext.PluginOrigins = []plugins.OriginPattern{{Wildcard: true, Host: "apps.iso.test"}}
+	w.gtSrv.ext.PluginOrigins = w.srv.ext.PluginOrigins
 	ctx := authz.System(context.Background())
 	csub := w.gt.AddUser("c-target@iso.test", "c-target-password")
 	var cID int64
@@ -201,9 +206,11 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	// app-icon removal, TestAnAppIconBecomesEveryIconAndRollsTheETag: this
 	// world has no branding store) + browser flows' hand-run form (whose
 	// admin controls are TestFlowLifecycleOverHTTP and
-	// TestAMemberGetsAskYourAdminOnFlows).
-	if len(routes) != 17 {
-		t.Fatalf("the admin-only class has %d routes, want 17: %v", len(routes), routes)
+	// TestAMemberGetsAskYourAdminOnFlows) + /admin/apps' 4 (server-installed
+	// apps, whose admin controls are
+	// TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn).
+	if len(routes) != 21 {
+		t.Fatalf("the admin-only class has %d routes, want 21: %v", len(routes), routes)
 	}
 	cs, ts := strconv.FormatInt(cID, 10), strconv.FormatInt(team.ID, 10)
 	concrete := func(route string) (string, string, string) {

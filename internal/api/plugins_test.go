@@ -544,3 +544,7 @@ func TestAValidDraftResultIsReadWhateverItsJSONEscaping(t *testing.T) {
 		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxResultRequestBytes)
 	}
 }
+
+// VisibleServerApps: this fake has no server apps (every page's app tabs read
+// it since core PR 1h.2).
+func (*countingPlugins) VisibleServerApps(context.Context) ([]plugins.Plugin, error) { return nil, nil }

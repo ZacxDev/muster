@@ -1023,7 +1023,10 @@ type isoWorld struct {
 	// The REAL gotrue-session leg (accounts PR 4): a second server in gotrue
 	// mode over the SAME stores, signing users in through the fake GoTrue
 	// issuer — no sessionUserOverride. gtTokens is each user's minted pair.
-	gtH      http.Handler
+	gtH http.Handler
+	// gtSrv is the gotrue twin's server, for a test that changes its
+	// extensions (the admin walk serves /admin/apps).
+	gtSrv    *Server
 	gtFake   *gotruetest.Fake
 	gtTokens map[int64][2]string
 	aSub     string // A's GoTrue subject in the twin's fake
@@ -1569,6 +1572,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	gtStore := users.NewPG(pool)
 	gtSrv.UseGoTrue(GoTrueAuth{Client: w.gtFake.Client(), Verifier: w.gtFake.Verifier(), Users: gtStore, Accounts: gtStore})
 	w.gtH = BrowserListener(gtSrv.Handler())
+	w.gtSrv = gtSrv
 	w.gtTokens = map[int64][2]string{}
 	for _, u := range []isoUser{w.a, w.b} {
 		sub := w.gtFake.AddUser(u.name+w.suffix+"@example.com", "iso-walk-password-0123")
@@ -2254,6 +2258,13 @@ var sideEffectControlled = map[string]string{
 	// owner, so another owner's token withdraws only its own plugin's
 	// notification — a 204 for A's ref, as for a ghost ref. TestAnotherPluginCannotWithdrawAKnock is its control.
 	"DELETE /plugin/v1/notify/{ref}": "the ref names no row: controlled in TestAnotherPluginCannotWithdrawAKnock",
+	// Account → Apps' Hide and Show (account_apps.go): the id names a SERVER
+	// app, which no one owns, and the write is the PRINCIPAL's own grant row;
+	// the walk's server has no server apps, so A's and a ghost's id answer
+	// alike. TestAccountAppsHideAndShow and TestTheTabGatesForAServerApp (B's
+	// hide leaves A's tabs) are the controls.
+	"POST /account/apps/{id}/hide": "the id names a server app no one owns; the write is the principal's own row: controlled in TestTheTabGatesForAServerApp",
+	"POST /account/apps/{id}/show": "the id names a server app no one owns; the write is the principal's own row: controlled in TestAccountAppsHideAndShow",
 	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
 	// with fleet proposals off, so every id answers 404 for A and the ghost
 	// alike. That another owner's tap on A's proposal decides nothing and sends

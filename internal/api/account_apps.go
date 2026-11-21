@@ -31,8 +31,8 @@ const AccountAppsTitle = "Apps"
 
 func (s *Server) registerAccountAppRoutes(mux Mux) {
 	mux.HandleFunc("GET "+accountAppsPath, s.requirePluginOriginsOn(s.requireSession(s.handleAccountApps)))
-	mux.HandleFunc("POST "+accountAppsPath+"/{id}/hide", s.requirePluginOriginsOn(s.requireOperatorWrite(s.handleAccountAppHidden(true))))
-	mux.HandleFunc("POST "+accountAppsPath+"/{id}/show", s.requirePluginOriginsOn(s.requireOperatorWrite(s.handleAccountAppHidden(false))))
+	mux.HandleFunc("POST "+accountAppsPath+"/{id}/hide", s.requirePluginOriginsOn(s.requireOperatorWrite(s.handleAccountAppHide)))
+	mux.HandleFunc("POST "+accountAppsPath+"/{id}/show", s.requirePluginOriginsOn(s.requireOperatorWrite(s.handleAccountAppShow)))
 }
 
 // AccountAppsNone is the page's line with no app installed.
@@ -105,23 +105,32 @@ func (s *Server) handleAccountApps(w http.ResponseWriter, r *http.Request) {
 		`<div class="flex flex-col gap-4">`+b.String()+`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to Account</a></div>`)
 }
 
-// handleAccountAppHidden is POST /account/apps/{id}/hide or /show.
-func (s *Server) handleAccountAppHidden(hidden bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := pathID(r)
-		if !ok {
+// handleAccountAppHide and handleAccountAppShow are POST
+// /account/apps/{id}/hide and /show (named handlers, so the route walks see
+// them).
+func (s *Server) handleAccountAppHide(w http.ResponseWriter, r *http.Request) {
+	s.setAccountAppHidden(w, r, true)
+}
+
+func (s *Server) handleAccountAppShow(w http.ResponseWriter, r *http.Request) {
+	s.setAccountAppHidden(w, r, false)
+}
+
+// setAccountAppHidden is Hide (hidden) or Show for the principal.
+func (s *Server) setAccountAppHidden(w http.ResponseWriter, r *http.Request, hidden bool) {
+	id, ok := pathID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.ext.Plugins.SetServerAppHidden(r.Context(), id, hidden, s.now()); err != nil {
+		if errors.Is(err, plugins.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := s.ext.Plugins.SetServerAppHidden(r.Context(), id, hidden, s.now()); err != nil {
-			if errors.Is(err, plugins.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			s.logger.Printf("account apps: set app %d hidden=%v: %v", id, hidden, err)
-			http.Error(w, "could not save", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, accountAppsPath+"?saved=1", http.StatusSeeOther)
+		s.logger.Printf("account apps: set app %d hidden=%v: %v", id, hidden, err)
+		http.Error(w, "could not save", http.StatusInternalServerError)
+		return
 	}
+	http.Redirect(w, r, accountAppsPath+"?saved=1", http.StatusSeeOther)
 }
