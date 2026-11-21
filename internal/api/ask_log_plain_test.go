@@ -119,7 +119,7 @@ func TestAnAsksQuestionIsNotDrawnAsCode(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := askFeedCardHTML(c.it, now)
-			m := regexp.MustCompile(`<p class="([^"]*)" data-attention-text>([^<]*)</p>`).FindStringSubmatch(out)
+			m := regexp.MustCompile(`<div class="([^"]*)" data-attention-text>([^<]*)</div>`).FindStringSubmatch(out)
 			if m == nil {
 				t.Fatalf("no question line:\n%s", out)
 			}

@@ -295,9 +295,10 @@ func TestEveryAskCardShowsItsLabelledId(t *testing.T) {
 	if got := chipsIn(li); strings.Join(got, ",") != "Ask #"+on+"|ask|"+on+"|Ask #"+on {
 		t.Errorf("the Open card's chip: %v\n%s", got, li)
 	}
-	// On the top row: the toggle (no button inside it) and THEN the chip,
-	// both children of data-asks-top, before the question.
-	top := regexp.MustCompile(`<div class="[^"]*" data-asks-top><button type="button"[^>]*data-asks-toggle>([^<]|<[^b/]|</[^b])*</button><span class="[^"]*" data-id-copy="Ask #` + on + `"[^>]*>Ask #` + on + `</span></div>\s*<p[^>]*data-attention-text>`)
+	// On the top row: the head (the link to the ask's page, holding no
+	// button), the chevron toggle, and THEN the chip, all children of
+	// data-asks-top, before the question.
+	top := regexp.MustCompile(`<div class="[^"]*" data-asks-top><a href="/attention/asks/` + on + `"[^>]*data-asks-card-link>([^<]|<[^ab/]|</[^ab])*</a><button type="button"[^>]*data-asks-toggle><svg[^>]*><path[^>]*/></svg></button><span class="[^"]*" data-id-copy="Ask #` + on + `"[^>]*>Ask #` + on + `</span></div>\s*<div[^>]*data-attention-text>`)
 	if !top.MatchString(li) {
 		t.Errorf("the Open card's chip is not on its top row after its toggle:\n%s", li)
 	}

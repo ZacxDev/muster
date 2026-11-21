@@ -115,11 +115,12 @@ func assertSharedHead(t *testing.T, view string, card asksNode, toggle, chip boo
 		t.Fatalf("%s: an empty card", view)
 	}
 	head := kids[0]
+	var row []asksNode
 	if head.has("data-asks-top") {
 		if cls, _ := head.attr("class"); cls != ui.AsksCardTopClass {
 			t.Errorf("%s: the top row's class %q", view, cls)
 		}
-		row := head.children()
+		row = head.children()
 		head = row[0]
 		got := false
 		for _, c := range row[1:] {
@@ -135,7 +136,21 @@ func assertSharedHead(t *testing.T, view string, card asksNode, toggle, chip boo
 		t.Fatalf("%s: the card does not open with the shared head: <%s %v>", view, head.Data, head.Attr)
 	}
 	want := ui.AsksFixedHeadClass
-	if toggle {
+	if head.has("data-asks-card-link") {
+		// A card with a page: its head is the link to it, and a toggle's
+		// expand is the chevron, a button of its own on the top row.
+		want = ui.AsksCardLinkHeadClass
+		if head.Data != "a" {
+			t.Errorf("%s: the card's link head is a <%s>", view, head.Data)
+		}
+		chevron := false
+		for _, c := range row {
+			chevron = chevron || (c.Data == "button" && c.has("data-asks-toggle"))
+		}
+		if chevron != toggle {
+			t.Errorf("%s: a chevron toggle on the top row %v, want %v", view, chevron, toggle)
+		}
+	} else if toggle {
 		want = ui.AsksCardHeadClass
 		if !head.has("data-asks-toggle") || head.Data != "button" {
 			t.Errorf("%s: the head is not the card's toggle", view)

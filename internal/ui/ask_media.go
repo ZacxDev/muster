@@ -98,7 +98,9 @@ func askContext(w AskWhy, tag, class string) string {
 	esc := html.EscapeString
 	switch {
 	case w.Text != "":
-		return `<` + tag + ` class="` + class + `" data-ask-why="agent"><span class="font-semibold">Why:</span> ` + esc(w.Text) + `</` + tag + `>`
+		// The agent's own words are ask text (AskTextHTML: markdown, hidden
+		// code points flagged), as its question is.
+		return `<` + tag + ` class="` + class + `" data-ask-why="agent"><span class="font-semibold">Why:</span> ` + AskTextHTML(w.Text) + `</` + tag + `>`
 	case w.Focus != "" || w.Last != "":
 		out := `<` + tag + ` class="` + class + `" data-ask-why="session">`
 		if w.Focus != "" {

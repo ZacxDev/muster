@@ -15,11 +15,14 @@ import (
 //
 // A card, top to bottom:
 //
-//   - its HEAD, a <button data-asks-toggle aria-expanded>: the kind badge
-//     (AsksKindBadge), who is waiting (the session's name, the one naming
-//     rule: docs/attention.md "Every card names its session the same way"),
-//     how long, and a chevron. The head is NOT a link any more: tapping it —
-//     or anywhere on the card outside its controls — expands the card in place;
+//   - its HEAD: the kind badge (AsksKindBadge), who is waiting (the session's
+//     name, the one naming rule: docs/attention.md "Every card names its
+//     session the same way"), how long, and a chevron. On a card with a page
+//     of its own (an ask's, AsksHead.Href) the head is a LINK to that page —
+//     a tap anywhere on the card outside its controls opens it — and the
+//     chevron is a <button data-asks-toggle aria-expanded> of its own that
+//     expands the card in place. On any other card the head is that button,
+//     and a tap anywhere outside its controls expands the card;
 //   - the QUESTION (or what the session waits on), clamped to four lines while
 //     the card is collapsed;
 //   - the CONTEXT slot ("why it's here") and the MEDIA slot (internal/api
@@ -160,6 +163,12 @@ type AsksHead struct {
 	// Chip is the card's id chip (AskIDChipHTML, DraftIDChipHTML), "" for
 	// none.
 	Chip string
+	// Href is the card's own page (an ask's /attention/asks/<id>), "" for a
+	// card with none. With one, the head's badge and who are ONE real link to
+	// it (data-asks-card-link) — the card's way in, which a tap anywhere else
+	// on the card that is not a control follows too (the feed's script) — and
+	// a toggle's expand is the chevron alone, a button of its own beside it.
+	Href string
 }
 
 // AsksHeadHTML is head h as the card's top row (AsksCardTopHTML): the head —
@@ -167,6 +176,24 @@ type AsksHead struct {
 // it (a button cannot hold a button).
 func AsksHeadHTML(h AsksHead) string {
 	var head string
+	if h.Href != "" {
+		// 🔴 THE LINK HOLDS NO CONTROL: the chevron and the chip sit beside it
+		// in the top row, never inside it (an <a> holding a <button> is
+		// invalid, and a tap on the chevron would open the page).
+		who := html.EscapeString(h.ID) + `-who`
+		link := `<a href="` + html.EscapeString(h.Href) + `" class="` + AsksCardLinkHeadClass + `" data-asks-head data-asks-card-link>` + h.Badge +
+			`<span id="` + who + `" class="` + AsksCardWhoClass + `">` + h.Who + `</span></a>`
+		toggle := ""
+		if h.Toggle {
+			controls := ""
+			if h.More != "" {
+				controls = ` aria-controls="` + html.EscapeString(h.More) + `"`
+			}
+			toggle = `<button type="button" class="` + AsksCardChevronButtonClass + `" aria-expanded="false"` + controls + ` aria-label="` + AsksCardExpandLabel +
+				`" aria-describedby="` + who + `" data-asks-toggle>` + AsksCardChevron + `</button>`
+		}
+		return `<div class="` + AsksCardTopClass + `" data-asks-top>` + link + toggle + h.End + h.Chip + `</div>`
+	}
 	if h.Toggle {
 		controls := ""
 		if h.More != "" {
@@ -183,6 +210,18 @@ func AsksHeadHTML(h AsksHead) string {
 	}
 	return AsksCardTopHTML(head, h.End+h.Chip)
 }
+
+// AsksCardLinkHeadClass is a head that is its card's link (AsksHead.Href):
+// the toggle's row, as a link.
+const AsksCardLinkHeadClass = "press -m-1 flex min-h-[44px] min-w-0 items-center gap-2 rounded-lg p-1 text-left transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+
+// AsksCardChevronButtonClass is the chevron as a button of its own (a head
+// that is its card's link): 44px square, overhanging the row as the chip does.
+const AsksCardChevronButtonClass = "press -my-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+
+// AsksCardExpandLabel is the chevron button's accessible name: it expands the
+// card in place (the head beside it opens the card's page).
+const AsksCardExpandLabel = "Expand"
 
 // AsksFixedHeadClass is a fixed card's head: the toggle's row without the
 // toggle.
@@ -327,8 +366,13 @@ const AsksFeedNoticeHTML = `<p id="asks-feed-notice" role="alert" class="` + Ask
 // asksFeedJS: delegated on document, bound once per window, so it works on a
 // boosted navigation into the page and on cards a live refresh drew.
 //
-//   - EXPAND: a click on a card's head, or anywhere on the card outside its
-//     controls (and not ending a text selection), toggles data-expanded. Which
+//   - OPEN: a card with its own page (an ask's: its head is a link,
+//     data-asks-card-link) opens it on a click anywhere outside its controls
+//     and its chevron (and not ending a text selection); a ctrl/cmd/shift or
+//     middle click opens it in a new tab. Its chevron alone expands it.
+//   - EXPAND: on a card with no page, a click on its head, or anywhere on the
+//     card outside its controls (and not ending a text selection), toggles
+//     data-expanded. Which
 //     cards are open outlives the live refresh (by id). A card with nothing
 //     more to show (no more region, nothing its clamp cuts: data-asks-nomore)
 //     draws no chevron and does not expand.
@@ -356,7 +400,7 @@ var asksFeedJS = `(function () {
   if (window.__asksFeedInit) return;
   window.__asksFeedInit = true;
   var CARD = '[data-asks-card]';
-  var CONTROLS = 'a,button,input,textarea,select,label,summary,[contenteditable],[data-asks-media],[data-asks-controls]';
+  var CONTROLS = 'a,button,input,textarea,select,label,summary,details,[contenteditable],[data-id-copy],[data-asks-media],[data-asks-controls]';
   var expanded = {}, lastTab = -1;
   function reduced() { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } }
   function feed() { return document.getElementById('attention-items'); }
@@ -631,6 +675,26 @@ var asksFeedJS = `(function () {
     var s = b.form.querySelector('[data-asks-send]');
     if (s) { if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
   });
+  // cardLink: card's own link (AsksHead.Href), null for a card with no page.
+  function cardLink(card) {
+    var l = card.querySelector('[data-asks-card-link]');
+    return l && l.closest(CARD) === card ? l : null;
+  }
+  function selected() { var s = window.getSelection && window.getSelection(); return !!(s && !s.isCollapsed && String(s)); }
+  // follow: open link as a tap on it would — a new tab for a ctrl-, cmd- or
+  // shift-click, or a middle click (auxclick), else the link's own click.
+  function follow(link, e) {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) { window.open(link.href, '_blank', 'noopener'); return; }
+    link.click();
+  }
+  document.addEventListener('auxclick', function (e) {
+    var t = e.target;
+    if (e.button !== 1 || !t || !t.closest) return;
+    var card = t.closest(CARD), link = card && cardLink(card);
+    if (!link || t.closest(CONTROLS) || t.closest('[data-asks-toggle]')) return;
+    e.preventDefault();
+    follow(link, e);
+  });
   document.addEventListener('click', function (e) {
     var t = e.target;
     var chip = t && t.closest && t.closest('[data-asks-suggestion]');
@@ -645,7 +709,20 @@ var asksFeedJS = `(function () {
       return;
     }
     var card = t && t.closest && t.closest(CARD);
-    if (!card || card.hasAttribute('data-asks-fixed')) return;
+    if (!card) return;
+    // A CARD WITH A PAGE (its head is its link, data-asks-card-link): its
+    // chevron expands it in place; a tap anywhere else that is not a control
+    // and does not end a text selection opens its page — through the link
+    // itself, so a boosted navigation, and a modified click's new tab, are
+    // the link's own.
+    var link = cardLink(card);
+    if (link) {
+      if (t.closest('[data-asks-toggle]')) { if (!card.hasAttribute('data-asks-fixed')) setExpanded(card, card.getAttribute('data-expanded') !== 'true'); return; }
+      if (t.closest(CONTROLS) || selected()) return;
+      follow(link, e);
+      return;
+    }
+    if (card.hasAttribute('data-asks-fixed')) return;
     if (!t.closest('[data-asks-toggle]')) {
       if (t.closest(CONTROLS)) return;
       var sel = window.getSelection && String(window.getSelection());

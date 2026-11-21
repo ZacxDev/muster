@@ -54,7 +54,9 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 		t.Fatalf("the view: %s", body)
 	}
 	li := body[strings.Index(body, `<li id="`+key+`"`):]
-	li = li[:strings.Index(li, "</li>")]
+	// The card's own end (its question is ask text: "1. …" is a list, whose
+	// items end in </li> too).
+	li = li[:strings.Index(li, "</li>\n")]
 	if !strings.Contains(li, `<a href="`+html.EscapeString(view)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>View in session</a>`) || strings.Count(li, "<a ") != 1 {
 		t.Fatalf("the held question's card's one link is not View in session to its session's view: %s", li)
 	}

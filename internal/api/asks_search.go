@@ -259,17 +259,23 @@ func askSearchCardHTML(a attention.Ask, now time.Time) string {
 	var b strings.Builder
 	b.WriteString(`<li id="search-ask-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asks-search-result="ask" data-ask-id="` + id +
 		`" data-status="` + esc(string(a.Status)) + `">
-<div class="` + ui.AsksSearchTopClass + `"><a href="` + esc(askPagePath(a.ID)) + `" class="` + ui.AsksSearchOpenClass + `" data-asks-search-open>` +
+<div class="` + ui.AsksSearchTopClass + `"><a href="` + esc(askPagePath(a.ID)) + `" class="` + ui.AsksSearchOpenClass + `" data-asks-search-open data-asks-card-link>` +
 		`<span class="` + ui.AsksTitleClass + `" data-asks-search-title>` + esc(title) + `</span><span class="` + ui.AsksSubClass + `">` + esc(askSearchState(a)) +
 		` · <time datetime="` + a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></span></a>` +
 		ui.AskIDChipHTML(a.ID) + `</div>
 `)
 	if text != "" {
-		b.WriteString(`<p class="` + ui.AsksSearchTextClass + `" data-asks-search-text>` + esc(text) + `</p>
+		// A question is ask text; a step-up card's post is drawn as written
+		// (it is shown as its venue will show it).
+		body := askTextHTML(text)
+		if a.StepUp != nil {
+			body = esc(text)
+		}
+		b.WriteString(`<div class="` + ui.AsksSearchTextClass + `" data-asks-search-text>` + body + `</div>
 `)
 	}
 	if ans := strings.TrimSpace(a.Answer); ans != "" {
-		b.WriteString(`<p class="` + ui.AsksSearchAnswerClass + `" data-asks-search-answer>` + answerLabel(a) + esc(ans) + `</p>
+		b.WriteString(`<div class="` + ui.AsksSearchAnswerClass + `" data-asks-search-answer>` + answerLabel(a) + askTextHTML(ans) + `</div>
 `)
 	}
 	b.WriteString("</li>\n")
@@ -287,7 +293,7 @@ func draftSearchCardHTML(c plugins.DraftCard, now time.Time) string {
 	var b strings.Builder
 	b.WriteString(`<li id="search-draft-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asks-search-result="draft" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-<div class="` + ui.AsksSearchTopClass + `"><a href="` + esc(draftFocusLink(d.ID)) + `" class="` + ui.AsksSearchOpenClass + `" data-asks-search-open>` +
+<div class="` + ui.AsksSearchTopClass + `"><a href="` + esc(draftFocusLink(d.ID)) + `" class="` + ui.AsksSearchOpenClass + `" data-asks-search-open data-asks-card-link>` +
 		`<span class="` + ui.AsksTitleClass + `" data-asks-search-title>` + stepUpHiddenHTML(draftWho(c)) + `</span><span class="` + ui.AsksSubClass + `">` + esc(sub))
 	if !d.CreatedAt.IsZero() {
 		b.WriteString(` · <time datetime="` + d.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.CreatedAt))) + `</time>`)

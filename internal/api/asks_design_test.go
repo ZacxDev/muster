@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,11 @@ func itemLi(t *testing.T, out, key string) string {
 	return li[:strings.Index(li, "</li>")+len("</li>")]
 }
 
+// cardBadgeLink is the same for a card with a page (an ask's, a notice's):
+// its head is the link to the page, holding the badge and the who line, and
+// the toggle is the chevron, a button of its own after it.
+var cardBadgeLink = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<div class="[^"]*" data-asks-top><a href="/attention/asks/[0-9]+" class="[^"]*" data-asks-head data-asks-card-link>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)".*?</a><button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Expand" aria-describedby="([^"]+)" data-asks-toggle>`)
+
 var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*(?:<div class="[^"]*" data-asks-top>)?<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-head data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
 
 // TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
@@ -67,8 +73,25 @@ var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*
 func TestTheOpenFeedOrdersCardsByKindWithABadgeEach(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	out := s.askListHTML(context.Background(), designItems(), asksRead{}, designNow)
+	// Both shapes, in the feed's order: m is id, controls, describedby, badge
+	// kind, badge words, who id.
+	type hit struct {
+		at int
+		m  []string
+	}
+	var hits []hit
+	for _, ix := range cardBadge.FindAllStringSubmatchIndex(out, -1) {
+		m := cardBadge.FindStringSubmatch(out[ix[0]:])
+		hits = append(hits, hit{ix[0], m})
+	}
+	for _, ix := range cardBadgeLink.FindAllStringSubmatchIndex(out, -1) {
+		l := cardBadgeLink.FindStringSubmatch(out[ix[0]:])
+		hits = append(hits, hit{ix[0], []string{l[0], l[1], l[5], l[6], l[2], l[3], l[4]}})
+	}
+	slices.SortFunc(hits, func(a, b hit) int { return a.at - b.at })
 	var got []string
-	for _, m := range cardBadge.FindAllStringSubmatch(out, -1) {
+	for _, h := range hits {
+		m := h.m
 		// A toggle names its more region only when the card has one.
 		if m[2] != "" && m[2] != m[1]+"-more" || m[2] != "" && !strings.Contains(out, `id="`+m[2]+`"`) {
 			t.Errorf("%s's toggle controls %q", m[1], m[2])
@@ -177,22 +200,32 @@ func TestEachCardDrawsTheActionsItsKindHas(t *testing.T) {
 	}
 	// A task card names the task, says why it is here, and reads the rest.
 	task := itemLi(t, out, "task-3")
-	for _, want := range []string{`data-attention-title>Task #3</span>`, `data-attention-text>route it</p>`, `data-asks-context><span>Your chief has not routed it yet.</span>`} {
+	for _, want := range []string{`data-attention-title>Task #3</span>`, `data-attention-text>route it</div>`, `data-asks-context><span>Your chief has not routed it yet.</span>`} {
 		if !strings.Contains(task, want) {
 			t.Errorf("the task card lacks %q:\n%s", want, task)
 		}
 	}
 	// The waiting window: its pending call, and its last words as the context.
 	wait := itemLi(t, out, "session-bbbbbbbbbbbbbbbb")
-	if !strings.Contains(wait, `data-attention-text>Bash: npm test</p>`) || !strings.Contains(wait, `data-asks-context><span data-attention-detail>Running the tests.</span>`) {
+	if !strings.Contains(wait, `data-attention-text>Bash: npm test</div>`) || !strings.Contains(wait, `data-asks-context><span data-attention-detail>Running the tests.</span>`) {
 		t.Errorf("the waiting card:\n%s", wait)
 	}
-	// The head is never a link: the card is reached by its toggle and footer.
-	for _, key := range []string{"ask-1", "ask-5", "session-bbbbbbbbbbbbbbbb", "task-3"} {
+	// A card with no page of its own (a waiting window, a task) has a head
+	// that is its toggle, never a link: it is reached by its footer.
+	for _, key := range []string{"session-bbbbbbbbbbbbbbbb", "task-3"} {
 		li := itemLi(t, out, key)
 		head := li[:strings.Index(li, "</button>")]
 		if strings.Contains(head, "<a ") || !strings.Contains(head, "data-asks-toggle") {
 			t.Errorf("%s's head is a link, or no toggle:\n%s", key, head)
+		}
+	}
+	// An ask's and a notice's head is the link to its page, its chevron the
+	// toggle beside it.
+	for key, href := range map[string]string{"ask-1": "/attention/asks/1", "ask-5": "/attention/asks/5"} {
+		li := itemLi(t, out, key)
+		head := li[:strings.Index(li, "</button>")]
+		if !strings.Contains(head, `<a href="`+href+`"`) || !strings.Contains(head, "</a><button") || !strings.Contains(head, "data-asks-toggle") {
+			t.Errorf("%s's head is not its page's link beside its toggle:\n%s", key, head)
 		}
 	}
 }
@@ -313,12 +346,13 @@ func TestCardTextIsEscapedEverywhere(t *testing.T) {
 		t.Fatalf("a raw tag reached the page:\n%s", out)
 	}
 	for name, frag := range map[string]string{
-		"title":    `data-attention-name>Name ` + want + `</span>`,
+		"title": `data-attention-name>Name ` + want + `</span>`,
 		// The place is words ("on <host>"); the exact target is the ⓘ's.
-		"place":    `data-attention-source>on atlas ` + placeWant + `</span>`,
-		"address":  `data-info-code="">tmux fern:1 @ atlas ` + placeWant + `</code>`,
-		"copy":     `data-info-copy=""`,
-		"question": `data-attention-text>q? ` + want + `</p>`,
+		"place":   `data-attention-source>on atlas ` + placeWant + `</span>`,
+		"address": `data-info-code="">tmux fern:1 @ atlas ` + placeWant + `</code>`,
+		"copy":    `data-info-copy=""`,
+		// The question is ask text (markdown's escape: " is &quot;).
+		"question": `data-attention-text>q? &lt;img src=x onerror=alert(1)&gt;&quot;&amp;</div>`,
 		"option":   `data-attention-option>opt ` + want + `</button>`,
 		"chip":     `>chip ` + want + `</button>`,
 		"detail":   `data-attention-detail>detail ` + want + `</span>`,

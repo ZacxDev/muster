@@ -224,7 +224,7 @@ func askQuestionHTML(a attention.Ask) string {
 	if a.StepUp != nil {
 		return stepUpCardHTML(a.StepUp)
 	}
-	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + askTextHTML(a.Question) + "</p>\n"
+	return `<div class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + askTextHTML(a.Question) + "</div>\n"
 }
 
 // The ask page's own words and classes.
@@ -312,7 +312,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 <p class="text-base font-semibold text-fg">` + esc(state) + `</p>
 `)
 		if a.Answer != "" {
-			b.WriteString(`<p class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</p>
+			b.WriteString(`<div class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 `)
 		}
 		if a.Status == attention.Answered {

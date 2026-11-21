@@ -51,12 +51,12 @@ func TestTheRenderedPluginReplyEscalationIsExactlyThis(t *testing.T) {
 		t.Fatalf("no labelled note before the answer form:\n%s", card)
 	}
 	want := `<p class="text-xs text-fg2" data-officer-note-label>The officer's note</p>
-<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>Officer marketing:example escalated item 13 (plugin.reply plugin:8:reply-example-42) to you:
+<div class="` + ui.AsksCardQuestionClass + `" data-attention-text>Officer marketing:example escalated item 13 (plugin.reply plugin:8:reply-example-42) to you:
 
 The sender asks about queued messages.
 I hold no facts on it.
 
-Answer to send the item back to the officer with your answer; dismiss it to leave the item escalated.</p>
+Answer to send the item back to the officer with your answer; dismiss it to leave the item escalated.</div>
 <div class="flex min-w-0 flex-col gap-2" data-officer-context>
 <p class="break-words text-xs text-fg2" data-officer-context-item>Officer marketing:example · item 13 · plugin.reply · plugin:8:reply-example-42</p>
 <div class="flex min-w-0 flex-col gap-1 rounded-xl bg-s1 px-3 py-2 ring-1 ring-line" data-officer-source>

@@ -265,7 +265,7 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			// label ("work:1 @ atlas (not shown …)"), the Asks surface's own
 			// open case (TestNoTopLayerOfTheAsksSurfacesSpellsATmuxAddress's
 			// "Not covered").
-			q := regexp.MustCompile(`(?s)<p [^>]*data-ask-question>.*?</p>`).FindString(mpage)
+			q := regexp.MustCompile(`(?s)<div [^>]*data-ask-question>.*?</div>`).FindString(mpage)
 			if q == "" {
 				t.Fatalf("CONTROL: no question on the mirrored session's ask page")
 			}
