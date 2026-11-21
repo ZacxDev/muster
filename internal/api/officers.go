@@ -1760,6 +1760,17 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 			"description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, " +
 				"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], " +
 				"each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400."}
+		// `ask` is open for the same reason: HQ owns the kind vocabulary, so a
+		// kind HQ adds needs no change here (no enum on kind).
+		desc += " When you escalate, `ask: {kind, ref}` names the single thing the escalation asks a person to do, as your charter says."
+		props["ask"] = map[string]any{"type": "object", "additionalProperties": true,
+			"properties": map[string]any{
+				"kind": strProp("What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\")."),
+				"ref":  strProp("What it is about, as your charter says to name it (e.g. the request id or the pull request). Use the SAME ref every time you escalate the same thing: HQ folds repeats of one ask together."),
+			},
+			"required": []string{"kind", "ref"},
+			"description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. " +
+				"muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held)."}
 	}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
@@ -1778,8 +1789,8 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 }
 
 // completeTakesHQFields is THE rule for whether officer o's instances are
-// offered officer_complete's authors, attributed_prs, attribution and
-// tickets (the features only HQ serves), and may send them: an HQ officer's only. The
+// offered officer_complete's authors, attributed_prs, attribution, tickets
+// and ask (the features only HQ serves), and may send them: an HQ officer's only. The
 // builtin backend has none of those features, and would complete the item
 // while dropping them.
 func completeTakesHQFields(o officers.Officer) bool { return !o.IsBuiltin() }
@@ -2010,6 +2021,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		AttributedPRs json.RawMessage `json:"attributed_prs"`
 		Attribution   json.RawMessage `json:"attribution"`
 		Tickets       json.RawMessage `json:"tickets"`
+		// officer_complete's ask, kept as sent and forwarded unchanged
+		// (officers.Completion.AskJSON): HQ owns its kinds.
+		Ask json.RawMessage `json:"ask"`
 		// officer_complete's hand-off, checked by completeHandoff.
 		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
@@ -2163,9 +2177,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// 🔴 REFUSED, NEVER DROPPED, on a builtin officer: it is not offered
 		// them, and its backend would complete the item without them.
 		if !completeTakesHQFields(o) {
-			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets} {
+			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets, "ask": in.Ask} {
 				if len(bytes.TrimSpace(raw)) > 0 {
-					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution or tickets): complete without it", f, o.ID), true
+					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution, tickets or asks): complete without it", f, o.ID), true
 				}
 			}
 		}
@@ -2199,7 +2213,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// HQ's bound, never the instance's own text.
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
 		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff,
-			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets}
+			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets, AskJSON: in.Ask}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {
