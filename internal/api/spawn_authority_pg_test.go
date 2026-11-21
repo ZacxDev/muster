@@ -425,6 +425,7 @@ func spawnRefusedTools(s *Server, ctx context.Context, c toolCaller) map[string]
 	m[pluginRequestDecideTool] = func() string { return s.toolPluginRequestDecide(ctx, c, `{"id": 1, "decision": "deny"}`) }
 	m[pluginOutboundBatchGetTool] = func() string { return s.toolOutboundBatchGet(ctx, c, `{"batch_id": 1}`) }
 	m[pluginOutboundBatchDecideTool] = func() string { return s.toolOutboundBatchDecide(ctx, c, `{"batch_id": 1}`) }
+	m[pluginDraftRetryTool] = func() string { return s.toolPluginDraftRetry(ctx, c, `{"id": 1}`) }
 	return m
 }
 

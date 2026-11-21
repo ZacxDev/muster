@@ -155,10 +155,14 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 }
 
 // handlePluginDraftResult is POST /plugin/v1/drafts/{id}/result {ok,
-// external_ref, detail}: settle a draft this plugin claimed as sent (ok) or
-// failed. 200 {draft_id, status}; the same result again is 200 and changes
+// external_ref, detail, nothing_sent?, transient?}: settle a draft this plugin
+// claimed as sent (ok) or failed. 200 {draft_id, status}, and — when a failed
+// outbound draft's result said nothing_sent and transient and its chain has
+// time left — retry {draft_id, attempt, not_before}: the successor muster
+// filed (plugins draft_retry.go). The same result again is 200 and changes
 // nothing; the other result is 409; a draft never claimed is 409; another
-// plugin's, or none, is 404.
+// plugin's, or none, is 404; nothing_sent or transient with ok true, or
+// transient without nothing_sent, is 400.
 func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -170,24 +174,42 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		ExternalRef string          `json:"external_ref"`
 		Detail      string          `json:"detail"`
 		RetryAt     json.RawMessage `json:"retry_at"`
+		NothingSent bool            `json:"nothing_sent"`
+		Transient   bool            `json:"transient"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.OK == nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"ok": true|false, "external_ref", "detail"}`})
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"ok": true|false, "external_ref", "detail", "nothing_sent"?, "transient"?}`})
 		return
 	}
 	p := pluginFromContext(r.Context())
-	d, fresh, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
+	d, fresh, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail,
+		NothingSent: in.NothingSent, Transient: in.Transient})
 	switch {
 	case err == nil:
 		s.draftStatusMoved(messagesOwner(p), d.ID)
+		out := map[string]any{"draft_id": d.ID, "status": string(d.Status)}
 		if fresh && d.Status == plugins.DraftFailed {
 			// Once, on the result that made it failed: a repeat changes nothing.
-			s.draftRefused(r.Context(), p, d, true, parseRetryAt(in.RetryAt))
+			// 🔴 A FAILURE WITH A SUCCESSOR (plugin_draft_retry.go) is not a
+			// refusal: its chain goes on, so nothing goes back to the officer
+			// and its item keeps waiting.
+			if next := d.Retry.Next; next != nil {
+				s.draftRetryScheduled(p, d)
+				out["retry"] = map[string]any{"draft_id": next.ID, "attempt": next.Attempt, "not_before": next.NotBefore.UTC()}
+			} else {
+				if d.Retry.Err != "" {
+					s.logger.Printf("plugins: plugin %d draft %d: its retry could not be filed, so it ends failed: %s", p.ID, d.ID, d.Retry.Err)
+				}
+				s.draftRefused(r.Context(), p, d, true, parseRetryAt(in.RetryAt))
+				if d.Retry.EndedAtExpiry {
+					s.notifyRetryChainEnded(messagesOwner(p), p.Label, d)
+				}
+			}
 		}
 		if fresh && d.Status == plugins.DraftSent {
 			s.outboundSettled(r.Context(), messagesOwner(p), d, settledByPlugin, nil)
 		}
-		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
+		s.writeJSON(w, http.StatusOK, out)
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
 	case errors.Is(err, plugins.ErrNotFound):
@@ -828,6 +850,14 @@ func draftStatusText(d plugins.Draft) string {
 	case plugins.DraftPending:
 		return "Awaiting your decision"
 	case plugins.DraftApproved:
+		if d.RetryOf != nil {
+			// A retry chain is one card (plugins draft_retry.go): its
+			// latest attempt, going again on its own.
+			if d.ClaimedAt != nil {
+				return "Retrying · attempt " + strconv.Itoa(d.Attempt) + " · the plugin collected it and is sending it"
+			}
+			return "Retrying on its own · attempt " + strconv.Itoa(d.Attempt)
+		}
 		if d.ClaimedAt != nil {
 			return "Approved · the plugin collected it and is sending it"
 		}
@@ -835,6 +865,9 @@ func draftStatusText(d plugins.Draft) string {
 	case plugins.DraftSent:
 		return "Sent"
 	case plugins.DraftFailed:
+		if d.NothingSent {
+			return "The plugin could not send it · nothing was sent"
+		}
 		return "The plugin could not send it"
 	case plugins.DraftUnconfirmed:
 		return "Unconfirmed: the plugin collected it and never said whether it was sent. It may have been. " +
@@ -871,6 +904,33 @@ func draftExpiryText(d plugins.Draft, now time.Time) string {
 		return "expires in " + strconv.Itoa(int(left/time.Hour)) + "h"
 	}
 	return "expires in " + strconv.Itoa(int(left/(24*time.Hour))) + "d"
+}
+
+// draftNextTryText is a retrying draft's next try, relative to now ("next try
+// in 4m"), "" for a draft that is not waiting for one.
+func draftNextTryText(d plugins.Draft, now time.Time) string {
+	if !d.Retrying() || d.ClaimedAt != nil || d.NotBefore == nil {
+		return ""
+	}
+	left := d.NotBefore.Sub(now)
+	switch {
+	case left <= 0:
+		return "next try now"
+	case left < time.Minute:
+		return "next try in under a minute"
+	case left < time.Hour:
+		return "next try in " + strconv.Itoa(int(left/time.Minute)+1) + "m"
+	}
+	return "next try in " + strconv.Itoa(int(left/time.Hour)) + "h"
+}
+
+// draftRetryable reports whether the card offers Retry now: an outbound
+// draft that failed with nothing sent and has not expired. The store decides
+// (plugins.PGStore.RetryDraft): it still refuses while a later attempt is out
+// — the case of an earlier attempt's card opened by its id, which the lists
+// never show (a chain is one card, its latest attempt).
+func draftRetryable(d plugins.Draft, now time.Time) bool {
+	return d.IsOutbound() && d.Status == plugins.DraftFailed && d.NothingSent && d.ExpiresAt.After(now)
 }
 
 // draftWho is who a draft card says drafted it: an officer's draft by the
@@ -955,6 +1015,9 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	if exp := draftExpiryText(d, now); exp != "" {
 		pills = append(pills, `<span class="`+ui.AsksPillClass+`" data-draft-expiry><time datetime="`+d.ExpiresAt.UTC().Format(time.RFC3339)+`">`+esc(exp)+`</time></span>`)
 	}
+	if next := draftNextTryText(d, now); next != "" {
+		pills = append(pills, `<span class="`+ui.AsksPillClass+`" data-draft-next-try><time datetime="`+d.NotBefore.UTC().Format(time.RFC3339)+`">`+esc(next)+`</time></span>`)
+	}
 	b.WriteString(`<div class="` + ui.AsksPillsClass + `" data-draft-pills>` + strings.Join(pills, "") + `</div>
 `)
 	b.WriteString(draftAnswersHTML(c))
@@ -971,6 +1034,11 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 			b.WriteString(`<p class="break-all text-xs text-fg2" data-draft-medium data-ref="` + esc(ref) + `">` + stepUpHiddenHTML(ref) + ` · <span class="font-semibold" data-draft-medium-missing>not uploaded yet</span></p>
 `)
 		}
+	}
+	if d.Retrying() && d.RetryLastDetail != "" {
+		// A retrying chain's last attempt's word: why it is going again.
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-last-try>Last try: the plugin said: ` + stepUpHiddenHTML(d.RetryLastDetail) + `</span>
+`)
 	}
 	if d.Detail != "" {
 		// The plugin's own word on it (why it refused or failed): read
@@ -993,8 +1061,20 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
+			withdraw := "Withdraw the approval"
+			if d.RetryOf != nil {
+				withdraw = "Stop retrying"
+			}
 			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
-				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
+				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>` + withdraw + `</button></form></div>
+`)
+		}
+	case plugins.DraftFailed:
+		if draftRetryable(d, now) {
+			// The owner's manual retry (plugin_draft_retry.go): the plugin
+			// said nothing was sent, so the approved bytes may go again.
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/retry" class="flex flex-wrap items-center gap-2">` + p.backField() +
+				`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-retry>Retry now</button></form></div>
 `)
 		}
 	case plugins.DraftPending:

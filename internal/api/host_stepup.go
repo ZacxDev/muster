@@ -103,6 +103,7 @@ var hostStepUpExempt = map[string]string{
 	agentsListTool:             "a read",
 	connectorRequestsListTool:  "a read",
 	pluginDraftsListTool:       "a read",
+	pluginDraftRetryTool:       "re-sends only the bytes the owner already approved, after an attempt its plugin said sent nothing, one attempt at a time (operator decision 2026-11-21: no step-up)",
 	pluginOutboundBatchGetTool: "a read",
 	pluginMessagesListTool:     "a read",
 	dispatchRequestTool:        "files a held start that starts nothing; dispatch_approve is the decision",

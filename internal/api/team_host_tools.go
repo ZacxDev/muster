@@ -82,6 +82,7 @@ var teamHostTools = map[string]teamHostRule{
 	attentionAnswerTool:           teamRefused(whyOwnerAuthority),
 	connectorRequestDecideTool:    teamRefused(whyOwnerAuthority),
 	pluginDraftDecideTool:         teamRefused(whyOwnerAuthority),
+	pluginDraftRetryTool:          teamRefused(whyOwnerAuthority),
 	agentDestroyTool:              teamRefused(whyOwnerAuthority),
 	chiefRestartTool:              teamRefused("an owner's restart of their own chief: a team decides through a member in muster's web UI, never through a host"),
 	dispatchApproveTool:           teamRefused(whyOwnerAuthority),

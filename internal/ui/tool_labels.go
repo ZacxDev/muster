@@ -100,6 +100,7 @@ var musterToolLabels = map[string]string{
 	"plugin_message_route":         "Sent a message to a session",
 	"plugin_drafts_list":           "Looked at reply drafts",
 	"plugin_draft_decide":          "Decided on a reply",
+	"plugin_draft_retry":           "Retried a post",
 	"plugin_requests_list":         "Looked at connection requests",
 	"plugin_request_decide":        "Decided on a connection request",
 	"plugin_outbound_batch_get":    "Looked at planned follows and likes",

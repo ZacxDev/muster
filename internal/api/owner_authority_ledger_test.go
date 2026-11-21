@@ -25,6 +25,7 @@ var ownerAuthorityCallers = map[string][]string{
 	"outreach_batch.go:toolOutboundBatchDecide":            {pluginOutboundBatchDecideTool},
 	"outreach_batch.go:toolOutboundBatchGet":               {pluginOutboundBatchGetTool},
 	"plugin_draft_tools.go:toolPluginDraftDecide":          {pluginDraftDecideTool},
+	"plugin_draft_retry.go:toolPluginDraftRetry":           {pluginDraftRetryTool},
 	"plugin_draft_tools.go:toolPluginDraftsList":           {pluginDraftsListTool},
 	"plugin_message_route_tools.go:toolPluginMessageRoute": {pluginMessageRouteTool},
 	"plugin_message_route_tools.go:toolPluginMessagesList": {pluginMessagesListTool},
@@ -39,8 +40,11 @@ var ownerAuthorityCallers = map[string][]string{
 // dispatch_request, which files a hold that starts nothing (dispatch_approve,
 // gated, is the decision; its card shows the hold), and chief_restart
 // (operator decision "fully ungated": a restart of the owner's own chief runs
-// at once on every machine; its accepted risk is in hostStepUpExempt).
-var ownerAuthorityNotGated = []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
+// at once on every machine; its accepted risk is in hostStepUpExempt), and
+// plugin_draft_retry (operator decision 2026-11-21: it re-sends only bytes
+// the owner already approved, after an attempt its plugin said sent nothing;
+// its reason is in hostStepUpExempt).
+var ownerAuthorityNotGated = []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftRetryTool, pluginDraftsListTool,
 	pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
 
 // ownerAuthoritySpawnRefused is the set every caller of ownersOwnSession
@@ -78,7 +82,7 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	}
 	refused := ownerAuthoritySpawnRefused()
 	refusedWant := []string{agentDestroyTool, agentsListTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool,
-		connectorRequestsListTool, dispatchApproveTool, dispatchRequestTool, pluginDraftDecideTool, pluginDraftsListTool,
+		connectorRequestsListTool, dispatchApproveTool, dispatchRequestTool, pluginDraftDecideTool, pluginDraftRetryTool, pluginDraftsListTool,
 		pluginMessageRouteTool, pluginMessagesListTool, pluginOutboundBatchDecideTool, pluginOutboundBatchGetTool,
 		pluginRequestDecideTool, pluginRequestsListTool, routeReplyToolName}
 	slices.Sort(refusedWant)
@@ -112,7 +116,7 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	if g := hostStepUpToolNames(); !slices.Equal(g, gatedWant) {
 		t.Errorf("the gated set = %v, want %v", g, gatedWant)
 	}
-	notGatedWant := []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
+	notGatedWant := []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftRetryTool, pluginDraftsListTool,
 		pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
 	if !slices.Equal(slices.Sorted(slices.Values(ownerAuthorityNotGated)), slices.Sorted(slices.Values(notGatedWant))) {
 		t.Errorf("the not-gated set = %v, want %v", ownerAuthorityNotGated, notGatedWant)

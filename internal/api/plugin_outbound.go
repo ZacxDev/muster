@@ -122,6 +122,9 @@ func (s *Server) linkPluginsToOfficers(store *builtin.Store) {
 			}
 			return time.Now()
 		}})
+		// A retry chain (an officer's outbound draft, plugin_draft_retry.go)
+		// that the sweep ended unsent at its expiry: its owner is told once.
+		ps.WithRetryEnded(s.retryEndedBySweep)
 	}
 }
 

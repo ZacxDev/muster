@@ -404,6 +404,10 @@ var wantForeignKeys = []string{
 	"plugin_reply_drafts|plugin_reply_drafts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0121: an outbound draft names its plugin directly, under the same owner.
 	"plugin_reply_drafts|plugin_reply_drafts_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0174: a retry's chain root, a draft of the same table. Simple on
+	// purpose: 0174's trigger checks the root is the same owner's, so a
+	// composite (retry_of, owner_id) would add nothing.
+	"plugin_reply_drafts|plugin_reply_drafts_retry_of_fkey|FOREIGN KEY (retry_of) REFERENCES plugin_reply_drafts(id) ON DELETE CASCADE",
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

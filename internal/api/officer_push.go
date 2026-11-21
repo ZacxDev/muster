@@ -59,6 +59,13 @@ const (
 	// officerPushDraftRefused: the plugin refused an officer's draft; it went
 	// back to the officer (notifyDraftRefused).
 	officerPushDraftRefused officerPush = "draft_refused"
+	// officerPushDraftRetrying: an officer's approved draft failed for the
+	// plugins.RetryOwnerPushAttempt-th time with nothing sent and keeps
+	// retrying on its own (draftRetryScheduled): once per chain.
+	officerPushDraftRetrying officerPush = "draft_retrying"
+	// officerPushDraftRetryEnded: an officer's retrying draft ended unsent
+	// at its expiry (notifyRetryChainEnded): once per chain.
+	officerPushDraftRetryEnded officerPush = "draft_retry_ended"
 	// officerPushBudget: the officer's daily budget was reached
 	// (officerBudgetNotice): it is held for the day unless the operator
 	// raises the cap or lifts the hold, on the officer's page.
@@ -106,6 +113,11 @@ var officerPushes = map[officerPush]bool{
 	officerPushOutreachBatch:    true,  // tick the follows and likes that go out
 	officerPushConnectorRequest: true,  // approve or deny the access
 	officerPushDraftRefused:     false, // it went back to the officer, which handles it
+	// The owner approved it and it is still not out (operator decision
+	// 2026-11-21: one push at the third failure, one at the end, never per
+	// attempt): clear what blocks the plugin, or stop or retry it on its card.
+	officerPushDraftRetrying:    true,
+	officerPushDraftRetryEnded:  true,
 	officerPushBudget:           true,  // raise the cap for today, or lift the hold (the officer's page)
 	officerPushBudgetUnreadable: false, // muster's failure, in its log; nothing the operator decides
 	officerPushCapHold:          true,  // the officer is held: act on its page
@@ -152,7 +164,7 @@ func officerDecisionCard(k officerPush, r officerCardRef) string {
 		// The tap route, resolved when tapped: the open ask's own page (its
 		// card, its options and its answer box), else its item on the queue.
 		return attentionOpenURL(r.ID)
-	case officerPushDraft:
+	case officerPushDraft, officerPushDraftRetrying, officerPushDraftRetryEnded:
 		id, err := strconv.ParseInt(r.ID, 10, 64)
 		if err != nil {
 			return ""

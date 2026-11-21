@@ -47,6 +47,10 @@ import (
 // message (the chief files one; its card warns that an earlier reply may already
 // have reached the sender) — and if the unconfirmed one is then reported sent
 // after all, that new draft is superseded before it can go (FinishDraft).
+//
+// An outbound draft whose plugin reports `failed` AND asserts nothing was
+// sent is not re-offered either: a NEW row, its successor, goes instead
+// (draft_retry.go "RETRY CHAINS"); the failed row keeps its claim.
 
 // DraftStatus is a draft's state. The set is closed (the 0015 CHECK).
 type DraftStatus string
@@ -160,7 +164,52 @@ type Draft struct {
 	// draftDeciderRefusal refuses a person approving a team draft they
 	// caused; 0130's draft_approver trigger refuses it again.
 	RequestedByUser *int64 `json:"-"`
+	// A RETRY CHAIN's (migration 0174, see "RETRY CHAINS" below): RetryOf is
+	// a successor's chain root (nil on a root and on every other draft),
+	// Attempt its number in the chain (1 on a root), NotBefore when a
+	// successor may first be claimed, RetryLastDetail the detail of the
+	// attempt it follows. NothingSent and Transient are a FAILED draft's
+	// result's assertions (DraftResult).
+	RetryOf         *int64     `json:"retryOf,omitempty"`
+	Attempt         int        `json:"attempt,omitempty"`
+	NotBefore       *time.Time `json:"notBefore,omitempty"`
+	RetryLastDetail string     `json:"retryLastDetail,omitempty"`
+	NothingSent     bool       `json:"nothingSent,omitempty"`
+	Transient       bool       `json:"transient,omitempty"`
+	// Retry is what the store DECIDED about a retry in the transaction that
+	// recorded this draft's failed result (FinishDraft), like Refusal: never
+	// stored, never read back. internal/api acts on it.
+	Retry RetryDecision `json:"-"`
 }
+
+// RetryDecision is what FinishDraft decided about retrying a failed outbound
+// draft (Draft.Retry).
+type RetryDecision struct {
+	// Next is the successor it filed (approved, claimable from its
+	// NotBefore), nil for none.
+	Next *Draft
+	// EndedAtExpiry: the result asked for a retry (nothing_sent + transient)
+	// but the next attempt's backoff would run past the chain's expiry, so
+	// the chain ended unsent here.
+	EndedAtExpiry bool
+	// Err is why a successor that should have been filed was not (a
+	// database refusal, rolled back to its savepoint): the failure itself is
+	// still recorded, and the chain ends as an ordinary failure. "" for none.
+	Err string
+}
+
+// ChainRoot is the id of the retry chain d belongs to: its RetryOf, or its
+// own id for a root (every draft is the root of its own chain of one).
+func (d Draft) ChainRoot() int64 {
+	if d.RetryOf != nil {
+		return *d.RetryOf
+	}
+	return d.ID
+}
+
+// Retrying reports whether d is a live attempt of a retry chain: a
+// successor that is approved (waiting for its NotBefore, or collected).
+func (d Draft) Retrying() bool { return d.RetryOf != nil && d.Status == DraftApproved }
 
 // RefusalOutcome is where a refused draft goes (Draft.Refusal).
 type RefusalOutcome string
@@ -296,10 +345,20 @@ func (c Claim) MarshalJSON() ([]byte, error) {
 }
 
 // DraftResult is what a plugin reports after trying to send a claimed draft.
+//
+// NothingSent and Transient (migration 0174) are meaningful only with OK
+// false, and an old plugin sends neither: its result is recorded exactly as
+// before. NothingSent is the plugin's assertion that NOTHING reached the
+// venue (it refused before any submit, or the post is provably absent) —
+// never set when the outcome is unknown. Transient (only with NothingSent)
+// says the cause should clear without changing the draft. Both together on
+// an outbound draft make FinishDraft file its retry (see "RETRY CHAINS").
 type DraftResult struct {
 	OK          bool   `json:"ok"`
 	ExternalRef string `json:"external_ref"`
 	Detail      string `json:"detail"`
+	NothingSent bool   `json:"nothing_sent"`
+	Transient   bool   `json:"transient"`
 }
 
 // DraftCard is a draft with the message it answers and its plugin, for /plugins.
@@ -503,6 +562,10 @@ func (r DraftResult) Validate() error {
 		return invalid("external_ref is at most %d characters of UTF-8 text", MaxExternalRefRunes)
 	case !utf8.ValidString(r.Detail) || strings.ContainsRune(r.Detail, 0) || len(r.Detail) > MaxDetailBytes:
 		return invalid("detail is at most %d bytes of UTF-8 text", MaxDetailBytes)
+	case r.OK && (r.NothingSent || r.Transient):
+		return invalid("nothing_sent and transient go with ok: false only")
+	case r.Transient && !r.NothingSent:
+		return invalid("transient goes with nothing_sent: true only (a cause that clears matters only when nothing was sent)")
 	}
 	return nil
 }
@@ -518,14 +581,16 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
-	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason`
+	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
+	retry_of, attempt, not_before, retry_last_detail, nothing_sent, transient`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
 		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
-		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason}
+		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
+		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.Transient}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
@@ -593,7 +658,31 @@ func scanDraft(row pgx.Row) (Draft, error) {
 // holds nothing it waits for; and its rows are taken in id order
 // (sweepDrafts), so two sweeps cannot deadlock each other either.
 func (s *PGStore) sweep(ctx context.Context) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error { return s.sweepDrafts(ctx, tx) })
+	var ended []Draft
+	if err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		ended, err = s.sweepDrafts(ctx, tx)
+		return err
+	}); err != nil {
+		return err
+	}
+	// After the commit, never inside it: a retry chain that ended unsent
+	// (its live attempt expired) is told to its owner once
+	// (WithRetryEnded), and a rolled-back sweep tells nobody.
+	if s.retryEnded != nil {
+		for _, d := range ended {
+			s.retryEnded(ctx, d)
+		}
+	}
+	return nil
+}
+
+// WithRetryEnded sets what is called, after the sweep that expired it
+// commits, with each live attempt of a RETRY CHAIN (a successor) that
+// expired unsent: internal/api pushes its owner once.
+func (s *PGStore) WithRetryEnded(f func(context.Context, Draft)) *PGStore {
+	s.retryEnded = f
+	return s
 }
 
 // sweepDrafts settles what time has decided, for the principal's rows: a draft
@@ -602,7 +691,9 @@ func (s *PGStore) sweep(ctx context.Context) error {
 // acting. Each is audited, one row per draft, as whichever principal's request
 // ran the sweep; and an OUTBOUND draft's officer item is settled in the same
 // transaction (outboundEnded: its item never waits on a draft that ended).
-func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) error {
+// retryEnded is the successors (RETRY CHAINS) among the expired: each ended
+// its chain unsent.
+func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) (retryEnded []Draft, err error) {
 	for _, step := range []struct {
 		q, action, why string
 		how            OutboundEnd
@@ -622,22 +713,25 @@ func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) error {
 	} {
 		rows, err := tx.Query(ctx, step.q)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		ds, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) })
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, d := range ds {
 			if err := audit(ctx, tx, step.action, DraftObject(d.ID), map[string]any{"why": step.why}); err != nil {
-				return err
+				return nil, err
+			}
+			if step.how == OutboundExpired && d.RetryOf != nil {
+				retryEnded = append(retryEnded, d)
 			}
 		}
 		if err := s.outboundEnded(ctx, tx, ds, step.how); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return retryEnded, nil
 }
 
 // lockMessage locks message id's row and answers ErrReplyInFlight when another
@@ -766,8 +860,15 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, draftsPendingFirst, limit, limit)
+	// A RETRY CHAIN is ONE card, its latest attempt's: an attempt a later one
+	// follows is left out (draft_retry.go).
+	return s.draftCards(ctx, `WHERE NOT `+supersededAttempt+` ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, draftsPendingFirst, limit, limit)
 }
+
+// supersededAttempt is true of a draft d that a later attempt of its retry
+// chain follows (draft_retry.go): the lists show a chain as its latest.
+const supersededAttempt = `EXISTS (SELECT 1 FROM plugin_reply_drafts n
+	WHERE n.retry_of = coalesce(d.retry_of, d.id) AND n.attempt > d.attempt)`
 
 // DraftCard is one of the principal's drafts as a card (after a sweep):
 // what the Asks page draws for a just-decided draft that DraftCards' cut
@@ -1124,7 +1225,8 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 
 // ClaimDraft hands plugin pluginID ONE of its approved, unclaimed, unexpired
 // drafts — the oldest approval first — and leases it for LeaseDuration. ok is
-// false when there is none.
+// false when there is none. A retry chain's successor is not handed out
+// before its not_before (its backoff).
 //
 // 🔴 `claimed_at IS NULL` IS THE AT-MOST-ONCE RULE (see the file header): a
 // draft is claimed once and its claim is never cleared. SKIP LOCKED lets two
@@ -1165,6 +1267,7 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
 			 WHERE coalesce(m.plugin_id, d.plugin_id) = $1 AND d.status = 'approved' AND d.claimed_at IS NULL
 			   AND d.expires_at > now() AND NOT coalesce(m.no_reply, false)
+			   AND (d.not_before IS NULL OR d.not_before <= now())
 			 ORDER BY d.approved_at, d.id
 			 LIMIT 1
 			   FOR UPDATE OF d SKIP LOCKED`, pluginID), &ext)
@@ -1378,19 +1481,30 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 			return err
 		}
 		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-			SET status = $2, finished_at = now(), external_ref = $3, detail = $4
-			WHERE id = $1 RETURNING `+draftCols, draftID, string(want), r.ExternalRef, r.Detail)); err != nil {
+			SET status = $2, finished_at = now(), external_ref = $3, detail = $4, nothing_sent = $5, transient = $6
+			WHERE id = $1 RETURNING `+draftCols, draftID, string(want), r.ExternalRef, r.Detail, r.NothingSent, r.Transient)); err != nil {
 			return err
 		}
-		if err := audit(ctx, tx, "plugin.draft."+string(want), DraftObject(draftID), map[string]any{
-			"plugin_id": pluginID, "external_ref": r.ExternalRef, "late": late || cur.Status == DraftUnconfirmed,
-		}); err != nil {
+		detail := map[string]any{"plugin_id": pluginID, "external_ref": r.ExternalRef, "late": late || cur.Status == DraftUnconfirmed}
+		if r.NothingSent {
+			detail["nothing_sent"], detail["transient"] = true, r.Transient
+		}
+		if err := audit(ctx, tx, "plugin.draft."+string(want), DraftObject(draftID), detail); err != nil {
 			return err
 		}
 		fresh = true
 		if want == DraftFailed {
-			d.Refusal, err = refuseRouteDraftTx(ctx, tx, d, r.Detail)
-			return err
+			if d.Refusal, err = refuseRouteDraftTx(ctx, tx, d, r.Detail); err != nil {
+				return err
+			}
+			// 🔴 THE AUTO RETRY (RETRY CHAINS): only an OUTBOUND draft, only
+			// when the plugin asserted nothing was sent AND the cause is
+			// transient, and only a result within its lease — a late one's
+			// draft was already given up on as unconfirmed.
+			if d.IsOutbound() && r.NothingSent && r.Transient && !late && cur.Status == DraftApproved {
+				d.Retry, _ = s.fileRetryTx(ctx, tx, d, RetryBackoff(d.Attempt), retryAuto)
+			}
+			return nil
 		}
 		if d.IsOutbound() && d.ContactID != nil && s.officers != nil {
 			// The person was reached: an outreach event on them, in this
