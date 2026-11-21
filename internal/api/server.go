@@ -266,6 +266,8 @@ type Server struct {
 	attention attentionState
 	// brand is the instance branding's cached row (branding.go).
 	brand brandCache
+	// themeFiles memoises the kit files built from the current theme (theme.go).
+	themeFiles themeFiles
 	// jobLanes runs one machine job per agent at a time (jobs.go); ownJobs is
 	// the jobs this process accepted and has not finished; jobSecond
 	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
@@ -890,6 +892,7 @@ func (s *Server) registerAll(mux Mux) {
 	// Instance branding (branding.go): the public instance document and
 	// logo images, and the admin's writes (requireAdminRole).
 	s.registerBrandingRoutes(mux)
+	s.registerThemeRoutes(mux)
 	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
 	s.registerAPITokenRoutes(mux)
 	// The machine job API (jobs.go): the service tier only.

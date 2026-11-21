@@ -110,6 +110,13 @@ var publicRoutes = []string{
 	"GET /brand/logo.png",
 	"GET /brand/icon-192.png",
 	"GET /brand/icon-512.png",
+	// The plugin UI kit (theme.go, docs/ui-kit.md): the build's components and
+	// the server's theme, linked by plugins on other origins; nothing
+	// per-user (TestTheKitCarriesNoSessionOrUserData).
+	"GET /ui-kit/v1/kit.css",
+	"GET /ui-kit/v1/theme.css",
+	"GET /ui-kit/v1/icons.svg",
+	"GET /ui-kit/v1/kit.js",
 	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
 	// admits it and no request Principal is attached — internal/mirror
 	// authenticates its own per-host mirror token (mirror_tokens, looked up under
@@ -351,6 +358,9 @@ var routeVias = map[authz.Via][]string{
 		"PUT /api/instance/branding",
 		"DELETE /api/instance/branding/logo",
 		"DELETE /api/instance/branding/app-icon",
+		// The server's theme (theme.go): requireAdminRole, like the branding.
+		"PUT /api/instance/theme",
+		"GET /api/instance/theme/preview",
 		"POST /admin/users/{id}/enable",
 		"POST /admin/users/{id}/reset-link",
 		"POST /admin/users/{id}/role",

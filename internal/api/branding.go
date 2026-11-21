@@ -152,7 +152,7 @@ func (s *Server) brandingStored(b branding.Branding) {
 // uiBrand is the branding as the pages draw it.
 func (s *Server) uiBrand(ctx context.Context) ui.Brand {
 	b := s.instanceBranding(ctx)
-	return ui.Brand{Name: b.Name, ETag: b.ETag, LogoShowsName: b.LogoShowsName}
+	return ui.Brand{Name: b.Name, ETag: b.ETag, LogoShowsName: b.LogoShowsName, ThemeETag: s.themeETag(ctx)}
 }
 
 // --- GET /api/instance ----------------------------------------------------------
@@ -163,6 +163,10 @@ func (s *Server) uiBrand(ctx context.Context) ui.Brand {
 type InstanceDoc struct {
 	Name *string       `json:"name"`
 	Logo *InstanceLogo `json:"logo"`
+	// Theme is the server's theme (docs/ui-kit.md#the-theme): always present,
+	// the default preset when none was chosen. Added after the Android
+	// contract's two fields, which it does not change.
+	Theme *InstanceTheme `json:"theme"`
 }
 
 // InstanceLogo is the logo's three images (paths on this server, each with
@@ -190,7 +194,9 @@ func instanceDoc(b branding.Branding) InstanceDoc {
 
 func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", instanceMaxAge)
-	s.writeJSON(w, http.StatusOK, instanceDoc(s.instanceBranding(r.Context())))
+	d := instanceDoc(s.instanceBranding(r.Context()))
+	d.Theme = s.instanceTheme(r.Context())
+	s.writeJSON(w, http.StatusOK, d)
 }
 
 // --- GET /brand/* ---------------------------------------------------------------
@@ -383,7 +389,9 @@ func (s *Server) brandingApply(w http.ResponseWriter, r *http.Request, c brandin
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", accountPath+"?branding="+done+"#"+brandingAccountID)
 	}
-	s.writeJSON(w, http.StatusOK, instanceDoc(b))
+	d := instanceDoc(b)
+	d.Theme = s.instanceTheme(r.Context())
+	s.writeJSON(w, http.StatusOK, d)
 }
 
 // logoShowsNameField is the PUT's form field for Branding.LogoShowsName.

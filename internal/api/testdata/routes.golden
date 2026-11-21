@@ -94,6 +94,7 @@ GET /api/flows/jobs/{id}
 GET /api/host-jobs
 GET /api/host-jobs/{name}/runs
 GET /api/instance
+GET /api/instance/theme/preview
 GET /api/jobs/{id}
 GET /api/officers/declared
 GET /api/officers/declared/{officer}
@@ -199,6 +200,10 @@ GET /teams/{id}/connectors
 GET /teams/{id}/hosts
 GET /teams/{id}/officers
 GET /teams/{id}/plugins
+GET /ui-kit/v1/icons.svg
+GET /ui-kit/v1/kit.css
+GET /ui-kit/v1/kit.js
+GET /ui-kit/v1/theme.css
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
@@ -474,6 +479,7 @@ POST /uploads
 POST /uploads/{id}/revoke
 PUT /api/device/push
 PUT /api/instance/branding
+PUT /api/instance/theme
 PUT /api/officers/declared/{officer}
 PUT /api/officers/defs/{officer}
 PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags

@@ -566,6 +566,10 @@ export const serverAppEdgePort = port + 484;
 // cards — its own server (plugins and task routing on, for the fixture's
 // draft and task). +485: clear of the blocks above.
 export const asksSearchPort = port + 485;
+// tests/instance-theme.spec.ts: the server's theme (docs/ui-kit.md) — its own
+// password-mode server (+486: clear of the blocks above), so no other server
+// caches the theme it saves.
+export const instanceThemePort = port + 486;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

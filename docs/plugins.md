@@ -191,6 +191,17 @@ partitions them at best. Redeem the hand-off code at your entry URL and keep
 the session in the page's memory; reloading the frame re-enters through
 muster's page.
 
+**Look like muster: link the UI kit.** muster serves its tokens, component
+classes, icons and a small script at `/ui-kit/v1/` ([ui-kit.md](ui-kit.md)),
+carrying the server's [theme](ui-kit.md#the-theme). Link them live from the
+muster server, not a copy, and the page follows an admin's theme change on its
+next load. If your page sets a Content-Security-Policy, it must admit muster's
+origin for the kit: `style-src` (kit.css), `script-src` (kit.js), `img-src`
+(icons drawn through CSS, brand images) and `connect-src` (kit.js reads
+icons.svg). The read is answered with CORS only for an https origin under
+`MUSTER_PLUGIN_ORIGINS`. muster's own page around the frame needs no change
+for this: the frame's document is yours, and so is its policy.
+
 ### `POST /plugin/v1/notify`: a knock notification
 
 An `app` plugin may ask muster to push you one of a **fixed set of

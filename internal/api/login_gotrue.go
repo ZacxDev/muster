@@ -490,7 +490,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 `+s.accountPagesSection(r)+`
 `+s.accountChiefSection(r)+`
 `+s.accountSuggestSection(r)+`
-`+s.accountBrandingSection(r)+`</div>`)
+`+s.accountBrandingSection(r)+`
+`+s.accountThemeSection(r)+`</div>`)
 }
 
 // resetSignalNode is, on the page a reset that REMOVED passkeys lands on, the

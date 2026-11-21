@@ -17,6 +17,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
+	"github.com/ZacxDev/muster/internal/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -126,84 +127,26 @@ func themes(t *testing.T) (dark, light themeTokens) {
 		parseTokens(t, cssBlock(t, css, ":root:not(.dark)"), "light")
 }
 
-func channelLum(v int) float64 {
-	c := float64(v) / 255
-	if c <= 0.04045 {
-		return c / 12.92
-	}
-	return math.Pow((c+0.055)/1.055, 2.4)
-}
-
-func luminance(c rgb) float64 {
-	return 0.2126*channelLum(c.r) + 0.7152*channelLum(c.g) + 0.0722*channelLum(c.b)
-}
-
-// contrast is the WCAG 2.x contrast ratio.
-func contrast(a, b rgb) float64 {
-	la, lb := luminance(a), luminance(b)
-	if la < lb {
-		la, lb = lb, la
-	}
-	return (la + 0.05) / (lb + 0.05)
-}
-
-type contrastPair struct {
-	fg, bg string
-	min    float64
-}
-
-// contrastPairs is the table the palette was designed against (the theme
-// proposal's contrast table, WCAG 2.2 AA): text roles on every surface at 4.5,
-// the accent as link text, the two filled-button labels, the focus ring and the
-// control edge at 3 (1.4.11 / 2.4.13), and every status's chip label at 4.5 and
-// glyph on the card at 3.
-//
-// ⚠ `line` IS ABSENT ON PURPOSE: it is a decorative divider between regions,
-// which 1.4.11 does not cover. A control's boundary is `edge`, which is here.
-func contrastPairs() []contrastPair {
-	var out []contrastPair
-	for _, fg := range []string{"text", "text2", "muted"} {
-		for _, bg := range []string{"bg", "s1", "s2", "s3"} {
-			out = append(out, contrastPair{fg, bg, 4.5})
-		}
-	}
-	for _, bg := range []string{"bg", "s1", "s2", "s3"} {
-		out = append(out, contrastPair{"accent", bg, 4.5})
-	}
-	out = append(out, contrastPair{"on-accent", "accent", 4.5}, contrastPair{"on-danger", "danger", 4.5})
-	for _, bg := range []string{"bg", "s1", "s2"} {
-		out = append(out, contrastPair{"focus", bg, 3})
-	}
-	for _, bg := range []string{"bg", "s1"} {
-		out = append(out, contrastPair{"edge", bg, 3})
-	}
-	out = append(out, contrastPair{"danger", "s1", 3})
-	for _, st := range []string{"open", "progress", "review", "complete", "error", "warning", "running"} {
-		out = append(out,
-			contrastPair{"st-" + st + "-fg", "st-" + st + "-bg", 4.5},
-			contrastPair{"st-" + st + "-fg", "s1", 3})
+// asTheme is a parsed token set as the theme package's type.
+func asTheme(tok themeTokens) theme.Tokens {
+	out := theme.Tokens{}
+	for k, v := range tok {
+		out[k] = theme.RGB{R: uint8(v.r), G: uint8(v.g), B: uint8(v.b)}
 	}
 	return out
 }
 
-// contrastFailures checks every pair against one theme and returns one line per
-// failure (or per missing token). It is the instrument; the test below and its
-// negative control both run it.
-func contrastFailures(theme string, tok themeTokens) []string {
-	var bad []string
-	for _, p := range contrastPairs() {
-		fg, okf := tok[p.fg]
-		bg, okb := tok[p.bg]
-		if !okf || !okb {
-			bad = append(bad, fmt.Sprintf("%s: %s on %s — token missing", theme, p.fg, p.bg))
-			continue
-		}
-		if r := contrast(fg, bg); r < p.min {
-			bad = append(bad, fmt.Sprintf("%s: %s %s on %s %s = %.2f:1, needs %.1f:1",
-				theme, p.fg, fg.hex(), p.bg, bg.hex(), r, p.min))
-		}
-	}
-	return bad
+// contrast is the WCAG 2.x contrast ratio: theme.Contrast, the one formula.
+func contrast(a, b rgb) float64 {
+	return theme.Contrast(theme.RGB{R: uint8(a.r), G: uint8(a.g), B: uint8(a.b)}, theme.RGB{R: uint8(b.r), G: uint8(b.g), B: uint8(b.b)})
+}
+
+// contrastFailures checks one theme against THE contrast table,
+// theme.Pairs — the same table the server checks an admin's theme against
+// before it saves it (theme.Choice.Validate). One table, so the stylesheet's
+// test and the save refuse the same things.
+func contrastFailures(label string, tok themeTokens) []string {
+	return theme.Failures(label, asTheme(tok))
 }
 
 // TestThemeTokensMeetWCAG asserts every designed pair, in both themes, at its
@@ -219,7 +162,7 @@ func TestThemeTokensMeetWCAG(t *testing.T) {
 	}
 
 	dark, light := themes(t)
-	pairs := contrastPairs()
+	pairs := theme.Pairs()
 	// 38 pairs per theme is the size of the designed table (76 across both). A
 	// table that shrank would be checking less while reporting the same green.
 	if len(pairs) != 38 {
@@ -246,6 +189,37 @@ func TestThemeTokensMeetWCAG(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "on-accent ") || !strings.Contains(got[0], " on accent ") {
 		t.Fatalf("negative control: on-accent == accent should fail exactly the one `on-accent on "+
 			"accent` pair, got %d: %v", len(got), got)
+	}
+}
+
+// TestTheDefaultPresetIsTheShippedPalette pins internal/theme's default
+// theme to tokens.css's dark block in BOTH directions: every theme colour the
+// server can serve (theme.ColourNames) has the shipped value, and every dark
+// token that is not the recency scale or a server colour (muster's own, not
+// the theme's) is a theme colour. So a server that saved the default preset,
+// and the theme.css it links, draw what app.css draws with nothing saved.
+func TestTheDefaultPresetIsTheShippedPalette(t *testing.T) {
+	dark, _ := themes(t)
+	def, err := theme.Choice{}.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, n := range theme.ColourNames() {
+		names[n] = true
+		got, ok := dark[n]
+		if !ok {
+			t.Errorf("theme colour --mu-%s is not in tokens.css's dark block", n)
+			continue
+		}
+		if w := def[n]; int(w.R) != got.r || int(w.G) != got.g || int(w.B) != got.b {
+			t.Errorf("--mu-%s: the default theme has %s, tokens.css ships %s", n, w.Hex(), got.hex())
+		}
+	}
+	for k := range dark {
+		if !names[k] && !strings.HasPrefix(k, "idle-") && !strings.HasPrefix(k, "server-") {
+			t.Errorf("tokens.css's --mu-%s is neither a theme colour nor muster's own scale; add it to internal/theme", k)
+		}
 	}
 }
 

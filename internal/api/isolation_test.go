@@ -161,6 +161,12 @@ var isolationClasses = map[string]routeClass{
 	"GET /brand/logo.png":     classPublic,
 	"GET /brand/icon-192.png": classPublic,
 	"GET /brand/icon-512.png": classPublic,
+	// The plugin UI kit (theme.go): the components and the server's theme,
+	// nothing per-user.
+	"GET /ui-kit/v1/kit.css":   classPublic,
+	"GET /ui-kit/v1/theme.css": classPublic,
+	"GET /ui-kit/v1/icons.svg": classPublic,
+	"GET /ui-kit/v1/kit.js":    classPublic,
 	// accounts PR 4: the admin claim (token in a form field) and the account page.
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
@@ -268,6 +274,9 @@ var isolationClasses = map[string]routeClass{
 	"PUT /api/instance/branding":             classAdminOnly,
 	"DELETE /api/instance/branding/logo":     classAdminOnly,
 	"DELETE /api/instance/branding/app-icon": classAdminOnly,
+	// The server's theme (theme.go, requireAdminRole).
+	"PUT /api/instance/theme":         classAdminOnly,
+	"GET /api/instance/theme/preview": classAdminOnly,
 
 	// Server-installed apps (admin_apps.go): an admin's page; the rotate and
 	// uninstall name a server app by id, which no person owns.
