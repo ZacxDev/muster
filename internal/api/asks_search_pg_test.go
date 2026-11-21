@@ -274,10 +274,11 @@ func TestEveryAskCardShowsItsLabelledId(t *testing.T) {
 	if got := chipsIn(li); strings.Join(got, ",") != "Ask #"+on+"|ask|"+on+"|Ask #"+on {
 		t.Errorf("the Open card's chip: %v\n%s", got, li)
 	}
-	// On the top row, after the toggle closes and before the question.
-	toggleEnd, chip, question := strings.Index(li, "</button>"), strings.Index(li, "data-id-copy"), strings.Index(li, "data-attention-text")
-	if !(toggleEnd > 0 && chip > toggleEnd && chip < question) || !strings.Contains(li, `data-asks-top>`) {
-		t.Errorf("the Open card's chip is not on its top row outside the toggle (toggle ends %d, chip %d, question %d)", toggleEnd, chip, question)
+	// On the top row: the toggle (no button inside it) and THEN the chip,
+	// both children of data-asks-top, before the question.
+	top := regexp.MustCompile(`<div class="[^"]*" data-asks-top><button type="button"[^>]*data-asks-toggle>([^<]|<[^b/]|</[^b])*</button><span class="[^"]*" data-id-copy="Ask #` + on + `"[^>]*>Ask #` + on + `</span></div>\s*<p[^>]*data-attention-text>`)
+	if !top.MatchString(li) {
+		t.Errorf("the Open card's chip is not on its top row after its toggle:\n%s", li)
 	}
 	if got := chipsIn(liByID(page, "answered-"+an)); strings.Join(got, ",") != "Ask #"+an+"|ask|"+an+"|Ask #"+an {
 		t.Errorf("the Answered card's chip: %v", got)
