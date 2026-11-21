@@ -281,11 +281,47 @@ const assetPlaceholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEA
 // ![alt](asset:<id>). The renderer (o.Markdown) draws no image of its own.
 var markdownAssetImage = regexp.MustCompile(`!\[([^\]\n]{0,200})\]\(asset:([A-Za-z0-9_-]{22})\)`)
 
+// markdownDataImage is a markdown image written inline as a data: URI of one
+// of the raster types an asset may be: ![alt](data:image/png;base64,...).
+//
+// 🔴 THE ADDRESS CANNOT LEAVE THE ATTRIBUTE: the media type is one of four
+// literals (never image/svg+xml, a document with script of its own), and the
+// payload is the base64 alphabet only (no quote, space, parenthesis, < or &),
+// then checked to decode (dataImageDecodes). Anything else stays the
+// renderer's text.
+var markdownDataImage = regexp.MustCompile(`!\[([^\]\n]{0,200})\]\((data:image/(?:png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2}))\)`)
+
+// dataImageDecodes reports whether a markdownDataImage's payload is base64
+// that decodes (the alphabet alone admits "A" or "AB=C").
+func dataImageDecodes(b64 string) bool {
+	_, err := base64.StdEncoding.DecodeString(b64)
+	return err == nil
+}
+
+// MarkdownImageDrawn reports whether m, ONE markdown image as written
+// (![alt](address)), is one a page's markdown block can draw: an asset
+// reference (drawn when it names one of the page's assets), or a data: image
+// markdownDataImage accepts that decodes. It is the rule markdownWithAssets
+// draws by, so the phone check (internal/ui PagePhoneNotes) cannot disagree
+// with it.
+func MarkdownImageDrawn(m string) bool {
+	if loc := markdownAssetImage.FindStringIndex(m); loc != nil && loc[0] == 0 && loc[1] == len(m) {
+		return true
+	}
+	sub := markdownDataImage.FindStringSubmatchIndex(m)
+	return sub != nil && sub[0] == 0 && sub[1] == len(m) && dataImageDecodes(m[sub[6]:sub[7]])
+}
+
 // markdownWithAssets is markdown text through o.Markdown, with each
 // ![alt](asset:<id>) naming one of o.Assets drawn as that asset: an <img>, or a
 // <video controls> for a video, its src the reference itself (the SDK puts the
-// asset's blob: URL in its place, sdkScript). Any other image syntax is the
-// renderer's to draw as text.
+// asset's blob: URL in its place, sdkScript) — and each inline
+// ![alt](data:image/png|jpeg|webp|gif;base64,...) (markdownDataImage) drawn as
+// an <img> of it (the content document's policy allows img-src data:). Any
+// other image syntax is the renderer's to draw as text.
+//
+// It is the PAGE's markdown only: ui.MarkdownHTML, which task bodies, chat
+// and comments also use, draws no image at all.
 //
 // 🔴 THE RENDERER STILL ESCAPES EVERY AUTHOR CHARACTER: each such image is
 // swapped for a placeholder (letters and digits around a per-render random
@@ -297,27 +333,43 @@ func markdownWithAssets(text string, o RenderOptions) string {
 	for _, a := range o.Assets {
 		kinds[a.PublicID] = a.ContentType
 	}
-	if len(kinds) == 0 || !strings.Contains(text, "](asset:") {
+	hasAsset := len(kinds) > 0 && strings.Contains(text, "](asset:")
+	hasData := strings.Contains(text, "](data:image/")
+	if !hasAsset && !hasData {
 		return o.Markdown(text)
 	}
 	nonce := make([]byte, 9)
 	_, _ = rand.Read(nonce)
 	mark := "MUSTERASSET" + strings.ToUpper(hex.EncodeToString(nonce))
 	var tags, literals []string
-	text = markdownAssetImage.ReplaceAllStringFunc(text, func(m string) string {
-		sub := markdownAssetImage.FindStringSubmatch(m)
-		ct, ok := kinds[sub[2]]
-		if !ok {
-			return m
-		}
-		alt, src := html.EscapeString(sub[1]), AssetScheme+sub[2]
-		tag := `<img src="` + src + `" alt="` + alt + `">`
-		if IsVideo(ct) {
-			tag = `<video src="` + src + `" controls playsinline preload="metadata" aria-label="` + alt + `"></video>`
-		}
+	hold := func(m, tag string) string {
 		tags, literals = append(tags, tag), append(literals, html.EscapeString(m))
 		return mark + "N" + strconv.Itoa(len(tags)-1) + "X"
-	})
+	}
+	if hasAsset {
+		text = markdownAssetImage.ReplaceAllStringFunc(text, func(m string) string {
+			sub := markdownAssetImage.FindStringSubmatch(m)
+			ct, ok := kinds[sub[2]]
+			if !ok {
+				return m
+			}
+			alt, src := html.EscapeString(sub[1]), AssetScheme+sub[2]
+			tag := `<img src="` + src + `" alt="` + alt + `">`
+			if IsVideo(ct) {
+				tag = `<video src="` + src + `" controls playsinline preload="metadata" aria-label="` + alt + `"></video>`
+			}
+			return hold(m, tag)
+		})
+	}
+	if hasData {
+		text = markdownDataImage.ReplaceAllStringFunc(text, func(m string) string {
+			sub := markdownDataImage.FindStringSubmatch(m)
+			if !dataImageDecodes(sub[3]) {
+				return m
+			}
+			return hold(m, `<img src="`+sub[2]+`" alt="`+html.EscapeString(sub[1])+`">`)
+		})
+	}
 	return spliceAssets(o.Markdown(text), mark, tags, literals)
 }
 
@@ -597,6 +649,13 @@ var contentThemeCSS string
 // on, plus a document's headings: scoped to a markdown block, so a page's own
 // HTML is never reset. A page's own styles still win over every global rule
 // here: those are element selectors, or :where() (no specificity at all).
+//
+// A markdown block never makes the page wider than a phone: its text breaks
+// anywhere a line cannot otherwise fit (a long code span, URL or base64 run),
+// and a table keeps its cells at least 6rem wide and normal word breaking, so
+// a wide one scrolls inside its own box (the renderer's overflow-x-auto)
+// instead of being crushed into one-letter columns. e2e/tests/pages-phone.spec.ts
+// measures both at 390x844.
 const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--bg:rgb(var(--mu-bg));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));` +
 	`--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent));--bad:rgb(var(--mu-st-error-fg));--good:rgb(var(--mu-st-complete-fg))}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -610,6 +669,7 @@ const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--
 .mp-markdown :is(code,pre){font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .mp-markdown table{text-indent:0;border-color:inherit}.mp-markdown :is(th,td){vertical-align:top}.mp-markdown th{font-weight:600}
 .mp-markdown summary{list-style:none}.mp-markdown details{color:var(--fg)}
+.mp-markdown{overflow-wrap:anywhere}.mp-markdown :is(th,td){overflow-wrap:break-word;min-width:6rem}
 html{scroll-padding-top:` + shellHeaderPx + `px}
 .mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}

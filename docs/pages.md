@@ -110,7 +110,8 @@ dispatched, so it must not wait for either (put its setup at its top level). Tal
 
 Inside the share page's frame the page has **no network**: `fetch`, images
 from elsewhere and fonts from elsewhere are refused by its policy. A small
-image can be inline as a `data:` URI; a full-size image or a video is an
+image can be inline as a `data:` URI ([which ones a markdown block
+draws](#images-in-a-markdown-block)); a full-size image or a video is an
 [asset](#images-and-video). The policy cannot stop a top-level navigation, so the
 content is served only into a frame: a browser opening `/s/<token>/content`
 on its own (`Sec-Fetch-Dest: document`) gets the link's 404, and only muster's
@@ -161,6 +162,37 @@ publish a version whose blocks use the `ref`:
 
 A version may refer only to its own page's assets: naming another page's (or
 one that does not exist) refuses the version, naming it.
+
+### Images in a markdown block
+
+A markdown block draws exactly two kinds of image; every other image syntax
+is shown as the text it was written as:
+
+| written | drawn as |
+|---|---|
+| `![what it shows](asset:<id>)` | the asset: an image, or a video player for a video |
+| `![what it shows](data:image/png;base64,…)` — `png`, `jpeg`, `webp` or `gif`, base64 that decodes | an `<img>` of it, at most the column's width |
+
+Not drawn: an `http(s)` address (the frame has no network), an SVG
+(`data:image/svg+xml`) or any other `data:` type, a `data:` URI that is not
+base64, and the syntax inside a code span or a fenced block (shown as code,
+as written). An html block may use any `data:` URI the frame's policy allows.
+An inline image counts toward the 512 KiB a version may hold; a large one is
+an asset.
+
+### Written for a phone
+
+A page is read on a phone more often than not. A markdown block's text wraps
+wherever a line cannot otherwise fit (a long code span, URL or unbroken run),
+images never exceed the column, and a table keeps each column at least 6rem
+wide and scrolls inside its own box when it is wider than the screen.
+
+`page_create` and `page_update` answer each published version with
+`phone_notes` when a markdown block has a shape that still reads badly: a
+table of more than 5 columns, an inline code span of more than 60
+characters, or an image the block cannot draw. Each note names the block
+(`blocks[i]`, as the call's array) and what to change. The version is
+published either way; a version with nothing to say has no `phone_notes`.
 
 **How it is shown.** The frame's policy is not widened: the page still has no
 network. Muster's own shell — on muster's origin, outside the frame — fetches

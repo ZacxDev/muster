@@ -549,6 +549,11 @@ export const clsAppEdgePort = port + 475;
 // (e2e/pushsink), through which that server reaches the sink's TLS endpoint.
 export const knockPushPort = port + 476;
 export const knockPushSinkPort = port + 477;
+// tests/pages-phone.spec.ts: a markdown page read on a phone — its own server
+// (pages on, a link key, so +479 its connect listener). +478: clear of the
+// blocks above.
+export const pagesPhonePort = port + 478;
+export const pagesPhoneConnectPort = port + 479;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.
