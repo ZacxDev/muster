@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"io"
+	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -398,4 +403,279 @@ func TestAClosedAskPageDrawsTheOpenHead(t *testing.T) {
 			}
 		}
 	}
+}
+
+// assertNodeFlags: node (an element a test found by its data attribute)
+// draws a visible flag for each of hidden, and never writes the hidden
+// character itself. what names the node in the failure.
+func assertNodeFlags(t *testing.T, what string, node asksNode, hidden ...rune) {
+	t.Helper()
+	if node.Node == nil {
+		t.Errorf("%s: not drawn", what)
+		return
+	}
+	flags := map[string]bool{}
+	for _, m := range node.all("data-stepup-hidden") {
+		v, _ := m.attr("data-stepup-hidden")
+		if cls, _ := m.attr("class"); cls == ui.StepUpHiddenClass && m.Data == "mark" && m.text() == v {
+			flags[v] = true
+		}
+	}
+	for _, r := range hidden {
+		cp := fmtCodePoint(r)
+		if !flags[cp] {
+			t.Errorf("%s: no visible flag for %s", what, cp)
+		}
+		if strings.ContainsRune(node.text(), r) {
+			t.Errorf("%s: writes hidden character %U into the page", what, r)
+		}
+	}
+}
+
+// fmtCodePoint is r as the flag names it: "U+202E".
+func fmtCodePoint(r rune) string {
+	s := strings.ToUpper(strconv.FormatInt(int64(r), 16))
+	for len(s) < 4 {
+		s = "0" + s
+	}
+	return "U+" + s
+}
+
+// TestTheAnsweredCardFlagsHiddenCharsInItsQuestionAndAnswer: an answered
+// card's question and its answer each draw a hidden character as a visible
+// flag (askTextHTML), never as itself.
+//
+// Mutation-checked: askTextHTML reverted to html.EscapeString fails this
+// test's question and answer assertions.
+func TestTheAnsweredCardFlagsHiddenCharsInItsQuestionAndAnswer(t *testing.T) {
+	now := designNow
+	a := attention.Ask{ID: 8, Owner: 1, Question: "Ship it‮ tonight?", Answer: "Yes​, ship it", Status: attention.Answered,
+		CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute), Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
+	card := cardsOf(t, answeredFeedHTML([]attention.Ask{a}, []attentionItem{askItem(a)}, now, nil))
+	if len(card) != 1 {
+		t.Fatalf("%d answered cards", len(card))
+	}
+	q, _ := card[0].first("data-attention-text")
+	assertNodeFlags(t, "the answered card's question", q, '‮')
+	ans, _ := card[0].first("data-attention-answer-text")
+	assertNodeFlags(t, "the answered card's answer", ans, '​')
+}
+
+// TestTheAskPageFlagsHiddenCharsInItsQuestionAndAnswer: an answered ask's
+// page draws its question and its answer with each hidden character a
+// visible flag.
+//
+// Mutation-checked: askTextHTML reverted to html.EscapeString fails this
+// test's question and answer assertions.
+func TestTheAskPageFlagsHiddenCharsInItsQuestionAndAnswer(t *testing.T) {
+	a := attention.Ask{ID: 36, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Rotate‮ the key?", Answer: "Rotate​ it now",
+		Status: attention.Answered, CreatedAt: time.Now().Add(-time.Hour), ResolvedAt: time.Now()}
+	page := parseAsks(t, askPageBody(t, whereServer(t, a), a, askPagePath(a.ID)))
+	q, _ := page.first("data-ask-question")
+	assertNodeFlags(t, "the ask page's question", q, '‮')
+	ans, _ := page.first("data-ask-answer")
+	assertNodeFlags(t, "the ask page's answer", ans, '​')
+}
+
+// TestTheOpenCardFlagsHiddenCharsInItsQuestion: an open ask's card on the
+// Open feed draws its question with each hidden character a visible flag.
+//
+// Mutation-checked: askTextHTML reverted to html.EscapeString fails it.
+func TestTheOpenCardFlagsHiddenCharsInItsQuestion(t *testing.T) {
+	a := attention.Ask{ID: 37, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Merge‮ it?", Options: []string{"yes", "no"},
+		Status: attention.Open, CreatedAt: designNow.Add(-time.Minute)}
+	card := cardsOf(t, askFeedCardHTML(askItem(a), designNow))
+	if len(card) != 1 {
+		t.Fatalf("%d open cards", len(card))
+	}
+	q, _ := card[0].first("data-attention-text")
+	assertNodeFlags(t, "the open card's question", q, '‮')
+}
+
+// TestADraftsQuotedMessageFlagsHiddenChars: the message a reply draft
+// answers — the outside party's text — is drawn in its quote box with each
+// hidden character a visible flag.
+//
+// Mutation-checked: askTextHTML reverted to html.EscapeString fails it.
+func TestADraftsQuotedMessageFlagsHiddenChars(t *testing.T) {
+	agent := int64(4)
+	reply := plugins.DraftCard{Draft: plugins.Draft{ID: 23, AgentID: &agent, AgentName: "chief", Body: "Soon.", Status: plugins.DraftPending,
+		CreatedAt: designNow.Add(-time.Minute), ExpiresAt: designNow.Add(time.Hour), CheckState: plugins.CheckSendable},
+		Message: plugins.Message{ID: 6, Sender: "dana@example.com", Body: "Pay ‮gro.live‬ now"}, PluginLabel: "Example inbox"}
+	card := cardsOf(t, draftListHTML([]plugins.DraftCard{reply}, draftsPendingEmpty))
+	if len(card) != 1 {
+		t.Fatalf("%d draft cards", len(card))
+	}
+	body, _ := card[0].first("data-draft-quote-body")
+	assertNodeFlags(t, "the draft's quoted message", body, '‮', '‬')
+}
+
+// chatDraftStore is the plugin store, played: DraftCard answers card.
+type chatDraftStore struct {
+	plugins.Store
+	card plugins.DraftCard
+}
+
+func (c chatDraftStore) DraftCard(context.Context, int64) (plugins.DraftCard, error) {
+	return c.card, nil
+}
+
+// TestAChatConfirmCardQuotesWhatAReplyAnswers: an officer chat's confirm card
+// for an outbound REPLY draft quotes the message it answers — the outside
+// party's, in its own box, marked untrusted — and, when muster holds no
+// message with that reference, says to check the target before approving:
+// the Drafts tab's card's own part (draftAnswersHTML), not a copy.
+//
+// RED at 23adc35: the chat card drew the preview and Details only.
+func TestAChatConfirmCardQuotesWhatAReplyAnswers(t *testing.T) {
+	plugin, venue, kind, ref := int64(3), "x", plugins.TargetReply, "1890"
+	d := plugins.Draft{ID: 24, PluginID: &plugin, Venue: &venue, TargetKind: &kind, TargetRef: &ref, Body: "Thanks — glad it helped.",
+		Status: plugins.DraftPending, CreatedAt: designNow, ExpiresAt: designNow.Add(time.Hour), CheckState: plugins.CheckSendable}
+	known := plugins.DraftCard{Draft: d, PluginLabel: "Acme social", ReplyTo: &plugins.Message{ID: 9, Sender: "@dana", Body: "Did‮ it ship?"}}
+	unknown := plugins.DraftCard{Draft: d, PluginLabel: "Acme social"}
+	cc := builtin.ChatCard{ID: 1, Kind: builtin.CardDraft, Officer: "marketing", DraftID: d.ID, BodySHA256: plugins.DraftBodySHA256(d.Body), MediaSHA256: []string{}}
+
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.ext.Plugins = chatDraftStore{card: known}
+	raw := s.chatCardHTML(context.Background(), officerScope{}, cc)
+	card := parseAsks(t, raw)
+	quote, ok := card.first("data-draft-reply-to")
+	if !ok {
+		t.Fatalf("the chat card does not quote the message the reply answers:\n%s", raw)
+	}
+	if _, ok := quote.first("data-draft-untrusted"); !ok {
+		t.Error("the quoted message is not marked untrusted")
+	}
+	if from, _ := quote.first("data-draft-quote-from"); from.Node == nil || !strings.Contains(from.text(), "@dana") {
+		t.Error("the quote does not say who it is from")
+	}
+	body, _ := quote.first("data-draft-quote-body")
+	assertNodeFlags(t, "the chat card's quoted message", body, '‮')
+	if _, ok := card.first("data-draft-reply-to-missing"); ok {
+		t.Error("a known message also drew the no-such-reply warning")
+	}
+	if _, ok := card.first("data-chat-card-body"); !ok {
+		t.Error("the chat card lost its preview body")
+	}
+
+	s.ext.Plugins = chatDraftStore{card: unknown}
+	card = parseAsks(t, s.chatCardHTML(context.Background(), officerScope{}, cc))
+	if w, ok := card.first("data-draft-reply-to-missing"); !ok || w.text() != "muster received no reply with this reference: check the target before you approve." {
+		t.Errorf("an unknown target does not draw the warning")
+	}
+	if _, ok := card.first("data-draft-reply-to"); ok {
+		t.Error("an unknown target drew a quote")
+	}
+}
+
+// lookalikeHandle is a handle with a Cyrillic 'а' (U+0430) among Latin letters.
+const lookalikeHandle = "@pаypal"
+
+// assertMarked: node holds a look-alike mark whose text is want.
+func assertMarked(t *testing.T, what string, node asksNode, want string) {
+	t.Helper()
+	if node.Node == nil {
+		t.Errorf("%s: not drawn", what)
+		return
+	}
+	for _, m := range node.all("data-stepup-lookalike") {
+		if cls, _ := m.attr("class"); cls == ui.StepUpLookalikeClass && m.Data == "mark" && m.text() == want {
+			return
+		}
+	}
+	t.Errorf("%s: %q is not marked as look-alike", what, want)
+}
+
+// TestAPostPreviewMarksItsTargetHandle: the preview head's target handle
+// ("Direct message to @…", "Follow @…") is the outside party's text: a
+// look-alike handle is marked and a hidden character in it is a visible
+// flag — on the page's preview and the feed's — even reaching the renderer
+// directly (a card not made by NormalizeHandle); the note under the preview
+// says it has look-alike letters.
+//
+// RED at 23adc35: the handle was only HTML-escaped.
+func TestAPostPreviewMarksItsTargetHandle(t *testing.T) {
+	for _, target := range []string{plugins.TargetDM, plugins.TargetFollow} {
+		for _, feed := range []bool{false, true} {
+			view := target + map[bool]string{false: " page", true: " feed"}[feed]
+			c := &attention.StepUpCard{DraftID: 9, Venue: "X", Platform: "x", Target: target, Handle: lookalikeHandle, Preview: "Hi."}
+			frag := parseAsks(t, stepUpPostHTML(c, feed))
+			kind, _ := frag.first("data-stepup-post-kind")
+			assertMarked(t, view+": the head's handle", kind, lookalikeHandle)
+			if _, ok := frag.first("data-stepup-lookalike-note"); !ok {
+				t.Errorf("%s: no look-alike note for the handle", view)
+			}
+			c.Handle = "@some​one"
+			frag = parseAsks(t, stepUpPostHTML(c, feed))
+			kind, _ = frag.first("data-stepup-post-kind")
+			assertNodeFlags(t, view+": the head's handle", kind, '​')
+			// CONTROL: a plain handle is drawn as itself, unmarked.
+			c.Handle = "@someone"
+			frag = parseAsks(t, stepUpPostHTML(c, feed))
+			if kind, _ = frag.first("data-stepup-post-kind"); kind.all("data-stepup-lookalike") != nil || !strings.HasSuffix(kind.text(), " @someone") {
+				t.Errorf("%s: a plain handle reads %q", view, kind.text())
+			}
+		}
+	}
+}
+
+// TestADraftsDetailsMarkLookalikeTargets: the Details fold's To / Target,
+// Because-of and Reference lines mark a look-alike word and flag a hidden
+// character.
+//
+// RED at 23adc35: they flagged hidden characters only.
+func TestADraftsDetailsMarkLookalikeTargets(t *testing.T) {
+	plugin, venue, dm, reply := int64(3), "x", plugins.TargetDM, plugins.TargetReply
+	handle, because, ref := lookalikeHandle, "x.com/pаypal/status/1", "pаypal.com/status/2"
+	dmCard := plugins.DraftCard{Draft: plugins.Draft{ID: 25, PluginID: &plugin, Venue: &venue, TargetKind: &dm, TargetRef: &handle, BecauseRef: &because,
+		ExternalRef: "mаil​-ref", Body: "Hi."}}
+	replyCard := plugins.DraftCard{Draft: plugins.Draft{ID: 26, PluginID: &plugin, Venue: &venue, TargetKind: &reply, TargetRef: &ref, Body: "Hi."}}
+	details := parseAsks(t, draftDetailsHTML(dmCard))
+	to, _ := details.first("data-draft-target")
+	assertMarked(t, "the To line", to, lookalikeHandle)
+	bc, _ := details.first("data-draft-because")
+	assertMarked(t, "the Because-of line", bc, because)
+	xr, _ := details.first("data-draft-ref")
+	assertNodeFlags(t, "the Reference line", xr, '​')
+	if xr.Node != nil && len(xr.all("data-stepup-lookalike")) != 1 {
+		t.Errorf("the Reference line: its look-alike word is not marked")
+	}
+	target, _ := parseAsks(t, draftDetailsHTML(replyCard)).first("data-draft-target")
+	assertMarked(t, "the Target line", target, ref)
+}
+
+// TestADraftSearchResultShowsItsVenuePreview: a draft found by the search
+// box is drawn as the Drafts tab draws it — the post it becomes on its venue
+// (the feed's compact preview: logo, what it does, the text, a hidden
+// character a flag) — never its text spelled out.
+//
+// RED at 23adc35: the text was one box through flows.VisibleEscape
+// (visibleLines: \u{202e}).
+func TestADraftSearchResultShowsItsVenuePreview(t *testing.T) {
+	plugin, venue, kind := int64(3), "x", plugins.TargetPost
+	c := plugins.DraftCard{Draft: plugins.Draft{ID: 27, PluginID: &plugin, Venue: &venue, TargetKind: &kind, Body: draftFixtureBody,
+		Status: plugins.DraftPending, CreatedAt: designNow.Add(-time.Minute), ExpiresAt: designNow.Add(time.Hour), AgentName: "w​riter"}, PluginLabel: "Acme social"}
+	frag := draftSearchCardHTML(c, designNow)
+	li := parseAsks(t, frag)
+	text, ok := li.first("data-asks-search-text")
+	if !ok {
+		t.Fatalf("no text on the result:\n%s", frag)
+	}
+	post, ok := text.first("data-stepup-post")
+	if !ok {
+		t.Fatalf("the result has no venue preview:\n%s", frag)
+	}
+	if logo, _ := post.first("data-venue-logo"); logo.Node == nil {
+		t.Error("the preview has no logo")
+	} else if v, _ := logo.attr("data-venue-logo"); v != "x" {
+		t.Errorf("the preview's logo %q", v)
+	}
+	if k, _ := post.first("data-stepup-post-kind"); k.Node == nil || k.text() != "New post" {
+		t.Error("the preview does not say what it does there")
+	}
+	pt, _ := post.first("data-stepup-preview-text")
+	assertNodeFlags(t, "the result's text", pt, '‮', '‬')
+	title, _ := li.first("data-asks-search-title")
+	assertNodeFlags(t, "the result's title", title, '​')
+	assertNoSpelledEscapes(t, "search result", frag, '‮', '‬', '​')
 }

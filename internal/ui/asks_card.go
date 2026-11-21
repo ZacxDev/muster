@@ -240,13 +240,6 @@ func AsksDraftsWaitHTML(n int) string {
 // is not an expand).
 const AsksFixedCardAttrs = ` data-asks-card data-asks-fixed`
 
-// AsksFixedHeadHTML is a fixed card's head: its kind badge (badge, "" for
-// none), its title and the muted line under it — the feed card head's
-// anatomy without the toggle.
-func AsksFixedHeadHTML(badge, title, sub string) string {
-	return AsksHeadHTML(AsksHead{Badge: badge, Who: AsksWhoHTML(title, sub)})
-}
-
 // AsksWhoHTML is a head's lines: title (already HTML, its own
 // AsksTitleClass span), then sub (already HTML) as its muted line; sub ""
 // draws none.

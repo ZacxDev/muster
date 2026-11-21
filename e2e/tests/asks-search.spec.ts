@@ -131,6 +131,17 @@ for (const vp of [
       await expect(stepUp).toBeVisible();
       await expect(stepUp.locator('[data-asks-search-title]')).toHaveText('Post to X? · Draft #41');
 
+      // A draft found by its text is drawn as the Drafts tab draws it: the
+      // post it becomes (the venue preview), not a box of its text.
+      await search(page, 'noon works');
+      const draft = page.locator(`#search-draft-${ids.draft}`);
+      await expect(draft).toBeVisible();
+      const preview = draft.locator('[data-asks-search-text] [data-stepup-post]');
+      await expect(preview).toBeVisible();
+      await expect(preview.locator('[data-venue-logo]')).toHaveCount(1);
+      await expect(preview.locator('[data-stepup-preview-text]')).toHaveText('Yes, noon works.');
+      await noSideways(page);
+
       await search(page, 'no-such-words-' + stamp);
       const empty = page.locator('[data-asks-search-empty]');
       await expect(empty).toHaveText(`No asks match “no-such-words-${stamp}”. Clear`);

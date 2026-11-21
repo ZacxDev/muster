@@ -689,15 +689,17 @@ func stepUpWithVenue(c *attention.StepUpCard) *attention.StepUpCard {
 }
 
 // stepUpNotesHTML is the lines a preview of card c carries under it, OUTSIDE
-// the post's mock: that it is an excerpt (c.Excerpt), and that it has
-// look-alike letters (stepUpLookalikeNote); cls is the face's class.
+// the post's mock: that it is an excerpt (c.Excerpt), and that its text or
+// its target's handle has look-alike letters (stepUpLookalikeNote) or hidden
+// characters (stepUpHiddenNote); cls is the face's class.
 func stepUpNotesHTML(c *attention.StepUpCard, cls string) string {
 	var b strings.Builder
 	if c.Excerpt != "" {
 		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-excerpt>` + html.EscapeString(c.Excerpt) + `</p>
 `)
 	}
-	text := strings.Join(stepUpParagraphs(c.Preview), "\n")
+	// The text and the target's handle (stepUpPostKindHTML marks it too).
+	text := strings.Join(stepUpParagraphs(c.Preview), "\n") + "\n" + c.Handle
 	if stepUpLookalikeIn(text) {
 		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-lookalike-note>` + stepUpLookalikeNote + `</p>
 `)
@@ -724,12 +726,15 @@ func stepUpDetailsHTML(inner string) string {
 `
 }
 
-// stepUpPostKind is the line under a post preview's venue: what the draft
-// does there.
-func stepUpPostKind(c *attention.StepUpCard, parts int) string {
+// stepUpPostKindHTML is the line under a post preview's venue, as HTML: what
+// the draft does there. Its words are muster's own; the target's handle is
+// the OUTSIDE party's text, drawn through stepUpMarkedHTML — every hidden
+// code point a visible flag, a word with look-alike letters marked — so a
+// handle that only looks like the one the owner means is never shown as it.
+func stepUpPostKindHTML(c *attention.StepUpCard, parts int) string {
 	at := ""
 	if h := strings.TrimPrefix(strings.TrimSpace(c.Handle), "@"); h != "" {
-		at = " @" + h
+		at = " " + stepUpMarkedHTML("@"+h)
 	}
 	switch c.Target {
 	case plugins.TargetPost:
@@ -770,13 +775,13 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 	c = stepUpWithVenue(c)
 	parts, total := stepUpPostParts(c)
 	logo := ui.VenueLogoKey(c.Platform)
-	kind := stepUpPostKind(c, total)
+	kind := stepUpPostKindHTML(c, total)
 	var b strings.Builder
 	if feed {
 		b.WriteString(`<div class="` + ui.StepUpPostFeedClass + `" data-stepup-preview data-stepup-post data-logo="` + logo + `">
 <div class="` + ui.StepUpPostFeedHeadClass + `" data-stepup-post-head><span class="` + ui.StepUpLogoFeedClass + `" data-stepup-logo>` +
 			ui.VenueLogoSVG(c.Platform, ui.StepUpLogoFeedGlyphClass) + `</span><span class="` + ui.StepUpPostFeedNamesClass + `"><span class="` + ui.StepUpPostFeedVenueClass + `" data-stepup-venue>` + esc(c.Venue) +
-			`</span> · <span data-stepup-post-kind>` + esc(kind) + `</span></span></div>
+			`</span> · <span data-stepup-post-kind>` + kind + `</span></span></div>
 `)
 		if parts[0] != "" {
 			// One clamped block (asks-clamp counts lines in one box): its
@@ -807,7 +812,7 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 	b.WriteString(`<article class="` + ui.StepUpPostClass + `" data-stepup-preview data-stepup-post data-logo="` + logo + `">
 <header class="` + ui.StepUpPostHeadClass + `" data-stepup-post-head><span class="` + ui.StepUpLogoClass + `" data-stepup-logo>` +
 		ui.VenueLogoSVG(c.Platform, ui.StepUpLogoGlyphClass) + `</span><span class="` + ui.StepUpPostNamesClass + `"><span class="` + ui.StepUpPostVenueClass + `" data-stepup-venue>` +
-		esc(c.Venue) + `</span><span class="` + ui.StepUpPostKindClass + `" data-stepup-post-kind>` + esc(kind) + `</span></span></header>
+		esc(c.Venue) + `</span><span class="` + ui.StepUpPostKindClass + `" data-stepup-post-kind>` + kind + `</span></span></header>
 `)
 	// Which part each medium goes on: all on the one post, else medium i on
 	// part i+1 of the WHOLE thread (its last part takes any beyond). An

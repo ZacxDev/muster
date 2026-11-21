@@ -18,7 +18,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -897,22 +896,28 @@ func draftKindLabel(d plugins.Draft) string {
 	return "Reply draft"
 }
 
-// draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass, fixed),
-// its head the kind badge, WHO drafted it (the agent's display name:
-// DraftCard.AgentDisplay, the one naming rule, set by readDraftViews) and how
-// long ago; its facts as pills (the plugin, the state, a relative expiry); the
-// message it answers as a quote marked untrusted; the reply in
-// normal text; then ONE primary action (Approve and send) on its own row,
-// with Reject (and its reason box) under it (ui.AsksDecisionClass).
+// draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass,
+// fixed). Its head (ui.AsksHeadHTML) is WHO drafted it (draftWho: the
+// officer's words, else the agent's display name — DraftCard.AgentDisplay,
+// set by readDraftViews — else its name) and how long ago, with its id chip;
+// no kind badge, since the preview's own head says where it goes and what it
+// is. Then its facts as pills (its state, a relative expiry); what it answers
+// (draftAnswersHTML: the outside party's message quoted in its own box,
+// labelled untrusted, never mistaken for the draft — or the line saying
+// muster holds no such message); the draft itself as the post it becomes
+// (stepUpPostHTML over draftPostCard: the venue's logo, what it does there,
+// the text as paragraphs, its media); any medium not yet uploaded; the
+// plugin's last word; the Details fold (draftDetailsHTML: target, because-of,
+// each medium's facts, the plugin's reference); the owner's reason; then ONE
+// primary action (Approve and send) with Reject and its reason box under it
+// (ui.AsksDecisionClass).
 //
-// 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The draft is
-// drawn through flows.VisibleEscape line by line (visibleLines) — printable
-// ASCII as itself, a line break as one, everything else spelled out — so
-// nothing invisible or look-alike rides along unseen (its length in characters
-// is on data-runes, no longer a pill). It is in the page's normal text now (it was
-// monospace, broken anywhere: "minu/te"), wrapping at words. The message it
-// answers is the OUTSIDE party's text: drawn escaped, in its own box, labelled
-// untrusted, and never mistaken for the draft.
+// 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The text
+// is drawn whole, never cut to an excerpt, as the post reads (an em dash a
+// dash, an emoji an emoji): every hidden code point a visible flag naming it
+// (stepUpHiddenHTML) and every word with look-alike letters marked
+// (stepUpMarkedHTML), with a note under the preview when it holds either.
+// Its length in characters is on data-runes.
 func draftCardHTML(c plugins.DraftCard) string {
 	return draftCardHTMLAt(c, time.Now())
 }
@@ -928,7 +933,7 @@ func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
 // and bindings wherever it is drawn — a place only adds its return field.
 func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	esc := html.EscapeString
-	d, m := c.Draft, c.Message
+	d := c.Draft
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
 	who := draftWho(c)
@@ -952,19 +957,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	}
 	b.WriteString(`<div class="` + ui.AsksPillsClass + `" data-draft-pills>` + strings.Join(pills, "") + `</div>
 `)
-	// WHAT IT ANSWERS: the outside party's message, quoted and marked
-	// untrusted — a reply draft's message, an outbound reply's target.
-	switch {
-	case !d.IsOutbound():
-		b.WriteString(draftQuoteHTML(m.Sender, m.Subject, m.Body, ` data-draft-original`))
-	case d.Target().Kind == plugins.TargetReply || d.BecauseRef != nil:
-		if r := c.ReplyTo; r != nil {
-			b.WriteString(draftQuoteHTML(r.Sender, "", r.Body, ` data-draft-reply-to`))
-		} else {
-			b.WriteString(`<p class="text-xs text-fg2" data-draft-reply-to-missing>muster received no reply with this reference: check the target before you approve.</p>
-`)
-		}
-	}
+	b.WriteString(draftAnswersHTML(c))
 	// 🔴 WHAT IS APPROVED IS WHAT IS SEEN: the draft's WHOLE text, drawn as
 	// the step-up card draws it (stepUpPostHTML over draftPostCard: the
 	// venue's logo, the post as paragraphs, its media), every hidden code
@@ -1032,6 +1025,31 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	return b.String()
 }
 
+// draftAnswersHTML is WHAT draft card c ANSWERS, "" for nothing: the outside
+// party's message, quoted and marked untrusted (draftQuoteHTML) — a reply
+// draft's message, an outbound reply's (or a because-of draft's) target — or,
+// when muster holds no message with that reference, the one line telling the
+// owner to check the target before approving. THE one rule for it: the Drafts
+// tab's card and an officer chat's confirm card both draw it from here.
+func draftAnswersHTML(c plugins.DraftCard) string {
+	d, m := c.Draft, c.Message
+	switch {
+	case !d.IsOutbound():
+		return draftQuoteHTML(m.Sender, m.Subject, m.Body, ` data-draft-original`)
+	case d.Target().Kind == plugins.TargetReply || d.BecauseRef != nil:
+		if r := c.ReplyTo; r != nil {
+			return draftQuoteHTML(r.Sender, "", r.Body, ` data-draft-reply-to`)
+		}
+		return `<p class="text-xs text-fg2" data-draft-reply-to-missing>` + draftReplyToMissing + `</p>
+`
+	}
+	return ""
+}
+
+// draftReplyToMissing is what a reply draft's card says when muster received
+// no message with its target's reference.
+const draftReplyToMissing = "muster received no reply with this reference: check the target before you approve."
+
 // draftQuoteHTML is the message a draft answers, from the OUTSIDE party:
 // sender, an optional subject and its body (askTextHTML: real line breaks,
 // hidden code points flagged), in its own quote box, labelled untrusted and
@@ -1059,8 +1077,11 @@ func draftDetailsHTML(c plugins.DraftCard) string {
 	esc := html.EscapeString
 	d := c.Draft
 	var lines []string
+	// A target, a because-of and a reference are the outside party's text:
+	// hidden code points flagged and look-alike words marked
+	// (stepUpMarkedHTML), as the preview's own handle is.
 	line := func(attr, label, v string) {
-		lines = append(lines, `<li class="break-all text-xs text-fg2"`+attr+`>`+label+stepUpHiddenHTML(v)+`</li>`)
+		lines = append(lines, `<li class="break-all text-xs text-fg2"`+attr+`>`+label+stepUpMarkedHTML(v)+`</li>`)
 	}
 	if d.IsOutbound() {
 		t := d.Target()
@@ -1089,23 +1110,6 @@ func draftDetailsHTML(c plugins.DraftCard) string {
 		return ""
 	}
 	return `<ul class="flex min-w-0 flex-col gap-1 pb-2" data-draft-details>` + strings.Join(lines, "") + `</ul>`
-}
-
-// visibleLines is v drawn through flows.VisibleEscape LINE BY LINE: each
-// line break is drawn as one (the box is whitespace-pre-wrap), and everything
-// else — a tab, a carriage return, a bidi control, any non-ASCII letter — is
-// spelled out exactly as VisibleEscape spells it. Split back on "\n" and
-// unescaped line by line it is v again (the mapping stays one-to-one: a
-// literal backslash-n in v is drawn \\n). The step-up card's preview does NOT
-// draw a draft's text this way: it draws it as the post reads (an em dash a
-// dash, an emoji an emoji; stepUpParagraphsHTML), and instead marks each word
-// with look-alike letters and says so under the preview (stepUpLookalike).
-func visibleLines(v string) string {
-	lines := strings.Split(v, "\n")
-	for i, l := range lines {
-		lines[i] = flows.VisibleEscape(l)
-	}
-	return strings.Join(lines, "\n")
 }
 
 // draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:
