@@ -326,6 +326,16 @@ var (
 		"internal/plugins.(*PGStore).RotateServerApp",
 		"internal/plugins.(*PGStore).UninstallServerApp",
 		"internal/plugins.(*PGStore).SetServerAppHidden",
+		// …and its lists (core PR 1h.2): an admin's /admin/apps and the
+		// CLI's list (every live server app, and its grants' subjects for the
+		// live count THE gate makes), a person's tabs (live server apps that
+		// person has not hidden, keyed on the principal's own id) and a
+		// person's Account → Apps (every live server app with that person's
+		// own grant row).
+		"internal/plugins.(*PGStore).ServerApps",
+		"internal/plugins.(*PGStore).liveGrantCount",
+		"internal/plugins.(*PGStore).VisibleServerApps",
+		"internal/plugins.(*PGStore).AccountServerApps",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).

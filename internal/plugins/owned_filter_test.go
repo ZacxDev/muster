@@ -137,11 +137,18 @@ var pluginRowReads = map[string]string{
 	"PGStore.RotateServerApp":       "an admin's rotate, under System: scope = 'server', the app's id",
 	"PGStore.UninstallServerApp":    "an admin's uninstall, under System: scope = 'server', the app's id",
 	"PGStore.SetServerAppHidden":    "a person's Hide/Show, under System: scope = 'server', the app's id",
-	"PGStore.createPluginTx":        "an insert: owner_id is the principal's (the column's default)",
-	"PGStore.submit":                "the plugin door: the token's own plugin id, locked",
-	"PGStore.SetChiefSession":       "the plugin door's chief binding of the token's own plugin",
-	"PGStore.pairMintable":          "a name's uniqueness among the pairing owner's own (owner_id = $1)",
-	"PGStore.FileOutbound":          "an officer's draft names its owner's plugin (owner_id = $1)",
+	// 0172, core PR 1h.2: the server apps' lists. Each reads every live
+	// server app (scope = 'server') under System; the person's own state is
+	// keyed on the principal's id, and the grant counts and states are THE
+	// gate's (LiveServerGrants).
+	"PGStore.ServerApps":        "an admin's list, under System: every live server app (scope = 'server')",
+	"PGStore.VisibleServerApps": "a person's tabs, under System: live server apps the principal has not hidden",
+	"PGStore.AccountServerApps": "a person's Account → Apps, under System: every live server app with the principal's own row",
+	"PGStore.createPluginTx":    "an insert: owner_id is the principal's (the column's default)",
+	"PGStore.submit":            "the plugin door: the token's own plugin id, locked",
+	"PGStore.SetChiefSession":   "the plugin door's chief binding of the token's own plugin",
+	"PGStore.pairMintable":      "a name's uniqueness among the pairing owner's own (owner_id = $1)",
+	"PGStore.FileOutbound":      "an officer's draft names its owner's plugin (owner_id = $1)",
 
 	// 0154: a plugin's auto-start, written only by its owner's session
 	// (autostartWriter) and read by the owner and the plugin's own door.

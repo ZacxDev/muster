@@ -53,12 +53,14 @@ DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /.well-known/assetlinks.json
 GET /account
+GET /account/apps
 GET /account/credentials
 GET /account/devices/live
 GET /account/features
 GET /account/passkeys
 GET /account/teams
 GET /account/tokens
+GET /admin/apps
 GET /admin/invites
 GET /admin/teams
 GET /admin/users
@@ -236,6 +238,8 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /account/apps/{id}/hide
+POST /account/apps/{id}/show
 POST /account/chief
 POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
@@ -256,6 +260,9 @@ POST /account/suggest
 POST /account/teams/{id}/notify
 POST /account/tokens
 POST /account/tokens/{id}/revoke
+POST /admin/apps
+POST /admin/apps/{id}/rotate
+POST /admin/apps/{id}/uninstall
 POST /admin/invites
 POST /admin/invites/{id}/revoke
 POST /admin/teams

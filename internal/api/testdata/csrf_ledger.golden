@@ -90,6 +90,8 @@ cookie DELETE /tasks/{id}
 cookie DELETE /tasks/{id}/comments/{cid}
 cookie DELETE /tasks/{id}/tags/{tag}
 cookie PATCH /tasks/{id}/status
+cookie POST /account/apps/{id}/hide
+cookie POST /account/apps/{id}/show
 cookie POST /account/chief
 cookie POST /account/credentials/claude
 cookie POST /account/credentials/claude/{name}/delete
@@ -110,6 +112,9 @@ cookie POST /account/suggest
 cookie POST /account/teams/{id}/notify
 cookie POST /account/tokens
 cookie POST /account/tokens/{id}/revoke
+cookie POST /admin/apps
+cookie POST /admin/apps/{id}/rotate
+cookie POST /admin/apps/{id}/uninstall
 cookie POST /admin/invites
 cookie POST /admin/invites/{id}/revoke
 cookie POST /admin/teams

@@ -360,7 +360,11 @@ func TestTheServerGrantGateIsOneFunction(t *testing.T) {
 		}
 	})
 	delete(callers, "internal/plugins PGStore.LiveServerGrants") // the definition's own name
-	if got, want := setOf(callers), []string{"internal/api Server.admitServerPlugin", "internal/api Server.handlePluginOwnersCheck"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	// The two DECIDERS (act-for and owners/check), and the two DISPLAYS that
+	// ask the gate rather than re-spell it: an admin's live-grant count and a
+	// person's "can act for you until" (core PR 1h.2).
+	if got, want := setOf(callers), []string{"internal/api Server.admitServerPlugin", "internal/api Server.handlePluginOwnersCheck",
+		"internal/plugins PGStore.AccountServerApps", "internal/plugins PGStore.liveGrantCount"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("callers of LiveServerGrants: %v; want %v", got, want)
 	}
 	wantRefs := []string{
