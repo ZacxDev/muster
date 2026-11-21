@@ -84,6 +84,8 @@ func (s *Server) registerAdminRoutes(mux Mux) {
 	mux.HandleFunc("POST /admin/invites", s.requireAdmin(s.handleAdminInviteCreate))
 	mux.HandleFunc("POST /admin/invites/{id}/revoke", s.requireAdmin(s.handleAdminInviteRevoke))
 	s.registerAdminTeamRoutes(mux)
+	s.registerAdminAppRoutes(mux)
+	s.registerAccountAppRoutes(mux)
 }
 
 // adminPagesServed reports whether this server has what the admin pages need.
@@ -183,9 +185,14 @@ func (s *Server) writeAdminDocument(w http.ResponseWriter, r *http.Request, code
 		}
 		return `<a href="` + href + `"` + cur + ` class="` + cls + `">` + label + `</a>`
 	}
+	// Apps (server-installed app plugins, admin_apps.go): only where served.
+	appsTab := ""
+	if s.adminAppsServed() {
+		appsTab = tab(adminAppsPath, "Apps")
+	}
 	s.writeNavDocument(w, r, code, title, ui.NavAdmin, true, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
 <a href="/" class="inline-flex min-h-[44px] items-center px-2 text-sm text-accent underline">← muster</a>
-`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/admin/teams", "Teams")+tab("/account", "Account")+`
+`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/admin/teams", "Teams")+appsTab+tab("/account", "Account")+`
 </nav>
 <div class="flex flex-col gap-4">`+inner+`</div>`)
 }

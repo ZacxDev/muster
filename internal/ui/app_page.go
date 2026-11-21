@@ -112,6 +112,20 @@ type AppPageView struct {
 	Ref string
 	// MintPath is the hand-off route the script posts to.
 	MintPath string
+	// Server is a SERVER app's page (core PR 1h.2): no New tab (a server
+	// app's /enter refuses a top-level load), and in the Android app the card
+	// asks the app to open THIS page in the system browser (the bridge's
+	// open-external) — or, in an app too old for that message, says to open
+	// it there, with Copy link. It never navigates the WebView.
+	Server bool
+}
+
+// AppServerCardLine is a server app's card line where the Android app can
+// open the page in the browser; AppServerFallbackLine where it cannot (an app
+// too old for open-external), above the page's address.
+func AppServerCardLine(label string) string { return label + " opens in your browser" }
+func AppServerFallbackLine(label string) string {
+	return "Open this page in your browser to use " + label + ":"
 }
 
 // AppPage is the app tab's page document.
@@ -150,7 +164,8 @@ func AppPage(v AppPageView) g.Node {
 						H1(Class("min-w-0 flex-1 truncate text-base font-semibold text-fg"), g.Text(v.Label)),
 						// New tab; in the Android app the script hides it (the
 						// card's Open is the way out there).
-						Button(Type("button"), g.Attr("data-app-newtab", ""), Class(hiddenBtn+" text-accent hover:bg-s2"), g.Text("New tab")),
+						// Never for a SERVER app: it has no top-level way in.
+						g.If(!v.Server, Button(Type("button"), g.Attr("data-app-newtab", ""), Class(hiddenBtn+" text-accent hover:bg-s2"), g.Text("New tab"))),
 					),
 				),
 				Main(
@@ -162,6 +177,7 @@ func AppPage(v AppPageView) g.Node {
 					g.Attr("data-poll", strconv.Itoa(AppPollSeconds)),
 					g.Attr("data-removed", AppRemoved),
 					g.If(v.Ref != "", g.Attr("data-ref", v.Ref)),
+					g.If(v.Server, g.Attr("data-app-server", "")),
 					Class("relative flex min-h-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"),
 					P(ID("app-status"), g.Attr("role", "status"), g.Attr("aria-live", "polite"), g.Attr("hidden", ""),
 						Class("shrink-0 border-b border-line bg-danger/15 px-3 py-2 text-sm text-fg break-words")),
@@ -175,11 +191,26 @@ func AppPage(v AppPageView) g.Node {
 					),
 					// The Android app's card (window.musterApp): shown by the
 					// script in place of the frame.
-					Div(g.Attr("data-app-card", ""), g.Attr("hidden", ""),
+					g.If(!v.Server, Div(g.Attr("data-app-card", ""), g.Attr("hidden", ""),
 						Class("m-4 flex-col items-start gap-3 rounded-xl bg-s1 p-4 ring-1 ring-line [&:not([hidden])]:flex"),
 						P(Class("text-sm text-fg"), g.Text(v.Label+" opens in your browser")),
 						Button(Type("button"), g.Attr("data-app-open", ""), Class(btn+" bg-accent text-on-accent"), g.Text("Open")),
-					),
+					)),
+					// A SERVER app's two cards: the app can open muster's own page
+					// in the system browser (open-external), or it is too old to and
+					// the card says where to go, with Copy link. Neither mints or
+					// navigates.
+					g.If(v.Server, Div(g.Attr("data-app-card-external", ""), g.Attr("hidden", ""),
+						Class("m-4 flex-col items-start gap-3 rounded-xl bg-s1 p-4 ring-1 ring-line [&:not([hidden])]:flex"),
+						P(Class("text-sm text-fg"), g.Text(AppServerCardLine(v.Label))),
+						Button(Type("button"), g.Attr("data-app-external", ""), Class(btn+" bg-accent text-on-accent"), g.Text("Open")),
+					)),
+					g.If(v.Server, Div(g.Attr("data-app-card-copy", ""), g.Attr("hidden", ""),
+						Class("m-4 flex-col items-start gap-3 rounded-xl bg-s1 p-4 ring-1 ring-line [&:not([hidden])]:flex"),
+						P(Class("text-sm text-fg"), g.Text(AppServerFallbackLine(v.Label))),
+						P(g.Attr("data-app-address", ""), Class("break-all font-mono text-sm text-fg")),
+						Button(Type("button"), g.Attr("data-app-copy", ""), Class(btn+" text-accent ring-1 ring-inset ring-line"), g.Text("Copy link")),
+					)),
 				),
 				appScript(v.Nav.Feat),
 				pwaChrome(),
@@ -202,6 +233,25 @@ var appPageScriptSrc = staticJS("app-page", `
   function root() { return document.getElementById('app-main'); }
   function frame() { var r = root(); return r && r.querySelector('[data-app-frame]'); }
   function card() { var r = root(); return r && r.querySelector('[data-app-card]'); }
+  function server() { var r = root(); return !!r && r.getAttribute('data-app-server') !== null; }
+  // 🔴 THE ONE DETECTION (muster-android A1): an app that LISTS open-external
+  // in window.musterAppMessages. An older app has window.musterApp and no
+  // list, and gets the copy-link card.
+  function canOpenExternal() {
+    return !!(window.musterApp && Array.isArray(window.musterAppMessages) && window.musterAppMessages.indexOf('open-external') !== -1);
+  }
+  // This page's own address, exactly the shape the app accepts: muster's
+  // origin, /apps/<id>, and only ?ref=<ref> (raw: the ref rule's characters).
+  function pageURL() {
+    var r = root();
+    var u = window.location.origin + '/apps/' + r.getAttribute('data-plugin');
+    if (r.getAttribute('data-ref')) u += '?ref=' + r.getAttribute('data-ref');
+    return u;
+  }
+  function serverCards() {
+    var r = root();
+    return [r.querySelector('[data-app-card-external]'), r.querySelector('[data-app-card-copy]')];
+  }
   function say(msg) {
     var e = document.getElementById('app-status');
     if (!e) return;
@@ -245,6 +295,7 @@ var appPageScriptSrc = staticJS("app-page", `
     gone = true;
     removeFrame();
     var c = card(); if (c) c.remove();
+    serverCards().forEach(function (x) { if (x) x.remove(); });
     var n = document.querySelector('[data-app-newtab]'); if (n) n.hidden = true;
     if (timer) clearInterval(timer);
     say(root().getAttribute('data-removed'));
@@ -281,9 +332,24 @@ var appPageScriptSrc = staticJS("app-page", `
       .catch(function (e) { say(e && e.message ? e.message : 'the hand-off failed'); })
       .then(function () { busy = false; });
   }
+  // A server app's Open: the app opens THIS page in the system browser. It
+  // mints nothing and never navigates the WebView (no loop).
+  function openExternal() {
+    if (gone || !canOpenExternal()) return;
+    try { window.musterApp.postMessage(JSON.stringify({ type: 'open-external', url: pageURL() })); } catch (e) {}
+  }
+  function copyLink() {
+    try { if (navigator.clipboard) navigator.clipboard.writeText(pageURL()); } catch (e) {}
+  }
   function start() {
     if (!root()) return;
-    if (window.musterApp) {
+    if (window.musterApp && server()) {
+      removeFrame();
+      var sc = serverCards()[canOpenExternal() ? 0 : 1];
+      if (sc) sc.hidden = false;
+      var a = root().querySelector('[data-app-address]');
+      if (a) a.textContent = pageURL();
+    } else if (window.musterApp) {
       removeFrame();
       var n = document.querySelector('[data-app-newtab]'); if (n) n.hidden = true;
       var c = card(); if (c) c.hidden = false;
@@ -298,7 +364,9 @@ var appPageScriptSrc = staticJS("app-page", `
     var t = ev.target;
     if (!t || !t.closest) return;
     if (t.closest('[data-app-newtab]')) { ev.preventDefault(); newTab(); return; }
-    if (t.closest('[data-app-open]')) { ev.preventDefault(); openTop(); }
+    if (t.closest('[data-app-open]')) { ev.preventDefault(); openTop(); return; }
+    if (t.closest('[data-app-external]')) { ev.preventDefault(); openExternal(); return; }
+    if (t.closest('[data-app-copy]')) { ev.preventDefault(); copyLink(); }
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

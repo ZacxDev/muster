@@ -673,3 +673,152 @@ func (s *PGStore) serverAppMintRefusal(ctx context.Context, caps []Capability, e
 	}
 	return nil
 }
+
+// ServerAppInfo is a live server app as /admin/apps lists it: the row, who
+// installed it and how, and how many people hold a LIVE grant now (a count,
+// never names), counted by THE gate (LiveServerGrants) so the page cannot
+// disagree with act-for.
+type ServerAppInfo struct {
+	App          Plugin
+	InstalledBy  *int64
+	InstalledVia string
+	LiveGrants   int
+}
+
+// ServerApps is every live server app, oldest first, for an admin's page or
+// the command line's list. Under authz.System (a server row is hidden from
+// every principal); the caller gates who may read it.
+func (s *PGStore) ServerApps(ctx context.Context, origins []OriginPattern, now time.Time) ([]ServerAppInfo, error) {
+	sys := authz.System(ctx)
+	rows, err := s.pool.Query(sys, `SELECT `+pluginCols+`, installed_by, coalesce(installed_via, '') FROM plugins
+		WHERE scope = 'server' AND revoked_at IS NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	var out []ServerAppInfo
+	for rows.Next() {
+		var a ServerAppInfo
+		if err := rows.Scan(append(pluginDest(&a.App), &a.InstalledBy, &a.InstalledVia)...); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		n, err := s.liveGrantCount(ctx, out[i].App, origins, now)
+		if err != nil {
+			return nil, err
+		}
+		out[i].LiveGrants = n
+	}
+	return out, nil
+}
+
+// liveGrantCount is how many of app's grants THE gate calls live at now: every
+// subject that ever redeemed, asked in batches of MaxOwnersCheck.
+func (s *PGStore) liveGrantCount(ctx context.Context, app Plugin, origins []OriginPattern, now time.Time) (int, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT subject FROM plugin_server_users WHERE plugin_id = $1 AND signin_at IS NOT NULL ORDER BY id`, app.ID)
+	if err != nil {
+		return 0, err
+	}
+	subjects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for len(subjects) > 0 {
+		batch := subjects[:min(len(subjects), MaxOwnersCheck)]
+		subjects = subjects[len(batch):]
+		got, err := s.LiveServerGrants(ctx, app, origins, batch, now)
+		if err != nil {
+			return 0, err
+		}
+		for _, g := range got {
+			if g.State == GrantLive {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// VisibleServerApps is the live server apps ctx's principal gets a tab for,
+// oldest first: a PERSON's (never a team's acting principal, decision 14),
+// minus any the person hid. Origins are the caller's check, as for a
+// personal app plugin. Under authz.System, keyed on the principal's own id.
+func (s *PGStore) VisibleServerApps(ctx context.Context) ([]Plugin, error) {
+	who, ok := authz.From(ctx)
+	if !ok || who.UserID <= 0 || who.Team || who.All() {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT `+pluginCols+` FROM plugins p
+		WHERE p.scope = 'server' AND p.revoked_at IS NULL AND 'app' = ANY (p.capabilities)
+		  AND NOT EXISTS (SELECT 1 FROM plugin_server_users h WHERE h.plugin_id = p.id AND h.owner_id = $1 AND h.hidden_at IS NOT NULL)
+		ORDER BY p.id LIMIT $2`, who.UserID, MaxServerApps)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Plugin, error) { return scanPlugin(r) })
+}
+
+// AccountServerApp is one live server app as a person's Account → Apps lists
+// it: the row, whether the person hid it, and until when it may act for them
+// (nil: no live grant now, by THE gate).
+type AccountServerApp struct {
+	App       Plugin
+	Hidden    bool
+	LiveUntil *time.Time
+}
+
+// AccountServerApps is every live server app, oldest first, with ctx's
+// principal's own state under each. nil for anyone but a person.
+func (s *PGStore) AccountServerApps(ctx context.Context, origins []OriginPattern, now time.Time) ([]AccountServerApp, error) {
+	who, ok := authz.From(ctx)
+	if !ok || who.UserID <= 0 || who.Team || who.All() {
+		return nil, nil
+	}
+	sys := authz.System(ctx)
+	rows, err := s.pool.Query(sys, `SELECT `+prefixed("p", pluginCols)+`, coalesce(g.subject, ''), g.hidden_at IS NOT NULL, g.act_until
+		  FROM plugins p LEFT JOIN plugin_server_users g ON g.plugin_id = p.id AND g.owner_id = $1
+		 WHERE p.scope = 'server' AND p.revoked_at IS NULL ORDER BY p.id`, who.UserID)
+	if err != nil {
+		return nil, err
+	}
+	type row struct {
+		a       AccountServerApp
+		subject string
+		until   *time.Time
+	}
+	var got []row
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(append(pluginDest(&x.a.App), &x.subject, &x.a.Hidden, &x.until)...); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		got = append(got, x)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]AccountServerApp, 0, len(got))
+	for _, x := range got {
+		if x.subject != "" && !x.a.Hidden {
+			live, err := s.LiveServerGrants(ctx, x.a.App, origins, []string{x.subject}, now)
+			if err != nil {
+				return nil, err
+			}
+			if live[x.subject].State == GrantLive && x.until != nil {
+				u := x.until.UTC()
+				x.a.LiveUntil = &u
+			}
+		}
+		out = append(out, x.a)
+	}
+	return out, nil
+}
