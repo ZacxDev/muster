@@ -875,16 +875,18 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 		b.WriteString(` data-text-expired`)
 	}
 	sub := askLogSubHTML(a, `<time datetime="`+row.AskedAt.Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.AskedAt)))+`</time>`)
+	// THE OPEN CARD'S HEAD (ui.AsksHeadHTML): its kind and where, the
+	// outcome as its pill, its ask id.
 	b.WriteString(`>
-<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) +
-		`</span>` + sub + `</div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span>` + ui.AskIDChipHTML(askLogAskID(a)) + `</div>
+` + ui.AsksHeadHTML(ui.AsksHead{Who: `<span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) + `</span>` + sub,
+		End: `<span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span>`, Chip: ui.AskIDChipHTML(askLogAskID(a))}) + `
 `)
 	switch {
 	case row.TextExpired:
 		b.WriteString(`<p class="` + ui.AsksLogExpiredClass + `" data-asklog-expired>Text expired: question and answer text is kept ` + esc(askDuration(ttl)) + `.</p>
 `)
 	case strings.TrimSpace(a.Question) != "":
-		b.WriteString(`<p class="` + ui.AsksLogClampClass + `" data-asklog-question>` + esc(strings.TrimSpace(a.Question)) + `</p>
+		b.WriteString(`<p class="` + ui.AsksLogClampClass + `" data-asklog-question>` + askTextHTML(strings.TrimSpace(a.Question)) + `</p>
 `)
 	}
 	var ans []string

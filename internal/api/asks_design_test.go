@@ -56,7 +56,7 @@ func itemLi(t *testing.T, out, key string) string {
 	return li[:strings.Index(li, "</li>")+len("</li>")]
 }
 
-var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*(?:<div class="[^"]*" data-asks-top>)?<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
+var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*(?:<div class="[^"]*" data-asks-top>)?<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-head data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
 
 // TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
 // order questions, notices, waiting sessions, tasks to route; each card opens
@@ -415,7 +415,8 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 }
 
 // TestADraftCardKeepsItsSafetyWithOnePrimaryAction: the draft card still
-// draws exactly what is approved (flows.VisibleEscape, its length), the
+// draws exactly what is approved (the post's preview, every hidden character
+// a visible flag; its length), the
 // message it answers marked untrusted and escaped, ONE primary action
 // (Approve and send, a step-up form, on its own row: ui.AsksDecisionClass)
 // with Reject under it; an approval not yet collected keeps Withdraw; a draft
@@ -431,11 +432,16 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 	}
 	got := draftCardHTML(c)
 	for _, want := range []string{`class="` + ui.AsksQuoteClass + `" data-draft-original>`, `data-draft-untrusted>untrusted</span>`, "&lt;i&gt;hi&lt;/i&gt;",
-		`data-runes="3"`, `ok\u{200b}`, `<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/7/approve" data-step-up-form class="min-w-0"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
+		`data-runes="3"`, `ok<mark class="` + ui.StepUpHiddenClass + `" data-stepup-hidden="U+200B" title="Hidden character U+200B">U+200B</mark>`, `<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/7/approve" data-step-up-form class="min-w-0"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
 		`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the pending card lacks %q:\n%s", want, got)
 		}
+	}
+	// The zero-width space is flagged where it sits, never written into the
+	// page and never spelled out.
+	if strings.Contains(got, "​") || strings.Contains(got, `\u{`) {
+		t.Errorf("the pending card writes the hidden character, or spells it out:\n%s", got)
 	}
 	if strings.Count(got, ui.AsksPrimaryButtonClass) != 1 || strings.Contains(got, "<i>") || strings.Contains(got, "message 3") {
 		t.Errorf("the pending card has %d primary actions, or unescaped markup:\n%s", strings.Count(got, ui.AsksPrimaryButtonClass), got)
@@ -457,12 +463,13 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 }
 
 // TestADraftCardIsTheFeedCardWithItsFactsAsPills (the design review, 6, 9,
-// 10): a draft is THE feed card (data-asks-card, fixed), its head the kind
-// badge and the drafting agent's DISPLAY name (AgentDisplay, never the stored
-// slug when there is one) with its age; its facts are pills — the plugin, the
-// state, the expiry RELATIVE ("expires in 6d", never a UTC stamp), the
-// length; the reply is in the page's normal text, wrapping at words (it was
-// monospace broken anywhere); and the duplicate lines are gone ("message N",
+// 10): a draft is THE feed card (data-asks-card, fixed), its head the
+// drafting agent's DISPLAY name (AgentDisplay, never the stored slug when
+// there is one) with its age and no kind badge (the preview's head says the
+// venue: the plugin's label); its facts are pills — the state, the expiry
+// RELATIVE ("expires in 6d", never a UTC stamp); the reply is the post's
+// preview, in the page's normal text, wrapping at words (it was monospace
+// broken anywhere); and the duplicate lines are gone ("message N",
 // "approving sends exactly this, once", the "Reply · N characters" label).
 // RED at origin/main: the old card, a raw UTC expiry, mono break-all.
 func TestADraftCardIsTheFeedCardWithItsFactsAsPills(t *testing.T) {
@@ -478,13 +485,12 @@ func TestADraftCardIsTheFeedCardWithItsFactsAsPills(t *testing.T) {
 	got := draftCardHTMLAt(c, at)
 	for _, want := range []string{
 		`class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs,
-		`data-asks-badge="draft">Reply draft</span>`,
 		`data-draft-agent>Marketing for Acme</span>`,
 		`>2m ago</time>`,
-		`data-draft-plugin>Example inbox</span>`,
+		`data-stepup-venue>Example inbox</span>`,
 		`data-draft-state>Awaiting your decision</span>`,
 		`>expires in 6d</time></span>`,
-		`<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>It is on by default at 600 requests a minute per key.</p>`,
+		`data-stepup-preview-text><p class="whitespace-pre-wrap break-words">It is on by default at 600 requests a minute per key.</p></div>`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the draft card lacks %q:\n%s", want, got)
@@ -492,7 +498,7 @@ func TestADraftCardIsTheFeedCardWithItsFactsAsPills(t *testing.T) {
 	}
 	// No length pill (the asks audit: "53 characters" was noise beside the
 	// text itself; the length is the box's data-runes).
-	for _, bad := range []string{"marketing-acme-1", "UTC", "font-mono", "break-all font-mono", "approving sends exactly this", "message 3", "Reply · ", "characters</span>", "data-draft-runes"} {
+	for _, bad := range []string{"marketing-acme-1", "UTC", "font-mono", "break-all font-mono", "data-asks-badge", "approving sends exactly this", "message 3", "Reply · ", "characters</span>", "data-draft-runes"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("the draft card still draws %q:\n%s", bad, got)
 		}

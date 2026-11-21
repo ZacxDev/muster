@@ -1,11 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"html"
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -154,14 +157,15 @@ func stepUpLookalikeIn(t string) bool {
 	return false
 }
 
-// stepUpMarkedHTML is t escaped, every space kept exactly where it is, with
-// each flagged word (stepUpLookalike) inside a <mark data-stepup-lookalike>.
+// stepUpMarkedHTML is t escaped (stepUpHiddenHTML: every hidden code point a
+// visible flag), every space kept exactly where it is, with each flagged word
+// (stepUpLookalike) inside a <mark data-stepup-lookalike>.
 func stepUpMarkedHTML(t string) string {
 	var b strings.Builder
 	for len(t) > 0 {
-		i := strings.IndexFunc(t, unicode.IsSpace)
+		i := strings.IndexFunc(t, stepUpSpace)
 		if i == 0 {
-			j := strings.IndexFunc(t, func(r rune) bool { return !unicode.IsSpace(r) })
+			j := strings.IndexFunc(t, func(r rune) bool { return !stepUpSpace(r) })
 			if j < 0 {
 				j = len(t)
 			}
@@ -174,11 +178,103 @@ func stepUpMarkedHTML(t string) string {
 		}
 		w := t[:i]
 		if stepUpLookalike(w) {
-			b.WriteString(`<mark class="` + ui.StepUpLookalikeClass + `" data-stepup-lookalike>` + html.EscapeString(w) + `</mark>`)
+			b.WriteString(`<mark class="` + ui.StepUpLookalikeClass + `" data-stepup-lookalike>` + stepUpHiddenHTML(w) + `</mark>`)
 		} else {
-			b.WriteString(html.EscapeString(w))
+			b.WriteString(stepUpHiddenHTML(w))
 		}
 		t = t[i:]
 	}
 	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// HIDDEN CHARACTERS IN TEXT AN ASKS CARD DRAWS (a post's preview, a draft, a
+// quoted message, a question or an answer).
+//
+// A bidi control (U+202E turns the rest of a line around), a zero-width or
+// other invisible character, a control character: drawn as itself it is
+// either invisible or reorders what is around it, so what the owner reads is
+// not what is sent. Drawn spelled out (`\u{202e}`, flows.VisibleEscape) it
+// was safe but unreadable — every em dash and emoji spelled out too. So each
+// one is drawn IN PLACE as a small flag naming its code point
+// (<mark data-stepup-hidden>U+202E</mark>, ui.StepUpHiddenClass), and the
+// character itself is never written into the page. A U+FFFD — what muster's
+// own sanitising (fence.Sanitize) leaves where it took such a character out
+// of a stored card — is flagged the same way.
+//
+// Not flagged, since they are how ordinary text is written: a variation
+// selector after a symbol (❤️, the emoji form) or a digit/#/* (a keycap), and a
+// zero-width joiner between two symbols (a family emoji).
+// ---------------------------------------------------------------------------
+
+// stepUpHiddenNote is the one line under a preview (or a draft's text) that
+// holds a hidden character.
+const stepUpHiddenNote = "Contains hidden characters — each is marked where it sits, and is part of the text."
+
+// stepUpHidden reports whether r, between prev and next ("" runes as 0), is
+// drawn as a flag (the block above).
+func stepUpHidden(prev, r, next rune) bool {
+	if r == utf8.RuneError {
+		return true
+	}
+	if !fence.Unsafe(r) || r == '\n' || r == '\t' {
+		return false
+	}
+	switch {
+	case r == 0xFE0E || r == 0xFE0F:
+		return !(unicode.Is(unicode.So, prev) || unicode.IsDigit(prev) || prev == '#' || prev == '*')
+	case r == 0x200D:
+		return !(unicode.Is(unicode.So, prev) || prev == 0xFE0F) || !unicode.Is(unicode.So, next)
+	}
+	return true
+}
+
+// stepUpSpace reports whether r is a space a text is split into words on: a
+// space that is not hidden (a U+2028 is a space to unicode.IsSpace, and is
+// flagged like any other hidden character).
+func stepUpSpace(r rune) bool { return unicode.IsSpace(r) && !stepUpHidden(0, r, 0) }
+
+// stepUpHiddenHTML is t escaped, each hidden code point (stepUpHidden) drawn
+// as its flag, every other character as itself.
+func stepUpHiddenHTML(t string) string {
+	rs := []rune(t)
+	var b strings.Builder
+	start := 0
+	for i, r := range rs {
+		prev, next := rune(0), rune(0)
+		if i > 0 {
+			prev = rs[i-1]
+		}
+		if i+1 < len(rs) {
+			next = rs[i+1]
+		}
+		if !stepUpHidden(prev, r, next) {
+			continue
+		}
+		b.WriteString(html.EscapeString(string(rs[start:i])))
+		cp := fmt.Sprintf("U+%04X", r)
+		b.WriteString(`<mark class="` + ui.StepUpHiddenClass + `" data-stepup-hidden="` + cp + `" title="Hidden character ` + cp + `">` + cp + `</mark>`)
+		start = i + 1
+	}
+	b.WriteString(html.EscapeString(string(rs[start:])))
+	return b.String()
+}
+
+// stepUpHiddenIn reports whether t holds a hidden code point (stepUpHidden).
+func stepUpHiddenIn(t string) bool {
+	return strings.Contains(stepUpHiddenHTML(t), "data-stepup-hidden")
+}
+
+// askTextHTML is THE way an Asks card draws a block of text that is not a
+// post (a question, an answer, a log row's question, a nudge's message): t
+// escaped, its line breaks kept as breaks (its box is whitespace-pre-wrap; a
+// carriage return is one), each hidden code point a visible flag
+// (stepUpHiddenHTML). Never spelled out: a line break is never drawn as \n.
+func askTextHTML(t string) string {
+	t = strings.ReplaceAll(strings.ReplaceAll(t, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(t, "\n")
+	for i, l := range lines {
+		lines[i] = stepUpHiddenHTML(strings.ReplaceAll(l, "\t", " "))
+	}
+	return strings.Join(lines, "\n")
 }

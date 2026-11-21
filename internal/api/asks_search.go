@@ -271,7 +271,8 @@ func askSearchCardHTML(a attention.Ask, now time.Time) string {
 }
 
 // draftSearchCardHTML is one plugin draft as a search result: who drafted it,
-// its kind, state and age, linking to its card; its id chip; its text.
+// its kind, state and age, linking to its card; its id chip; its text as the
+// post it becomes (the venue preview).
 func draftSearchCardHTML(c plugins.DraftCard, now time.Time) string {
 	esc := html.EscapeString
 	d := c.Draft
@@ -281,16 +282,18 @@ func draftSearchCardHTML(c plugins.DraftCard, now time.Time) string {
 	b.WriteString(`<li id="search-draft-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asks-search-result="draft" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
 <div class="` + ui.AsksSearchTopClass + `"><a href="` + esc(draftFocusLink(d.ID)) + `" class="` + ui.AsksSearchOpenClass + `" data-asks-search-open>` +
-		`<span class="` + ui.AsksTitleClass + `" data-asks-search-title>` + esc(visibleLines(draftWho(c))) + `</span><span class="` + ui.AsksSubClass + `">` + esc(sub))
+		`<span class="` + ui.AsksTitleClass + `" data-asks-search-title>` + stepUpHiddenHTML(draftWho(c)) + `</span><span class="` + ui.AsksSubClass + `">` + esc(sub))
 	if !d.CreatedAt.IsZero() {
 		b.WriteString(` · <time datetime="` + d.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.CreatedAt))) + `</time>`)
 	}
 	b.WriteString(`</span></a>` + ui.DraftIDChipHTML(d.ID) + `</div>
 `)
-	if body := strings.TrimSpace(d.Body); body != "" {
-		b.WriteString(`<p class="` + ui.AsksSearchTextClass + `" data-asks-search-text>` + esc(visibleLines(body)) + `</p>
+	// Its text as the Drafts tab's card draws it: the post it becomes on its
+	// venue (stepUpPostHTML over draftPostCard), here the feed's compact one
+	// — the first part clamped, media as thumbnails — every hidden code point
+	// a visible flag and every look-alike word marked.
+	b.WriteString(`<div class="min-w-0" data-asks-search-text>` + stepUpPostHTML(draftPostCard(c), true) + `</div>
 `)
-	}
 	b.WriteString("</li>\n")
 	return b.String()
 }

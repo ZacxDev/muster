@@ -496,8 +496,8 @@ func outreachBatchCardHTMLIn(g batchGroup, p cardPlace) string {
 	}
 	var b strings.Builder
 	b.WriteString(`<li id="` + batchKey(g.id) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-outreach-batch="` + esc(g.id) + `">
-` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", "Outreach"),
-		`<span class="`+ui.AsksTitleClass+`">Batch `+esc(day)+`</span>`, `Follows and likes by `+esc(officer)) + `
+` + ui.AsksHeadHTML(ui.AsksHead{Badge: ui.AsksKindBadge("draft", "Outreach"), Who: ui.AsksWhoHTML(
+		`<span class="`+ui.AsksTitleClass+`">Batch `+esc(day)+`</span>`, `Follows and likes by `+esc(officer))}) + `
 <span class="break-words text-xs text-fg2">Tick what goes out; every entry you leave unticked is rejected.</span>
 `)
 	if len(g.entries) == 0 {

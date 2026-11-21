@@ -278,3 +278,46 @@ for (const vp of [
     });
   });
 }
+
+// AN ANSWERED STEP-UP CARD ON THE ANSWERED TAB IS THE OPEN CARD (the
+// operator: "the other tabs in the Asks page still don't have the updated
+// UI"), at a phone and a desktop: the Open card's head — its toggle, the id
+// chip on its top row — over the Open card's body, the post's venue preview
+// (X's logo, the text as paragraphs, the image), then the answer. Nothing is
+// spelled out and nothing scrolls sideways.
+// 🔴 RED at the branch base: the answered card drew the card's whole question
+// as one muted block of text (title, why, the post and "With 1 image" run
+// together), with no preview and no shared head.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', use: { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the Answered tab, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('an answered step-up card is drawn as the Open card: its head, the post preview, the answer', async ({ page }) => {
+      const id = fix('answered', '1');
+      await signIn(page, origin);
+      await serveMedium(page);
+      await page.goto(`${origin}/attention?tab=answered`);
+      const card = page.locator(`#answered-${id}`);
+      await expect(card).toBeVisible();
+      // The head: the top row's first child is the shared toggle head, the id
+      // chip after it.
+      const top = card.locator(':scope > [data-asks-top]');
+      await expect(top.locator(':scope > [data-asks-head][data-asks-toggle]')).toHaveCount(1);
+      await expect(top.locator(':scope > [data-id-copy]')).toContainText(`Ask #${id}`);
+      // The body: the Open card's step-up body, the venue preview.
+      const post = card.locator('[data-stepup-feed] [data-stepup-post]');
+      await expect(post).toBeVisible();
+      await expect(post.locator('svg[data-venue-logo="x"]')).toBeVisible();
+      await expect(post.locator('[data-stepup-media] img')).toBeVisible();
+      await expect(card.locator('[data-attention-answer-text]')).toContainText('Confirm');
+      const face = await card.innerText();
+      for (const never of ['\\n', '\\u{', 'With 1 image', 'image/png']) {
+        expect(face, `the answered card shows ${never}`).not.toContain(never);
+      }
+      const { sw, iw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
+      expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(iw);
+    });
+  });
+}

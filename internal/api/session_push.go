@@ -1202,9 +1202,9 @@ func episodeCardHTML(key, state, who, extra, quiet, line string, opened, now tim
 		cls += " " + extra
 	}
 	return `<li id="` + esc(key) + `" class="` + cls + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-attention-episode data-state="` + esc(state) + `">
-` + ui.AsksFixedHeadHTML(ui.AsksKindBadge(tone, words),
+` + ui.AsksHeadHTML(ui.AsksHead{Badge: ui.AsksKindBadge(tone, words), Who: ui.AsksWhoHTML(
 		`<span class="`+ui.AsksTitleClass+`" data-attention-episode-where>`+esc(who)+`</span>`,
-		`<span class="sr-only" data-attention-episode-state>`+esc(words)+`</span><time datetime="`+opened.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(opened)))+`</time>`+quiet) +
+		`<span class="sr-only" data-attention-episode-state>`+esc(words)+`</span><time datetime="`+opened.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(opened)))+`</time>`+quiet)}) +
 		line + `
 <div class="` + ui.AsksCardFooterClass + `" data-asks-footer><a href="` + esc(attentionOpenURL(key)) + `" class="` + ui.AsksCardLinkClass + `" data-asks-view-session data-attention-episode-open>` + askViewInSession + `</a></div></li>
 `

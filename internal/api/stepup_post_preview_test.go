@@ -124,14 +124,24 @@ Still first.</p>
 }
 
 // TestAStepUpPreviewsTextIsSafeAndReadable: the officer's text is escaped,
-// its bidi and control characters are U+FFFD (they cannot reorder the text),
-// a tab is a space, a carriage return a line break — on the page and the
-// feed, whether the card came through Clean or not. Nothing is spelled out.
+// its bidi and control characters are never written into the page — each is
+// a visible flag naming it (U+202E; a card stored through Clean holds U+FFFD
+// in its place, flagged the same way), so it can neither reorder the text nor
+// pass unseen, and the card says once that it has some — a tab is a space, a
+// carriage return a line break — on the page and the feed, whether the card
+// came through Clean or not. Nothing is spelled out.
 func TestAStepUpPreviewsTextIsSafeAndReadable(t *testing.T) {
-	const evil = "<script>alert(1)</script> \u202Egnp.exe\u202C & done\tnow\rnext"
-	const want = `<p class="whitespace-pre-wrap break-words">&lt;script&gt;alert(1)&lt;/script&gt; ` + "\uFFFD" + `gnp.exe` + "\uFFFD" + ` &amp; done now
+	const evil = "<script>alert(1)</script> ‮gnp.exe‬ & done\tnow\rnext"
+	flag := func(cp string) string {
+		return `<mark class="mx-px inline-block rounded-sm bg-danger/15 px-1 align-baseline font-mono text-[11px] font-semibold leading-tight text-fg ring-1 ring-inset ring-danger/60" data-stepup-hidden="` +
+			cp + `" title="Hidden character ` + cp + `">` + cp + `</mark>`
+	}
+	wantOf := func(open, end string) string {
+		return `<p class="whitespace-pre-wrap break-words">&lt;script&gt;alert(1)&lt;/script&gt; ` + flag(open) + `gnp.exe` + flag(end) + ` &amp; done now
 next</p>`
+	}
 	cards := map[string]attention.Ask{}
+	wants := map[string]string{}
 	// An X post (whose thread split folds a CR itself) and a reply draft
 	// (whose text only the renderer reads).
 	for _, platform := range []string{"x", ""} {
@@ -141,11 +151,15 @@ next</p>`
 		rc.Preview = evil // as if stored without Clean: the renderer's own guarantee
 		raw.StepUp = &rc
 		cards["cleaned "+platform], cards["raw "+platform] = stored, raw
+		wants["cleaned "+platform], wants["raw "+platform] = wantOf("U+FFFD", "U+FFFD"), wantOf("U+202E", "U+202C")
 	}
 	for name, a := range cards {
 		page, feed := askQuestionHTML(a), askFeedCardHTML(askItem(a), time.Now())
-		if !strings.Contains(page, want) {
+		if want := wants[name]; !strings.Contains(page, want) {
 			t.Errorf("%s: the page's text, want %s in\n%s", name, want, page)
+		}
+		if !strings.Contains(page, `data-stepup-hidden-note>Contains hidden characters — each is marked where it sits, and is part of the text.</p>`) {
+			t.Errorf("%s: the page does not say the post holds hidden characters:\n%s", name, page)
 		}
 		for face, html := range map[string]string{"page": page, "feed": feed} {
 			for _, never := range []string{"<script>", "\u202E", "\u202C", "\t", "\r", `\u{`, `\t`, `\r`, `\n`} {

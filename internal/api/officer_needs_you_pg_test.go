@@ -148,7 +148,7 @@ func TestNeedsYouDecidesADraftThroughTheAsksPagesBinding(t *testing.T) {
 	if nd == "" {
 		t.Fatal("the officer's page has no Needs-you section")
 	}
-	for _, want := range []string{`data-draft-id="` + sid + `"`, `data-draft-body>` + twoMediaBody + `</p>`, `name="body_sha256" value="` + sumHex([]byte(twoMediaBody)) + `"`,
+	for _, want := range []string{`data-draft-id="` + sid + `"`, `data-stepup-preview-text><p class="whitespace-pre-wrap break-words">` + twoMediaBody + `</p>`, `name="body_sha256" value="` + sumHex([]byte(twoMediaBody)) + `"`,
 		`name="media_sha256" value="` + sumHex(outWebPBytes) + "," + sumHex(outMP4Bytes) + `"`, `name="return" value="` + tOfficerBack + `"`,
 		`action="/plugins/drafts/` + sid + `/approve"`, `data-needs-count="1"`} {
 		if !strings.Contains(nd, want) {

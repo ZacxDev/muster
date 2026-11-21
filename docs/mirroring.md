@@ -1810,7 +1810,9 @@ A card leads with what is about to happen and why, and folds the rest away.
   those arguments out. The hashes still bind the decision (below); they are
   just not drawn. The post's text is never spelled out either: a line break
   is drawn as one, never as `\n`, and a hidden, control or bidi character
-  shows as `�` and cannot reorder the text.
+  is drawn in its place as a visible flag naming it (`U+202E`; a card stored
+  sanitised holds `U+FFFD` there), never as the character itself, so it
+  cannot reorder the text; a line under the post says it has some.
 
 The notification's body is the why, the where line and the start of the post.
 The card's text (what the page shows and the phone's prompt confirms, below) is
