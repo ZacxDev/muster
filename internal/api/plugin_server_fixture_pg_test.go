@@ -63,6 +63,8 @@ type srvFix struct {
 	// time (a password session is checked against it), whole-second aligned
 	// plus 400 ms so a whole-second comparison is never accidental.
 	signin time.Time
+	// timers holds the task pushes' debounce timers (never fired on their own).
+	timers manualTimers
 
 	userIDs []int64
 	appIDs  []int64
@@ -102,6 +104,13 @@ func newSrvFix(t *testing.T) *srvFix {
 		return v
 	}
 	f.srv.now = func() time.Time { return f.now }
+	// 🔴 THE TASK PUSHES' DEBOUNCE TIMERS ARE MANUAL (CI race, #936): with the
+	// real time.AfterFunc, a created or commented task's coalesced push fired
+	// on its own goroutine and called goNotify (pushInFlight.Add) while the
+	// test goroutine sat in WaitForPushes (pushInFlight.Wait) — an Add at zero
+	// concurrent with a Wait, which the race detector reports. Injected at
+	// construction, as push_task_ref_pg_test.go does; nothing here fires them.
+	f.srv.taskCreateAfter, f.srv.taskCommentAfter = f.timers.after, f.timers.after
 	f.h = f.srv.Handler()
 	f.tok, f.app = f.install("srv-meet", true)
 	if f.admin == authz.OperatorUserID || f.admin == f.app.ID {
