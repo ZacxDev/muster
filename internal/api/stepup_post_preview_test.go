@@ -15,13 +15,27 @@ import (
 
 // stepUpPostCard is a draft card on venue platform (target kind target) as
 // Clean stores it.
+//
+// Its title is the one muster gives that card: "Post to <venue>? · #9" for an
+// outbound draft, "Send this reply on <venue>? · #9" for a reply draft (no
+// platform).
 func stepUpPostCard(t *testing.T, platform, venue, target, handle, body string, media int) attention.Ask {
 	t.Helper()
-	c := &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to " + venue + "? · #9", Why: "Marketing: launch", Asker: "main:1",
+	title := "Post to " + venue + "? · #9"
+	if platform == "" {
+		title = "Send this reply on " + venue + "? · #9"
+	}
+	c := &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: title, Why: "Marketing: launch", Asker: "main:1",
 		Preview: body, Venue: venue, Platform: platform, Target: target, Handle: handle, DraftID: 9, Details: "D"}
 	for i := range media {
 		c.Media = append(c.Media, attention.StepUpMedium{N: i, Ref: "r/" + string(rune('a'+i)), Type: "image/png", SHA256: strings.Repeat("c", 64)})
 	}
+	return stepUpAsk(t, c)
+}
+
+// stepUpAsk is step-up card c as Clean stores it, on an open ask.
+func stepUpAsk(t *testing.T, c *attention.StepUpCard) attention.Ask {
+	t.Helper()
 	n, err := attention.Clean(attention.New{Asker: attention.Asker{System: true, Label: hostDecisionLabel}, StepUp: c,
 		Options: []string{hostDecisionConfirm, hostDecisionRefuse}})
 	if err != nil {
@@ -174,5 +188,97 @@ func TestStepUpDetailsSayTheCallInWords(t *testing.T) {
 	if got := stepUpDetails("host-a", "main:1", "approve a draft", pluginDraftDecideTool, `{"id":7,"body_sha256":"`+strings.Repeat("f", 64)+`"}`,
 		"This machine runs host officer acme:main"); got != want {
 		t.Errorf("stepUpDetails\n got %q\nwant %q", got, want)
+	}
+}
+
+// The classes the look-alike case is drawn with (internal/ui stepup_post.go),
+// as literals: what a reader of the page gets, not what the code computes.
+const (
+	stepUpMarkOpen = `<mark class="rounded-sm bg-danger/15 text-fg underline decoration-danger decoration-wavy underline-offset-2" data-stepup-lookalike>`
+	stepUpNoteLine = `Contains look-alike letters — check the highlighted words.</p>`
+)
+
+// TestLookAlikeLettersAreFlaggedOnTheStepUpPreview: the preview draws a
+// post's text as it reads, so a look-alike letter would read as the real one.
+// A mixed-script word (a Cyrillic а in "pаypal.com", a Greek ο in "gοogle"),
+// a non-ASCII letter in a domain or an @handle (all-Cyrillic "аррӏе.com",
+// "@аррӏе"), and a combining overlay mark (U+0336) are each marked, on the
+// page and the feed, with one line under the preview — outside the post's
+// mock — saying so. "café", a pure-Cyrillic word, Japanese, emoji and
+// ordinary punctuation are not, and carry no line.
+//
+// RED at 037fe5724: no word was marked and no line drawn — "pаypal.com" read
+// exactly as "paypal.com".
+func TestLookAlikeLettersAreFlaggedOnTheStepUpPreview(t *testing.T) {
+	flagged := []struct{ body, word string }{
+		{"Pay at p\u0430ypal.com today.", "p\u0430ypal.com"},
+		{"Search on g\u03BFogle now.", "g\u03BFogle"},
+		{"Visit \u0430\u0440\u0440\u04CF\u0435.com for more.", "\u0430\u0440\u0440\u04CF\u0435.com"},
+		{"Follow @\u0430\u0440\u0440\u04CF\u0435 there.", "@\u0430\u0440\u0440\u04CF\u0435"},
+		{"Big S\u0336A\u0336L\u0336E\u0336 today.", "S\u0336A\u0336L\u0336E\u0336"},
+	}
+	for _, c := range flagged {
+		for _, platform := range []string{"x", ""} {
+			a := stepUpPostCard(t, platform, "X", "post", "", c.body, 0)
+			page, feed := askQuestionHTML(a), askFeedCardHTML(askItem(a), time.Now())
+			for face, h := range map[string]string{"page": page, "feed": feed} {
+				if n := strings.Count(h, "data-stepup-lookalike>"); n != 1 || !strings.Contains(h, stepUpMarkOpen+c.word+`</mark>`) {
+					t.Errorf("%s %q (%q): want %q marked once (%d marks):\n%s", face, c.body, platform, c.word, n, h)
+				}
+				if strings.Count(h, stepUpNoteLine) != 1 {
+					t.Errorf("%s %q (%q): want the look-alike line once:\n%s", face, c.body, platform, h)
+				}
+			}
+			// The line is under the post, outside its mock.
+			if end, note := strings.Index(page, "</article>"), strings.Index(page, stepUpNoteLine); end < 0 || note < end {
+				t.Errorf("page %q: the look-alike line is not after the post's mock:\n%s", c.body, page)
+			}
+		}
+	}
+	for _, body := range []string{
+		"Caf\u00E9 and na\u00EFve r\u00E9sum\u00E9 \u2014 it\u2019s here. \u2615 \U0001F389\U0001F44D\U0001F3FD",
+		"\u041F\u0440\u0438\u0432\u0435\u0442 \u043C\u0438\u0440, see example.com and @someone.",
+		"\u65E5\u672C\u8A9E\u306E\u30C6\u30AD\u30B9\u30C8 iPhone\u3092 (English/\u0440\u0443\u0441\u0441\u043A\u0438\u0439).",
+	} {
+		a := stepUpPostCard(t, "x", "X", "post", "", body, 0)
+		for face, h := range map[string]string{"page": askQuestionHTML(a), "feed": askFeedCardHTML(askItem(a), time.Now())} {
+			if strings.Contains(h, "data-stepup-lookalike") || strings.Contains(h, "look-alike") {
+				t.Errorf("%s %q: an ordinary text is flagged:\n%s", face, body, h)
+			}
+		}
+	}
+}
+
+// TestAnOldDraftCardStillSaysItsVenue: a draft card filed before cards
+// carried their platform and target (both empty) is drawn with the venue and
+// kind its title names — an X post's card says X and New post, with X's logo —
+// rather than as a reply to a message with the neutral logo. A reply draft's
+// card (its title "Send this reply on …") and a card whose title names no
+// outbound kind stay neutral.
+//
+// RED at 037fe5724: every such card read "Reply to a message", neutral logo.
+func TestAnOldDraftCardStillSaysItsVenue(t *testing.T) {
+	cases := []struct{ title, venue, logo, kind string }{
+		{"Post to X? · #9", "X", "x", "New post"},
+		{"Post to X?", "X", "x", "New post"},
+		{"Reply on X? · #9", "X", "x", "Reply"},
+		{"Send a DM on X?", "X", "x", "Direct message"},
+		{"Post to Reddit? · #9", "Reddit", "reddit", "New post"},
+		{"Send this reply on X? · #9", "X", "other", "Reply to a message"},
+		{"Reject this draft? · #9", "X", "other", "Reply to a message"},
+	}
+	for _, c := range cases {
+		a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: c.title, Why: "Marketing: launch", Asker: "main:1",
+			Preview: "Hello there.", Venue: c.venue, DraftID: 9, Details: "D"})
+		for face, h := range map[string]string{"page": askQuestionHTML(a), "feed": askFeedCardHTML(askItem(a), time.Now())} {
+			if !strings.Contains(h, `data-venue-logo="`+c.logo+`"`) || !strings.Contains(h, `data-stepup-post-kind>`+c.kind+`</span>`) {
+				t.Errorf("%s %q: want logo %q and kind %q:\n%s", face, c.title, c.logo, c.kind, h)
+			}
+		}
+	}
+	// An old X post's card is a thread like a new one's.
+	a := stepUpAsk(t, &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · #9", Why: "W", Preview: "First.\n---8<---\nSecond.", Venue: "X", DraftID: 9, Details: "D"})
+	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-post-kind>Thread · 2 posts</span>`) || strings.Contains(page, "8&lt;") {
+		t.Errorf("an old X thread's card:\n%s", page)
 	}
 }

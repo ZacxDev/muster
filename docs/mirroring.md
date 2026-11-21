@@ -1770,11 +1770,27 @@ A card leads with what is about to happen and why, and folds the rest away.
   inline below it. An X post with `---8<---` lines is drawn as the thread it
   becomes, each part numbered, with medium *i* under part *i*+1. On the Asks
   feed the same card is compact: the first part (clamped until the card is
-  expanded) and the media as thumbnails. For
+  expanded), how many more posts the thread has, and the media as
+  thumbnails. A draft card filed before cards stored their venue is drawn
+  with the venue and kind its title names. For
   `dispatch_approve`: the held start and its instructions block (above).
   For every other tool: one plain sentence built from its arguments, never
-  their JSON. A preview longer than 2,600 characters is cut and labelled as an
-  excerpt.
+  their JSON.
+- **An excerpt says so, outside the post.** A preview longer than 2,600
+  characters is cut. An X thread is split into its posts first, so the card
+  keeps its first whole posts and still counts the whole thread (*Thread · 20
+  posts*, *1/20*, "+19 more posts in this thread"); any other preview keeps
+  its first characters. One line under the post, on the page and the feed,
+  and in the text the phone confirms, says it is an excerpt ("the first 9 of
+  the thread's 20 posts") and to refuse unless you have read the rest.
+- **Look-alike letters are flagged.** The text is drawn as it reads, so a
+  letter that only looks like another would read as the real one. A word that
+  mixes scripts (a Cyrillic а in "pаypal.com"), a link, domain, e-mail
+  address or @handle with any non-ASCII character in it, and a combining
+  overlay mark (a letter struck through with U+0336) are highlighted, and one
+  line under the post says "Contains look-alike letters — check the
+  highlighted words." Ordinary accented words ("café"), a word in one other
+  script, and emoji are not.
 - **A long part is cut, never refused.** The title, why, where line, venue
   and media refs each have a bound (300 characters for the why, 64 for the
   venue, 150 for a media ref), and a longer one ends in "…". A long reject
@@ -1794,8 +1810,8 @@ A card leads with what is about to happen and why, and folds the rest away.
 
 The notification's body is the why, the where line and the start of the post.
 The card's text (what the page shows and the phone's prompt confirms, below) is
-the title, the why, the where line, the preview and a media line ("With 1
-image"). All three are built from
+the title, the why, the where line, the preview, the excerpt line when it is
+one, and a media line ("With 1 image"). All three are built from
 the same stored parts.
 
 🔴 **A draft card shows only the draft its decision is bound to.** The

@@ -125,3 +125,69 @@ A second paragraph: github.com/example/repo</p>
 		}
 	}
 }
+
+// stepUpLongThread is an X thread of n parts of exactly 257 characters each,
+// every one distinct ("Post 07 of …"), joined by the venue's separator line.
+func stepUpLongThread(n int) (body string, parts []string) {
+	for i := 1; i <= n; i++ {
+		p := "Post " + strconv.Itoa(100 + i)[1:] + " of the launch thread:"
+		for len(p) < 257 {
+			p += " word"
+		}
+		parts = append(parts, p[:257])
+	}
+	return strings.Join(parts, "\n---8<---\n"), parts
+}
+
+// TestALongXThreadsCardCountsTheWholeThread: an X thread longer than a card
+// holds (20 parts of 257 characters) is split BEFORE it is cut, so its card
+// keeps its first whole parts — never a part ending in a cut "---8<-" — and
+// says the WHOLE thread's count: "Thread · 20 posts", "1/20" … "9/20", and
+// "+19 more posts in this thread" on the feed. That it is an excerpt is said
+// in one line OUTSIDE the post's mock, on the page and on the feed, and in
+// the question the phone confirms.
+//
+// RED at 037fe5724: the body was cut first, so the page read "Thread · 9
+// posts", part 9 ended "---8<-" with the "AN EXCERPT" warning drawn inside
+// it, and the feed read "+8 more posts" with no excerpt line.
+func TestALongXThreadsCardCountsTheWholeThread(t *testing.T) {
+	body, parts := stepUpLongThread(20)
+	r := newStepUpDraftRig(t, body)
+	a := r.decideCard(t, map[string]any{"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/hero-1")}})
+	const excerpt = "⚠ AN EXCERPT: the first 9 of the thread's 20 posts. Refuse unless you have read the rest in muster's web UI."
+	if c := a.StepUp; c == nil || c.Preview != strings.Join(parts[:9], "\n---8<---\n") {
+		t.Fatalf("the card's parts: %+v", a.StepUp)
+	}
+	if !strings.Contains(a.Question, "\n\n"+excerpt+"\n\nWith 1 image") {
+		t.Errorf("the question the phone confirms does not say it is an excerpt:\n%s", a.Question)
+	}
+
+	drawn := strings.ReplaceAll(excerpt, "'", "&#39;") // as HTML escapes it
+	card := stepUpRegion(t, r.askPage(t, a.ID))
+	article := card[:strings.Index(card, "</article>")]
+	if !strings.Contains(article, `data-stepup-post-kind>Thread · 20 posts</span>`) || strings.Count(article, `data-stepup-part="`) != 9 ||
+		!strings.Contains(article, `data-stepup-part-n>1/20</p>`) || !strings.Contains(article, `data-stepup-part-n>9/20</p>`) ||
+		!strings.Contains(article, `<p class="whitespace-pre-wrap break-words">`+parts[8]+`</p>`) {
+		t.Errorf("the page's thread:\n%s", article)
+	}
+	// (The separator is drawn escaped, "8&lt;", if at all: a raw "8<" is
+	// markup, such as a draft id of 8 closing its title.)
+	for _, never := range []string{"8&lt;", "EXCERPT", "Refuse unless"} {
+		if strings.Contains(article, never) {
+			t.Errorf("the post's mock carries %q:\n%s", never, article)
+		}
+	}
+	if !strings.Contains(card, "</article>\n"+`<p role="alert" class="rounded-2xl bg-s1 px-4 py-3 text-sm font-semibold text-fg ring-1 ring-line" data-stepup-excerpt>`+drawn+`</p>`) {
+		t.Errorf("the page has no excerpt line under the post:\n%s", card)
+	}
+
+	feed := askFeedCardHTML(askItem(a), time.Now())
+	i := strings.Index(feed, "data-stepup-post ")
+	if i < 0 || !strings.Contains(feed, `data-stepup-thread-more>+19 more posts in this thread</p>`) ||
+		!strings.Contains(feed, "</div>\n</div>\n"+`<p role="alert" class="rounded-xl bg-s1 px-3 py-2 text-sm font-semibold text-fg ring-1 ring-line" data-stepup-excerpt>`+drawn+`</p>`) {
+		t.Errorf("the feed's thread:\n%s", feed)
+	}
+	if strings.Contains(feed, "8&lt;") || strings.Count(feed, "EXCERPT") != 1 {
+		t.Errorf("the feed carries a separator or a second excerpt line:\n%s", feed)
+	}
+}

@@ -69,6 +69,16 @@ const (
 	StepUpFeedTitleClass   = "break-words text-[15px] font-semibold leading-snug text-fg"
 	StepUpFeedLineClass    = "asks-clamp-1 break-words text-sm text-fg2"
 	StepUpFeedChangedClass = "rounded-xl bg-s1 px-3 py-2 text-sm font-semibold text-fg ring-1 ring-line"
+	// StepUpNoteClass is a line drawn under the post, OUTSIDE its mock, that
+	// the post itself never says: that the preview is an excerpt, or that it
+	// has look-alike letters (StepUpFeedNoteClass the feed's).
+	StepUpNoteClass     = "rounded-2xl bg-s1 px-4 py-3 text-sm font-semibold text-fg ring-1 ring-line"
+	StepUpFeedNoteClass = "rounded-xl bg-s1 px-3 py-2 text-sm font-semibold text-fg ring-1 ring-line"
+	// StepUpLookalikeClass marks a word of the post holding look-alike
+	// letters (internal/api stepUpLookalike): the word drawn as it is, on a
+	// danger tint with a wavy underline, so it reads as flagged in light and
+	// dark alike.
+	StepUpLookalikeClass = "rounded-sm bg-danger/15 text-fg underline decoration-danger decoration-wavy underline-offset-2"
 )
 
 // VenueLogoFallback is the key of the neutral glyph (a speech bubble).

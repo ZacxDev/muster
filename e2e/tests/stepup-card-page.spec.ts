@@ -189,3 +189,92 @@ for (const vp of [
     });
   });
 }
+
+// A LONG X THREAD, AND LOOK-ALIKE LETTERS (the step-up preview audit), on the
+// page and the feed, at a phone and a desktop.
+//
+// The thread: 20 posts, of which the card holds the first 9 whole ones. It
+// says the WHOLE count (Thread · 20 posts, 1/20 … 9/20, "+19 more posts in
+// this thread"), no post ends in a cut "---8<-", and the excerpt line is drawn
+// OUTSIDE the post's mock. 🔴 RED at 037fe5724: the card was cut before it was
+// split, so it read "Thread · 9 posts", its last post ended "---8<-…" with the
+// excerpt warning inside it, and the feed said "+8 more posts" and no more.
+//
+// The look-alikes: "pаypal.com" (a Cyrillic а) and a struck-through word
+// (U+0336) are highlighted, one line under the post says so, and the
+// pure-Cyrillic word, "café" and the emoji are drawn as they are, unmarked.
+// 🔴 RED at 037fe5724: nothing was marked, and "pаypal.com" read as
+// "paypal.com".
+const shotsTo = process.env.MUSTER_STEPUP_SHOTS ?? '';
+for (const vp of [
+  { name: 'phone 390×844', key: 'mobile', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', key: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the preview audit, ${vp.name}`, () => {
+    test.use(vp.use);
+    const shoot = async (page: import('@playwright/test').Page, testInfo: import('@playwright/test').TestInfo, name: string) => {
+      const file = testInfo.outputPath(`${name}-${vp.key}.png`);
+      await page.screenshot({ path: file, fullPage: true });
+      await testInfo.attach(`${name}-${vp.key}.png`, { path: file, contentType: 'image/png' });
+      if (shotsTo) {
+        (await import('node:fs')).copyFileSync(file, `${shotsTo}/${name}-${vp.key}.png`);
+      }
+    };
+
+    test('a long X thread counts the whole thread, and says it is an excerpt outside the post', async ({ page }, testInfo) => {
+      const id = fix('thread', '1');
+      await signIn(page, origin);
+      await serveMedium(page);
+      await page.goto(`${origin}/attention/asks/${id}`);
+      const card = page.locator('[data-stepup-card]');
+      const post = card.locator('[data-stepup-post]');
+      await expect(post.locator('[data-stepup-post-kind]')).toHaveText('Thread · 20 posts');
+      await expect(post.locator('[data-stepup-part-n]')).toHaveText(['1/20', '2/20', '3/20', '4/20', '5/20', '6/20', '7/20', '8/20', '9/20']);
+      const postText = await post.innerText();
+      for (const never of ['8<', 'EXCERPT', 'Refuse unless']) {
+        expect(postText, `the post's mock carries ${never}`).not.toContain(never);
+      }
+      const excerpt = card.locator('[data-stepup-excerpt]');
+      await expect(excerpt).toHaveText("⚠ AN EXCERPT: the first 9 of the thread's 20 posts. Refuse unless you have read the rest in muster's web UI.");
+      await expect(post.locator('[data-stepup-excerpt]')).toHaveCount(0);
+      const pbox = (await post.boundingBox())!;
+      expect((await excerpt.boundingBox())!.y, 'the excerpt line is under the post').toBeGreaterThanOrEqual(pbox.y + pbox.height);
+      await excerpt.scrollIntoViewIfNeeded();
+      await shoot(page, testInfo, 'audit-thread-page');
+
+      await page.goto(`${origin}/attention`);
+      const fcard = page.locator(`#ask-${id}`);
+      await expect(fcard.locator('[data-stepup-post-kind]')).toHaveText('Thread · 20 posts');
+      await expect(fcard.locator('[data-stepup-thread-more]')).toHaveText('+19 more posts in this thread');
+      const fpost = fcard.locator('[data-stepup-post]');
+      await expect(fpost.locator('[data-stepup-excerpt]')).toHaveCount(0);
+      await expect(fcard.locator('[data-stepup-excerpt]')).toHaveCount(1);
+      await expect(fcard.locator('[data-stepup-excerpt]')).toBeVisible();
+      const { sw, iw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
+      expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(iw);
+      await fcard.scrollIntoViewIfNeeded();
+      await shoot(page, testInfo, 'audit-thread-feed');
+    });
+
+    test('look-alike letters are highlighted and said, ordinary text is not', async ({ page }, testInfo) => {
+      const id = fix('lookalike', '1');
+      await signIn(page, origin);
+      await serveMedium(page);
+      for (const where of ['page', 'feed']) {
+        await page.goto(where === 'page' ? `${origin}/attention/asks/${id}` : `${origin}/attention`);
+        const root = where === 'page' ? page.locator('[data-stepup-card]') : page.locator(`#ask-${id}`);
+        const marks = root.locator('[data-stepup-post] mark[data-stepup-lookalike]');
+        await expect(marks).toHaveText(['pаypal.com/refund', 'S̶A̶L̶E̶']);
+        await expect(marks.first()).toBeVisible();
+        const note = root.locator('[data-stepup-lookalike-note]');
+        await expect(note).toHaveText('Contains look-alike letters — check the highlighted words.');
+        await expect(root.locator('[data-stepup-post] [data-stepup-lookalike-note]')).toHaveCount(0);
+        // The marked word reads differently from its neighbours: a tinted
+        // background behind it.
+        expect(await marks.first().evaluate((m) => getComputedStyle(m).backgroundColor), 'the mark is tinted').not.toBe('rgba(0, 0, 0, 0)');
+        await root.scrollIntoViewIfNeeded();
+        await shoot(page, testInfo, `audit-lookalike-${where}`);
+      }
+    });
+  });
+}

@@ -48,6 +48,8 @@ const (
 	MaxStepUpToolRunes    = 64
 	MaxStepUpPreviewRunes = 2600
 	MaxStepUpDetailsRunes = 3000
+	MaxStepUpExcerptRunes = 300
+	MaxStepUpParts        = 1000
 	MaxStepUpMedia        = 4
 	MaxStepUpMediumRunes  = 150
 )
@@ -85,6 +87,15 @@ type StepUpCard struct {
 	// Handle is the person a dm or a follow reaches, as the draft names it;
 	// "" for every other card.
 	Handle string `json:"handle,omitempty"`
+	// Parts is how many posts an X thread's WHOLE body becomes (counted
+	// before Preview was cut to an excerpt of it), 0 for anything that is
+	// not a thread. A preview drawn as a thread takes its part count from
+	// here, never from the parts the excerpt happens to hold.
+	Parts int `json:"parts,omitempty"`
+	// Excerpt is the one line saying Preview is only part of what is about
+	// to happen ("⚠ AN EXCERPT: …"), "" when Preview is all of it. Drawn
+	// OUTSIDE the preview on every face, and a paragraph of Text.
+	Excerpt string `json:"excerpt,omitempty"`
 	// DraftID is the draft a plugin_draft_decide card is bound to (its
 	// Media are served from it), 0 for any other card.
 	DraftID int64 `json:"draft_id,omitempty"`
@@ -159,6 +170,9 @@ func (c *StepUpCard) Text() string {
 	if c.Preview != "" {
 		parts = append(parts, c.Preview)
 	}
+	if c.Excerpt != "" {
+		parts = append(parts, c.Excerpt)
+	}
 	if l := c.MediaLine(); l != "" {
 		parts = append(parts, l)
 	}
@@ -224,6 +238,11 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 	if out.Preview, err = stepUpBlock("preview", c.Preview, MaxStepUpPreviewRunes); err != nil {
 		return nil, err
 	}
+	out.Excerpt = stepUpLine(c.Excerpt, MaxStepUpExcerptRunes)
+	if c.Parts < 0 || c.Parts > MaxStepUpParts {
+		return nil, fmt.Errorf("%w: a step-up card's part count is not 0 to %d", ErrInvalid, MaxStepUpParts)
+	}
+	out.Parts = c.Parts
 	if out.Details, err = stepUpBlock("details", c.Details, MaxStepUpDetailsRunes); err != nil {
 		return nil, err
 	}
@@ -256,6 +275,7 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 		// A changed draft's card shows nothing of it.
 		out.Preview, out.Venue, out.Media = "", "", nil
 		out.Platform, out.Target, out.Handle = "", "", ""
+		out.Parts, out.Excerpt = 0, ""
 	}
 	return &out, nil
 }
