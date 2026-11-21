@@ -1,0 +1,536 @@
+/*
+ * THE UI KIT'S COMPONENTS (docs/ui-kit.md) — ONE SOURCE, TWO STYLESHEETS.
+ *
+ * input.css imports this file, so muster's own app.css carries every class
+ * below; internal/uikit embeds the SAME file and serves it at
+ * /ui-kit/v1/kit.css behind the install's theme block (internal/theme CSS), so
+ * a plugin on another origin draws muster's components in muster's theme.
+ * There is no second copy to drift.
+ *
+ * 🔴 v1 IS ADDITIVE ONLY. A class, a modifier or a token here is a promise to
+ * every plugin that links the kit: add, never remove, rename or repurpose.
+ * internal/uikit's ledger (TestKitCSSCarriesTheContract) fails when the set
+ * shrinks, and TestTheLedgerIsTheContract when it and docs/ui-kit.md disagree.
+ *
+ * Plain CSS, NOT in a Tailwind @layer: a layered rule is emitted only for a
+ * class Tailwind finds in its content files, and a plugin's classes are in
+ * nobody's content files. Every colour is a palette token (web/css/tokens.css;
+ * the theme block overrides them per install); no hue is written here.
+ */
+
+/* The shape, type and motion tokens. internal/theme.Fixed has the same
+   values (TestFixedTokensAreKitCSSDefaults); the served kit's theme block
+   repeats them at a higher specificity. */
+:root {
+  --mu-radius-sm: .375rem;
+  --mu-radius-md: .5rem;
+  --mu-radius-lg: 1rem;
+  --mu-radius-full: 9999px;
+  --mu-font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --mu-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --mu-dur-fast: 120ms;
+  --mu-dur-base: 200ms;
+  --mu-dur-slow: 320ms;
+  --mu-ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --mu-ease-enter: cubic-bezier(0, 0, 0, 1);
+  --mu-ease-exit: cubic-bezier(.3, 0, 1, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --mu-dur-fast: 0ms; --mu-dur-base: 0ms; --mu-dur-slow: 0ms; }
+}
+
+/* --- base --------------------------------------------------------------- */
+
+.mu-root {
+  color-scheme: dark;
+  background: rgb(var(--mu-bg));
+  color: rgb(var(--mu-text));
+  font-family: var(--mu-font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mu-icon {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  flex-shrink: 0;
+  vertical-align: -0.25em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* kit.js's icon sprite: definitions only, never drawn (it also carries the
+   `hidden` attribute, so this holds where kit.css is not linked). */
+svg[data-mu-sprite] { display: none; }
+
+.mu-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- buttons ------------------------------------------------------------ */
+
+.mu-btn,
+.mu-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 44px;
+  border: 0;
+  font: inherit;
+  font-family: var(--mu-font-sans);
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--mu-dur-fast) var(--mu-ease-standard),
+    box-shadow var(--mu-dur-fast) var(--mu-ease-standard),
+    transform var(--mu-dur-fast) var(--mu-ease-standard);
+}
+
+/* 🔴 ALIGNED TO MUSTER'S OWN, AND LOCKED. A kit button, input, card and
+   icon button draw what muster's own do today — the Account page family
+   (`rounded-md px-3 py-2 text-base font-semibold`, the secondary on `bg` with
+   an `edge` ring, the section card `rounded-2xl border bg-s1/70 px-5 py-6`,
+   the header's `h-11 w-11 rounded-lg text-muted` icon button).
+   e2e/tests/ui-kit-parity.spec.ts renders both, at a phone's size and a
+   desktop's, and fails when either side's computed size, padding, radius,
+   border, ring or colours drift. Change muster's, or the kit's, and change
+   the other in the same commit. */
+.mu-btn {
+  padding: .5rem .75rem;
+  border-radius: var(--mu-radius-sm);
+  font-size: 1rem;
+  line-height: 1.5rem;
+  background: rgb(var(--mu-bg));
+  color: rgb(var(--mu-text));
+  box-shadow: inset 0 0 0 1px rgb(var(--mu-edge));
+}
+
+.mu-btn:active:not(:disabled),
+.mu-icon-btn:active:not(:disabled) { transform: scale(.97); }
+
+.mu-btn:focus-visible,
+.mu-icon-btn:focus-visible,
+.mu-menu__item:focus-visible,
+.mu-input:focus-visible,
+.mu-select:focus-visible,
+.mu-textarea:focus-visible,
+.mu-check:focus-visible,
+.mu-switch:focus-visible {
+  outline: 2px solid rgb(var(--mu-focus));
+  outline-offset: 2px;
+}
+
+.mu-btn--primary { background: rgb(var(--mu-accent)); color: rgb(var(--mu-on-accent)); box-shadow: none; }
+.mu-btn--primary:hover:not(:disabled) { background: rgb(var(--mu-accent) / .9); }
+.mu-btn--secondary { background: rgb(var(--mu-bg)); color: rgb(var(--mu-text)); box-shadow: inset 0 0 0 1px rgb(var(--mu-edge)); }
+.mu-btn--secondary:hover:not(:disabled) { background: rgb(var(--mu-s2)); }
+.mu-btn--ghost { background: transparent; color: rgb(var(--mu-text)); box-shadow: none; }
+.mu-btn--ghost:hover:not(:disabled) { background: rgb(var(--mu-s2)); }
+.mu-btn--danger { background: rgb(var(--mu-danger)); color: rgb(var(--mu-on-danger)); box-shadow: none; }
+.mu-btn--danger:hover:not(:disabled) { background: rgb(var(--mu-danger) / .9); }
+.mu-btn--sm { min-height: 32px; padding: .25rem .75rem; font-size: .875rem; line-height: 1.25rem; }
+.mu-btn--block { display: flex; width: 100%; }
+
+.mu-icon-btn {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: var(--mu-radius-md);
+  background: transparent;
+  color: rgb(var(--mu-muted));
+}
+.mu-icon-btn:hover:not(:disabled) { background: rgb(var(--mu-s2)); color: rgb(var(--mu-text)); }
+.mu-icon-btn--danger { background: rgb(var(--mu-danger)); color: rgb(var(--mu-on-danger)); }
+.mu-icon-btn--danger:hover:not(:disabled) { background: rgb(var(--mu-danger) / .9); }
+.mu-icon-btn--lg { width: 56px; height: 56px; }
+.mu-icon-btn--lg .mu-icon { width: 1.5em; height: 1.5em; }
+
+.mu-btn:disabled,
+.mu-btn[aria-disabled="true"],
+.mu-icon-btn:disabled,
+.mu-icon-btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+
+.mu-toggle[aria-pressed="true"] {
+  background: rgb(var(--mu-s3));
+  box-shadow: inset 0 0 0 2px rgb(var(--mu-accent));
+}
+.mu-toggle--alert[aria-pressed="true"] {
+  background: rgb(var(--mu-st-error-bg));
+  color: rgb(var(--mu-st-error-fg));
+  box-shadow: inset 0 0 0 2px rgb(var(--mu-st-error-fg));
+}
+
+.mu-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .75rem;
+  padding: .75rem;
+  border-radius: var(--mu-radius-lg);
+  background: rgb(var(--mu-s1));
+}
+
+/* --- chips and badges --------------------------------------------------- */
+
+.mu-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .375rem;
+  padding: .25rem .625rem;
+  border-radius: var(--mu-radius-full);
+  background: rgb(var(--mu-s2));
+  color: rgb(var(--mu-text2));
+  font-size: .75rem;
+  font-weight: 600;
+  line-height: 1rem;
+}
+.mu-chip--open { background: rgb(var(--mu-st-open-bg)); color: rgb(var(--mu-st-open-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-open-fg) / .4); }
+.mu-chip--progress { background: rgb(var(--mu-st-progress-bg)); color: rgb(var(--mu-st-progress-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-progress-fg) / .4); }
+.mu-chip--review { background: rgb(var(--mu-st-review-bg)); color: rgb(var(--mu-st-review-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-review-fg) / .4); }
+.mu-chip--complete { background: rgb(var(--mu-st-complete-bg)); color: rgb(var(--mu-st-complete-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-complete-fg) / .4); }
+.mu-chip--error { background: rgb(var(--mu-st-error-bg)); color: rgb(var(--mu-st-error-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-error-fg) / .4); }
+.mu-chip--warning { background: rgb(var(--mu-st-warning-bg)); color: rgb(var(--mu-st-warning-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-warning-fg) / .4); }
+.mu-chip--running { background: rgb(var(--mu-st-running-bg)); color: rgb(var(--mu-st-running-fg)); box-shadow: inset 0 0 0 1px rgb(var(--mu-st-running-fg) / .4); }
+
+.mu-badge {
+  position: absolute;
+  top: -.25rem;
+  right: -.25rem;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 .3rem;
+  border-radius: var(--mu-radius-full);
+  background: rgb(var(--mu-s3));
+  color: rgb(var(--mu-text));
+  font-size: .6875rem;
+  font-weight: 700;
+  line-height: 1.125rem;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgb(var(--mu-bg));
+}
+.mu-badge--accent { background: rgb(var(--mu-accent)); color: rgb(var(--mu-on-accent)); }
+.mu-badge--danger { background: rgb(var(--mu-danger)); color: rgb(var(--mu-on-danger)); }
+
+/* --- cards -------------------------------------------------------------- */
+
+.mu-card {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  padding: 1.5rem 1.25rem;
+  line-height: 1.5;
+  border: 1px solid rgb(var(--mu-line));
+  border-radius: var(--mu-radius-lg);
+  background: rgb(var(--mu-s1) / .7);
+  color: rgb(var(--mu-text));
+  box-shadow: 0 0 0 1px rgb(var(--mu-line));
+}
+.mu-card--raised { background: rgb(var(--mu-s2)); }
+.mu-card__title { margin: 0; font-size: 1rem; font-weight: 600; color: rgb(var(--mu-text)); }
+.mu-card__body { margin: 0; font-size: .875rem; line-height: 1.5; color: rgb(var(--mu-text2)); }
+
+/* --- sheet and dialog --------------------------------------------------- */
+
+.mu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgb(var(--mu-bg) / .7);
+  animation: mu-fade-in var(--mu-dur-slow) var(--mu-ease-enter);
+}
+
+.mu-sheet {
+  position: fixed;
+  z-index: 61;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 85dvh;
+  border-radius: var(--mu-radius-lg) var(--mu-radius-lg) 0 0;
+  background: rgb(var(--mu-s1));
+  color: rgb(var(--mu-text));
+  box-shadow: 0 -1px 0 rgb(var(--mu-line)), 0 -12px 32px rgb(var(--mu-bg) / .5);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: mu-sheet-in var(--mu-dur-slow) var(--mu-ease-enter);
+}
+.mu-sheet[hidden], .mu-menu[hidden] { display: none; }
+
+@media (min-width: 640px) {
+  .mu-sheet {
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    top: 50%;
+    width: min(32rem, calc(100vw - 2rem));
+    transform: translate(-50%, -50%);
+    border-radius: var(--mu-radius-lg);
+    padding-bottom: 0;
+    animation: mu-fade-in var(--mu-dur-slow) var(--mu-ease-enter);
+  }
+}
+
+.mu-sheet__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .75rem .75rem .75rem 1.25rem;
+  border-bottom: 1px solid rgb(var(--mu-line));
+  font-weight: 600;
+}
+.mu-sheet__body { flex: 1 1 auto; overflow-y: auto; padding: 1.25rem; }
+.mu-sheet__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .75rem;
+  padding: .75rem 1.25rem 1.25rem;
+}
+
+@keyframes mu-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes mu-sheet-in { from { transform: translateY(1.5rem); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* --- menu --------------------------------------------------------------- */
+
+.mu-menu {
+  position: absolute;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  padding: .25rem;
+  border-radius: var(--mu-radius-md);
+  background: rgb(var(--mu-s2));
+  box-shadow: inset 0 0 0 1px rgb(var(--mu-line)), 0 12px 32px rgb(var(--mu-bg) / .6);
+  animation: mu-fade-in var(--mu-dur-base) var(--mu-ease-enter);
+}
+.mu-menu__item {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  min-height: 44px;
+  padding: 0 .75rem;
+  border: 0;
+  border-radius: var(--mu-radius-md);
+  background: transparent;
+  color: rgb(var(--mu-text));
+  font: inherit;
+  font-size: .875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: left;
+  cursor: pointer;
+}
+.mu-menu__item:hover, .mu-menu__item:focus-visible { background: rgb(var(--mu-s2)); }
+.mu-menu__item--danger { color: rgb(var(--mu-st-error-fg)); }
+.mu-menu__sep { height: 1px; margin: .25rem .5rem; background: rgb(var(--mu-line)); }
+
+/* --- avatars and tiles -------------------------------------------------- */
+
+.mu-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: var(--mu-radius-full);
+  background: rgb(var(--mu-s3));
+  color: rgb(var(--mu-text));
+  font-size: .875rem;
+  font-weight: 600;
+}
+.mu-avatar > img { width: 100%; height: 100%; object-fit: cover; }
+.mu-avatar--sm { width: 28px; height: 28px; font-size: .75rem; }
+.mu-avatar--lg { width: 64px; height: 64px; font-size: 1.25rem; }
+
+.mu-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--mu-radius-md);
+  background: rgb(var(--mu-s2));
+  transition: box-shadow var(--mu-dur-base) var(--mu-ease-standard);
+}
+.mu-tile > video { width: 100%; height: 100%; object-fit: cover; }
+.mu-tile--speaking { box-shadow: inset 0 0 0 3px rgb(var(--mu-accent)); }
+.mu-tile__label {
+  position: absolute;
+  left: .5rem;
+  bottom: .5rem;
+  max-width: calc(100% - 1rem);
+  overflow: hidden;
+  padding: .125rem .5rem;
+  border-radius: var(--mu-radius-sm);
+  background: rgb(var(--mu-bg) / .75);
+  color: rgb(var(--mu-text));
+  font-size: .8125rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mu-tile__status {
+  position: absolute;
+  top: .5rem;
+  right: .5rem;
+  display: flex;
+  gap: .25rem;
+  padding: .125rem .375rem;
+  border-radius: var(--mu-radius-sm);
+  background: rgb(var(--mu-bg) / .75);
+  color: rgb(var(--mu-text));
+}
+.mu-tile-grid {
+  display: grid;
+  gap: .5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+/* --- toasts ------------------------------------------------------------- */
+
+.mu-toast-region {
+  position: fixed;
+  z-index: 70;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  width: min(28rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.mu-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: .625rem;
+  padding: .75rem .75rem .75rem 1rem;
+  border-radius: var(--mu-radius-md);
+  background: rgb(var(--mu-s2));
+  color: rgb(var(--mu-text));
+  box-shadow: inset 0 0 0 1px rgb(var(--mu-edge)), 0 12px 32px rgb(var(--mu-bg) / .6);
+  font-size: .9375rem;
+  pointer-events: auto;
+  animation: mu-sheet-in var(--mu-dur-base) var(--mu-ease-enter);
+}
+.mu-toast > .mu-icon { margin-top: .125rem; }
+.mu-toast--success > .mu-icon { color: rgb(var(--mu-st-complete-fg)); }
+.mu-toast--warning > .mu-icon { color: rgb(var(--mu-st-warning-fg)); }
+.mu-toast--error { box-shadow: inset 0 0 0 1px rgb(var(--mu-st-error-fg)), 0 12px 32px rgb(var(--mu-bg) / .6); }
+.mu-toast--error > .mu-icon { color: rgb(var(--mu-st-error-fg)); }
+
+/* --- spinner ------------------------------------------------------------ */
+
+.mu-spinner {
+  display: inline-block;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--mu-radius-full);
+  animation: mu-spin 800ms linear infinite;
+}
+.mu-spinner--lg { width: 40px; height: 40px; border-width: 3px; }
+@keyframes mu-spin { to { transform: rotate(360deg); } }
+
+/* 🔴 REDUCED MOTION: the durations are already 0ms (above); what is not a
+   duration token stops here. The spinner is a still ring with a gap, and no
+   kit keyframe runs. */
+@media (prefers-reduced-motion: reduce) {
+  .mu-spinner { animation: none; }
+  .mu-backdrop, .mu-sheet, .mu-menu, .mu-toast { animation: none; }
+}
+
+/* --- inputs ------------------------------------------------------------- */
+
+.mu-field { display: flex; flex-direction: column; gap: .375rem; }
+.mu-label { font-size: .875rem; font-weight: 500; color: rgb(var(--mu-text)); }
+.mu-input,
+.mu-select,
+.mu-textarea {
+  min-height: 44px;
+  padding: .5rem .75rem;
+  border: 0;
+  border-radius: var(--mu-radius-sm);
+  background: rgb(var(--mu-bg));
+  color: rgb(var(--mu-text));
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5rem;
+  box-shadow: inset 0 0 0 1px rgb(var(--mu-edge));
+}
+.mu-textarea { min-height: 6rem; resize: vertical; }
+.mu-input::placeholder, .mu-textarea::placeholder { color: rgb(var(--mu-muted)); }
+.mu-input[aria-invalid="true"],
+.mu-select[aria-invalid="true"],
+.mu-textarea[aria-invalid="true"] { box-shadow: inset 0 0 0 2px rgb(var(--mu-danger)); }
+.mu-check { width: 20px; height: 20px; margin: 12px; accent-color: rgb(var(--mu-accent)); }
+.mu-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 44px;
+  height: 26px;
+  margin: 9px 0;
+  border-radius: var(--mu-radius-full);
+  background: rgb(var(--mu-s3));
+  box-shadow: inset 0 0 0 1px rgb(var(--mu-edge));
+  cursor: pointer;
+  transition: background-color var(--mu-dur-fast) var(--mu-ease-standard);
+}
+.mu-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--mu-radius-full);
+  background: rgb(var(--mu-text));
+  transition: transform var(--mu-dur-fast) var(--mu-ease-standard);
+}
+.mu-switch:checked { background: rgb(var(--mu-accent)); box-shadow: none; }
+.mu-switch:checked::after { transform: translateX(18px); background: rgb(var(--mu-on-accent)); }
+.mu-help { margin: 0; font-size: .8125rem; color: rgb(var(--mu-muted)); }
+.mu-error { margin: 0; font-size: .8125rem; color: rgb(var(--mu-st-error-fg)); }
+
+/* --- tooltip (drawn by kit.js) ------------------------------------------ */
+
+.mu-tooltip {
+  position: fixed;
+  z-index: 80;
+  max-width: 16rem;
+  padding: .3rem .55rem;
+  border-radius: var(--mu-radius-sm);
+  background: rgb(var(--mu-text));
+  color: rgb(var(--mu-bg));
+  font-family: var(--mu-font-sans);
+  font-size: .8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+  pointer-events: none;
+  animation: mu-fade-in var(--mu-dur-base) var(--mu-ease-enter);
+}

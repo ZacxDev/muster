@@ -24,7 +24,7 @@ import (
 // at all. Every document head calls this, and nothing else calls the two
 // (TestDocumentHeadsHaveOneSpelling, TestEveryDocumentLinksTheBrandIcon).
 func docHead(b Brand) g.Node {
-	return g.Group{manifestLink(), brandIconLinks(b)}
+	return g.Group{manifestLink(), brandIconLinks(b), themeLink(b)}
 }
 
 // DocHeadHTML is docHead as a raw string, for internal/api's hand-written

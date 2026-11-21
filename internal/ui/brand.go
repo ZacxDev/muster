@@ -35,6 +35,11 @@ type Brand struct {
 	// the name (a wordmark): the pages then draw the logo alone. It means
 	// nothing while no logo is set.
 	LogoShowsName bool
+	// ThemeETag names the server's theme stylesheet (/ui-kit/v1/theme.css,
+	// docs/ui-kit.md#the-theme), "" while the theme is the default: a page
+	// then links no theme stylesheet, and draws app.css's own palette exactly
+	// as before themes existed.
+	ThemeETag string
 }
 
 // HasLogo reports whether a logo is set.
@@ -117,6 +122,21 @@ func brandMark(b Brand) g.Node {
 			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))),
 		g.If(b.DrawsName(), Span(g.Attr("data-brand-name", ""), Class("truncate"), g.Text(b.Name))),
 	}
+}
+
+// ThemeCSSPath is the theme stylesheet's route, spelled once for the pages
+// (internal/uikit serves it; this package does not import that one).
+const ThemeCSSPath = "/ui-kit/v1/theme.css"
+
+// themeLink is a document's link to the server's theme, at its versioned
+// URL, or nothing for the default theme. Its rules are on `:root:root`
+// (internal/theme.Selector), which out-ranks app.css's `:root, .dark`
+// palette, so the order of the two <link>s does not matter.
+func themeLink(b Brand) g.Node {
+	if b.ThemeETag == "" {
+		return nil
+	}
+	return Link(Rel("stylesheet"), g.Attr("data-theme-css", ""), Href(ThemeCSSPath+"?v="+url.QueryEscape(b.ThemeETag)))
 }
 
 // brandIconLinks is a document's favicon and touch icon: the logo's icon when

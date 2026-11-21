@@ -74,7 +74,8 @@
       # directory is absent or empty, so narrowing this to `.go` would swap one
       # missing-package error for one missing-embed error. `web/css/input.css`
       # is deliberately NOT here: it is Tailwind's *input*, consumed by
-      # `make css`, and no Go package reads it.
+      # `make css`, and no Go package reads it. `web/css/kit.css` IS (its own row
+      # below): `web/kit.go` embeds it.
       onlyGo = pkgs: pkgs.lib.cleanSourceWith {
         src = ./.;
         name = "muster-source";
@@ -85,6 +86,7 @@
             rel == "cmd" || rel == "internal" || rel == "web"
             || pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel
             || rel == "web/static" || pkgs.lib.hasPrefix "web/static/" rel
+            || rel == "web/css"
           ))
           # Every `.go` file directly in `web/`, not one named file: the row used
           # to be `web/static.go` alone, and when `web/asset.go` (web.Asset, the
@@ -151,6 +153,14 @@
           # `internal/mirror`. Without this row `nix build .#muster-mirror` dies
           # with `pattern content_theme.css: no matching files found`.
           || rel == "internal/pages/content_theme.css"
+          # 🔴 ONE FILE, NOT THE DIRECTORY: `web/kit.go` embeds the UI kit's
+          # component stylesheet (docs/ui-kit.md), which `internal/uikit` serves at
+          # /ui-kit/v1/kit.css and every binary that compiles `internal/api`
+          # links. Without this row `nix build .#muster-cli` dies with
+          # `web/kit.go:10:12: pattern css/kit.css: no matching files found`.
+          # Its siblings (input.css, tokens.css, page-content.css) are
+          # Tailwind's inputs, read by `make css` only, and stay out.
+          || rel == "web/css/kit.css"
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens

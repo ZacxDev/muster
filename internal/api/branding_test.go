@@ -21,6 +21,8 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/theme"
+	"github.com/ZacxDev/muster/internal/uikit"
 )
 
 // memBranding is branding.Store in memory, with the PG store's own admin
@@ -365,20 +367,25 @@ func TestTheInstanceDocumentIsPublic(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "public, max-age=300" {
 		t.Fatalf("anonymous: %d Cache-Control %q", rec.Code, rec.Header().Get("Cache-Control"))
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"name":null,"logo":null}` {
+	// The default theme rides along (theme.go): additive to the Android
+	// contract's two fields. Its etag is theme.css's, the hash of its bytes.
+	defTok, _ := theme.Choice{}.Validate()
+	te := uikit.ThemeCSS(defTok).ETag
+	defTheme := `,"theme":{"preset":"brass","accent":null,"etag":"` + te + `","css":"/ui-kit/v1/theme.css?v=` + te + `"}`
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"name":null,"logo":null`+defTheme+`}` {
 		t.Fatalf("nothing set: %s", got)
 	}
 	if rec := putLogo(t, h, who{cookie: cookie}, "  Team Example  ", testLogoPNG(t, 24, 12)); rec.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
 	}
 	etag := mem.b.ETag
-	want := `{"name":"Team Example","logo":{"url":"/brand/logo.png?v=` + etag + `","icon192":"/brand/icon-192.png?v=` + etag + `","icon512":"/brand/icon-512.png?v=` + etag + `","etag":"` + etag + `"}}`
+	want := `{"name":"Team Example","logo":{"url":"/brand/logo.png?v=` + etag + `","icon192":"/brand/icon-192.png?v=` + etag + `","icon512":"/brand/icon-512.png?v=` + etag + `","etag":"` + etag + `"}` + defTheme + `}`
 	if got := strings.TrimSpace(get(h, InstancePath, nil, false).Body.String()); got != want {
 		t.Fatalf("after the upload:\n%s\nwant\n%s", got, want)
 	}
 	// Name only: logo null, name set.
 	brandingDo(h, http.MethodDelete, BrandingLogoPath, nil, "", who{cookie: cookie})
-	if got := strings.TrimSpace(get(h, InstancePath, nil, false).Body.String()); got != `{"name":"Team Example","logo":null}` {
+	if got := strings.TrimSpace(get(h, InstancePath, nil, false).Body.String()); got != `{"name":"Team Example","logo":null`+defTheme+`}` {
 		t.Fatalf("after the reset: %s", got)
 	}
 }

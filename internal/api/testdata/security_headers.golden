@@ -5,6 +5,7 @@
 csp1 = default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*:*/brand/icon-192.png http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
 csp3 = default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*:*/brand/icon-192.png http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png; connect-src 'self'; frame-ancestors 'none'; frame-src https://w.viewer.example.net; base-uri 'self'; form-action 'self'
 csp5 = default-src 'none'
+csp6 = default-src 'none'; style-src 'unsafe-inline'
 pp2 = microphone=(self)
 pp4 = microphone=(self "https://w.viewer.example.net"), camera=(self "https://w.viewer.example.net"), display-capture=(self "https://w.viewer.example.net"), fullscreen=(self "https://w.viewer.example.net"), autoplay=(self "https://w.viewer.example.net"), clipboard-write=(self "https://w.viewer.example.net")
 
@@ -156,6 +157,10 @@ GET /teams/{id}/connectors	csp1	pp2
 GET /teams/{id}/hosts	csp1	pp2
 GET /teams/{id}/officers	csp1	pp2
 GET /teams/{id}/plugins	csp1	pp2
+GET /ui-kit/v1/icons.svg	csp6	pp2
+GET /ui-kit/v1/kit.css	csp1	pp2
+GET /ui-kit/v1/kit.js	csp1	pp2
+GET /ui-kit/v1/theme.css	csp1	pp2
 GET /ui/agents/repos	csp1	pp2
 GET /ui/agents/{id}/header	csp1	pp2
 GET /ui/agents/{id}/status	csp1	pp2

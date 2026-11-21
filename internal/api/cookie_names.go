@@ -95,7 +95,14 @@ func (s *Server) hostCookieNames(next http.Handler) http.Handler {
 			s.refuseLoopbackSignIn(w, r)
 			return
 		}
-		expireLegacyCookies(w, r)
+		// 🔴 NOT ON THE UI KIT. /ui-kit/ answers are public and long-cached
+		// (?v= immutable): a Set-Cookie on one would be cached with it and
+		// replayed to whoever fetched it next, and the contract says the kit
+		// carries none (docs/ui-kit.md). The legacy cookie is expired on the
+		// next page instead.
+		if !strings.HasPrefix(r.URL.Path, uiKitPathPrefix) {
+			expireLegacyCookies(w, r)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

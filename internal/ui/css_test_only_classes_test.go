@@ -240,6 +240,10 @@ func cssScannedSources(t *testing.T) (nonTest, tests map[string]string) {
 	// deleted the comment and the guard immediately reported a leak in a class
 	// nobody had touched — a green that had been resting on prose.
 	add("../../web/css/input.css")
+	// The UI kit's components (docs/ui-kit.md): authored CSS that input.css
+	// imports, unlayered, so every class reaches app.css whatever the scan
+	// finds — they are written for plugins on other origins too.
+	add("../../web/css/kit.css")
 
 	// 🔴 `tests` IS EXPECTED TO BE EMPTY NOW, AND THAT IS THE POINT. The config
 	// excludes _test.go, so the glob walk above cannot reach a test file — which

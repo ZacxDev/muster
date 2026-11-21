@@ -9,9 +9,21 @@
  */
 @import "./tokens.css";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/*
+ * The UI kit's components (web/css/kit.css, docs/ui-kit.md) are the same file
+ * /ui-kit/v1/kit.css serves to plugins. 🔴 THEY SIT AFTER PREFLIGHT AND BEFORE
+ * THE UTILITIES, which is why the three Tailwind layers are @imports here and
+ * not @tailwind directives: an @import must precede every other statement, so
+ * with directives the kit landed BEFORE preflight, whose
+ * `button, [type='button']` rule (the same specificity as `.mu-btn--primary`)
+ * then won and drew a kit button on muster's own pages transparent. Measured:
+ * this order builds a stylesheet byte-identical to the directive form apart
+ * from the kit's own rules.
+ */
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "./kit.css";
+@import "tailwindcss/utilities";
 
 /*
  * The palette ("Brass Roll") is web/css/tokens.css, imported above.

@@ -569,6 +569,14 @@ export const asksSearchPort = port + 485;
 // tests/signin-progress.spec.ts: its own password-mode server, so its refused
 // and accepted sign-ins are charged to a budget of their own (lib/server.ts).
 export const signinProgressPort = port + 486;
+// tests/instance-theme.spec.ts: the server's theme (docs/ui-kit.md) — its own
+// password-mode server (+487: clear of the blocks above), so no other server
+// caches the theme it saves.
+export const instanceThemePort = port + 487;
+// tests/ui-kit-parity.spec.ts: muster's own components against the UI kit's —
+// its own password-mode server (+488: clear of the blocks above), with a logo
+// set so the branding section's secondary button is drawn.
+export const uiKitParityPort = port + 488;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.
