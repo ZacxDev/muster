@@ -118,6 +118,7 @@ func gather(t *testing.T) map[string][]string {
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
 	PluginHandoffs.WithLabelValues("view", "minted")
+	PluginServerGrants.WithLabelValues("granted")
 	PageLinkRequests.WithLabelValues("shell", "served")
 	CSRFRefusals.WithLabelValues("tasks", "no-headers")
 	PageResponses.WithLabelValues("submit", "recorded")

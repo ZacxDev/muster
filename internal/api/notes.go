@@ -581,17 +581,34 @@ func (s *Server) createTask(ctx context.Context, in taskCreateInput, linked func
 // already existed gets NONE of the create's side effects — no thread link,
 // broadcast, metric or push — because nothing was created.
 func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key string, comment *notes.Comment, linked func(id int64)) (notes.Note, bool, bool, error) {
+	want, err := s.taskWant(ctx, in)
+	if err != nil {
+		return notes.Note{}, false, false, err
+	}
+	return s.fileTask(ctx, in, want, linked, func(want notes.Note) (notes.Note, bool, bool, error) {
+		if key == "" {
+			n, err := s.ext.Notes.Create(ctx, want)
+			return n, true, false, err
+		}
+		return s.ext.Notes.CreateOnceByTag(ctx, key, want, comment)
+	})
+}
+
+// taskWant is the task a machine create files from in: the body required,
+// the tags resolved, the provenance stored. One spelling for every door that
+// files a task (createTaskOnce, a server app's ledgered create).
+func (s *Server) taskWant(ctx context.Context, in taskCreateInput) (notes.Note, error) {
 	if strings.TrimSpace(in.Body) == "" {
-		return notes.Note{}, false, false, errTaskBodyRequired
+		return notes.Note{}, errTaskBodyRequired
 	}
 	tags, err := s.resolveTaskTags(ctx, in.Tags)
 	if err != nil {
 		var ve errTagValidation
 		if errors.As(err, &ve) {
-			return notes.Note{}, false, false, ve
+			return notes.Note{}, ve
 		}
 		s.logger.Printf("notes: api create tags: %v", err)
-		return notes.Note{}, false, false, errTaskTagsUnchecked
+		return notes.Note{}, errTaskTagsUnchecked
 	}
 	// Provenance (migration 0017): taskSource is the single source of truth for BOTH
 	// the metric label (below) and the stored value. The default/unidentified "api"
@@ -609,13 +626,20 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 		SourceSessionID: nilIfEmpty(in.SessionID),
 		CreatedBy:       in.CreatedBy,
 	}
-	var note notes.Note
-	created, commented := true, false
-	if key == "" {
-		note, err = s.ext.Notes.Create(ctx, want)
-	} else {
-		note, created, commented, err = s.ext.Notes.CreateOnceByTag(ctx, key, want, comment)
-	}
+	return want, nil
+}
+
+// taskFiler files want, reporting whether a task was created (a once-key or a
+// ledger may answer an existing one instead) and whether a comment was
+// written.
+type taskFiler func(want notes.Note) (n notes.Note, created, commented bool, err error)
+
+// fileTask is createTaskOnce's tail: file runs the store's write, and a task
+// it CREATED gets every side effect (taskCreatedEffects); an existing one gets
+// none. A server app's ledgered create (plugin_server_tasks.go) comes through
+// here too, so it cannot forget one.
+func (s *Server) fileTask(ctx context.Context, in taskCreateInput, want notes.Note, linked func(id int64), file taskFiler) (notes.Note, bool, bool, error) {
+	note, created, commented, err := file(want)
 	if err != nil {
 		s.logger.Printf("notes: api create: %v", err)
 		return notes.Note{}, false, false, err

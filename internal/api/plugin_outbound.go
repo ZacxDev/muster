@@ -278,7 +278,7 @@ func (s *Server) handlePluginDraftMedia(w http.ResponseWriter, r *http.Request) 
 		if fresh {
 			code = http.StatusCreated
 		}
-		s.draftStatusMoved(p.OwnerID, id)
+		s.draftStatusMoved(messagesOwner(p), id)
 		s.writeJSON(w, code, map[string]any{"draft_id": id, "ref": m.Ref, "sha256": m.SHA256, "content_type": m.ContentType, "size": m.Size})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})

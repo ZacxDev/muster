@@ -104,8 +104,18 @@ const (
 
 // Plugin is one minted plugin's record; the token itself is never stored.
 type Plugin struct {
-	ID             int64      `json:"id"`
-	OwnerID        int64      `json:"ownerId"`
+	ID int64 `json:"id"`
+	// ownerID is the row's owner_id: a person or a team for a scope 'person'
+	// row, 0 (NULL) for a server app. 🔴 UNEXPORTED ON PURPOSE: the only way
+	// to read it is PersonalOwner, which answers (0, false) for a server row,
+	// so every read site has to say what a server app does there to compile
+	// (docs/design/meetings.md, "Who each route acts as"), and
+	// internal/api TestThePluginOwnerReadSitesAreALedger pins the set of
+	// those sites from the Go AST.
+	ownerID int64
+	// Scope is the row's scope (migration 0172): ScopePerson, or ScopeServer
+	// for an app an admin installed for the whole server.
+	Scope          string     `json:"scope"`
 	Name           string     `json:"name"`
 	Label          string     `json:"label"`
 	DataScope      string     `json:"dataScope"`
@@ -184,6 +194,37 @@ const (
 	// Chosen on /plugins only (never paired), fixed at mint.
 	CapApp Capability = "app"
 )
+
+// The scopes a plugin row has (migration 0172, plugins_scope_check).
+const (
+	// ScopePerson is a person's or a team's own plugin: every row before
+	// server apps, and every row minted on /plugins or paired.
+	ScopePerson = "person"
+	// ScopeServer is an app an ADMIN installed for the whole server
+	// (server.go): no owner, its token acts for nobody but the person whose
+	// live grant a request names.
+	ScopeServer = "server"
+)
+
+// PersonalOwner is THE ONE READ of a plugin row's owner: the person or team
+// that owns it, and true; (0, false) for a server app, which has no owner.
+func (p Plugin) PersonalOwner() (int64, bool) {
+	if p.Scope == ScopeServer || p.ownerID <= 0 {
+		return 0, false
+	}
+	return p.ownerID, true
+}
+
+// IsServer reports whether p is a server-installed app (ScopeServer).
+func (p Plugin) IsServer() bool { return p.Scope == ScopeServer }
+
+// OwnedBy is p as a personal plugin owned by owner: how a value of Plugin is
+// built outside this package (a test fake's Authenticate), since the owner
+// field is unexported. Every row this package reads is scanned, never built.
+func (p Plugin) OwnedBy(owner int64) Plugin {
+	p.ownerID, p.Scope = owner, ScopePerson
+	return p
+}
 
 // Has reports whether p's token carries c.
 func (p Plugin) Has(c Capability) bool {

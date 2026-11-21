@@ -132,7 +132,7 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if ok {
-			s.draftStatusMoved(p.OwnerID, c.DraftID)
+			s.draftStatusMoved(messagesOwner(p), c.DraftID)
 			s.writeJSON(w, http.StatusOK, c)
 			return
 		}
@@ -179,13 +179,13 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	d, fresh, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
 	switch {
 	case err == nil:
-		s.draftStatusMoved(p.OwnerID, d.ID)
+		s.draftStatusMoved(messagesOwner(p), d.ID)
 		if fresh && d.Status == plugins.DraftFailed {
 			// Once, on the result that made it failed: a repeat changes nothing.
 			s.draftRefused(r.Context(), p, d, true, parseRetryAt(in.RetryAt))
 		}
 		if fresh && d.Status == plugins.DraftSent {
-			s.outboundSettled(r.Context(), p.OwnerID, d, settledByPlugin, nil)
+			s.outboundSettled(r.Context(), messagesOwner(p), d, settledByPlugin, nil)
 		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
@@ -294,13 +294,13 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 			if merr != nil {
 				m = plugins.Message{}
 			}
-			s.notifyDraftAwaiting(r.Context(), p.OwnerID, d, m)
-			s.draftFiled(p.OwnerID, d)
+			s.notifyDraftAwaiting(r.Context(), messagesOwner(p), d, m)
+			s.draftFiled(messagesOwner(p), d)
 		}
 		if fresh && d.RefusedByCheck() {
 			s.draftRefused(r.Context(), p, d, false, parseRetryAt(in.RetryAt))
 		}
-		s.draftStatusMoved(p.OwnerID, d.ID)
+		s.draftStatusMoved(messagesOwner(p), d.ID)
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -359,7 +359,7 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 		// (plugin_outbound.go) — at once, or, past the bound, HELD until one
 		// of its open ones is finished — and the owner's push says which.
 		where := refusalToOfficer
-		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin, retryAt) {
+		if s.outboundSettled(ctx, messagesOwner(p), d, settledByPlugin, retryAt) {
 			where = refusalOfficerHeld
 		}
 		s.notifyDraftRefused(p, d, where)
@@ -439,11 +439,11 @@ const (
 // replace it, and left alone it would offer a decision that no longer exists.
 func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, where int) {
 	id := strconv.FormatInt(d.ID, 10)
-	if d.Officer != nil && !s.officerPushSends(officerPushDraftRefused, p.OwnerID, draftTag(d.ID)) {
-		s.goNotify(p.OwnerID, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: id, Tag: draftTag(d.ID)}, nil)
+	if d.Officer != nil && !s.officerPushSends(officerPushDraftRefused, messagesOwner(p), draftTag(d.ID)) {
+		s.goNotify(messagesOwner(p), push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: id, Tag: draftTag(d.ID)}, nil)
 		return
 	}
-	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
+	s.goNotify(messagesOwner(p), push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftRefusedPushTitle,
@@ -529,10 +529,10 @@ func (s *Server) draftStatusMoved(owner, id int64) {
 // message queued: the chief is not taking turns, and the next claim will try
 // again. One retry per owner at a time in this process.
 func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
-	if s.pluginDeliverer == nil || p.OwnerID <= 0 {
+	if s.pluginDeliverer == nil || messagesOwner(p) <= 0 {
 		return
 	}
-	if _, busy := s.pluginRetrying.LoadOrStore(p.OwnerID, true); busy {
+	if _, busy := s.pluginRetrying.LoadOrStore(messagesOwner(p), true); busy {
 		return
 	}
 	ctx, cancel := s.streamContext(context.WithoutCancel(r.Context()))
@@ -540,10 +540,10 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 	safeGo(s.logger, "plugin retry", func() {
 		defer s.pluginInFlight.Done()
 		defer cancel()
-		defer s.pluginRetrying.Delete(p.OwnerID)
-		msgs, err := s.ext.Plugins.QueuedForOwner(ctx, p.OwnerID, pluginRetryBatch)
+		defer s.pluginRetrying.Delete(messagesOwner(p))
+		msgs, err := s.ext.Plugins.QueuedForOwner(ctx, messagesOwner(p), pluginRetryBatch)
 		if err != nil {
-			s.logger.Printf("plugins: owner %d: list queued messages: %v", p.OwnerID, err)
+			s.logger.Printf("plugins: owner %d: list queued messages: %v", messagesOwner(p), err)
 			return
 		}
 		if len(msgs) == 0 {
@@ -551,7 +551,7 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 		}
 		chief, err := s.chiefAgent(ctx)
 		if err != nil && !errors.Is(err, ErrNoChief) {
-			s.logger.Printf("plugins: owner %d retry: resolve the chief: %v", p.OwnerID, err)
+			s.logger.Printf("plugins: owner %d retry: resolve the chief: %v", messagesOwner(p), err)
 		}
 		for _, m := range msgs {
 			if s.pluginDeliverer.Deliver(ctx, m.PluginID, m.ID, chief).Outcome == plugins.OutcomePending {

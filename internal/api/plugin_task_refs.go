@@ -431,7 +431,7 @@ func (s *Server) handlePluginTaskWritesClaim(w http.ResponseWriter, r *http.Requ
 		}
 		if len(got) > 0 {
 			for _, x := range got {
-				s.broadcastTo(p.OwnerID, EventTaskChanged, strconv.FormatInt(x.NoteID, 10))
+				s.broadcastTo(messagesOwner(p), EventTaskChanged, strconv.FormatInt(x.NoteID, 10))
 			}
 			s.writeJSON(w, http.StatusOK, map[string]any{"writes": got})
 			return
@@ -533,7 +533,7 @@ func (s *Server) handlePluginTaskWriteResult(w http.ResponseWriter, r *http.Requ
 			s.stopChiefAgentOnComplete(ctx, n)
 		}
 	}
-	s.broadcastTo(p.OwnerID, EventTaskChanged, strconv.FormatInt(wr.NoteID, 10))
+	s.broadcastTo(messagesOwner(p), EventTaskChanged, strconv.FormatInt(wr.NoteID, 10))
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": wr.ID, "state": wr.State, "applied": applied})
 }
 

@@ -415,6 +415,11 @@ type Server struct {
 	// appNotifies is the cap on an `app` plugin's knock notifications
 	// (plugin_notify.go): per (plugin, ref) and per plugin.
 	appNotifies appNotifyLimit
+	// serverTasks is a server app's task-write caps (plugin_server.go):
+	// per (app, person) and per app.
+	serverTasks serverTaskLimit
+	// ownersChecks is a server app's POST /plugin/v1/owners/check cap.
+	ownersChecks ownersCheckLimit
 	// pushOffLogged: the "push is not configured" drop has been logged once
 	// (logPushOff). On a server with no push at all every notification is
 	// dropped, so it is said once rather than once per notification.

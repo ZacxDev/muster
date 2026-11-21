@@ -63,12 +63,19 @@ const pluginCapFilesTasks plugins.Capability = "(messages or tasks)"
 // plugin holding its target's capability (plugins.HandoffTarget.purpose).
 const pluginCapHandoff plugins.Capability = "(viewer or app)"
 
+// pluginCapServer is the capability of a route only a SERVER app's token
+// opens (POST /plugin/v1/owners/check): a personal token is 403. Like
+// pluginCapAny it is no value plugins.capabilities admits.
+const pluginCapServer plugins.Capability = "(a server app)"
+
 // pluginTokenHas is THE ONE PLACE requirePluginToken admits a capability: p
 // opens a route that needs need.
 func pluginTokenHas(p plugins.Plugin, need plugins.Capability) bool {
 	switch need {
 	case pluginCapAny:
 		return true
+	case pluginCapServer:
+		return p.IsServer()
 	case pluginCapFilesTasks:
 		return p.Has(plugins.CapMessages) || p.Has(plugins.CapTasks)
 	case pluginCapHandoff:
@@ -85,6 +92,8 @@ func PluginCapabilityRefusal(c plugins.Capability) string {
 		return "this plugin token has neither the \"messages\" nor the \"tasks\" capability this route needs"
 	case pluginCapHandoff:
 		return "this plugin token has neither the \"viewer\" nor the \"app\" capability this route needs"
+	case pluginCapServer:
+		return "this route is a server app's; a personal plugin token does not have the capability this route needs"
 	}
 	return "this plugin token does not have the \"" + string(c) + "\" capability this route needs"
 }
@@ -160,6 +169,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	// messages OR tasks: the one route a tasks token opens (but /self).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, pluginCapFilesTasks))
+	// Which of the subjects a SERVER app holds still have a live grant
+	// (plugin_server.go): a server app's only, a personal token is 403.
+	mux.HandleFunc("POST "+pluginOwnersCheckPath, s.requirePluginOriginsOn(s.requirePluginToken(s.handlePluginOwnersCheck, pluginCapServer)))
 	// An app plugin's knock notification and its withdrawal (plugin_notify.go):
 	// app only, muster's own text.
 	s.registerPluginNotifyRoutes(mux)
@@ -238,6 +250,23 @@ func (s *Server) requirePluginToken(next http.HandlerFunc, need plugins.Capabili
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the plugin token"})
 			return
 		}
+		actFor := r.Header.Values(MusterActForHeader)
+		if p.IsServer() {
+			s.serveServerPlugin(w, r, next, p, actFor)
+			return
+		}
+		// 🔴 A PERSONAL token never names a person: the header is 400 on EVERY
+		// route, so a plugin that mixes the two models fails loudly instead of
+		// acting as the token's owner.
+		if len(actFor) > 0 {
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": ActForOnPersonalRefusal})
+			return
+		}
+		owner, ok := p.PersonalOwner()
+		if !ok {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PluginTokenRefusal})
+			return
+		}
 		// 🔴 A TEAM's token (team sharing 2b.3b) is served teamPluginRoutes'
 		// kept routes alone — the hand-off redeem and /self — WHATEVER ITS
 		// ROW'S CAPABILITIES SAY: the door, not the row, is the guard.
@@ -249,8 +278,8 @@ func (s *Server) requirePluginToken(next http.HandlerFunc, need plugins.Capabili
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PluginCapabilityRefusal(need)})
 			return
 		}
-		ctx := context.WithValue(r.Context(), pluginCtxKey{}, p)
-		s.admit(w, r.WithContext(ctx), next, s.principalFor(r.Context(), p.OwnerID, authz.ViaPlugin))
+		ctx := contextWithPlugin(r.Context(), p)
+		s.admit(w, r.WithContext(ctx), next, s.principalFor(r.Context(), owner, authz.ViaPlugin))
 	}
 }
 
@@ -272,9 +301,11 @@ func pluginFromContext(ctx context.Context) plugins.Plugin {
 
 // refusePluginTokenElsewhere is admit's half of "mpl_ opens /plugin/v1/* only":
 // true (and the request answered) when a request admitted by any door but the
-// plugin door carries a plugin-shaped credential.
+// plugin door carries a plugin-shaped credential. The plugin door is a
+// personal plugin's (ViaPlugin) OR a server app's acting for a person
+// (ViaServerPlugin): authz.IsPluginVia, so an act-for request is not refused.
 func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Request, via authz.Via) bool {
-	if via == authz.ViaPlugin || !plugins.LooksLikeToken(hookTokenFromRequest(r)) {
+	if authz.IsPluginVia(via) || !plugins.LooksLikeToken(hookTokenFromRequest(r)) {
 		return false
 	}
 	s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PluginTokenElsewhere})
@@ -303,6 +334,7 @@ var teamPluginRoutes = map[string]bool{
 	"POST /plugin/v1/tasks":                        false,
 	"POST /plugin/v1/notify":                       false,
 	"DELETE /plugin/v1/notify/{ref}":               false,
+	"POST /plugin/v1/owners/check":                 false,
 }
 
 // TeamPluginRouteRefusal answers a team plugin token anywhere but the
@@ -329,7 +361,14 @@ type pluginSelf struct {
 // the door's 401, which is how a plugin learns either within one call.
 func (s *Server) handlePluginSelf(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
-	self := pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
+	if p.IsServer() {
+		// A server app's: no person, no count of people, no list.
+		s.writeJSON(w, http.StatusOK, serverPluginSelf{PluginID: p.ID, PluginName: p.Name, Scope: plugins.ScopeServer,
+			OwnerKind: plugins.ScopeServer, Capabilities: p.Capabilities, ActForHours: int(plugins.ServerActFor / time.Hour)})
+		return
+	}
+	owner, _ := p.PersonalOwner()
+	self := pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: owner,
 		OwnerLogin: p.OwnerLogin, OwnerKind: "person", Capabilities: p.Capabilities, DeliverTo: p.DeliverTo}
 	if p.OwnerTeam {
 		self.OwnerKind = "team"
@@ -561,8 +600,8 @@ func (s *Server) handlePluginDraftChecksToggle(w http.ResponseWriter, r *http.Re
 		if merr != nil {
 			m = plugins.Message{}
 		}
-		s.notifyDraftAwaitingNoting(r.Context(), p.OwnerID, d, m, DraftChecksOffNote)
-		s.draftFiled(p.OwnerID, d)
+		s.notifyDraftAwaitingNoting(r.Context(), messagesOwner(p), d, m, DraftChecksOffNote)
+		s.draftFiled(messagesOwner(p), d)
 	}
 	http.Redirect(w, r, pluginsPath, http.StatusSeeOther)
 }

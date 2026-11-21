@@ -83,7 +83,7 @@ func (p *gtPlugins) Message(_ context.Context, id int64) (plugins.Message, error
 }
 
 func (p *gtPlugins) Plugin(_ context.Context, id int64) (plugins.Plugin, error) {
-	return plugins.Plugin{ID: id, OwnerID: gtOwner, Label: "Example inbox"}, nil
+	return plugins.Plugin{ID: id, Label: "Example inbox"}.OwnedBy(gtOwner), nil
 }
 
 type gatedFakeFixture struct {

@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +33,21 @@ type Store interface {
 	// RedeemHandoff spends a code minted for pluginID (handoffs.go): unknown,
 	// used, expired or another plugin's are one ErrNotFound.
 	RedeemHandoff(ctx context.Context, pluginID int64, code string, now time.Time) (Handoff, error)
+	// Server-installed apps (server.go; core PR 1h).
+
+	// RedeemServerHandoff spends a code minted for server app app and records
+	// its person's grant, answering the pairwise subject and display name.
+	RedeemServerHandoff(ctx context.Context, app Plugin, code string, now time.Time) (ServerHandoff, error)
+	// LiveServerGrants is THE gate: of subjects, those whose grant under app
+	// is live at now (serverGrantLive), each with its person.
+	LiveServerGrants(ctx context.Context, app Plugin, origins []OriginPattern, subjects []string, now time.Time) (map[string]int64, error)
+	// InstallServerApp, RotateServerApp and UninstallServerApp are an admin's
+	// (the caller gates who); each is audited as by.
+	InstallServerApp(ctx context.Context, in ServerAppIn, by users.Actor) (string, Plugin, error)
+	RotateServerApp(ctx context.Context, id int64, by users.Actor) (string, Plugin, error)
+	UninstallServerApp(ctx context.Context, id int64, by users.Actor) (Plugin, error)
+	// SetServerAppHidden hides or shows a server app for the principal, a person.
+	SetServerAppHidden(ctx context.Context, id int64, hidden bool, now time.Time) (bool, error)
 	// List is the principal's plugins, newest first.
 	List(ctx context.Context) ([]Plugin, error)
 	// Revoke revokes one of the principal's plugins, reporting whether it has
@@ -177,13 +193,30 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at, app_label, app_icon`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at, app_label, app_icon, scope`
 
 // pluginDest is the scan destinations for pluginCols, in its order. THE ONE
 // COPY, as messageDest: every reader of pluginCols scans through it.
 func pluginDest(p *Plugin) []any {
-	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt, &p.AppLabel, &p.AppIcon}
+	return []any{&p.ID, ownerCol{p}, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt, &p.AppLabel, &p.AppIcon, &p.Scope}
+}
+
+// ownerCol scans plugins.owner_id into p's unexported owner: an owner id, or
+// NULL (a server app, migration 0172) as 0. THE ONE WRITER of the field from
+// a row.
+type ownerCol struct{ p *Plugin }
+
+func (o ownerCol) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		o.p.ownerID = 0
+	case int64:
+		o.p.ownerID = v
+	default:
+		return fmt.Errorf("plugins: owner_id scanned as %T", src)
+	}
+	return nil
 }
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
@@ -318,6 +351,10 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 		}
 		owner, _ := authz.From(ctx)
 		if err := s.appMintChecks(ctx, tx, owner.Team); err != nil {
+			return "", Plugin{}, err
+		}
+		// Fork 9: not into a plugin a server app already offers everyone.
+		if err := s.serverAppMintRefusal(ctx, caps, in.EntryURL); err != nil {
 			return "", Plugin{}, err
 		}
 		tabLabel, tabIcon = &appLabel, &in.AppIcon
@@ -610,6 +647,22 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 		RETURNING `+prefixed("p", pluginCols)+`, coalesce(nullif(u.email, ''), u.display_name), u.kind = 'team'`, HashToken(token)).
 		Scan(append(pluginDest(&p), &p.OwnerLogin, &p.OwnerTeam)...)
 	if errors.Is(err, pgx.ErrNoRows) {
+		return s.authenticateServerApp(ctx, token)
+	}
+	return p, err
+}
+
+// authenticateServerApp is Authenticate's SECOND ARM (core PR 1h): a live
+// SERVER app's token, with no owner to join. It comes back with Scope
+// ScopeServer and no owner (PersonalOwner is false), and the door
+// (internal/api serverPluginRoutes) decides what it is served. Run under
+// the caller's authz.System, as Authenticate is.
+func (s *PGStore) authenticateServerApp(ctx context.Context, token string) (Plugin, error) {
+	p, err := scanPlugin(s.pool.QueryRow(ctx, `
+		UPDATE plugins SET last_seen_at = now()
+		 WHERE token_hash = $1 AND revoked_at IS NULL AND scope = 'server' AND owner_id IS NULL
+		RETURNING `+pluginCols, HashToken(token)))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return Plugin{}, ErrBadToken
 	}
 	return p, err
@@ -644,7 +697,7 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		var live bool
 		var p Plugin
 		err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL, id, owner_id, name, deliver_to FROM plugins WHERE id = $1 FOR UPDATE`,
-			pluginID).Scan(&live, &p.ID, &p.OwnerID, &p.Name, &p.DeliverTo)
+			pluginID).Scan(&live, &p.ID, ownerCol{&p}, &p.Name, &p.DeliverTo)
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
 			return ErrNotFound
 		}

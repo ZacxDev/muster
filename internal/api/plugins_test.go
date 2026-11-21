@@ -67,23 +67,23 @@ func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins
 	c.note(ctx, "Authenticate")
 	switch tok {
 	case pgnTok:
-		return plugins.Plugin{ID: 3, OwnerID: authz.OperatorUserID, Name: "example-inbox", Label: "Example inbox",
-			Capabilities: []plugins.Capability{plugins.CapMessages}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 3, Name: "example-inbox", Label: "Example inbox",
+			Capabilities: []plugins.Capability{plugins.CapMessages}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	case pgnViewerTok:
-		return plugins.Plugin{ID: 4, OwnerID: authz.OperatorUserID, Name: "example-viewer", Label: "Example viewer",
-			Capabilities: []plugins.Capability{plugins.CapViewer}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 4, Name: "example-viewer", Label: "Example viewer",
+			Capabilities: []plugins.Capability{plugins.CapViewer}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	case pgnChecksTok:
-		return plugins.Plugin{ID: 6, OwnerID: authz.OperatorUserID, Name: "example-checker", Label: "Example checker",
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 6, Name: "example-checker", Label: "Example checker",
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	case pgnExtTok:
-		return plugins.Plugin{ID: 7, OwnerID: authz.OperatorUserID, Name: "example-guide", Label: "Example guide",
-			Capabilities: []plugins.Capability{plugins.CapChiefExtension}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 7, Name: "example-guide", Label: "Example guide",
+			Capabilities: []plugins.Capability{plugins.CapChiefExtension}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	case pgnTasksTok:
-		return plugins.Plugin{ID: 8, OwnerID: authz.OperatorUserID, Name: "example-filer", Label: "Example filer",
-			Capabilities: []plugins.Capability{plugins.CapTasks}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 8, Name: "example-filer", Label: "Example filer",
+			Capabilities: []plugins.Capability{plugins.CapTasks}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	case pgnAppTok:
-		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "example-app", Label: "Example app",
-			Capabilities: []plugins.Capability{plugins.CapApp}, OwnerLogin: "owner@example.invalid"}, nil
+		return plugins.Plugin{ID: 9, Name: "example-app", Label: "Example app",
+			Capabilities: []plugins.Capability{plugins.CapApp}, OwnerLogin: "owner@example.invalid"}.OwnedBy(authz.OperatorUserID), nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

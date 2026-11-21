@@ -76,7 +76,9 @@ func (s *Server) liveAppPlugins(ctx context.Context) []plugins.Plugin {
 	}
 	var out []plugins.Plugin
 	for _, p := range all {
-		if p.RevokedAt != nil || !p.Has(plugins.CapApp) || p.OwnerTeam || p.OwnerID != owner ||
+		// The principal's own PERSONAL app plugins (a server app's tab is its
+		// own arm, core PR 1h.2).
+		if o, ok := p.PersonalOwner(); !ok || p.RevokedAt != nil || !p.Has(plugins.CapApp) || p.OwnerTeam || o != owner ||
 			p.AppLabel == nil || p.AppIcon == nil || p.Origin == nil || p.EntryURL == nil {
 			continue
 		}

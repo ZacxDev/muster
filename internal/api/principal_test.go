@@ -777,9 +777,9 @@ type principalPlugins struct{ plugins.Store }
 
 func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
 	if tok == pPluginToken {
-		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
+		return plugins.Plugin{ID: 9, Name: "principal-test",
 			// Every capability, so the probe reaches every plugin route's handler.
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension, plugins.CapApp}}, nil
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension, plugins.CapApp}}.OwnedBy(authz.OperatorUserID), nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

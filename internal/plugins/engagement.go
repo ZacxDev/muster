@@ -118,7 +118,11 @@ func (s *PGStore) routeEngagement(ctx context.Context, tx pgx.Tx, p Plugin, offi
 	if s.officers == nil {
 		return Message{}, ErrOfficerUnavailable
 	}
-	res, err := s.officers.EngagementTx(ctx, tx, p.OwnerID, Engagement{Officer: officer, Venue: in.Venue, Person: *in.Person,
+	owner, ok := p.PersonalOwner()
+	if !ok {
+		return Message{}, ErrOfficerUnavailable
+	}
+	res, err := s.officers.EngagementTx(ctx, tx, owner, Engagement{Officer: officer, Venue: in.Venue, Person: *in.Person,
 		Event: *in.Event, PluginID: p.ID, PluginName: p.Name, MessageID: m.ID})
 	if err != nil {
 		return Message{}, err
