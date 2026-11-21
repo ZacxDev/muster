@@ -3,7 +3,6 @@ package attention
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/db"
 )
@@ -31,11 +30,10 @@ type Search struct {
 	// Text matches, case-insensitively and as a plain substring (no
 	// wildcards: % _ and \ are themselves), the question, the why line, any
 	// option, the answer, who asked (the stored label, the mirrored session),
-	// and a step-up card's title, why and post text ("": none) — only on asks
-	// created at or after TextSince, the ask log's text window: older text is
-	// not searched, while the ask's id still is.
-	Text      string
-	TextSince time.Time
+	// and a step-up card's title, why and post text ("": none), on every ask
+	// whatever its age: attention_asks keeps an ask's text as long as the ask
+	// (only the separate ask log forgets text, after MUSTER_ASK_LOG_TEXT_TTL).
+	Text string
 	// Limit is how many asks at most, newest first (≤ 0: MaxSearchResults).
 	Limit int
 }
@@ -80,6 +78,6 @@ func (s *PGStore) Search(ctx context.Context, q Search) ([]Ask, error) {
 		  AND NOT to_chief
 		  AND (($1::bigint > 0 AND id = $1)
 		    OR ($2::bigint > 0 AND step_up IS NOT NULL AND step_up->>'draft_id' = $2::bigint::text)
-		    OR ($3::text <> '' AND created_at >= $4 AND `+searchText+`))
-		ORDER BY id DESC LIMIT $5`, q.AskID, q.DraftID, pattern, q.TextSince, limit))
+		    OR ($3::text <> '' AND `+searchText+`))
+		ORDER BY id DESC LIMIT $4`, q.AskID, q.DraftID, pattern, limit))
 }

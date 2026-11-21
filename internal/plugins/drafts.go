@@ -785,14 +785,13 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 
 // SearchDraftCards is the caller's OWN drafts (the Asks page's search box)
 // with id draftID (0: none), or whose text contains text ("" none:
-// case-insensitive, a plain substring — % _ and \ are themselves) among those
-// created at or after textSince, newest first, at most limit (≤ 0 or over
-// 200: 100).
+// case-insensitive, a plain substring — % _ and \ are themselves) whatever
+// their age, newest first, at most limit (≤ 0 or over 200: 100).
 //
 // 🔴 OWN, NAMED IN THE QUERY: plugin_reply_drafts is team-shared (0127: a
 // team's operator reads the team's drafts), so row-level security alone would
 // list a team's drafts as the caller's.
-func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text string, textSince time.Time, limit int) ([]DraftCard, error) {
+func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text string, limit int) ([]DraftCard, error) {
 	text = strings.TrimSpace(text)
 	if draftID <= 0 && text == "" {
 		return nil, nil
@@ -805,8 +804,8 @@ func (s *PGStore) SearchDraftCards(ctx context.Context, draftID int64, text stri
 		pattern = "%" + db.LikeEscape(text) + "%"
 	}
 	cards, err := s.draftCards(ctx, `WHERE d.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
-		   AND (($1::bigint > 0 AND d.id = $1) OR ($2::text <> '' AND d.created_at >= $3 AND d.body ILIKE $2 ESCAPE '\'))
-		 ORDER BY d.id DESC LIMIT $4`, limit, draftID, pattern, textSince, limit)
+		   AND (($1::bigint > 0 AND d.id = $1) OR ($2::text <> '' AND d.body ILIKE $2 ESCAPE '\'))
+		 ORDER BY d.id DESC LIMIT $3`, limit, draftID, pattern, limit)
 	if err != nil {
 		return nil, err
 	}
