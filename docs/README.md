@@ -73,6 +73,7 @@ it off. The full list of features, with every `.env` line, is
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [ui-kit.md](ui-kit.md) — the plugin UI kit at `/ui-kit/v1/`: the theme's tokens, component classes, icon sprite and `kit.js`, so a plugin's page matches muster and follows the server's theme; the versioning rule and the theme an admin sets
 - [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
 - [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: what muster needs, and a pointer to the plugin's own repository (setup, pairing, troubleshooting)
