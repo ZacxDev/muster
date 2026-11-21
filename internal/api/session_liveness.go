@@ -206,6 +206,15 @@ func (l *liveNotes) CreateOnceByTag(ctx context.Context, key string, n notes.Not
 	return out, created, commented, err
 }
 
+func (l *liveNotes) FileOnceByLedger(ctx context.Context, ledger notes.TaskLedger, n *notes.Note, c *notes.Comment) (notes.Note, bool, bool, bool, error) {
+	out, found, created, commented, err := l.Store.FileOnceByLedger(ctx, ledger, n, c)
+	if !found {
+		return out, found, created, commented, err
+	}
+	out, err = l.resolveOne(ctx, out, err)
+	return out, found, created, commented, err
+}
+
 func (l *liveNotes) FindLiveByTag(ctx context.Context, key string) (notes.Note, bool, error) {
 	out, ok, err := l.Store.FindLiveByTag(ctx, key)
 	if !ok {

@@ -68,6 +68,9 @@ func computeCSRFLedger(t *testing.T) []string {
 		cookie[p] = true
 	}
 	bearer := map[string]bool{}
+	for _, p := range serverNobodyRoutes {
+		bearer[p] = true
+	}
 	for via, ps := range routeVias {
 		if via != authz.ViaSession {
 			for _, p := range ps {

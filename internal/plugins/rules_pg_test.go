@@ -25,7 +25,7 @@ func ruleAsk(t *testing.T, pool *pgxpool.Pool, owner int64) int64 {
 
 func ruleNew(t *testing.T, pool *pgxpool.Pool, p Plugin, sender string) RuleNew {
 	return RuleNew{PluginID: p.ID, PluginName: p.Name, Match: RuleMatch{Sender: sender, RequireVerified: true},
-		Action: RuleSettle, SettleReason: "a newsletter", ChiefAgent: 1, SourceMessage: 1, AskID: ruleAsk(t, pool, p.OwnerID)}
+		Action: RuleSettle, SettleReason: "a newsletter", ChiefAgent: 1, SourceMessage: 1, AskID: ruleAsk(t, pool, p.ownerID)}
 }
 
 // TestARuleIsApprovedOnceAndOnlyByItsOwner: a proposal is approved at most

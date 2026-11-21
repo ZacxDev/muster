@@ -27,8 +27,8 @@ func (l appListedPlugins) List(context.Context) ([]plugins.Plugin, error) { retu
 
 func appRow(id, owner int64, mut func(*plugins.Plugin)) plugins.Plugin {
 	label, icon, origin, entry := "Calls", "video", "https://*.meet.example.test", "https://w.meet.example.test/enter"
-	p := plugins.Plugin{ID: id, OwnerID: owner, Capabilities: []plugins.Capability{plugins.CapApp},
-		AppLabel: &label, AppIcon: &icon, Origin: &origin, EntryURL: &entry}
+	p := plugins.Plugin{ID: id, Capabilities: []plugins.Capability{plugins.CapApp},
+		AppLabel: &label, AppIcon: &icon, Origin: &origin, EntryURL: &entry}.OwnedBy(owner)
 	if mut != nil {
 		mut(&p)
 	}

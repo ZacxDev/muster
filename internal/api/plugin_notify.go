@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -48,6 +49,14 @@ import (
 // 🔴 ONE TAG PER (plugin, ref): app-<plugin id>-<ref>, so a later count
 // replaces the earlier one on the device and the withdrawal finds it. The tap
 // opens /apps/<plugin id>?ref=<ref>, which mints at tap time like any visit.
+//
+// 🔴 THE RECIPIENT IS THE REQUEST PRINCIPAL, AND EVERY CAP AND THE "WHICH KNOCKS
+// ARE OUT" LEDGER ARE KEYED BY IT (core PR 1h). For a personal token the
+// principal is the token's owner (unchanged). For a SERVER app it is the
+// person whose live grant the Muster-Act-For subject names (admitServerPlugin)
+// — never the row's owner (it has none) and never installed_by. So a server
+// token acting for B cannot withdraw A's knock by naming A's ref, and A's
+// knocks never spend B's caps.
 
 const (
 	pluginNotifyPath = pluginAPIPrefix + "/notify"
@@ -60,6 +69,10 @@ const (
 	appNotifyRefWindow    = 30 * time.Second
 	appNotifyPluginBurst  = 30
 	appNotifyPluginWindow = time.Hour
+	// appNotifyServerCeiling is a SERVER app's knocks per appNotifyPluginWindow
+	// across everyone it acts for (core PR 1h): each person's own
+	// appNotifyPluginBurst is per (app, person), under this per-app ceiling.
+	appNotifyServerCeiling = 600
 
 	// appNotifyMaxCount is the largest count a knock may carry.
 	appNotifyMaxCount = 99
@@ -140,9 +153,22 @@ func (s *Server) handlePluginNotify(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "this plugin has no app tab to notify from"})
 		return
 	}
-	owner, tag := p.OwnerID, appNotifyTag(p.ID, in.Ref)
+	owner, tag := notifyRecipient(r), appNotifyTag(p.ID, in.Ref)
+	// 🔴 A SERVER APP LEARNS NOTHING ABOUT A PERSON'S PUSH SETUP (audit round
+	// 1): its caps are spent FIRST, and a person who muted app pushes or has
+	// no device is answered exactly as one who has both — 202, dropped and
+	// logged. A personal app plugin is its owner's own and keeps the 204.
+	server := p.IsServer()
+	if server && !s.allowKnock(w, p, owner, in.Ref, tag) {
+		return
+	}
+	queued := func() { s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "tag": tag}) }
 	if s.pushMuted(r.Context(), owner, push.EventApp) {
 		s.logPushDrop(tag, push.EventApp, owner, pushDropMuted)
+		if server {
+			queued()
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -154,13 +180,14 @@ func (s *Server) handlePluginNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(devs) == 0 {
 		s.logPushDrop(tag, push.EventApp, owner, pushDropNoDevice)
+		if server {
+			queued()
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if wait, ok := s.appNotifies.allow(p.ID, in.Ref, s.now()); !ok {
-		s.logPushDrop(tag, push.EventApp, owner, pushDropAppCap)
-		w.Header().Set("Retry-After", strconv.Itoa(wait))
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": pushDropSentence(pushDropAppCap), "retry_after": wait})
+	if !server && !s.allowKnock(w, p, owner, in.Ref, tag) {
 		return
 	}
 	s.goNotify(owner, push.EventApp, RouterNotification{
@@ -197,12 +224,12 @@ func (s *Server) handlePluginNotifyWithdraw(w http.ResponseWriter, r *http.Reque
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": pushUnconfigured})
 		return
 	}
-	tag := appNotifyTag(p.ID, ref)
-	live, wait, ok := s.appNotifies.withdraw(p.ID, ref, s.now())
+	owner, tag := notifyRecipient(r), appNotifyTag(p.ID, ref)
+	live, wait, ok := s.appNotifies.withdraw(p.ID, owner, ref, s.now())
 	switch {
 	case !ok:
 		s.logger.Printf("plugin notify: refused a withdrawal tag=%s owner=%d: the plugin's cap of %d withdrawals of nothing per %s is reached",
-			tag, p.OwnerID, appWithdrawGhostBurst, appNotifyPluginWindow)
+			tag, owner, appWithdrawGhostBurst, appNotifyPluginWindow)
 		w.Header().Set("Retry-After", strconv.Itoa(wait))
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many withdrawals of notifications that are not out", "retry_after": wait})
 		return
@@ -210,39 +237,67 @@ func (s *Server) handlePluginNotifyWithdraw(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.goNotify(p.OwnerID, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
+	s.goNotify(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
 	s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "tag": tag})
 }
 
-// appWithdrawGhostBurst is how many withdrawals of nothing (no live knock) one
-// plugin may make per appNotifyPluginWindow.
-const appWithdrawGhostBurst = 60
-
-// appNotifyLimit is the knock caps: at most one send per (plugin, ref) per
-// appNotifyRefWindow, and appNotifyPluginBurst per plugin in any
-// appNotifyPluginWindow (a sliding window: the sends' own times). It also
-// remembers which knocks are OUT (sent and not withdrawn, for at most
-// appNotifyPluginWindow after the last send, so at most appNotifyPluginBurst
-// per plugin), and counts each plugin's withdrawals of nothing.
-type appNotifyLimit struct {
-	mu     sync.Mutex
-	refs   map[appNotifyKey]time.Time // the last send per (plugin, ref)
-	sends  map[int64][]time.Time      // each plugin's sends in the last window, oldest first
-	live   map[appNotifyKey]time.Time // knocks out: the last send of each, until withdrawn
-	ghosts map[int64][]time.Time      // each plugin's withdrawals of nothing in the last window
+// allowKnock spends the knock caps for (p, owner, ref), or answers the 429
+// with Retry-After (logged as a dropped push) and reports false.
+func (s *Server) allowKnock(w http.ResponseWriter, p plugins.Plugin, owner int64, ref, tag string) bool {
+	wait, ok := s.appNotifies.allow(p.ID, owner, ref, p.IsServer(), s.now())
+	if ok {
+		return true
+	}
+	s.logPushDrop(tag, push.EventApp, owner, pushDropAppCap)
+	w.Header().Set("Retry-After", strconv.Itoa(wait))
+	s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": pushDropSentence(pushDropAppCap), "retry_after": wait})
+	return false
 }
 
+// notifyRecipient is whom a knock or its withdrawal is for: THE REQUEST
+// PRINCIPAL's user — a personal token's owner, or the person a server app's
+// act-for grant names. The one spelling, for both handlers.
+func notifyRecipient(r *http.Request) int64 { return authz.MustFrom(r.Context()).UserID }
+
+// appWithdrawGhostBurst is how many withdrawals of nothing (no live knock) one
+// plugin may make per appNotifyPluginWindow — per (plugin, person).
+const appWithdrawGhostBurst = 60
+
+// appNotifyLimit is the knock caps: at most one send per (plugin, person,
+// ref) per appNotifyRefWindow, appNotifyPluginBurst per (plugin, person) in
+// any appNotifyPluginWindow (a sliding window: the sends' own times), and for
+// a server app appNotifyServerCeiling per plugin across everyone. It also
+// remembers which knocks are OUT (sent and not withdrawn, for at most
+// appNotifyPluginWindow after the last send), and counts each (plugin,
+// person)'s withdrawals of nothing. For a personal plugin the person is
+// always its owner, so each per-(plugin, person) cap is the per-plugin cap it
+// always was.
+type appNotifyLimit struct {
+	mu      sync.Mutex
+	refs    map[appNotifyKey]time.Time   // the last send per (plugin, person, ref)
+	sends   map[appNotifyWho][]time.Time // each (plugin, person)'s sends in the last window, oldest first
+	ceiling map[int64][]time.Time        // each server app's sends in the last window, oldest first
+	live    map[appNotifyKey]time.Time   // knocks out: the last send of each, until withdrawn
+	ghosts  map[appNotifyWho][]time.Time // each (plugin, person)'s withdrawals of nothing in the last window
+}
+
+// appNotifyWho is one plugin acting for one person.
+type appNotifyWho struct {
+	plugin, owner int64
+}
+
+// appNotifyKey is one knock: a plugin, the person it is for, and the ref.
 type appNotifyKey struct {
-	plugin int64
-	ref    string
+	plugin, owner int64
+	ref           string
 }
 
 // prune forgets what has rolled out of every window, so the maps hold only
 // live plugins and refs. l.mu is held.
 func (l *appNotifyLimit) prune(now time.Time) {
 	if l.refs == nil {
-		l.refs, l.sends = map[appNotifyKey]time.Time{}, map[int64][]time.Time{}
-		l.live, l.ghosts = map[appNotifyKey]time.Time{}, map[int64][]time.Time{}
+		l.refs, l.sends, l.ceiling = map[appNotifyKey]time.Time{}, map[appNotifyWho][]time.Time{}, map[int64][]time.Time{}
+		l.live, l.ghosts = map[appNotifyKey]time.Time{}, map[appNotifyWho][]time.Time{}
 	}
 	for k, at := range l.refs {
 		if now.Sub(at) >= appNotifyRefWindow {
@@ -254,62 +309,99 @@ func (l *appNotifyLimit) prune(now time.Time) {
 			delete(l.live, k)
 		}
 	}
-	for _, m := range []map[int64][]time.Time{l.sends, l.ghosts} {
+	for _, m := range []map[appNotifyWho][]time.Time{l.sends, l.ghosts} {
 		for id, ts := range m {
-			i := 0
-			for i < len(ts) && now.Sub(ts[i]) >= appNotifyPluginWindow {
-				i++
-			}
-			if i == len(ts) {
+			if ts = trimWindow(ts, now, appNotifyPluginWindow); len(ts) == 0 {
 				delete(m, id)
 			} else {
-				m[id] = ts[i:]
+				m[id] = ts
 			}
+		}
+	}
+	for id, ts := range l.ceiling {
+		if ts = trimWindow(ts, now, appNotifyPluginWindow); len(ts) == 0 {
+			delete(l.ceiling, id)
+		} else {
+			l.ceiling[id] = ts
 		}
 	}
 }
 
-// allow reports whether plugin may send about ref at now, and records it (and
-// the knock as out) when it may; refused, wait is the whole seconds until it
-// may (Retry-After). A refused send is not recorded and spends neither cap.
-func (l *appNotifyLimit) allow(plugin int64, ref string, now time.Time) (wait int, ok bool) {
+// trimWindow drops the times in ts (oldest first) at least window before now.
+func trimWindow(ts []time.Time, now time.Time, window time.Duration) []time.Time {
+	i := 0
+	for i < len(ts) && now.Sub(ts[i]) >= window {
+		i++
+	}
+	return ts[i:]
+}
+
+// allow reports whether plugin may send about ref for owner at now, and
+// records it (and the knock as out) when it may; server is true for a server
+// app, which is also held to appNotifyServerCeiling. Refused, wait is the
+// whole seconds until it may (Retry-After). A refused send is not recorded and
+// spends no cap.
+func (l *appNotifyLimit) allow(plugin, owner int64, ref string, server bool, now time.Time) (wait int, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.prune(now)
 	var until time.Duration
-	key := appNotifyKey{plugin, ref}
+	key, who := appNotifyKey{plugin, owner, ref}, appNotifyWho{plugin, owner}
 	if at, seen := l.refs[key]; seen {
 		until = max(until, appNotifyRefWindow-now.Sub(at))
 	}
-	if ts := l.sends[plugin]; len(ts) >= appNotifyPluginBurst {
+	if ts := l.sends[who]; len(ts) >= appNotifyPluginBurst {
 		until = max(until, appNotifyPluginWindow-now.Sub(ts[len(ts)-appNotifyPluginBurst]))
+	}
+	if ts := l.ceiling[plugin]; server && len(ts) >= appNotifyServerCeiling {
+		until = max(until, appNotifyPluginWindow-now.Sub(ts[len(ts)-appNotifyServerCeiling]))
 	}
 	if until > 0 {
 		return int(math.Ceil(until.Seconds())), false
 	}
 	l.refs[key] = now
-	l.sends[plugin] = append(l.sends[plugin], now)
+	l.sends[who] = append(l.sends[who], now)
+	if server {
+		l.ceiling[plugin] = append(l.ceiling[plugin], now)
+	}
 	l.live[key] = now
 	return 0, true
 }
 
-// withdraw answers a withdrawal of plugin's ref at now: live when a knock
-// about it is out (it is then no longer out, and the caller sends the
-// resolved); not live, a withdrawal of nothing, counted; ok false (wait the
-// Retry-After) when that count is past appWithdrawGhostBurst. A live
-// withdrawal is never refused.
-func (l *appNotifyLimit) withdraw(plugin int64, ref string, now time.Time) (live bool, wait int, ok bool) {
+// withdraw answers a withdrawal of plugin's ref for owner at now: live when a
+// knock about it FOR THAT PERSON is out (it is then no longer out, and the
+// caller sends the resolved); not live, a withdrawal of nothing, counted
+// against (plugin, owner); ok false (wait the Retry-After) when that count is
+// past appWithdrawGhostBurst. A live withdrawal is never refused.
+func (l *appNotifyLimit) withdraw(plugin, owner int64, ref string, now time.Time) (live bool, wait int, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.prune(now)
-	key := appNotifyKey{plugin, ref}
+	key, who := appNotifyKey{plugin, owner, ref}, appNotifyWho{plugin, owner}
 	if _, out := l.live[key]; out {
 		delete(l.live, key)
 		return true, 0, true
 	}
-	if ts := l.ghosts[plugin]; len(ts) >= appWithdrawGhostBurst {
+	if ts := l.ghosts[who]; len(ts) >= appWithdrawGhostBurst {
 		return false, int(math.Ceil((appNotifyPluginWindow - now.Sub(ts[len(ts)-appWithdrawGhostBurst])).Seconds())), false
 	}
-	l.ghosts[plugin] = append(l.ghosts[plugin], now)
+	l.ghosts[who] = append(l.ghosts[who], now)
 	return false, 0, true
+}
+
+// takeOut forgets every knock of plugin still out at now and returns them:
+// an uninstall withdraws each (uninstallServerApp), so no device keeps a
+// notification whose tap would open a 404.
+func (l *appNotifyLimit) takeOut(plugin int64, now time.Time) []appNotifyKey {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prune(now)
+	var out []appNotifyKey
+	for k := range l.live {
+		if k.plugin == plugin {
+			out = append(out, k)
+			delete(l.live, k)
+		}
+	}
+	return out
 }

@@ -122,6 +122,16 @@ var (
 		Help: "Viewer hand-off codes minted and redeemed, by purpose and outcome.",
 	}, []string{"purpose", "outcome"})
 
+	// PluginServerGrants counts a SERVER app's hand-off redeems
+	// (docs/plugins.md#server-apps) by outcome: granted (a grant recorded or
+	// renewed) and not_found (the one 404: an unknown, spent, expired or
+	// another app's code, or a person refused on the redeem's re-check). A
+	// redeem writes no audit row; this is its record.
+	PluginServerGrants = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_plugin_server_grants_total",
+		Help: "Server app hand-off redeems, by outcome.",
+	}, []string{"outcome"})
+
 	// PushDelivery counts Web Push delivery attempts, one per DEVICE per
 	// notification, by result:
 	//   ok      — the push service accepted it (2xx)

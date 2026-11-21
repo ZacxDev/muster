@@ -773,7 +773,7 @@ learn of a task it did not file; auto-start an agent (that needs
    has not hidden it, and its origin still passes the current
    `MUSTER_PLUGIN_ORIGINS`. The code row is **owned by the person** and names
    the app in a new column, `server_plugin_id`, with `plugin_id` NULL
-   ([data model](#data-model-and-migration-0171)). The 60-per-minute cap,
+   ([data model](#data-model-and-migration-0172)). The 60-per-minute cap,
    the 60 s life and single use are unchanged.
    - **It records the minting session's sign-in time** on the code row, as
      `signed_in_at`: `stepup.AuthTime(ctx)`, the time the pairing code
@@ -817,13 +817,14 @@ learn of a task it did not file; auto-start an agent (that needs
 3. **The answer** carries no muster user id and no email (fork 2):
 
    ```json
-   {"owner": {"subject": "Q2hhbmdlTWUtMTIzNDU2Nzg", "display_name": "Ada"},
+   {"owner": {"subject": "AAECAwQFBgcICQoLDA0ODw", "display_name": "Ada"},
     "scope": "server", "target": {"app": {}}, "purpose": "app",
     "stepped_up": true, "minted_at": "2000-01-02T03:04:05Z",
     "act_until": "2000-01-02T11:04:05Z"}
    ```
 
-   `subject` is **pairwise**: one person has a different subject under each
+   `subject` is exactly **22 base64url characters** (16 random bytes, no
+   padding), as the data model stores it. It is **pairwise**: one person has a different subject under each
    server app, so two apps cannot join their records on it, and it is stable
    for the life of the install, so the plugin keys its data on it.
    `display_name` is the account's display name, or `""` when it has none,
@@ -913,7 +914,11 @@ could **withdraw A's knock** by naming A's ref, and A's knocks would spend
 B's caps. The per-plugin caps (30 knocks an hour, 60 withdrawals of nothing
 an hour) become **per (plugin, person)**, under a new per-app ceiling of 600
 knocks an hour. The person's own knock budget (10 per 10 minutes across all
-their app plugins) is unchanged. The knock's title is the server app's label,
+their app plugins) is unchanged. 🔴 **A server app learns nothing of a person's push
+setup** (core PR 1h.1, audit round 1): its caps are spent before the toggle
+and device checks, and a person who muted "An app needs you" or has no device
+is answered `202` exactly as one who has both (dropped and logged). Only a
+personal app plugin keeps the `204`. The knock's title is the server app's label,
 the admin's words.
 
 #### Tasks for a server app
@@ -969,11 +974,31 @@ plugin or the person filed). So for a server token:
 
 No person, no count of people, no list. `401` once the app is uninstalled or
 rotated away. **`POST /plugin/v1/owners/check {"subjects": [...]}`** (1 to
-200 subjects, each the subject shape) answers `{"live": [...]}`: the subset
-whose grant passes **`serverGrantLive`**, the same constant the act-for
-check uses (`WHERE g.subject = ANY ($2) AND <serverGrantLive>`). It can say nothing about a
-subject the plugin did not already hold. A personal token is `403`. 60 calls
-a minute per app.
+200 subjects, each the subject shape; more is `400`) answers
+`{"states": {"<subject>": "live" | "expired" | "revoked"}}`, with **exactly one
+entry per subject asked about and no other**:
+
+- `live`: the grant passes **`serverGrantLive`**, the same predicate the
+  act-for check uses;
+- `expired`: **only** `act_until` has passed and every other condition holds
+  (the person's next visit to the tab renews it, so the plugin keeps their
+  open meeting);
+- `revoked`: anything else: hidden, disabled, a team, signed out everywhere
+  (or cut off) since the sign-in, the app uninstalled or its origin retired,
+  or no grant. A subject this app never redeemed is `revoked` too, so the
+  answer cannot tell "never seen" from "ended".
+
+🔴 **Precedence: `revoked` wins.** A subject is `expired` only when the clock
+is the SINGLE failing condition; if any other fails, it is `revoked` even
+when `act_until` has also passed. Hide sets `act_until = now()`, so an
+expiry-first answer would report a hidden person as `expired` and their
+meetings would stay open. The state comes from the same statement as the
+gate: `serverGrantLive` is `serverGrantInTime AND serverGrantStanding`, and
+`LiveServerGrants` evaluates the two halves per row (live is both; expired is
+standing alone), so the three states cannot drift from act-for. Never why a
+subject is revoked beyond the one word. It can say nothing about a subject
+the plugin did not already hold. A personal token is `403`. 60 calls a
+minute per app.
 
 #### The tab for every person
 
@@ -1042,10 +1067,15 @@ again: a loop.
   (Chrome, or a Custom Tab, which shares Chrome's cookies), never in the
   WebView. That browser frames the plugin as a desktop browser does, so
   `/enter` gets `Sec-Fetch-Dest: iframe`. A person not signed in to muster
-  in that browser signs in there first. The app advertises the message it
-  supports (the A1 PR defines how, for example a list of message types on
-  `window.musterApp`), and muster's page reads that, never an app version
-  string.
+  in that browser signs in there first. The app advertises the messages it
+  supports as a list, **`window.musterAppMessages`** (muster-android A1), and
+  muster's page reads that, never an app version string:
+  `!!(window.musterApp && Array.isArray(window.musterAppMessages) &&
+  window.musterAppMessages.indexOf('open-external') !== -1)`. An older app has
+  `window.musterApp` but no list, so its card is the copy-link fallback. The
+  posted URL is exactly `<muster origin>/apps/<id>`, optionally with exactly
+  `?ref=<ref>` (the ref rule, raw): no other query, no fragment, no trailing
+  slash. The app rebuilds the URL itself and refuses anything else.
 - **The card, for a server app**, where `window.musterApp` exists: "<label>
   opens in your browser" and **Open**. Open posts `open-external` for this
   page's own URL and does nothing else. It mints no code and never
@@ -1079,17 +1109,18 @@ again: a loop.
 - **The plugin** learns it from `/self`'s `401` within 60 s and ends every
   owner session and open meeting it holds. Per person, it learns a hidden app,
   a disable or a sign-out everywhere from `owners/check` (every 60 s, for the
-  subjects with a live owner session or open meeting) and ends that person's
-  sessions and meetings.
+  subjects with a live owner session or open meeting): a subject answered
+  `revoked` ends that person's sessions and meetings; one answered `expired`
+  keeps them (the grant only ran out of time).
 - **Grant expiry** is not revocation. Past `act_until` a knock for that person
   is `404`, and the plugin keeps its lobby row, as on today's `204`. The
   person's next visit to the tab re-mints and extends the grant.
 
-#### Data model and migration 0171
+#### Data model and migration 0172
 
-**`0171_plugin_server_scope.sql`.** The highest migration on `main` at
-`8ccee8ddc` is `0170_officer_auto_restarts`. 🔴 Renumber it if another takes
-0171 first; the contiguity test refuses a gap. Idempotent.
+**`0172_plugin_server_scope.sql`** (written as 0171; `0171_attention_step_up_card`
+took 0171 first, so it is 0172). 🔴 Renumber it if another takes 0172 first;
+the contiguity test refuses a gap. Idempotent.
 
 - `plugins.scope TEXT NOT NULL DEFAULT 'person'`, `CHECK (scope IN ('person', 'server'))`.
 - `plugins.owner_id DROP NOT NULL`, with `plugins_scope_owner`:
@@ -1152,7 +1183,7 @@ again: a loop.
   `db.RLSOn`'s table list and the `rls_off` rollback.
 
 🔴 **The RLSOn caveat.** `db.RLSOn` re-applies the bodies of 0104 and 0141
-(and 0015's defaults) on every RLS cycle. 0171 is written so that a
+(and 0015's defaults) on every RLS cycle. 0172 is written so that a
 re-application cannot undo it:
 
 - it re-states **neither** `plugins_capabilities_known` (0141, 0167, 0168)
@@ -1172,7 +1203,7 @@ it cycles RLS with a server row, a server code and a grant present
 **ROLLBACK** (in the migration's header): uninstall every server app first,
 then roll the image back. Then delete the server rows and their codes,
 restore `plugin_id NOT NULL` and `owner_id NOT NULL`, drop the new columns,
-constraints, index and both tables, and `DELETE FROM schema_migrations WHERE version = 171`.
+constraints, index and both tables, and `DELETE FROM schema_migrations WHERE version = 172`.
 
 #### Threat model
 
@@ -1379,7 +1410,7 @@ the mutation that must turn it red, and each is watched red before it counts.
   succeeds.
 - **Sign-in time on the mint.** A session with no recorded sign-in time is
   refused `401` at the mint. A server code row always has `signed_in_at`
-  (the 0171 CHECK, and a test that a mint stores the session's own value).
+  (the 0172 CHECK, and a test that a mint stores the session's own value).
 - **Mint arm.** A team's acting principal, a hidden app, a retired origin
   and an uninstalled app each refuse the mint `404`; a person mints. *Red
   if:* the System read drops `scope = 'server'` (a personal plugin of
@@ -1392,10 +1423,10 @@ the mutation that must turn it red, and each is watched red before it counts.
   `resolved`).
 - **Migration and RLS.** `TestPluginCapabilityChecksMatchGo`'s RLS cycle, or
   a sibling test, runs with a server row, a server code and a grant
-  present, and asserts every 0171 constraint is still present afterwards.
+  present, and asserts every 0172 constraint is still present afterwards.
   The rollback list is checked against the previous migration.
   `TestEveryPluginRowReadSaysWhoseRowsItReads` classes each new System
-  read. *Red if:* 0171's constraints are written unguarded and a re-applied
+  read. *Red if:* 0172's constraints are written unguarded and a re-applied
   body narrows one. **The NULL-owner invariant** (an invariant guard: no
   policy admits a NULL owner today): a server row is invisible to a person's
   principal **that carries team memberships**, so the `team_read` arm's
@@ -1436,7 +1467,7 @@ grant predicate dropped; the cutoffs compared with the redeem time;
 exemption or from `ruleWriter`'s refusal; the server task lookup through
 `FindLiveByTag`; the per-person task cap, and each per-app ceiling,
 removed; Hide without `act_until = now()`; Rotate as a new row; fork 9's
-read under the person's principal; the redeem answer with `owner_id`; 0171
+read under the person's principal; the redeem answer with `owner_id`; 0172
 unguarded; the mint's System read without `scope = 'server'`. Two for the
 subject: **a subject derived from the user id** (for example its decimal
 or a hash of it: caught by a fixture whose user ids are known, asserting
@@ -1492,8 +1523,9 @@ keys `owners` on muster's `owner_id`. Under 1h:
   needs a one-time map from `owner_id` to subject before the switch.
 - **Liveness:** the 60 s `/self` poll now covers the whole app (`401` ends
   every session and meeting). Beside it, a 60 s `owners/check` covers the
-  subjects with a live owner session or open meeting, and a subject missing
-  from `live` ends that person's sessions and meetings.
+  subjects with a live owner session or open meeting: a subject answered
+  `revoked` ends that person's sessions and meetings, and `expired` keeps
+  them (a meeting may outlast the 8-hour grant).
 - **Calls for a person:** `POST /plugin/v1/notify`, its `DELETE` and
   `POST /plugin/v1/tasks` send `Muster-Act-For: <subject>`. A `404` means
   "cannot reach this person now": the knock keeps its lobby row, and
@@ -2710,7 +2742,7 @@ with the test plan's tests included.
 | | 1c: `plugin-app.spec.ts`, routes.golden, cls.spec, nav ledger | muster | M |
 | | 1d: the `tasks` capability (decision 11): the capability, the `/plugins` checkbox, pairing, the task routes' check, plugins.md | muster | S |
 | | 1e: knock notification (decision 10): `POST`/`DELETE /plugin/v1/notify`, the `app` push event and its toggle, payload v2 `type: "app"`, limits, push.md, **and the new paired-device TLS push sink for e2e** ([knock push spec](#the-knock-push-spec)). **Needs 1a** (the `app` capability) **and 1b** (the `?ref=` page) | muster | L |
-| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–10 answered, every recommendation accepted, decision 20): migration 0171 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id` and `signed_in_at`, `plugin_server_users` with the sign-in time, `plugin_server_tasks`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and the one `serverGrantLive` predicate, `ViaServerPlugin` at every `ViaPlugin` branch site, per-person notify keys and the per-app ceiling, server tasks through the ledger with their caps, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, no New tab for a server app and its Android card (`open-external`, with the copy-link fallback), the mint's cap and prune keyed on the minting person, `PersonalOwner()`, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
+| | 1h: **server-installed app plugins** ([design](#core-seam-server-installed-app-plugins); forks 1–10 answered, every recommendation accepted, decision 20): migration 0172 (`plugins.scope`, NULL owner, `plugin_handoffs.server_plugin_id` and `signed_in_at`, `plugin_server_users` with the sign-in time, `plugin_server_tasks`, guarded against `db.RLSOn`), `/admin/apps` install, rotate and uninstall with step-up, the `muster-server app` CLI, the `serverPluginRoutes` door and its ledger, the owner-scoped redeem with pairwise subjects, `Muster-Act-For` and the one `serverGrantLive` predicate, `ViaServerPlugin` at every `ViaPlugin` branch site, per-person notify keys and the per-app ceiling, server tasks through the ledger with their caps, `POST /plugin/v1/owners/check`, the tab for every person with Hide on Account → Apps, no New tab for a server app and its Android card (`open-external`, with the copy-link fallback), the mint's cap and prune keyed on the minting person, `PersonalOwner()`, uninstall withdrawing knocks, plugins.md and auth.md, the isolation tests and `plugin-server-app.spec.ts`. **Needs 1a, 1b, 1d and 1e.** It may split into 1h.1 (store, door, redeem, act-for) and 1h.2 (admin page, CLI, tab, Account → Apps) | muster | L |
 | | A1: **`open-external` bridge message** ([the Android path](#the-android-path-for-a-server-app)): the main frame's `{"type": "open-external", "url"}`, accepted only for muster's exact origin and `/apps/<digits>`, opened with `ACTION_VIEW` in the system browser and never in the WebView; the app advertises that it supports it; its unit tests. **A dependency of 1h's Android path**, not of 1h's merge: without it an app shows the copy-link card | muster-android | S |
 | **2: plugin MVP (calls)** | 2a: repo from the template, `/enter` and owner sessions, `/self` poll, SQLite, meetings list, New meeting, link. **After 1h:** one server token in place of the comma-separated list ([what changes](#what-changes-in-the-plugins-phase-2a)), S | muster-meetings | M |
 | | 2b: LiveKit rooms and tokens, guest page, lobby, admit/deny/remove, end, webhook, screen share, consent notice, knock notify calls, mobile layout | muster-meetings | L |

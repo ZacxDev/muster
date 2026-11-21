@@ -733,10 +733,48 @@ loopback address), and `Origin` on `fetch` and htmx writes.
 | Mirror token (`mmt_…`) | the host it was minted for | A **team host token** (owned by a team) is served a reduced tool set and never remotely; see [Teams](#teams) ("Team hosts"). A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes, `POST /mirror/mcp`, `POST /mirror/ask-attachments` (a file for one of that host's listed sessions' asks, stored as an upload of its owner: [attention.md](attention.md#attachments-and-context)) and `POST /mirror/pages/{id}/assets` (an image or video for a page made from that host: [pages.md](pages.md#images-and-video)). Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. 🔴 **With a token whose host has started agents for the chief** (the token is marked the first time its host advertises `-agent-spawn` or has a host dispatch, and stays marked until it is rotated), or from a host running a host officer, every one of those decisions — `attention_answer`, `connector_request_decide`, `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`, `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`, `agent_destroy` — is instead a confirmation card that runs only when the owner confirms it on their paired phone ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)), so such a token alone decides none of them (but for a `route_reply` from the session the route was sent to). It **can still restart its owner's chief**: `chief_restart` is not gated on any machine, so such a token, or any process on that host, can restart the chief and with `force` cut off a turn in flight, by operator decision ([mirroring.md](mirroring.md#chief_restart-is-not-gated)). Rotate a host's token when you turn its `-agent-spawn` off, once the agents it started have ended. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | A disabled owner's token is refused. Disabling a user revokes all of their runner tokens, and re-enabling them brings none back. See [browser-flows.md](browser-flows.md). |
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
+| Server app token (`mpl_…`, a plugin row with `scope = 'server'`) | **nobody**; on the act-for routes, the one person whose live grant the `Muster-Act-For` subject names | Installed by an admin for the whole server and shown once. The same shape as a plugin token, so every other route refuses it. See [Server apps](#server-apps-and-the-people-they-act-for). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
 
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
+
+### Server apps and the people they act for
+
+A server app ([plugins.md](plugins.md#server-apps)) is a plugin row with no
+owner, so row-level security shows it to no principal: every read of one is
+an explicit `authz.System` read keyed on the app's own id, in the System
+ledger. Its token carries **no request principal** on `GET /plugin/v1/self`,
+the hand-off redeem and `POST /plugin/v1/owners/check`: it is never given a
+fake one, and it never borrows the installing admin (`installed_by` is
+bookkeeping only). On the act-for routes (the knock, its withdrawal, and
+`POST /plugin/v1/tasks`) the door reads the grant row for the
+`Muster-Act-For` subject and admits the request as THAT person, through
+`authz.ViaServerPlugin`, with the person's own role and row-level security.
+The principal comes from the row, never from the header. `ViaServerPlugin`
+is not a team door, and every rule a plugin is held to (no other route, no
+routing-rule writes) holds for it too (`authz.IsPluginVia`).
+
+- **A grant exists only after a redeem** of a code that person's own browser
+  minted, signed in, on muster's page. The code records the minting
+  session's **sign-in time**; a session with none recorded is asked to sign in
+  again rather than mint a code nothing could revoke.
+- **The grant is cut by the same cutoffs as a paired phone**: it is live only
+  while that sign-in time is strictly after the person's Sign out everywhere
+  and session cutoff, in whole seconds (at-or-before refused), and the person
+  is enabled and has not hidden the app. The comparison uses the PERSISTED
+  sign-in time of the minting session, never the redeem's time, because in
+  GoTrue mode a sign-out is applied from each process's memory: a stolen
+  session from before a Sign out everywhere could still mint on a restarted
+  pod, and its code is refused at the redeem and on every later call whatever
+  any process remembers. A sign-out in one browser does not end a grant.
+- **It lasts 8 hours** from the latest redeem; Hide, a disable, Sign out
+  everywhere, the session cutoff, an uninstall or a retired origin end it
+  sooner.
+- **A stolen server token** can knock for and file tasks for each person who
+  opened the tab in the last 8 hours and has not hidden it, and only if it
+  also holds their subjects. It reads nothing of anyone's. Uninstall or
+  rotate ends it at once.
 
 ### Mirror tokens and session routing
 

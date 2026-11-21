@@ -42,18 +42,19 @@ func (teamUsers) HoldTeamRole(context.Context, int64, int64) (authz.TeamRole, bo
 // below holds admit to it by behaviour. A team host's mirror token (2b.2) is
 // the other: there the team is the token's owner.
 var doorAdmitsATeam = map[authz.Via]bool{
-	authz.ViaAgent:      true,  // /agent/*, /mcp: requireAgentToken
-	authz.ViaConnect:    true,  // /connect/*: requireConnectorAgent
-	authz.ViaRelay:      true,  // the approval relay: requireRelayAgent
-	authz.ViaSession:    false, // a person, in the browser
-	authz.ViaHook:       false, // the shared machine token
-	authz.ViaService:    false, // the service token
-	authz.ViaToken:      false, // a person's API token
-	authz.ViaRunner:     false, // a host's flow runner
-	authz.ViaMirrorHost: true,  // a mirror host: a TEAM HOST's token (2b.2) acts as the team, through teamHostTools
-	authz.ViaPageLink:   false, // a page share link
-	authz.ViaDevice:     false, // a paired phone
-	authz.ViaPlugin:     true,  // a plugin: a TEAM VIEWER PLUGIN's token (2b.3b) acts as the team, through teamPluginRoutes
+	authz.ViaAgent:        true,  // /agent/*, /mcp: requireAgentToken
+	authz.ViaConnect:      true,  // /connect/*: requireConnectorAgent
+	authz.ViaRelay:        true,  // the approval relay: requireRelayAgent
+	authz.ViaSession:      false, // a person, in the browser
+	authz.ViaHook:         false, // the shared machine token
+	authz.ViaService:      false, // the service token
+	authz.ViaToken:        false, // a person's API token
+	authz.ViaRunner:       false, // a host's flow runner
+	authz.ViaMirrorHost:   true,  // a mirror host: a TEAM HOST's token (2b.2) acts as the team, through teamHostTools
+	authz.ViaPageLink:     false, // a page share link
+	authz.ViaDevice:       false, // a paired phone
+	authz.ViaPlugin:       true,  // a plugin: a TEAM VIEWER PLUGIN's token (2b.3b) acts as the team, through teamPluginRoutes
+	authz.ViaServerPlugin: false, // a server app acting for one PERSON: never a team (serverGrantLive admits persons only)
 }
 
 // TestOnlyTheAgentDoorsAdmitATeam is the ledger over every authenticated

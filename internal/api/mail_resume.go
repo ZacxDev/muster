@@ -149,7 +149,7 @@ func (s *Server) startMailResume(ctx context.Context, p plugins.Plugin, m plugin
 	}
 	sid := mr.origin.Session
 	who := "message " + strconv.FormatInt(m.ID, 10) + " from " + strconv.Quote(m.Sender) + " for session " + sid
-	if !s.ext.MailResume.Allow.Allows(p.OwnerID, p.Name, m.Sender, m.SenderVerified) {
+	if !s.ext.MailResume.Allow.Allows(messagesOwner(p), p.Name, m.Sender, m.SenderVerified) {
 		s.logger.Printf("mail resume: %s: the sender may not resume a session; to the chief", who)
 		return false
 	}
@@ -192,7 +192,7 @@ func (s *Server) startMailResume(ctx context.Context, p plugins.Plugin, m plugin
 // true once routed; false — every way it can fail, recorded on the claim — for
 // the chief's ordinary delivery.
 func (s *Server) runMailResume(ctx context.Context, p plugins.Plugin, m plugins.Message, mr musterRoute, id int64, hosts []string, who string) bool {
-	owner := p.OwnerID
+	owner := messagesOwner(p)
 	key := mailResumeKey{owner, mr.origin.Session}
 	// One resume per session at a time: a message for a session another
 	// message is resuming NOW waits for that window instead of starting one.

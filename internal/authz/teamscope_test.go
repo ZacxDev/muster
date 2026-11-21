@@ -20,6 +20,7 @@ var carriesTeams = map[Via]bool{
 	ViaRelay:        false,
 	ViaRunner:       false,
 	ViaPlugin:       false,
+	ViaServerPlugin: false, // a server app acting for one person: that person's own rows only
 	ViaMirrorHost:   false, // a host's token: team hosts are phase 2b
 	ViaDevice:       true,  // a paired phone: a person signing an action
 	ViaPageLink:     false,

@@ -193,7 +193,7 @@ func TestAnOfficersOutreachBatchPushesItsCard(t *testing.T) {
 // never a new notification. Control: a chief's refused reply still pushes.
 func TestAnOfficersRefusedDraftIsWithdrawnNotPushed(t *testing.T) {
 	r, p := officerPushRig(t)
-	pl := plugins.Plugin{ID: 9, OwnerID: 1, Label: "Mailer"}
+	pl := plugins.Plugin{ID: 9, Label: "Mailer"}.OwnedBy(1)
 	r.s.notifyDraftRefused(pl, plugins.Draft{ID: 5317, OwnerID: 1, Officer: officerStr(offA)}, refusalToOfficer)
 	got := r.sent(p)
 	if len(got) != 1 || got[0].Type != push.TypeResolved || got[0].Tag != "plugin-draft-5317" {

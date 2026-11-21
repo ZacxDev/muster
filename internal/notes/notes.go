@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/taskstatus"
 )
 
@@ -398,6 +400,19 @@ type Page struct {
 }
 
 // Store is the notes persistence behaviour.
+// TaskLedger is a caller's own key→task ledger, read and written inside
+// FileOnceByLedger's transaction (internal/plugins ServerTaskLedger is the one).
+type TaskLedger interface {
+	// LockKey names the advisory lock that serialises one ledger entry.
+	LockKey() string
+	// TaskKey is the key a new task is tagged with (a normalized tag).
+	TaskKey() string
+	// Find is the task the ledger names for the key, if any.
+	Find(ctx context.Context, tx pgx.Tx) (id int64, ok bool, err error)
+	// Record points the ledger entry at task id (insert or re-point).
+	Record(ctx context.Context, tx pgx.Tx, id int64) error
+}
+
 type Store interface {
 	Create(ctx context.Context, n Note) (Note, error)
 	Get(ctx context.Context, id int64) (Note, error)
@@ -549,6 +564,20 @@ type Store interface {
 	// complete and not a merge loser (`superseded-by:`) — and whether there is
 	// one. Both go through ONE lookup, so they can never disagree.
 	FindLiveByTag(ctx context.Context, key string) (note Note, ok bool, err error)
+	// FileOnceByLedger is CreateOnceByTag for a caller that keeps ITS OWN
+	// key→task ledger (a server app's plugin_server_tasks, internal/plugins
+	// ServerTaskLedger): the task is found THROUGH THE LEDGER ONLY, never by
+	// the key's tag among all the caller's tasks, so a task the person or
+	// another plugin tagged with the same key is never found, commented on or
+	// revealed. Under a transaction-scoped advisory lock on l.LockKey():
+	//   - the ledgered task, when it is OPEN (FindLiveByTag's rule), is the
+	//     answer (found, not created);
+	//   - otherwise, with n set, a NEW task is filed (l.TaskKey() added to its
+	//     tags) and the ledger re-pointed at it (l.Record), so two retries
+	//     file one task; with n nil nothing is written and found is false.
+	// c, when non-nil, is recorded once on the answer's task (AddCommentOnce's
+	// rule) in the same transaction.
+	FileOnceByLedger(ctx context.Context, l TaskLedger, n *Note, c *Comment) (note Note, found, created, commented bool, err error)
 	// AddCommentOnce appends c unless the task's thread already holds a comment
 	// with the same author and the same body (a retracted one included, so a
 	// retraction is not undone by a retry), and reports whether it wrote.

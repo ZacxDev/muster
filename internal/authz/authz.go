@@ -83,6 +83,15 @@ const (
 	// on the /plugin/v1/* routes only. It acts as the token's OWNER, so row-level
 	// security confines the plugin to that owner's plugin rows.
 	ViaPlugin Via = "plugin"
+	// ViaServerPlugin is a SERVER-INSTALLED APP's token (`mpl_…`, a plugins
+	// row with scope 'server' and no owner; docs/design/meetings.md, "Core
+	// seam: server-installed app plugins") acting FOR ONE PERSON: the person
+	// whose live grant the request's Muster-Act-For subject names, read from
+	// the grant row by requirePluginToken's server arm (internal/api
+	// admitServerPlugin), never from anything the request says. Served on the
+	// act-for routes alone (notify, its withdrawal, tasks). It never acts as a
+	// team, and the server token's other routes carry no principal at all.
+	ViaServerPlugin Via = "server-plugin"
 	// ViaQueue is the SERVER-SIDE SEND QUEUE's dispatcher probing the window
 	// and delivering a message its owner queued from a signed-in session
 	// earlier (internal/sendqueue): the deferred end of that owner's own
@@ -211,6 +220,11 @@ var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
 	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true, ViaPlugin: true,
 	ViaQueue: true,
+
+	// A server app acting for one person (internal/api admitServerPlugin).
+	// Without it the first act-for request PANICS here. NOT a team-acting
+	// door (teamActingVias): a server app never acts as a team.
+	ViaServerPlugin: true,
 	// The session focus refresher's per-owner door (internal/api's
 	// focusPrincipal). Without it the refresher's first pass PANICS here.
 	ViaFocus: true,
@@ -334,6 +348,13 @@ var teamActingVias = map[Via]bool{
 	// sendQueueOwnerRefusal), never from the team acting principal.
 	ViaQueue: true,
 }
+
+// IsPluginVia reports whether via is a PLUGIN token's door: a person's or a
+// team's own plugin (ViaPlugin) or a server app acting for a person
+// (ViaServerPlugin). THE ONE PREDICATE every "is this a plugin?" branch asks
+// (internal/api refusePluginTokenElsewhere, internal/plugins ruleWriter), so a
+// server app is never let past a rule a plugin is held to.
+func IsPluginVia(via Via) bool { return via == ViaPlugin || via == ViaServerPlugin }
 
 // OperatorUserID is the user every principal names today: the operator, the
 // one user muster has. It is the seed admin row the accounts schema creates

@@ -176,7 +176,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if chief.ID == 0 {
 		return d.attempted(parent, messageID, "no_chief")
 	}
-	if chief.OwnerID != p.OwnerID {
+	if owner, ok := p.PersonalOwner(); !ok || chief.OwnerID != owner {
 		// Never another owner's agent, whatever the caller resolved.
 		return d.attempted(parent, messageID, "not_owners_chief")
 	}
@@ -221,7 +221,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if err != nil {
 		return pending("message_unreadable")
 	}
-	if m.Status != StatusQueued || m.PluginID != pluginID || m.OwnerID != p.OwnerID {
+	if owner, ok := p.PersonalOwner(); !ok || m.Status != StatusQueued || m.PluginID != pluginID || m.OwnerID != owner {
 		return Result{Outcome: OutcomeSettled}
 	}
 	// A message the owner retried says so in its turn (retrySentence): its
@@ -240,7 +240,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return d.attempted(parent, messageID, "chief_unreadable")
 	}
 	switch {
-	case fresh.OwnerID != p.OwnerID:
+	case !personallyOwnedBy(p, fresh.OwnerID):
 		return d.attempted(parent, messageID, "not_owners_chief")
 	case fresh.Status != agents.StatusRunning:
 		return d.attempted(parent, messageID, "chief_not_running")
@@ -398,4 +398,11 @@ func (d *Deliverer) session(ctx context.Context, p Plugin, chief agents.Agent) (
 		d.log.Printf("plugins: plugin %d: record its chief session: %v", p.ID, err)
 	}
 	return s, nil
+}
+
+// personallyOwnedBy reports whether owner is p's own (personal) owner: never
+// true for a server app, which has none.
+func personallyOwnedBy(p Plugin, owner int64) bool {
+	o, ok := p.PersonalOwner()
+	return ok && o == owner
 }

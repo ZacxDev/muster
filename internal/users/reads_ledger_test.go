@@ -88,6 +88,14 @@ var usersReads = map[string]string{
 	// refuse a team's plugin (u.kind <> 'team'); it returns no new user.
 	"internal/plugins PGStore.SetAutostart": readByID,
 	"internal/plugins PGStore.AutostartOf":  readByID,
+
+	// Server-installed apps (0172, core PR 1h). Both yield a PERSON a server
+	// app acts for, never a team: THE gate's serverGrantStanding (a const the
+	// function names) holds u.id IN (users.EnabledPersonIDs), and the redeem's
+	// re-check of the code's person does the same in its own SQL. A team row
+	// (no redeem can make one) is "revoked" / refused.
+	"internal/plugins PGStore.LiveServerGrants":    readEnabledPerson,
+	"internal/plugins PGStore.RedeemServerHandoff": readEnabledPerson,
 }
 
 const (
@@ -106,8 +114,16 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	type site struct{ body string }
+	type site struct {
+		body string
+		dir  string
+		refs []string // identifiers the function names, for its package's consts
+	}
 	found := map[string]site{}
+	// consts is each package's const declarations' source, by name: a read
+	// whose SQL lives in a const (internal/plugins serverGrantStanding) has its
+	// person filter there, not in the function's own text.
+	consts := map[string]map[string]string{}
 	for _, top := range []string{"internal", "cmd"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -127,10 +143,24 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 			}
 			rel, _ := filepath.Rel(root, filepath.Dir(p))
 			for _, decl := range f.Decls {
+				if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.CONST {
+					for _, sp := range gd.Specs {
+						vs := sp.(*ast.ValueSpec)
+						for _, n := range vs.Names {
+							if consts[rel] == nil {
+								consts[rel] = map[string]string{}
+							}
+							consts[rel][n.Name] = string(src[fset.Position(vs.Pos()).Offset:fset.Position(vs.End()).Offset])
+						}
+					}
+				}
+			}
+			for _, decl := range f.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
 				if !ok {
 					continue
 				}
+				var refs []string
 				hit := false
 				ast.Inspect(fd, func(n ast.Node) bool {
 					if bl, ok := n.(*ast.BasicLit); ok && bl.Kind == token.STRING && readsUsers.MatchString(bl.Value) {
@@ -138,6 +168,9 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 					}
 					// A read whose only users-table SQL is the shared PersonIDs
 					// subquery spells no "FROM users" of its own: count it too.
+					if id, ok := n.(*ast.Ident); ok {
+						refs = append(refs, id.Name)
+					}
 					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "PersonIDs" || sel.Sel.Name == "EnabledPersonIDs" || sel.Sel.Name == "EnabledPersonOrTeamIDs") {
 						if id, ok := sel.X.(*ast.Ident); ok && id.Name == "users" {
 							hit = true
@@ -146,7 +179,8 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 					return true
 				})
 				if hit {
-					found[filepath.ToSlash(rel)+" "+funcName(fd)] = site{body: string(src[fset.Position(fd.Pos()).Offset:fset.Position(fd.End()).Offset])}
+					found[filepath.ToSlash(rel)+" "+funcName(fd)] = site{body: string(src[fset.Position(fd.Pos()).Offset:fset.Position(fd.End()).Offset]),
+						dir: rel, refs: refs}
 				}
 			}
 			return nil
@@ -154,6 +188,27 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Each function's text is read WITH the same-package consts it names,
+	// and the consts those name (a const built from others), so a filter
+	// spelled in a const counts as the function's own.
+	for k, st := range found {
+		seen := map[string]bool{}
+		queue := append([]string(nil), st.refs...)
+		for len(queue) > 0 {
+			n := queue[0]
+			queue = queue[1:]
+			text, ok := consts[st.dir][n]
+			if !ok || seen[n] {
+				continue
+			}
+			seen[n] = true
+			st.body += "\n" + text
+			for _, w := range regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`).FindAllString(text, -1) {
+				queue = append(queue, w)
+			}
+		}
+		found[k] = st
 	}
 	// Positive control: the walk sees the reads it must see.
 	if len(found) < 25 {

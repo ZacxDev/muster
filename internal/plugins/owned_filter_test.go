@@ -126,11 +126,22 @@ var pluginRowReads = map[string]string{
 	"PGStore.appMintChecks":            "own", // 0168: the five-live-app cap counts the principal's own
 	"PGStore.Plugin":                   "by id: a message's own plugin, read where the message is (delivery under System, a session's route)",
 	"PGStore.Authenticate":             "the token lookup, under System: how the owner is learned",
-	"PGStore.createPluginTx":           "an insert: owner_id is the principal's (the column's default)",
-	"PGStore.submit":                   "the plugin door: the token's own plugin id, locked",
-	"PGStore.SetChiefSession":          "the plugin door's chief binding of the token's own plugin",
-	"PGStore.pairMintable":             "a name's uniqueness among the pairing owner's own (owner_id = $1)",
-	"PGStore.FileOutbound":             "an officer's draft names its owner's plugin (owner_id = $1)",
+	// 0172: SERVER apps have no owner, so ownedByPrincipal can never match one:
+	// each read is an explicit System read keyed on scope = 'server' and the
+	// app's own id (or, fork 9, its entry URL).
+	"PGStore.authenticateServerApp": "a server app's token lookup, under System: scope = 'server', no owner",
+	"PGStore.mintServerHandoff":     "the mint's server arm, under System: scope = 'server', the app's id",
+	"PGStore.RedeemServerHandoff":   "the redeem's re-check of its own app, under System, held FOR SHARE: scope = 'server', the app's id",
+	"PGStore.serverAppAtEntry":      "fork 9, under System on its own connection: a live server app's entry URL",
+	"PGStore.InstallServerApp":      "an admin's install, under System: counts live server apps (scope = 'server')",
+	"PGStore.RotateServerApp":       "an admin's rotate, under System: scope = 'server', the app's id",
+	"PGStore.UninstallServerApp":    "an admin's uninstall, under System: scope = 'server', the app's id",
+	"PGStore.SetServerAppHidden":    "a person's Hide/Show, under System: scope = 'server', the app's id",
+	"PGStore.createPluginTx":        "an insert: owner_id is the principal's (the column's default)",
+	"PGStore.submit":                "the plugin door: the token's own plugin id, locked",
+	"PGStore.SetChiefSession":       "the plugin door's chief binding of the token's own plugin",
+	"PGStore.pairMintable":          "a name's uniqueness among the pairing owner's own (owner_id = $1)",
+	"PGStore.FileOutbound":          "an officer's draft names its owner's plugin (owner_id = $1)",
 
 	// 0154: a plugin's auto-start, written only by its owner's session
 	// (autostartWriter) and read by the owner and the plugin's own door.
