@@ -72,6 +72,13 @@ func TestParseRefusesABadGallery(t *testing.T) {
 		{"a caption of two lines", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"caption":"a\nb"`) + `]}]`, "caption holds a control"},
 		{"a bidi caption", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"caption":"a‮b"`) + `]}]`, "caption holds a control"},
 		{"a long group", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"group":"`+strings.Repeat("g", maxGroupRunes+1)+`"`) + `]}]`, "group is longer"},
+		// The SDK swaps every asset:<id> of the page in the markup for its
+		// placeholder, so a caption holding one could never be saved.
+		{"a caption holding an asset ref", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"caption":"same as `+galRef(2)+`"`) + `]}]`,
+			"item 1: the caption holds an asset reference (" + galRef(2) + ")"},
+		{"a caption holding its own ref", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), "") + `,` + item(galRef(2), `,"caption":"`+galRef(2)+`"`) + `]}]`,
+			"item 2: the caption holds an asset reference"},
+		{"a group holding an asset ref", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"group":"see asset:x"`) + `]}]`, "item 1: the group holds an asset reference (asset:x)"},
 		{"an unknown item field", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), `,"href":"x"`) + `]}]`, "href"},
 		{"an unknown pick field", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), "") + `],"pick":{"max":2}}]`, "max"},
 		{"a bad layout", `[{"type":"gallery","id":"g","items":[` + item(galRef(1), "") + `],"layout":"masonry"}]`, "not grid or rows"},
@@ -318,30 +325,51 @@ func TestAGallerysScriptIsTheSDKsOwn(t *testing.T) {
 // TestTheShellOwnsTheViewersHistoryEntry pins the shell's half of the
 // viewer's Back (gallery.go): "viewer" is read only from the port; an open
 // pushes ONE marked entry, a close pops it, an open during that pop waits for
-// it; a popstate that pops an open viewer's entry answers "back" on the port;
-// a marked entry left by a reload is unmarked. And the picks it keeps for the
-// frame: a key of the version and gallery, under this page's path, in this
-// window's sessionStorage, bounded.
+// it — by its popstate, never a timer; a popstate answers "back" on the port
+// only when the current entry is no longer the one this load pushed; a marked
+// entry current while nothing is open (a reload, a Forward) is taken over by
+// the next open. And the picks it keeps for the frame: only a key the server
+// named (KEEPS), under this page's path, in this window's sessionStorage,
+// bounded per key and per path.
 func TestTheShellOwnsTheViewersHistoryEntry(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false)
+	js := ShellScript("/s/TOKEN", false, "v3:logo", "v3:pick2")
 	for _, want := range []string{
 		`if(m.op==="scroll")onY(m.y);else if(m.op==="viewer")viewer(m.open===true);else relay(m);`,
+		`function vMine(){var s=vState();return !!s&&s.musterViewer===1&&s.t===vTok&&vTok!=="";}`,
 		`if(vOpen)return;if(vClosing){vWant=true;return;}
-  try{history.pushState({musterViewer:1},"");vOpen=true;}catch(e){}`,
-		`vWant=false;if(!vOpen)return;vOpen=false;vClosing=true;history.back();`,
-		`if(vClosing){vClosing=false;if(vWant){vWant=false;viewer(true);}return;}
- if(vOpen){vOpen=false;if(port)port.postMessage({muster:1,op:"back"});}`,
-		`try{if(history.state&&history.state.musterViewer===1)history.replaceState(null,"");}catch(e){}`,
-		`!/^v[0-9]{1,9}:[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(d.key)`,
-		`var sk="muster-picks:"+location.pathname+"|"+d.key;`,
+  vTok=vId+":"+(++vN);var st={musterViewer:1,t:vTok};
+  try{if(vMarked())history.replaceState(st,"");else history.pushState(st,"");vOpen=true;}catch(e){vTok="";}`,
+		`vWant=false;if(!vOpen)return;vOpen=false;
+ if(!vMine()){vTok="";return;}
+ vClosing=true;history.back();
+}`,
+		`if(vClosing){vClosing=false;vTok="";if(vWant){vWant=false;viewer(true);}return;}
+ if(vOpen&&!vMine()){vOpen=false;vTok="";if(port)port.postMessage({muster:1,op:"back"});}`,
+		`,port=null,KEEPS=["v3:logo","v3:pick2"];`,
+		`typeof d.key!=="string"||KEEPS.indexOf(d.key)<0)
+   return reply(false,"muster does not take that");`,
+		`var pre="muster-picks:"+location.pathname+"|",sk=pre+d.key;`,
 		`if(kv.length>16384)return reply(false,"too much to keep");`,
+		`if(KEEPS.indexOf(kk.slice(pre.length))<0)sessionStorage.removeItem(kk);else held++;`,
+		`if(held>=16)return reply(false,"too much to keep");`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the shell lacks %q", want)
 		}
 	}
-	// One push, one place a viewer is read, one "back".
-	for s, n := range map[string]int{"history.pushState(": 1, `"viewer"`: 1, `op:"back"`: 1, "viewer(": 4} {
+	// No keeps named: none is taken (KEEPS is empty, never null).
+	if !strings.Contains(ShellScript("/s/TOKEN", false), `,KEEPS=[];`) {
+		t.Error("a shell with no keeps does not refuse every key")
+	}
+	// The viewer's entry is decided by history.state alone: the old timer
+	// fallback (a pop presumed done after a second) is gone.
+	if i, j := strings.Index(js, "var vOpen="), strings.Index(js, "function relay("); i < 0 || j < i {
+		t.Error("the shell's viewer entry is not where it was")
+	} else if strings.Contains(js[i:j], "setTimeout") {
+		t.Error("the shell still presumes a pop done on a timer")
+	}
+	// One push, one replace (the take-over), one place a viewer is read, one "back".
+	for s, n := range map[string]int{"history.pushState(": 1, "history.replaceState(": 1, `"viewer"`: 1, `op:"back"`: 1, "viewer(": 3, "history.back()": 1} {
 		if got := strings.Count(js, s); got != n {
 			t.Errorf("the shell has %d %q, want %d", got, s, n)
 		}
@@ -356,5 +384,40 @@ func TestTheShellOwnsTheViewersHistoryEntry(t *testing.T) {
 	if !strings.Contains(sdk, `if(d.op==="back"&&d.id===undefined){var b=onBack;onBack=null;if(b)b();return;}`) ||
 		!strings.Contains(sdk, `function viewer(open){if(port)R(PM,port,[{muster:1,op:"viewer",open:open===true}]);}`) {
 		t.Error("the SDK's half of the viewer's Back is not as pinned")
+	}
+}
+
+// TestTheShellKeepsOnlyTheShownVersionsPickGalleries: KeepKeys names each
+// gallery WITH a pick of the version, as galleryJS builds its key, and the
+// shell embeds exactly that list; a gallery to look at only keeps nothing.
+func TestTheShellKeepsOnlyTheShownVersionsPickGalleries(t *testing.T) {
+	v := Version{Title: "x", Version: 7, Blocks: append(mustGallery(t, `{}`), Block{Type: BlockMarkdown, Text: "hi"},
+		Block{Type: BlockGallery, ID: "second", Items: []GalleryItem{{Asset: galRef(5)}}, Pick: &GalleryPick{}})}
+	got := KeepKeys(v)
+	if strings.Join(got, ",") != "v7:logo,v7:second" {
+		t.Errorf("KeepKeys = %q, want v7:logo,v7:second", got)
+	}
+	if !strings.Contains(sdkScript(v, "", nil), `var VER=7,`) || !strings.Contains(galleryJS(v), `key="v"+VER+":"+id`) {
+		t.Error("the SDK's keep key is no longer v<version>:<id>")
+	}
+	shell := Shell(ShellView{Title: "x", FrameSrc: "/s/T/content", Base: "/s/T", Nonce: "N", Keeps: got})
+	if !strings.Contains(shell, `,KEEPS=["v7:logo","v7:second"];`) {
+		t.Error("the shell does not embed the version's keep keys")
+	}
+	if k := KeepKeys(Version{Version: 1, Blocks: []Block{{Type: BlockMarkdown, Text: "hi"}}}); k == nil || len(k) != 0 {
+		t.Errorf("a version without a pick gallery keeps %q", k)
+	}
+}
+
+// TestTheViewerEnlargesASmallImage pins the viewer image's box: it fills the
+// slide and is letterboxed (object-fit:contain), so a small image is drawn
+// up to the viewer's width or height; max-width/max-height alone could only
+// shrink it. The e2e test measures the drawn size.
+func TestTheViewerEnlargesASmallImage(t *testing.T) {
+	if !strings.Contains(galleryCSS, `.mp-viewer-slide img{width:100%;height:100%;object-fit:contain;`) {
+		t.Error("the viewer's image does not fill its slide")
+	}
+	if strings.Contains(galleryCSS, `.mp-viewer-slide img{max-width`) {
+		t.Error("the viewer's image is still only shrunk to fit")
 	}
 }

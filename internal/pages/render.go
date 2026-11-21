@@ -805,6 +805,9 @@ const (
 	// confirmMaxChars bounds the confirm's summary: a send whose summary is
 	// longer is refused, never shown in part.
 	confirmMaxChars = "65536"
+	// maxKeeps bounds the galleries' kept picks under one page path (the
+	// shell's relay): keys, each at most 16 KiB of JSON.
+	maxKeeps = "16"
 )
 
 // ShellView is what the shell draws.
@@ -839,6 +842,9 @@ type ShellView struct {
 	// (Page details, Made by) open in a new tab (the panel's frame grants no
 	// top navigation, ui.SessionPageSandbox).
 	Embed bool
+	// Keeps are the only keys the shell keeps a gallery's unsaved picks under
+	// for the frame (KeepKeys of the version it shows); none keeps nothing.
+	Keeps []string
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the
@@ -1041,7 +1047,7 @@ func Shell(v ShellView) string {
 	b.WriteString(`</header>
 <iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
 `)
-	script := ShellScript(v.Base, o != nil)
+	script := ShellScript(v.Base, o != nil, v.Keeps...)
 	if o != nil {
 		b.WriteString(`<div class="scrim" data-versions-scrim hidden></div>
 <div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>
@@ -1154,13 +1160,20 @@ func Shell(v ShellView) string {
 // the port: a page's script posting one to the shell is ignored, as is one
 // from any other window, and a y that is not such a number.
 // TestTheShellHidesItsHeaderOnlyByTheRules and e2e pages.spec.ts.
-func ShellScript(base string, owner bool) string {
+//
+// keeps are the gallery keys the relay keeps picks under (KeepKeys of the
+// shown version): a keep or recall of any other key is refused.
+func ShellScript(base string, owner bool, keeps ...string) string {
 	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
 	if owner {
 		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
 	}
+	if keeps == nil {
+		keeps = []string{}
+	}
+	keepJSON, _ := json.Marshal(keeps)
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null,KEEPS=` + string(keepJSON) + `;
 var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,floorY=0,quiet=0,cap=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
 function hidden(){return !!hdr&&hdr.hasAttribute("data-hidden");}
 function setHidden(h){
@@ -1242,26 +1255,39 @@ if(box){
 }
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
 // THE VIEWER'S HISTORY ENTRY (gallery.go): a gallery's full-size viewer is
-// in the frame, Back is this window's. When the frame says it opened, the shell pushes ONE
-// entry (its state marked musterViewer); a Back that pops it tells the frame
-// ("back") and the viewer closes; a close in the frame (×, Esc, a tap
-// outside) pops it here. An open while that pop is on its way waits for it,
-// so the entries never pile up; one left by a reload while open is unmarked
-// on load (it costs one Back that stays on the page).
-var vOpen=false,vClosing=false,vWant=false;
-try{if(history.state&&history.state.musterViewer===1)history.replaceState(null,"");}catch(e){}
+// in the frame, Back is this window's. When the frame says it opened, the
+// shell pushes ONE entry, its state marked musterViewer and carrying a token
+// of this load's (vTok); a Back that leaves it tells the frame ("back") and
+// the viewer closes; a close in the frame (×, Esc, a tap outside) pops it
+// here.
+// 🔴 EVERY DECISION IS BY history.state, NEVER BY A TIMER. A back() is
+// queued, and its traversal's target is counted when it RUNS: a push made
+// before a slow pop lands is popped instead, and the late popstate then reads
+// as a Back that closes the reopened viewer, leaving the closed viewer's
+// entry current (two Backs to leave). So an open while a pop is on its way
+// waits for that pop's popstate, and a popstate closes the viewer only when
+// the current entry is no longer the one this load pushed.
+// A marked entry that is current while nothing is open — left by a reload
+// while open, or reached by Forward — is taken over by the next open
+// (replaceState, not a push), so it never costs an extra Back once used.
+var vOpen=false,vClosing=false,vWant=false,vId=String(Math.random()).slice(2),vN=0,vTok="";
+function vState(){try{return history.state;}catch(e){return null;}}
+function vMarked(){var s=vState();return !!s&&s.musterViewer===1;}
+function vMine(){var s=vState();return !!s&&s.musterViewer===1&&s.t===vTok&&vTok!=="";}
 function viewer(open){
  if(open){
   if(vOpen)return;if(vClosing){vWant=true;return;}
-  try{history.pushState({musterViewer:1},"");vOpen=true;}catch(e){}
+  vTok=vId+":"+(++vN);var st={musterViewer:1,t:vTok};
+  try{if(vMarked())history.replaceState(st,"");else history.pushState(st,"");vOpen=true;}catch(e){vTok="";}
   return;
  }
- vWant=false;if(!vOpen)return;vOpen=false;vClosing=true;history.back();
- setTimeout(function(){if(vClosing){vClosing=false;if(vWant){vWant=false;viewer(true);}}},1000);
+ vWant=false;if(!vOpen)return;vOpen=false;
+ if(!vMine()){vTok="";return;}
+ vClosing=true;history.back();
 }
 window.addEventListener("popstate",function(){
- if(vClosing){vClosing=false;if(vWant){vWant=false;viewer(true);}return;}
- if(vOpen){vOpen=false;if(port)port.postMessage({muster:1,op:"back"});}
+ if(vClosing){vClosing=false;vTok="";if(vWant){vWant=false;viewer(true);}return;}
+ if(vOpen&&!vMine()){vOpen=false;vTok="";if(port)port.postMessage({muster:1,op:"back"});}
 });
 function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
@@ -1269,14 +1295,23 @@ function relay(d){
  // A gallery's unsaved picks (gallery.go), kept in THIS window's
  // sessionStorage (the frame has none): under this page's own path and the
  // version and gallery the key names, at most 16 KiB of JSON. Nothing is sent.
+ // 🔴 ONLY A KEY THE SERVER NAMED (KEEPS: the shown version's pick
+ // galleries), so a page's script forging gallery sections cannot fill this
+ // origin's sessionStorage; and a NEW key first drops this path's keys of
+ // other versions, then is refused past ` + maxKeeps + ` under the path.
  if(d.op==="keep"||d.op==="recall"){
-  if(!only(d,d.op==="keep"?["muster","id","op","key","value"]:["muster","id","op","key"])||typeof d.key!=="string"||!/^v[0-9]{1,9}:[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(d.key))
+  if(!only(d,d.op==="keep"?["muster","id","op","key","value"]:["muster","id","op","key"])||typeof d.key!=="string"||KEEPS.indexOf(d.key)<0)
    return reply(false,"muster does not take that");
-  var sk="muster-picks:"+location.pathname+"|"+d.key;
+  var pre="muster-picks:"+location.pathname+"|",sk=pre+d.key;
   try{
    if(d.op==="recall"){var kept=sessionStorage.getItem(sk);return reply(true,kept?JSON.parse(kept):null);}
    var kv=JSON.stringify(d.value===undefined?null:d.value);
    if(kv.length>16384)return reply(false,"too much to keep");
+   if(sessionStorage.getItem(sk)===null){
+    var held=0;
+    for(var ki=sessionStorage.length-1;ki>=0;ki--){var kk=sessionStorage.key(ki);if(kk&&kk.indexOf(pre)===0){if(KEEPS.indexOf(kk.slice(pre.length))<0)sessionStorage.removeItem(kk);else held++;}}
+    if(held>=` + maxKeeps + `)return reply(false,"too much to keep");
+   }
    sessionStorage.setItem(sk,kv);return reply(true,null);
   }catch(e){return reply(false,"it could not be kept");}
  }

@@ -315,11 +315,16 @@ sandboxed subframe pushes is not seen by an Android WebView's own back
 handling (it reports the main frame's history changes only). So the SDK posts
 `{op: "viewer", open}` on the port and the shell pushes one history entry on
 open and pops it on a close inside the frame; a Back that pops it is answered
-`{op: "back"}` and the viewer closes. The frame has no storage, so a gallery's
-unsaved picks are kept by the shell in its own `sessionStorage`
-(`{op: "keep"|"recall", key, value}`, the key the version and the gallery's
-id, under the shell's path). A page's own script never holds the port, so it
-can do neither.
+`{op: "back"}` and the viewer closes. The shell decides by `history.state`
+(a token of the entry it pushed), never by a timer: a queued `history.back()`
+counts its target when it runs, so a push made before a slow pop lands would
+be popped instead. The frame has no storage, so a gallery's unsaved picks are
+kept by the shell in its own `sessionStorage` (`{op: "keep"|"recall", key,
+value}`, the key the version and the gallery's id, under the shell's path).
+A page's own script never holds the port, but it CAN add gallery-shaped
+sections that the SDK's gallery script then keeps for; so the shell takes only
+the keys the server named for the version it rendered (its pick galleries),
+at most 16 under one path, 16 KiB each.
 
 The header shows on load, near the top, and on any scroll up, and hides
 only on a scroll down past its own height. It also comes back on its own 3

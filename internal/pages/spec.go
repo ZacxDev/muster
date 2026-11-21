@@ -359,6 +359,12 @@ func validateBlock(b *Block) error {
 // validateGallery checks a gallery's items (1 to MaxGalleryItems, each an
 // asset reference — that it is one of the page's own is the store's check,
 // AssetRefs — with a one-line caption and group), its layout and its pick.
+//
+// A caption or group may not hold anything shaped like an asset reference
+// (assetRefPattern): the SDK swaps every asset:<id> of the page in the
+// rendered markup for its placeholder (asset.go), which would rewrite the
+// caption the gallery sends with a pick, and checkGalleryPicks would then
+// refuse every Save ("caption is not the one sent").
 func validateGallery(b *Block) error {
 	switch {
 	case len(b.Items) == 0:
@@ -378,10 +384,14 @@ func validateGallery(b *Block) error {
 			return invalid("item %d: the caption is longer than %d characters", i+1, maxCaptionRunes)
 		case !plainLine(it.Caption):
 			return invalid("item %d: the caption holds a control or text-direction character", i+1)
+		case assetRefPattern.MatchString(it.Caption):
+			return invalid("item %d: the caption holds an asset reference (%s); a caption is plain words — put the image in an item of its own", i+1, cutRunes(assetRefPattern.FindString(it.Caption), 40))
 		case utf8.RuneCountInString(it.Group) > maxGroupRunes:
 			return invalid("item %d: the group is longer than %d characters", i+1, maxGroupRunes)
 		case !plainLine(it.Group):
 			return invalid("item %d: the group holds a control or text-direction character", i+1)
+		case assetRefPattern.MatchString(it.Group):
+			return invalid("item %d: the group holds an asset reference (%s); a group is plain words", i+1, cutRunes(assetRefPattern.FindString(it.Group), 40))
 		}
 	}
 	switch b.Layout {

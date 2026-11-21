@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,6 +52,16 @@ func TestAGallerysPicksAreAResponseLikeAnyOther(t *testing.T) {
 	assertContentHeaders(t, w, "the gallery's content")
 	if b := pageContentBlocks(t, w.Body.String()); !strings.Contains(b, `aria-label="Open 1a full size"`) || !strings.Contains(b, `data-muster-pick="one"`) {
 		t.Fatalf("the content does not draw the gallery: %s", b)
+	}
+	// Both shells name the shown version's pick gallery as the ONLY key they
+	// keep picks under (a page's forged gallery sections keep nothing).
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"the link's shell":  f.get(t, pages.LinkPath(l.Token), nil),
+		"the owner's shell": f.get(t, "/pages/"+strconv.FormatInt(id, 10)+"/view", f.ownerHdr()),
+	} {
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `,KEEPS=["v2:logos"];`) {
+			t.Errorf("%s does not keep exactly v2:logos: %d", name, w.Code)
+		}
 	}
 
 	// Refused: another item's asset; two of a single pick. Nothing recorded.

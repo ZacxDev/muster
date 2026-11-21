@@ -31,9 +31,11 @@ import "strconv"
 //     them in the SHELL's sessionStorage over the port ({op:"keep"} /
 //     {op:"recall"}, keyed by the version and the gallery's id, under the
 //     shell's own path): a reload keeps unsaved picks, per tab and per page
-//     version. Save sends {picks} once through muster.submit's own path —
-//     the owner's "Send as you?" confirm, by_owner, a link's viewer's
-//     response — and a second Save waits for the first's answer.
+//     version. The shell keeps only the keys the server named for the
+//     version it rendered (KeepKeys), since a page's script can add
+//     gallery-shaped sections this script would keep for. Save sends
+//     {picks} once through muster.submit's own path — the owner's "Send as
+//     you?" confirm, by_owner, a link's viewer's response — and a second Save waits for the first's answer.
 // ---------------------------------------------------------------------------
 
 // HasGallery reports whether blocks hold a gallery (so the content document
@@ -45,6 +47,20 @@ func HasGallery(blocks []Block) bool {
 		}
 	}
 	return false
+}
+
+// KeepKeys is the keys the shell keeps v's unsaved picks under for the frame
+// (ShellView.Keeps): "v<version>:<id>" for each gallery with a pick, the key
+// galleryJS builds. The shell refuses a keep or recall of any other key, so a
+// page's script cannot add keys by forging gallery sections.
+func KeepKeys(v Version) []string {
+	out := []string{}
+	for _, b := range v.Blocks {
+		if b.Type == BlockGallery && b.Pick != nil {
+			out = append(out, "v"+strconv.Itoa(v.Version)+":"+b.ID)
+		}
+	}
+	return out
 }
 
 // galleryJS is the SDK's gallery part for version v, inside the SDK's own
@@ -115,7 +131,21 @@ function galOne(sec){
   var m=im();m.style.transform=z.s>1?"translate("+z.x+"px,"+z.y+"px) scale("+z.s+")":"";
   m.setAttribute("data-muster-zoom",String(Math.round(z.s*100)/100));vw.d.classList.toggle("mp-zoomed",z.s>1);
  }
- function clamp(){var w=vw.tr.clientWidth,h=vw.tr.clientHeight,mx=(z.s-1)*w/2,my=(z.s-1)*h/2;z.x=Math.max(-mx,Math.min(mx,z.x));z.y=Math.max(-my,Math.min(my,z.y));}
+ // drawn is the size the image is drawn at, unzoomed: its img fills the slide
+ // (so a small image is enlarged) and object-fit:contain letterboxes it, so
+ // the picture is the natural size scaled to fit the box. 0 x 0 until loaded.
+ function drawn(m){var w=m.clientWidth,h=m.clientHeight,nw=m.naturalWidth,nh=m.naturalHeight;if(!nw||!nh)return {w:0,h:0};var s=Math.min(w/nw,h/nh);return {w:nw*s,h:nh*s};}
+ // clamp keeps a zoomed picture over the viewer: it pans only as far as its
+ // own drawn edges reach past the track's, and stays centred on an axis where
+ // it is narrower than the track.
+ function clamp(){var w=vw.tr.clientWidth,h=vw.tr.clientHeight,d=drawn(im()),mx=Math.max(0,(z.s*d.w-w)/2),my=Math.max(0,(z.s*d.h-h)/2);z.x=Math.max(-mx,Math.min(mx,z.x));z.y=Math.max(-my,Math.min(my,z.y));}
+ // beside is whether a tap at (x, y) misses the picture: on its slide, or on
+ // the img's letterbox around the drawn picture.
+ function beside(t,x,y){
+  if(!t||!t.classList)return false;if(t.classList.contains("mp-viewer-slide"))return true;
+  if(t!==im())return false;var r=t.getBoundingClientRect(),d=drawn(t);
+  return Math.abs(x-(r.left+r.width/2))>d.w/2||Math.abs(y-(r.top+r.height/2))>d.h/2;
+ }
  function unzoom(){if(!vw)return;if(z.s!==1||z.x||z.y){z={s:1,x:0,y:0};apply();}pinch=null;pan=null;mpan=null;}
  function rel(x,y){var r=vw.tr.getBoundingClientRect();return {x:x-(r.left+r.width/2),y:y-(r.top+r.height/2)};}
  function zoomTo(s,px,py){
@@ -165,8 +195,9 @@ function galOne(sec){
    if(aim>=0){if(j!==aim&&Date.now()-aimAt<1500)return;aim=-1;}
    if(j!==cur&&j>=0&&j<n)setCur(j);
   },{passive:true});
-  // A tap beside the image (on its slide, not on it) closes, unless zoomed.
-  tr.addEventListener("click",function(e){if(z.s===1&&e.target&&e.target.classList&&e.target.classList.contains("mp-viewer-slide"))shut(false);});
+  // A tap beside the picture (its slide, or the img's letterbox) closes,
+  // unless zoomed.
+  tr.addEventListener("click",function(e){if(z.s===1&&beside(e.target,e.clientX,e.clientY))shut(false);});
   tr.addEventListener("dblclick",function(e){if(z.s>1)unzoom();else zoomTo(2.5,e.clientX,e.clientY);});
   tr.addEventListener("touchstart",function(e){
    var t=e.touches;aim=-1;
@@ -260,7 +291,7 @@ html.mp-viewer-open{overflow:hidden}
 .mp-viewer-track::-webkit-scrollbar{display:none}
 .mp-zoomed .mp-viewer-track{overflow:hidden;touch-action:none}
 .mp-viewer-slide{flex:0 0 100%;width:100%;height:100%;scroll-snap-align:center;scroll-snap-stop:always;display:flex;align-items:center;justify-content:center;overflow:hidden}
-.mp-viewer-slide img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;transform-origin:center;user-select:none;-webkit-user-select:none;-webkit-user-drag:none}
+.mp-viewer-slide img{width:100%;height:100%;object-fit:contain;transform-origin:center;user-select:none;-webkit-user-select:none;-webkit-user-drag:none}
 .mp-zoomed .mp-viewer-slide img{cursor:grab}
 .mp-viewer-prev,.mp-viewer-next{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:64px;min-height:0;padding:0;font-size:32px;line-height:1;background:rgb(0 0 0/.4);color:#fff;border-radius:10px}
 .mp-viewer-prev{left:8px}.mp-viewer-next{right:8px}.mp-viewer [aria-disabled=true]{opacity:.3}

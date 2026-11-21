@@ -94,21 +94,25 @@ Many images to compare and pick from, on a phone:
   (`asset:<id>`; a video, another page's asset or a missing one refuses the
   version). `caption` is one line of at most 120 characters: the image's alt
   text and its name on its buttons ("Open 1a full size", "Pick 1a") and in a
-  pick. A heading is drawn wherever an item's `group` differs from the item
+  pick. A caption or `group` holding anything shaped like an asset reference
+  (`asset:` followed by an id) refuses the version: the page's asset
+  references are swapped for their images in the rendered markup, so such a
+  caption could never be saved with a pick. A heading is drawn wherever an item's `group` differs from the item
   before it, so keep a group's items together. `layout` is `grid`
   (thumbnails, the default) or `rows` (one image per row).
 - A tap on a thumbnail opens it **full size**: swipe (or the arrows and ← / →
   on a desktop) to move through every item of the gallery, pinch or
   double-tap to zoom (drag to pan; swiping waits until you zoom back out).
-  The counter ("7 / 24") and the caption are shown. **Back closes the viewer**
-  and stays on the page, as do ×, Esc and a tap beside the image.
+  A small image is enlarged to fill the viewer's width or height. The counter
+  ("7 / 24") and the caption are shown. **Back closes the viewer** and stays
+  on the page, as do ×, Esc and a tap beside the image.
 - With `pick`, each image has a **Pick** button, under it and in the viewer:
   a tap toggles it at once and sends nothing. The bar under the gallery says
   how many are picked, and its **Save** sends them in one submit — in your own
   view after muster's *Send as you?*, recorded as yours (`by_owner`), like
   every other component. `multiple: false` keeps one pick (a new pick replaces
   it); `required` refuses an empty Save. Unsaved picks survive a reload (per
-  browser tab and page version); after a Save the bar says *Saved*, and a
+  browser tab and page version, for up to 16 picking galleries a page); after a Save the bar says *Saved*, and a
   change can be saved again (each Save is its own response).
 - A Save is stored as `{"picks": [{"index": 0, "asset": "asset:<id>",
   "caption": "1a"}]}`: `index` counts from 0 in the items' order, picks in

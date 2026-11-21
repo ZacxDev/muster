@@ -1573,7 +1573,7 @@ let galleryRefs: string[] = [];
 // galleryPage makes a page and attaches the six images to it (galleryRefs:
 // their refs, in order), then publishes a gallery of them — captions 1a..2c in
 // groups "Round 1" and "Round 2" — with pick (none: a gallery to look at).
-async function galleryPage(title: string, pick: Record<string, unknown> | null): Promise<number> {
+async function galleryPage(title: string, pick: Record<string, unknown> | null, extra: Record<string, unknown>[] = []): Promise<number> {
   const created = await call('page_create', { title: title + ' ' + stamp, blocks: [{ type: 'markdown', text: 'Images coming.' }] });
   expect(created.isError, JSON.stringify(created.body)).toBe(false);
   const id = created.body.page_id as number;
@@ -1589,7 +1589,7 @@ async function galleryPage(title: string, pick: Record<string, unknown> | null):
   const items = refs.map((asset, i) => ({ asset, caption: `${Math.floor(i / 3) + 1}${'abc'[i % 3]}`, group: `Round ${Math.floor(i / 3) + 1}` }));
   const block: Record<string, unknown> = { type: 'gallery', id: 'logos', label: 'Pick the logos', items };
   if (pick) block.pick = pick;
-  const upd = await call('page_update', { page_id: id, blocks: [{ type: 'markdown', text: '# Logo review' }, block] });
+  const upd = await call('page_update', { page_id: id, blocks: [{ type: 'markdown', text: '# Logo review' }, block, ...extra] });
   expect(upd.isError, JSON.stringify(upd.body)).toBe(false);
   return id;
 }
@@ -1640,6 +1640,19 @@ function viewerOf(page: Page) {
         const im = t.children[i]?.querySelector('img') as HTMLImageElement | null;
         return { i, w: im && im.complete ? im.naturalWidth : 0, zoom: Number(im?.getAttribute('data-muster-zoom') ?? '1') };
       }),
+    // drawn is how the current slide's picture is DRAWN: its natural size
+    // scaled to fit its img's box (object-fit:contain letterboxes it in the
+    // box; an img box of exactly the natural size draws it at 1x), beside the
+    // track's size, and the zoom transform's offset and scale.
+    drawn: () =>
+      track.evaluate((t: HTMLElement) => {
+        const i = Math.round(t.scrollLeft / t.clientWidth);
+        const im = t.children[i]?.querySelector('img') as HTMLImageElement;
+        const nw = im.naturalWidth, nh = im.naturalHeight, bw = im.clientWidth, bh = im.clientHeight;
+        const s = nw && nh ? Math.min(bw / nw, bh / nh) : 0;
+        const m = new DOMMatrix(getComputedStyle(im).transform === 'none' ? '' : getComputedStyle(im).transform);
+        return { nw, nh, w: nw * s, h: nh * s, tw: t.clientWidth, th: t.clientHeight, x: m.m41, y: m.m42, z: m.a };
+      }),
     // rest waits for the track to come to rest on a slide (a swipe's snap
     // finished): a finger lands on a still image, as a person's does.
     rest: () =>
@@ -1679,6 +1692,14 @@ test('a gallery on a phone: tap opens full size, a swipe moves on, pinch and dou
     await expect(v.cap).toHaveText('1a');
     await expect.poll(v.shown).toEqual({ i: 0, w: galleryWidth(0), zoom: 1 });
     await expect(v.dlg.getByRole('button', { name: 'Close full size' })).toBeFocused();
+    // A small image (120x90 on a 390-wide phone) is ENLARGED to fill the
+    // viewer's width or height, not drawn at its own size in the middle.
+    {
+      const d = await v.drawn();
+      expect(d.nw, 'the first image is decoded').toBe(galleryWidth(0));
+      expect(d.w, `drawn ${d.w}x${d.h} in a ${d.tw}x${d.th} viewer: larger than its natural ${d.nw}`).toBeGreaterThan(d.nw * 2);
+      expect(Math.abs(d.w - d.tw) <= 2 || Math.abs(d.h - d.th) <= 2, `drawn ${d.w}x${d.h} fills the ${d.tw}x${d.th} viewer's width or height`).toBe(true);
+    }
     await shot(page, 'gallery-phone-viewer');
 
     // A swipe left: image 2 (snapped, its neighbour already loaded).
@@ -1700,6 +1721,17 @@ test('a gallery on a phone: tap opens full size, a swipe moves on, pinch and dou
     await page.waitForTimeout(400);
     await expect(v.count, 'no swipe while zoomed').toHaveText('2 / 6');
     expect((await v.shown()).i).toBe(1);
+    // A pan stops at the PICTURE's edges, not the viewer's: dragged far down,
+    // the zoomed picture moves only as far as its drawn height overhangs the
+    // track (none at all when it is shorter than the track).
+    await touchDrag(page, { x: mid.x, y: mid.y - 150 }, { x: mid.x, y: mid.y + 250 });
+    await page.waitForTimeout(200);
+    {
+      const d = await v.drawn();
+      const room = Math.max(0, (d.z * d.h - d.th) / 2);
+      expect(d.z, 'still zoomed').toBeGreaterThan(1);
+      expect(Math.abs(d.y), `panned ${d.y}px down; the ${d.z}x picture (${d.z * d.h}px high in a ${d.th}px track) has ${room}px of room`).toBeLessThanOrEqual(room + 1);
+    }
     // A second double-tap zooms back out; the swipe works again.
     await doubleTap(page, mid);
     await expect.poll(async () => (await v.shown()).zoom).toBe(1);
@@ -1758,6 +1790,88 @@ test('a gallery leaves no history entry behind: opens closed by ×, Esc, a tap b
     expect(await page.evaluate(() => history.length), 'no entry piled up').toBeLessThanOrEqual(before + 1);
     // The next Back is the page's own: it leaves.
     await Promise.all([page.waitForURL(origin + '/pages'), page.goBack()]);
+  });
+});
+
+test('a gallery survives a slow history pop: reopened while the close is still popping, it stays open with ONE entry; Forward into a closed viewer\'s entry and reopening adds none', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const id = await galleryPage('Gallery slow pop', null);
+  await asOwner(browser, ROUND_VIEWPORTS[1], async (page) => {
+    await page.goto(origin + '/pages');
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const open2 = v.frame.getByRole('button', { name: 'Open 1b full size' });
+    const close = () => v.dlg.getByRole('button', { name: 'Close full size' }).click();
+    await expect(open2).toBeVisible();
+    const before = await page.evaluate(() => history.length);
+    // A slow traversal, as on a cold or loaded phone: the shell's history.back()
+    // lands 1.5 s after it is called (a back() is queued, and its target is
+    // counted when it runs, so this is the same race).
+    await page.evaluate(() => {
+      const back = history.back.bind(history);
+      (history as unknown as { back: () => void }).back = () => void setTimeout(back, 1500);
+    });
+    await open2.click();
+    await expect.poll(() => viewerEntry(page)).toBe(1);
+    await close();
+    await expect(v.dlg).toBeHidden();
+    // Reopened while that pop is still on its way.
+    await open2.click();
+    await expect(v.dlg).toBeVisible();
+    // Past the pop, and past any one-second guess at it.
+    await page.waitForTimeout(2500);
+    await expect(v.dlg, 'the late pop does not close the reopened viewer').toBeVisible();
+    expect(await viewerEntry(page), "the viewer's entry is current while it is open").toBe(1);
+    expect(await page.evaluate(() => history.length), 'one entry while open').toBe(before + 1);
+    await close();
+    await expect(v.dlg).toBeHidden();
+    await expect.poll(() => viewerEntry(page), { message: 'the close pops its entry', timeout: 5000 }).toBe(0);
+    await page.evaluate(() => void delete (history as unknown as { back?: unknown }).back);
+
+    // Back closes it; Forward lands on that closed viewer's entry; opening
+    // takes the entry over rather than pushing another.
+    await open2.click();
+    await expect.poll(() => viewerEntry(page)).toBe(1);
+    await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+    await expect(v.dlg).toBeHidden();
+    await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+    await expect.poll(() => viewerEntry(page), 'Forward is on the old viewer entry').toBe(1);
+    await expect(v.dlg, 'Forward does not open the viewer').toBeHidden();
+    await open2.click();
+    await expect(v.dlg).toBeVisible();
+    expect(await page.evaluate(() => history.length), 'reopening on that entry adds none').toBe(before + 1);
+    await close();
+    await expect.poll(() => viewerEntry(page)).toBe(0);
+    // The next Back is the page's own: it leaves.
+    await Promise.all([page.waitForURL(origin + '/pages'), page.goBack()]);
+  });
+});
+
+// FORGED_GALLERIES is an html block's markup and script posing as 20 hidden
+// picking galleries: the SDK's gallery script takes every gallery-shaped
+// section, so a tap on each fake Pick makes it send a keep for an id the page
+// does not have.
+const FORGED_GALLERIES =
+  Array.from({ length: 20 }, (_, i) =>
+    `<section hidden data-muster-kind="gallery" data-muster-component="forged${i}" data-muster-pick="several"><ul><li data-muster-item="0"><button type="button" class="mp-gallery-pick">P</button></li></ul></section>`,
+  ).join('') +
+  `<p id="forged-out"></p><script>document.addEventListener('DOMContentLoaded',function(){var b=document.querySelectorAll('section[data-muster-component^="forged"] .mp-gallery-pick');for(var i=0;i<b.length;i++)b[i].click();document.getElementById('forged-out').textContent='clicked:'+b.length;});</script>`;
+
+test('a page script forging gallery sections keeps nothing: only the version\'s own pick gallery is kept in the shell\'s sessionStorage', async ({ browser }) => {
+  const id = await galleryPage('Gallery forged keeps', { multiple: true }, [{ type: 'html', html: FORGED_GALLERIES }]);
+  await asOwner(browser, ROUND_VIEWPORTS[0], async (page) => {
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    await expect(v.frame.locator('#forged-out')).toHaveText('clicked:20');
+    // The real gallery's pick IS kept (the positive control: keeps work and
+    // this read sees them). The port is in order, so once it is stored every
+    // forged keep sent before it has been answered.
+    await v.frame.locator('.mp-gallery-grid').getByRole('button', { name: 'Pick 1a' }).tap();
+    const keys = () => page.evaluate(() => Object.keys(sessionStorage).filter((k) => k.startsWith('muster-picks:')));
+    await expect.poll(async () => (await keys()).filter((k) => k.endsWith(':logos')).length, 'the real pick is kept').toBe(1);
+    const all = await keys();
+    expect(all.filter((k) => k.includes('forged')), 'no key for a forged gallery: ' + JSON.stringify(all)).toEqual([]);
+    expect(all.length).toBe(1);
   });
 });
 
