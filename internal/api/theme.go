@@ -161,17 +161,23 @@ func (s *Server) serveKitFile(w http.ResponseWriter, r *http.Request, f uikit.Fi
 }
 
 // kitCORSOrigin is the Access-Control-Allow-Origin for a request's Origin:
-// the origin itself when it is exactly `https://<host>` (no port, path or
-// user) and the host is under one of patterns, else "". With no
-// MUSTER_PLUGIN_ORIGINS nothing is allowed.
+// the origin itself when it is exactly `https://<host>` — no other scheme, no
+// port, path, query or user — and the host is under one of patterns, else "".
+// With no MUSTER_PLUGIN_ORIGINS nothing is allowed.
+//
+// The spelling check is ONE comparison: an Origin is serialised as
+// scheme://host[:port], so anything but `https://` + the parsed host (which
+// still carries a port) is refused by it; the port is refused separately,
+// since MUSTER_PLUGIN_ORIGINS names no port.
 func kitCORSOrigin(patterns []plugins.OriginPattern, origin string) string {
 	if origin == "" || len(patterns) == 0 {
 		return ""
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.Port() != "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" ||
-		origin != "https://"+u.Host {
+	if err != nil || origin != "https://"+u.Host {
+		return ""
+	}
+	if u.Port() != "" {
 		return ""
 	}
 	if !plugins.AnyMatchesHost(patterns, u.Host) {

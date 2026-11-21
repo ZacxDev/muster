@@ -231,15 +231,16 @@ var (
 )
 
 // Derive is the two colours an accent brings with it: on-accent, a label on
-// the accent fill (the accent darkened to near black, or white, whichever
-// reads better), and focus, the ring (the accent lightened toward white).
+// the accent fill (the accent darkened to near black, as brass's own label
+// is), and focus, the ring (the accent lightened toward white).
+//
+// ⚠ NO WHITE LABEL, ON PURPOSE. An accent that can be saved reads at 4.5:1 on
+// every surface, so it is light (relative luminance about 0.29 or more); white
+// on it is then at most about 3:1 and the near-black label at least about 6:1.
+// A "white if it reads better" branch could never be taken by a theme that
+// passes Validate — a mutation test showed it dead — so it is not written.
 func Derive(accent RGB) (onAccent, focus RGB) {
-	dark := mix(accent, black, 0.87)
-	onAccent = dark
-	if Contrast(white, accent) > Contrast(dark, accent) {
-		onAccent = white
-	}
-	return onAccent, mix(accent, white, 0.3)
+	return mix(accent, black, 0.87), mix(accent, white, 0.3)
 }
 
 // Choice is what an admin saves: a preset, and optionally an accent of their

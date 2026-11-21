@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -219,7 +220,15 @@ func TestTheKitCarriesNoSessionOrUserData(t *testing.T) {
 			if bodies[i] != bodies[0] {
 				t.Errorf("%s: the body differs by caller (%d)", path, i)
 			}
+			// Both ways: a header only one caller gets is a difference too.
+			keys := map[string]bool{}
 			for k := range heads[0] {
+				keys[k] = true
+			}
+			for k := range heads[i] {
+				keys[k] = true
+			}
+			for k := range keys {
 				if heads[i].Get(k) != heads[0].Get(k) {
 					t.Errorf("%s: header %s differs by caller: %q vs %q", path, k, heads[i].Get(k), heads[0].Get(k))
 				}
@@ -258,11 +267,12 @@ func TestANonCompliantAccentIsRefusedAtSave(t *testing.T) {
 		t.Errorf("htmx refusal redirect = %q", got)
 	}
 	page := get(h, "/account?theme_error=theme_contrast", cookie, true).Body.String()
-	if !strings.Contains(page, themeErrorText["theme_contrast"]) {
+	if !strings.Contains(page, html.EscapeString(themeErrorText["theme_contrast"])) {
 		t.Error("the Account page does not say why the theme was refused")
 	}
-	if page := get(h, "/account?theme_error=%3Cscript%3E", cookie, true).Body.String(); strings.Contains(page, "<script>") && !strings.Contains(page, "The theme could not be saved.") {
-		t.Error("an unknown refusal code is drawn from the query")
+	// An unknown code draws the generic sentence, never the query's text.
+	if page := get(h, "/account?theme_error=%3Cb%3Ezzq%3C/b%3E", cookie, true).Body.String(); !strings.Contains(page, "The theme could not be saved.") || strings.Contains(page, "zzq") {
+		t.Error("an unknown refusal code is not answered with the generic sentence, or the query's text is drawn")
 	}
 	for _, c := range []struct{ preset, accent, code string }{
 		{"brass", "red", "theme_accent_invalid"},
