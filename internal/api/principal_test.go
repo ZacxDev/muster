@@ -92,6 +92,10 @@ var publicRoutes = []string{
 	// being anonymous (browser listener + same-origin only).
 	"POST /auth/passkey/options",
 	"POST /auth/passkey/verify",
+	// The sign-in pages' background cache clear: answers Clear-Site-Data to
+	// the asking browser, reads no cookie and touches no state (same-origin
+	// only).
+	"POST /auth/clear-caches",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",

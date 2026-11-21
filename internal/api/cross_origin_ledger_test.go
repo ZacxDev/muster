@@ -45,6 +45,7 @@ var unauthenticatedWriteReasons = map[string]string{
 	"POST /auth/reset":           "a single-use reset link, held by a visitor with no session; same-origin checked in the handler",
 	"POST /auth/passkey/options": "passkey sign-in, like POST /login; same-origin checked in the handler",
 	"POST /auth/passkey/verify":  "passkey sign-in, like POST /login; same-origin checked in the handler",
+	"POST /auth/clear-caches":    "the sign-in pages' background Clear-Site-Data; reads no cookie, writes nothing; same-origin checked in the handler",
 	"POST /plugin/v1/pair":       "a plugin with no token asks to pair; it only waits for its owner's approval",
 	"POST /mirror/ask":           "the mirror plugin authenticates its own host token; no cookie is read",
 	"POST /api/device/pair":      "the single-use pairing code is the authority; no cookie is read",

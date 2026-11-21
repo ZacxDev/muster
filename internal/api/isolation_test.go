@@ -194,7 +194,10 @@ var isolationClasses = map[string]routeClass{
 	// names a passkey by id (param: A's passkey id).
 	"POST /auth/passkey/options": classPublic,
 	"POST /auth/passkey/verify":  classPublic,
-	"GET /account/passkeys":      classList,
+	// The sign-in pages' background cache clear: a header to the asking
+	// browser, no cookie read, nothing returned.
+	"POST /auth/clear-caches": classPublic,
+	"GET /account/passkeys":   classList,
 	// The feature registry's page: server configuration, the same for every user.
 	"GET /account/features":              classList,
 	"POST /account/passkeys/options":     classList,

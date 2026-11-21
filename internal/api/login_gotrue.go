@@ -253,7 +253,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
-</form>` + passkey
+</form>` + passkey + signInProgressJS
 	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
@@ -329,7 +329,6 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	outcome = outcomeSucceeded
-	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -699,7 +698,6 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, r, code, "Claimed, but sign-in failed", problem)
 		return
 	}
-	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
