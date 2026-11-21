@@ -379,7 +379,9 @@ func accessLogPath(u *url.URL) string {
 func loggedPath(p string) string {
 	// A page's share link (/s/<token>…) is a bearer capability: none of it
 	// is written, whatever follows the token.
-	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/", pages.SharePrefix} {
+	// The app sign-in code (/auth/qr#<code>) rides in the fragment too; a
+	// hand-made /auth/qr/<code> is cut the same way.
+	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/", AppSignInPhonePath + "/", pages.SharePrefix} {
 		if strings.HasPrefix(p, prefix) {
 			return prefix + "[redacted]"
 		}

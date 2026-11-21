@@ -254,6 +254,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>` + passkey + signInProgressJS
+	inner += s.appSignInHTML(next)
 	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
@@ -330,6 +331,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 	}
 	outcome = outcomeSucceeded
 	s.setGoTrueCookies(w, sess)
+	s.setGoTrueKnownDevice(w, u.ID)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
 }
@@ -695,10 +697,12 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 				"GoTrue sign-in (MUSTER_AUTH_MODE=gotrue) you will sign in with this email and password.")
 		return
 	}
-	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+	admitted, problem, code := s.admitFreshSession(r.Context(), sess)
+	if problem != "" {
 		s.renderNotice(w, r, code, "Claimed, but sign-in failed", problem)
 		return
 	}
 	s.setGoTrueCookies(w, sess)
+	s.setGoTrueKnownDevice(w, admitted.ID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

@@ -133,6 +133,7 @@ func (s *Server) registerLoginRoutes(mux Mux) {
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("POST /auth/clear-caches", s.handleClearCaches)
 	s.registerAccountRoutes(mux)
+	s.registerAppSignInRoutes(mux)
 }
 
 // handleLoginPage renders the form. An already-signed-in caller is sent on
@@ -397,6 +398,7 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>` + signInProgressJS
+	inner += s.appSignInHTML(next)
 	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 

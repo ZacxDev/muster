@@ -241,6 +241,7 @@
       "tests/passkeys.spec.ts",
       "tests/plugin-chip.spec.ts",
       "tests/preview-composer.spec.ts",
+      "tests/qr-signin.spec.ts",
       "tests/server-switcher.spec.ts",
       "tests/share.spec.ts",
       "tests/signin-progress.spec.ts",

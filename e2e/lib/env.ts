@@ -577,6 +577,12 @@ export const instanceThemePort = port + 487;
 // its own password-mode server (+488: clear of the blocks above), with a logo
 // set so the branding section's secondary button is drawn.
 export const uiKitParityPort = port + 488;
+// tests/qr-signin.spec.ts: sign in with the muster app in gotrue mode — its
+// own server's two listeners and its own real GoTrue. +490 to +492: clear of
+// the blocks above.
+export const qrMainPort = port + 490;
+export const qrBrowserPort = port + 491;
+export const qrGotruePort = Number(process.env.MUSTER_E2E_QR_GOTRUE_PORT ?? port + 492);
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.
