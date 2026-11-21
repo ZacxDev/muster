@@ -421,6 +421,26 @@ class ConstantSignalTest(Base):
         self.assertEqual([m["text"] for m in msgs if m["type"] == "final"], [""])
         self.assertEqual(code, 1000)
 
+    def test_a_constant_nonzero_stream_sends_no_partials_while_its_padded_last_frame_awaits_end(self):
+        # 3 chunks less half a frame: 21 frames, the 21st carrying 640 real
+        # samples and 640 of zero padding. That frame COMPLETES the third
+        # chunk, so the third model step always runs with it already received
+        # and before `end` is answered (a step outranks a queued command):
+        # its padding is in the stream before the server can know it is
+        # padding. The value is non-zero so the padding differs from it.
+        n = 3 * CHUNK - FRAME // 2
+        dead = np.full(n, 2311, "<i2")
+        with self.connect() as ws:
+            for f in frames(dead):
+                ws.send_bytes(f)
+            ws.send_text(json.dumps({"type": "end", "samples": n}))
+            msgs, code = until_close(ws)
+        self.assertGreaterEqual(sum(self.eng.batches), 3, "control: the stub never decoded the three chunks")
+        self.assertEqual([m for m in msgs if m["type"] == "partial"], [],
+                         "the padding of the last frame made a constant stream send partials")
+        self.assertEqual([m["text"] for m in msgs if m["type"] == "final"], [""])
+        self.assertEqual(code, 1000)
+
     def test_positive_control_speech_after_a_dead_segment_is_transcribed(self):
         with self.connect() as ws:
             for f in frames(np.zeros(CHUNK, "<i2")):
