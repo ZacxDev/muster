@@ -13,8 +13,8 @@ g init -q
 commit() { for p in images README; do [ -e "$work/$p" ] && g add -- "$p"; done; g commit -q --allow-empty -m "$1"; g rev-parse HEAD; }
 
 passes=0; fails=0
-expect() {  # <name> <commit> <this-tag> <want>
-  local got; got="$(cd "$work" && "$SRC" "$2" "$3" 2>&1)"
+expect() {  # <name> <commit> <this-tag> <want> [<dir>]
+  local got; got="$(cd "$work" && "$SRC" "$2" "$3" ${5:+"$5"} 2>&1)"
   if [ "$got" = "$4" ]; then echo "PASS  $1"; passes=$((passes + 1))
   else echo "FAIL  $1: got '$got', want '$4'"; fails=$((fails + 1)); fi
 }
@@ -32,5 +32,15 @@ echo B > "$work/images/stt-cohere/Dockerfile"; c3="$(commit "image changed")"
 expect "image changed since the previous tag -> build" "$c3" v0.99.2 build
 expect "no previous tag reachable -> build" "$c0" v0.9.0 build
 
+# A second image directory is decided on ITS OWN changes only.
+g tag v0.99.2 "$c3"
+mkdir -p "$work/images/stt-nemotron"; echo N > "$work/images/stt-nemotron/Dockerfile"
+c4="$(commit "nemotron added")"; g tag v0.99.3 "$c4"
+expect "nemotron: its directory is new since the previous tag -> build" "$c4" v0.99.3 build images/stt-nemotron
+expect "cohere: unchanged while nemotron was added -> retag" "$c4" v0.99.4 "retag v0.99.3"
+echo C > "$work/images/stt-cohere/Dockerfile"; c5="$(commit "only cohere changed")"
+expect "nemotron: unchanged while cohere changed -> retag" "$c5" v0.99.4 "retag v0.99.3" images/stt-nemotron
+expect "cohere: changed -> build" "$c5" v0.99.4 build
+
 echo "stt-cohere-source-test: $passes passed, $fails failed"
-[ "$passes" -eq 5 ] && [ "$fails" -eq 0 ]
+[ "$passes" -eq 9 ] && [ "$fails" -eq 0 ]
