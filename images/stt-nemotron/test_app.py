@@ -568,6 +568,73 @@ class RealServerTest(unittest.TestCase):
         self.assertIsNone(cfg["ws_ping_timeout"])
 
 
+class BenchmarkedConfigTest(unittest.TestCase):
+    """The model, attention context and precision are the benchmarked ones and
+    NO environment variable changes them: the weights always come from the
+    pinned, hash-checked download, at [70, 6] (560 ms chunks) in bf16.
+
+    nemo_engine.py is imported with torch, omegaconf and NeMo stubbed (only
+    their names are needed to import it); the engine is never built."""
+
+    STUBBED = (
+        "torch", "omegaconf", "nemo", "nemo.collections", "nemo.collections.asr",
+        "nemo.collections.asr.inference", "nemo.collections.asr.inference.factory",
+        "nemo.collections.asr.inference.factory.cache_aware_pipeline_builder",
+        "nemo.collections.asr.inference.streaming", "nemo.collections.asr.inference.streaming.framing",
+        "nemo.collections.asr.inference.streaming.framing.request",
+        "nemo.collections.asr.inference.streaming.framing.request_options",
+        "nemo.collections.asr.inference.utils", "nemo.collections.asr.inference.utils.pipeline_utils",
+    )
+
+    def load_engine_module(self):
+        saved = {n: sys.modules.get(n) for n in self.STUBBED + ("nemo_engine",)}
+        self.addCleanup(lambda: [sys.modules.pop(n, None) if m is None else sys.modules.__setitem__(n, m)
+                                 for n, m in saved.items()])
+        for n in self.STUBBED:
+            sys.modules[n] = types.ModuleType(n)
+        sys.modules["torch"].cuda = types.SimpleNamespace(is_available=lambda: False)
+        sys.modules["omegaconf"].OmegaConf = types.SimpleNamespace(create=lambda d: d)
+        base = "nemo.collections.asr.inference."
+        sys.modules[base + "factory.cache_aware_pipeline_builder"].CacheAwarePipelineBuilder = object
+        sys.modules[base + "streaming.framing.request"].Frame = object
+        sys.modules[base + "streaming.framing.request_options"].ASRRequestOptions = object
+        sys.modules[base + "utils.pipeline_utils"].ids_to_text_without_stripping = None
+        sys.modules.pop("nemo_engine", None)
+        sys.path.insert(0, str(HERE))
+        try:
+            return importlib.import_module("nemo_engine")
+        finally:
+            sys.path.remove(str(HERE))
+
+    def test_the_constants_are_the_benchmarked_values(self):
+        ne = self.load_engine_module()
+        self.assertEqual(ne.ATT_CONTEXT, [70, 6])
+        self.assertEqual(ne.COMPUTE_DTYPE, "bfloat16")
+
+    def test_environment_cannot_change_model_context_or_precision(self):
+        ne = self.load_engine_module()
+        fetched = []
+        ne.fetch_model = lambda: fetched.append(1) or "/fixture/pinned-9d1.nemo"
+        built = []
+        ne.NemotronEngine.__init__ = lambda self, *a: built.append(a)
+        # Values a removed knob would have honoured, each distinct from the
+        # benchmarked one; the stream cap (still a setting) is distinct from 8.
+        env = {"STT_MODEL": "/fixture/other-model.nemo", "STT_ATT_CONTEXT": "70,1",
+               "STT_DTYPE": "fp32", "STT_MAX_STREAMS": "5"}
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            ne.NemotronEngine.from_env()
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(fetched, [1], "the pinned, hash-checked download must always be used")
+        self.assertEqual(built, [("/fixture/pinned-9d1.nemo", 5, [70, 6], "bfloat16")])
+
+
 class RequirementsArePinnedTest(unittest.TestCase):
     def test_every_requirement_is_an_exact_pin(self):
         lines = [

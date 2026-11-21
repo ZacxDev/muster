@@ -47,6 +47,14 @@ MODEL_FILE = "nemotron-speech-streaming-en-0.6b.nemo"
 MODEL_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
 MODEL_SHA256 = "283638054c44f6794e74fe9af9048d78a6d9d6c058c12131856c7859a62ac9cd"
 
+# 🔴 THE BENCHMARKED CONFIGURATION, HARD-CODED: no environment variable can
+# change the model, the attention context or the precision. [70, 6] is the
+# 560 ms chunk the benchmark behind decision 19 ran; bf16 is what the memory
+# figures in README.md were measured in. A different model or setting is a
+# code change here, a re-measurement, and a review.
+ATT_CONTEXT = [70, 6]
+COMPUTE_DTYPE = "bfloat16"
+
 
 def sha256_of(path: str) -> str:
     h = hashlib.sha256()
@@ -174,12 +182,9 @@ class NemotronEngine:
 
     @classmethod
     def from_env(cls) -> "NemotronEngine":
-        model = os.environ.get("STT_MODEL", "")
-        if not model:
-            model = fetch_model()
-        att = [int(x) for x in os.environ.get("STT_ATT_CONTEXT", "70,6").split(",")]
-        dtype = {"bf16": "bfloat16", "fp32": "float32"}[os.environ.get("STT_DTYPE", "bf16")]
-        return cls(model, int(os.environ.get("STT_MAX_STREAMS", "8")), att, dtype)
+        """The ONLY setting read from the environment is the stream cap. The
+        weights always come from fetch_model() (pinned commit + sha256)."""
+        return cls(fetch_model(), int(os.environ.get("STT_MAX_STREAMS", "8")), list(ATT_CONTEXT), COMPUTE_DTYPE)
 
     # -- per stream -----------------------------------------------------------
     def new_stream(self):

@@ -20,12 +20,11 @@ Environment:
   STT_RETRY_AFTER          seconds in that Retry-After (default 30)
   STT_MAX_BACKLOG_SECONDS  undecoded audio one stream may queue before it is
                            closed 1013 (default 30)
-  STT_MODEL                model id or a local .nemo path
-                           (default nvidia/nemotron-speech-streaming-en-0.6b)
-  STT_ATT_CONTEXT          attention context "left,right" (default 70,6:
-                           560 ms chunks, the benchmarked setting)
-  STT_DTYPE                bf16 (default) | fp32
   STT_PORT                 listen port (default 8000)
+
+The model, its attention context (70,6: 560 ms chunks) and its precision
+(bf16) are NOT configurable: they are the benchmarked values, fixed in
+nemo_engine.py.
 """
 
 from __future__ import annotations

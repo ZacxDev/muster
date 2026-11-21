@@ -127,11 +127,17 @@ The server listens only after the model has loaded.
 | `STT_MAX_STREAMS` | 8 | concurrent streams, and the batch size and slot count inside NeMo |
 | `STT_RETRY_AFTER` | 30 | seconds, in the capacity `503` |
 | `STT_MAX_BACKLOG_SECONDS` | 30 | undecoded audio one stream may queue |
-| `STT_MODEL` | the pinned download | a local `.nemo` path instead (skips the download and the hash check) |
-| `STT_ATT_CONTEXT` | `70,6` | attention context; `70,6` = 560 ms chunks, the benchmarked setting |
-| `STT_DTYPE` | `bf16` | `bf16` or `fp32` |
 | `STT_PORT` | 8000 | |
 | `HF_HOME` | `/models` | where the weights are cached: mount a volume |
+
+**Not configurable, on purpose:** the model (always the pinned download,
+always hash-checked), the attention context (`70,6`: 560 ms chunks, the
+benchmarked setting) and the precision (bf16, what the memory below was
+measured in). They are constants in `nemo_engine.py`; changing one is a code
+change and a re-measurement. `test_app.py` pins them.
+
+**`STT_MAX_STREAMS` stays 8 until the fit beside `stt-cohere` is measured**
+(an open follow-up; see [Measured](#measured)).
 
 **Sample rate:** the server reads `preprocessor.sample_rate` from the loaded
 `.nemo` and **refuses to start** unless it is 16000 (the wire format; the
@@ -180,8 +186,9 @@ change). Without `torch.cuda.empty_cache()` after load the idle process held
 releases it. The design's earlier figure (~6.8 GB) was fp32 and untuned.
 
 **Not measured here:** the fit **beside `stt-cohere` on the same GPU** (this
-GPU did not run `stt-cohere`), WER on meeting audio (AMI, phase 3d), and
-streams past 8. Each run also checked: the 9th stream got `503` with
+GPU did not run `stt-cohere`) is an **open follow-up**: run the procedure
+below on the GPU host before raising `STT_MAX_STREAMS` above 8. Also not
+measured: WER on meeting audio (AMI, phase 3d), and streams past 8. Each run also checked: the 9th stream got `503` with
 `Retry-After: 30`; one utterance followed directly by `end` came back with its
 words; and after three rounds of dropping 8 streams without `end`, 8 fresh
 streams all transcribed (no leaked slot).
