@@ -403,6 +403,7 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	clearSiteCaches(w)
 	s.clearGoTrueCookies(w)
+	s.clearGoTrueKnownDevice(w)
 	if failed != "" {
 		s.renderNotice(w, r, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
 		return

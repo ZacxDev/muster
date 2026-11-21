@@ -25,6 +25,10 @@ const DENIED = 'The sign-in was denied on your phone.';
 const EXPIRED = 'This code has expired.';
 const APPROVED_PHONE = 'Approved. The other browser is signing in now.';
 const DENIED_PHONE = 'Denied. Nothing was signed in.';
+const APPROVED_BY = 'Approved on a phone signed in as';
+const CANCELLED = 'Cancelled. Nothing was signed in.';
+// The password server's one account, as the page names it.
+const OPERATOR = 'the operator (the shared password)';
 
 async function desktop(browser: Browser): Promise<{ ctx: BrowserContext; page: Page }> {
   const ctx = await browser.newContext({ baseURL, viewport: { width: 1280, height: 800 }, storageState: { cookies: [], origins: [] } });
@@ -62,7 +66,15 @@ test('approve on the phone: the desktop follows along and lands signed in', asyn
     await page.getByRole('button', { name: 'Approve' }).click();
     await expect(page.locator('#qr-signin-phone-result')).toHaveText(APPROVED_PHONE);
 
-    // The desktop redeems and is sent on, signed in.
+    // The desktop names who approved and waits for its person: nothing is
+    // redeemed before "Continue as …".
+    await expect(desk.page.locator('#qr-signin-status')).toHaveText(`${APPROVED_BY} ${OPERATOR}.`);
+    const cont = desk.page.getByRole('button', { name: `Continue as ${OPERATOR}` });
+    await expect(cont).toBeVisible();
+    await desk.page.waitForTimeout(2500); // a poll interval and more: still on /login, unredeemed
+    expect(new URL(desk.page.url()).pathname).toBe('/login');
+    expect((await desk.ctx.cookies(baseURL)).find((c) => c.name === 'muster_session'), 'nothing redeemed before Continue').toBeFalsy();
+    await cont.click();
     await desk.page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 15_000 });
     const cookies = await desk.ctx.cookies(baseURL);
     expect(cookies.find((c) => c.name === 'muster_session'), 'the desktop holds a session').toBeTruthy();
@@ -98,6 +110,25 @@ test('deny on the phone: the desktop says so and offers a new code', async ({ br
     const next = await desk.page.locator('#qr-signin-code').getAttribute('data-qr-url');
     expect(next, 'a new code, not the denied one').not.toBe(link);
     await expect(fresh).toBeHidden();
+  } finally {
+    await desk.ctx.close();
+  }
+});
+
+test('cancel after an approval: the desktop signs nothing in', async ({ browser, page }) => {
+  await signIn(page, baseURL);
+  const desk = await desktop(browser);
+  try {
+    const link = await startCode(desk.page);
+    await page.goto(link);
+    await page.getByRole('button', { name: 'Approve' }).click();
+    await expect(page.locator('#qr-signin-phone-result')).toHaveText(APPROVED_PHONE);
+    await desk.page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(desk.page.locator('#qr-signin-status')).toHaveText(CANCELLED);
+    await expect(desk.page.getByRole('button', { name: 'Get a new code' })).toBeVisible();
+    await desk.page.waitForTimeout(2500);
+    expect(new URL(desk.page.url()).pathname).toBe('/login');
+    expect((await desk.ctx.cookies(baseURL)).find((c) => c.name === 'muster_session'), 'a cancel signs nothing in').toBeFalsy();
   } finally {
     await desk.ctx.close();
   }
@@ -215,6 +246,11 @@ test.describe('gotrue mode', () => {
       await phone.getByRole('button', { name: 'Approve' }).click();
       await expect(phone.locator('#qr-signin-phone-result')).toHaveText(APPROVED_PHONE);
 
+      // Named by display name and email (user 1's display name is whatever
+      // the seed gave it); the email is what identifies the account.
+      await expect(deskPage.locator('#qr-signin-status')).toContainText(APPROVED_BY);
+      await expect(deskPage.locator('#qr-signin-status')).toContainText(adminEmail);
+      await deskPage.getByRole('button', { name: /^Continue as / }).click();
       await deskPage.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 20_000 });
       const deskCookies = await desk.cookies(browserURL);
       const at = deskCookies.find((c) => c.name === 'muster_at');
@@ -223,6 +259,36 @@ test.describe('gotrue mode', () => {
       expect(deskCookies.find((c) => c.name === 'muster_device'), 'an app sign-in does not mark a known device').toBeFalsy();
       await deskPage.goto(browserURL + '/account');
       await expect(deskPage.locator('#account-who')).toContainText(adminEmail);
+    } finally {
+      await desk.close();
+      await phoneCtx.close();
+    }
+  });
+
+  // A signed-out phone signs in and comes back to the request, and the code
+  // is never in a URL on the way: every request the phone makes is recorded.
+  test('a signed-out phone signs in and comes back; the code rides in no URL', async ({ browser }) => {
+    test.setTimeout(120_000);
+    const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: { cookies: [], origins: [] } });
+    const desk = await browser.newContext({ viewport: { width: 1280, height: 800 }, storageState: { cookies: [], origins: [] } });
+    try {
+      const deskPage = await desk.newPage();
+      const link = await startCode(deskPage, browserURL);
+      const code = link.slice(link.indexOf('#') + 1);
+      const phone = await phoneCtx.newPage();
+      const urls: string[] = [];
+      phone.on('request', (r) => urls.push(r.url().split('#')[0])); // the fragment is never sent
+      await phone.goto(link);
+      await expect(phone.getByRole('heading', { name: 'Sign in to approve' })).toBeVisible();
+      await phone.locator('#qr-signin-phone-login').click();
+      await phone.fill('#muster-email', adminEmail);
+      await phone.fill('#muster-password', adminPW);
+      await Promise.all([phone.waitForURL(/\/auth\/qr$/), phone.click('button[type=submit]')]);
+      await expect(phone.getByRole('heading', { name: 'Sign in on another device?' })).toBeVisible();
+      expect(urls.length, 'positive control: the phone\'s requests were recorded').toBeGreaterThan(3);
+      expect(urls.filter((u) => u.includes(code)), 'no request line carried the code').toEqual([]);
+      expect(await phone.evaluate(() => sessionStorage.length), 'the carried code is gone').toBe(0);
+      await expect(deskPage.locator('#qr-signin-status')).toHaveText(SCANNED);
     } finally {
       await desk.close();
       await phoneCtx.close();

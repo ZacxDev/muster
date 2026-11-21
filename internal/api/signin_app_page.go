@@ -17,11 +17,15 @@ import (
 // The status lines the page shows, named so the tests pin them whole. The
 // script carries the same strings (appSignInJS reads them from here).
 const (
-	AppSignInWaiting  = "Scan this code with your phone's camera. Your phone must be signed in to muster."
-	AppSignInScanned  = "Scanned. Approve the sign-in on your phone."
-	AppSignInRedeem   = "Approved. Signing you in…"
-	AppSignInDeniedJS = "The sign-in was denied on your phone."
-	AppSignInExpired  = "This code has expired."
+	AppSignInWaiting = "Scan this code with your phone's camera. Your phone must be signed in to muster."
+	AppSignInScanned = "Scanned. Approve the sign-in on your phone."
+	AppSignInRedeem  = "Signing you in…"
+	// AppSignInApprovedBy precedes the approver's name: the page asks before it
+	// redeems, since whoever approved is who this browser becomes.
+	AppSignInApprovedBy = "Approved on a phone signed in as"
+	AppSignInCancelled  = "Cancelled. Nothing was signed in."
+	AppSignInDeniedJS   = "The sign-in was denied on your phone."
+	AppSignInExpired    = "This code has expired."
 )
 
 // appSignInHTML is the option on the sign-in page, or "" when the server
@@ -38,6 +42,10 @@ func (s *Server) appSignInHTML(next string) string {
 <p class="text-center text-sm text-fg2" id="qr-signin-status" role="status" aria-live="polite"></p>
 <p class="text-center text-xs text-muted">No camera? Open this link on your phone:</p>
 <a id="qr-signin-link" href="#" class="break-all text-center text-xs text-accent underline" rel="noreferrer"></a>
+<div id="qr-signin-confirm" class="flex w-full flex-col gap-2" hidden>
+<button type="button" id="qr-signin-continue" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"></button>
+<button type="button" id="qr-signin-cancel" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Cancel</button>
+</div>
 <button type="button" id="qr-signin-new" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90" hidden>Get a new code</button>
 </div>
 </section>
@@ -55,14 +63,26 @@ func appSignInJS() string {
   if (!root || !window.fetch) { return; }
   var start = document.getElementById('qr-signin-start'), panel = document.getElementById('qr-signin-panel'),
       box = document.getElementById('qr-signin-code'), status = document.getElementById('qr-signin-status'),
-      link = document.getElementById('qr-signin-link'), again = document.getElementById('qr-signin-new');
+      link = document.getElementById('qr-signin-link'), again = document.getElementById('qr-signin-new'),
+      confirmBox = document.getElementById('qr-signin-confirm'), cont = document.getElementById('qr-signin-continue'),
+      cancel = document.getElementById('qr-signin-cancel');
   var next = root.getAttribute('data-next') || '/';
   var code = '', timer = 0, delay = 2000, gen = 0;
-  var WAITING = ` + js(AppSignInWaiting) + `, SCANNED = ` + js(AppSignInScanned) + `, REDEEM = ` + js(AppSignInRedeem) + `,
+  var WAITING = ` + js(AppSignInWaiting) + `, SCANNED = ` + js(AppSignInScanned) + `, REDEEM = ` + js(AppSignInRedeem) + `, APPROVED_BY = ` + js(AppSignInApprovedBy) + `, CANCELLED = ` + js(AppSignInCancelled) + `,
       DENIED = ` + js(AppSignInDeniedJS) + `, EXPIRED = ` + js(AppSignInExpired) + `;
   function say(t) { status.textContent = t; }
   function stop() { if (timer) { clearTimeout(timer); timer = 0; } }
-  function end(state, t) { stop(); box.setAttribute('data-state', state); say(t); again.hidden = false; }
+  function end(state, t) { stop(); confirmBox.hidden = true; box.setAttribute('data-state', state); say(t); again.hidden = false; }
+  // ask: an approval names WHO approved; this browser becomes that account,
+  // so nothing is redeemed until its person says "Continue as …".
+  function ask(mine, who) {
+    var name = who.email && who.name !== who.email ? who.name + ' (' + who.email + ')' : (who.name || who.email || 'an unknown account');
+    say(APPROVED_BY + ' ' + name + '.');
+    cont.textContent = 'Continue as ' + (who.name || who.email || 'this account');
+    cont.onclick = function () { if (mine !== gen) { return; } confirmBox.hidden = true; say(REDEEM); redeem(mine); };
+    cancel.onclick = function () { if (mine !== gen) { return; } gen++; end('cancelled', CANCELLED); };
+    confirmBox.hidden = false;
+  }
   function json(r) { return r.json().then(function (j) { return { status: r.status, ok: r.ok, j: j || {} }; }, function () { return { status: r.status, ok: false, j: {} }; }); }
   function backoff(res) {
     var floor = (res && res.j && res.j.interval ? res.j.interval : 0) * 1000;
@@ -70,7 +90,7 @@ func appSignInJS() string {
   }
   function begin() {
     stop(); gen++; var mine = gen;
-    start.hidden = true; panel.hidden = false; again.hidden = true;
+    start.hidden = true; panel.hidden = false; again.hidden = true; confirmBox.hidden = true;
     box.innerHTML = ''; box.setAttribute('data-state', 'starting'); box.setAttribute('data-qr-url', '');
     link.textContent = ''; link.setAttribute('href', '#');
     say('Getting a code…');
@@ -98,7 +118,7 @@ func appSignInJS() string {
         box.setAttribute('data-state', st);
         if (st === 'pending') { say(WAITING); poll(mine); }
         else if (st === 'scanned') { say(SCANNED); poll(mine); }
-        else if (st === 'approved') { say(REDEEM); redeem(mine); }
+        else if (st === 'approved') { ask(mine, res.j.approver || {}); }
         else if (st === 'denied') { end('denied', DENIED); }
         else { end('expired', EXPIRED); }
       }, function () { if (mine === gen) { backoff(null); poll(mine); } });

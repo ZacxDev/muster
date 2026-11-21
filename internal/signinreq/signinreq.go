@@ -114,6 +114,9 @@ type Request struct {
 	ExpiresAt      time.Time
 	// ApprovedBy is the approver's user id, 0 until approved.
 	ApprovedBy int64
+	// ApproverSigninAt is the approving session's sign-in time; nil until
+	// approved.
+	ApproverSigninAt *time.Time
 }
 
 // Object is the audit_log `object` a request's rows carry.
@@ -126,6 +129,7 @@ type Store interface {
 	Open(ctx context.Context, code string) (Request, error)
 	Decide(ctx context.Context, code string, approve bool, by users.Actor, signinAt time.Time) (Request, error)
 	Redeem(ctx context.Context, code, binding string, accountRules bool) (Request, error)
+	SameBrowser(ctx context.Context, code, binding string) (bool, error)
 }
 
 // PGStore is Store over Postgres (migration 0173).
@@ -188,10 +192,10 @@ func clip(s string, max int) string {
 // The columns every read returns, with the effective state: an unredeemed
 // row past its expiry reads as expired.
 const cols = `id, CASE WHEN state <> 'redeemed' AND expires_at <= now() THEN 'expired' ELSE state END,
-	requester_ip, requester_agent, created_at, expires_at, coalesce(approved_by, 0)`
+	requester_ip, requester_agent, created_at, expires_at, coalesce(approved_by, 0), approver_signin_at`
 
 func dest(r *Request) []any {
-	return []any{&r.ID, &r.State, &r.RequesterIP, &r.RequesterAgent, &r.CreatedAt, &r.ExpiresAt, &r.ApprovedBy}
+	return []any{&r.ID, &r.State, &r.RequesterIP, &r.RequesterAgent, &r.CreatedAt, &r.ExpiresAt, &r.ApprovedBy, &r.ApproverSigninAt}
 }
 
 func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
@@ -309,8 +313,11 @@ func (s *PGStore) Decide(ctx context.Context, code string, approve bool, by user
 //
 // 🔴 IT TAKES THE APPROVER'S CREDENTIALS LOCK (users.LockCredentialsTx) before
 // re-checking the approver, as a device pairing does: a disable, a reset or a
-// Sign out everywhere that commits first is seen, and one that comes after
-// meets a session issued after it (which it then ends).
+// Sign out everywhere that commits first is seen. ⚠ The lock ends with this
+// transaction, BEFORE the caller has GoTrue issue the session, so one that
+// commits in between is NOT seen here — and the session issued after it would
+// survive it. The caller closes that gap by reading the account again once the
+// session exists (internal/api handleAppSignInRedeem).
 //
 // accountRules says whether the approver's account rules govern sessions on
 // this server: true in gotrue mode. False in password mode, where the one
@@ -343,9 +350,9 @@ func (s *PGStore) Redeem(ctx context.Context, code, binding string, accountRules
 				return err
 			}
 		}
-		var signin *time.Time
-		err = tx.QueryRow(ctx, `SELECT `+cols+`, approver_signin_at FROM signin_requests
-			WHERE code_sha256 = $1 AND binding_sha256 = $2 FOR UPDATE`, hash(code), hash(binding)).Scan(append(dest(&r), &signin)...)
+		err = tx.QueryRow(ctx, `SELECT `+cols+` FROM signin_requests
+			WHERE code_sha256 = $1 AND binding_sha256 = $2 FOR UPDATE`, hash(code), hash(binding)).Scan(dest(&r)...)
+		signin := r.ApproverSigninAt
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -389,4 +396,20 @@ func (s *PGStore) Redeem(ctx context.Context, code, binding string, accountRules
 		return Request{}, err
 	}
 	return r, nil
+}
+
+// SameBrowser reports whether binding is the binding of the request code names:
+// the browser deciding is the one that started it. False for a malformed or
+// absent binding, or no such request.
+func (s *PGStore) SameBrowser(ctx context.Context, code, binding string) (bool, error) {
+	if !CodeShapeOK(code) || !BindingShapeOK(binding) {
+		return false, nil
+	}
+	var same bool
+	err := s.pool.QueryRow(sys(ctx), `SELECT binding_sha256 = $2 FROM signin_requests WHERE code_sha256 = $1`,
+		hash(code), hash(binding)).Scan(&same)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return same, err
 }

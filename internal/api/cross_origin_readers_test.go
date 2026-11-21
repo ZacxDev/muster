@@ -35,10 +35,6 @@ import (
 
 var sessionReaderNames = map[string]bool{"hasValidSession": true, "passwordSession": true, "resolveGoTrueSession": true}
 
-// looksSignedIn (signin_app.go) is in sessionReaders below: it reads the
-// session cookies without resolving them, only to choose between a sign-in
-// link and requireOperatorWrite, which then runs the central check.
-
 var sessionReaders = map[string]string{
 	"hasValidSession":       "the password-mode reader itself (passwordSession)",
 	"requireSession":        "the session door: hands on through admit, which runs the central check",
@@ -46,9 +42,7 @@ var sessionReaders = map[string]string{
 	"handleLoginPage":       "GET /login: a redirect for a signed-in browser; GET changes nothing",
 	"handleGoTrueLoginPage": "GET /login in GoTrue mode: a redirect (and a cookie refresh); GET changes nothing",
 	"handleLogout":          "POST /logout: refuseCrossOriginWrite before the read",
-	"looksSignedIn": "POST /auth/qr: isSameOrigin (appSignInRefusal) before the read, which only picks the sign-in link " +
-		"or requireOperatorWrite; nothing is written on it",
-	"handleGoTrueLogout": "POST /logout in GoTrue mode: isSameOrigin before the read",
+	"handleGoTrueLogout":    "POST /logout in GoTrue mode: isSameOrigin before the read",
 	"passwordGate": "POST /login and the step-up confirm: a signed-in browser is exempt from the sign-in throttle. " +
 		"⚠ POST /login is not origin-checked in password mode, so a sibling page can use that exemption",
 }

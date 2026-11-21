@@ -143,10 +143,13 @@ Their advice:
 | F2 reusable | approved → redeemed is one conditional update under a row lock; a second redeem, even a concurrent one, is refused |
 | F3/F4 predictable or client-chosen | 32 random bytes, minted by the server |
 | F5 phone-supplied identity | the approver is the session's principal (`requireSession`), never a field; the issued session is checked to be that user's |
-| F6 leakage | the poll answers a state and an interval; the approver's identity and the session are only ever set as cookies on the redeem |
+| F6 leakage | the poll answers a state and an interval, and once approved the approver's name and email (below); the session is only ever set as cookies on the redeem |
 | QRLjacking | the phone shows the browser, its address and the phone's own address side by side, says "Approve only if you started this yourself, on a screen in front of you", and the code lives 2 minutes |
 | login CSRF (a sibling page starts or spends a sign-in in your browser) | every POST checks Origin, like the other sign-in doors |
-| a stolen session cookie approving | the approving browser must also be a **known device** (below) |
+| a stolen session cookie approving | the approving browser must also be a **known device**, revoked with the user's sessions |
+| a stale or copied session laundering itself into a fresh one | an approval needs a **fresh** sign-in on the phone (the step-up window), and the browser that started a request cannot approve it (audit round 1) |
+| someone else approving a code they saw (a screen share, over a shoulder) | the browser is told **who** approved and redeems only on "Continue as …"; Cancel signs nothing in (audit round 1) |
+| the code in a query string, history or a proxy log | the code is only ever in the URL fragment or a POST body; across the phone's sign-in it rides in that tab's sessionStorage (audit round 1) |
 
 **What it does not stop.** Like Discord, WhatsApp and every app-approval
 scheme, this flow cannot tell a relayed QR from a real one. A person who
@@ -240,72 +243,9 @@ itself, one `<path>` with a white quiet zone (`qrSVG`).
 
 ## The design, as built
 
-**The table.** `signin_requests` (migration 0173) holds one row per request:
-
-- the sha256 of the **code** (in the QR) and of the **binding** (in the
-  browser's cookie);
-- the state: `pending` → `scanned` → `approved` | `denied`, then `approved` →
-  `redeemed`. Expiry is not a state: every transition checks `expires_at` on
-  the database's clock;
-- the requester's address and User-Agent summary;
-- the approver, and the **sign-in time of the session that approved**.
-
-It has no owner, because a request is anonymous until a phone approves it. It
-is under forced row-level security with a `scope_all` policy only, and
-`internal/signinreq` reaches it through its one system-scope helper.
-
-**The browser** (`/login` in both modes):
-
-- **Sign in with the muster app** posts `/login/app`. muster creates the
-  request, sets the binding cookie and answers with the code, the link, the QR
-  as SVG, `expires_in` and `interval`.
-- The page draws the QR, the link under it for a phone with no camera, and a
-  status line: waiting → scanned, approve on your phone → approved, signing you
-  in. Denied or expired shows **Get a new code**.
-- It polls `/login/app/status` and, once approved, posts `/login/app/redeem`
-  with the code. The cookie goes with it.
-- A redeem in password mode sets the operator session. In gotrue mode it gets
-  a GoTrue session for the approver as above.
-- The session it sets does **not** mark the browser a known device, so an
-  approval cannot create another approver.
-
-**The phone** (`/auth/qr#<code>`):
-
-- The page moves the fragment into a form and posts it, so the code never
-  appears in a path, a query or the access log. A hand-made `/auth/qr/<x>` is
-  cut from the log too.
-- With no session, it shows **Sign in** with a link to
-  `/login?next=/auth/qr%23<code>`, and the sign-in returns there with the
-  fragment intact.
-- With a session, the request goes through `requireSession` and the origin
-  check. The browser must be a **known device**, and then the details card
-  shows the browser, its address, the phone's own address, and **Approve** /
-  **Deny**.
-- Each decision is written to the audit log (`signin.app.approve`,
-  `signin.app.deny`, `signin.app.redeem`) and to the server log.
-
-**Known devices.** Password mode already sets `muster_device` on every
-operator-password sign-in. gotrue mode now sets it too, on every sign-in that
-proved a credential: password, passkey, claim, invite, reset. It is signed
-with a key derived from `MUSTER_GOTRUE_JWT_SECRET` **and the user's id**, so it
-vouches for one person in one browser. A session alone, whether a copied cookie
-or one this flow issued, cannot approve.
-
-**An approval dies with its session.** The redeem holds the approver's
-credentials lock and refuses when the approver is disabled, or when the
-approving session's sign-in is at or before the account's session cutoff or
-latest Sign out everywhere. That is the rule a paired phone is held to. It
-applies in gotrue mode only: a password-mode session is a stateless cookie no
-users row ends, so the account columns are not read there (a gotrue spec in
-the same CI leg had left user 1 signed out everywhere, and the first version
-refused a valid password-mode approval because of it).
-
-**Throttles**, all per client address:
-
-- 10 requests started a minute, and 300 across the whole server.
-- 10 failed look-ups or redeems a minute, counted after the look-up, so a live
-  code is never refused for its address.
-- 90 polls a minute, then `slow_down`.
+What was built, its routes and its throttles are in
+[auth.md](../auth.md#sign-in-with-the-muster-app), the one place they are
+stated. The table above is how it answers each attack.
 
 ## The Android app
 

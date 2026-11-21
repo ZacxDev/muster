@@ -31,10 +31,14 @@ import (
 //   - GET  /login/app/status   the page polls the request's state by its cookie.
 //   - POST /login/app/redeem   the page spends an approval: the code AND the
 //     cookie of the same request, then a session of the approver is issued.
-//   - GET  /auth/qr            what the QR opens on the phone (the code in the
-//     URL fragment, never sent to a server or a log); it posts the code here:
+//   - GET  /auth/qr            what the QR opens on the phone. The code is in
+//     the URL FRAGMENT, which a browser never puts in a request line, so it is
+//     in no path, query, access log or proxy log; the page POSTs it here, in a
+//     request body:
 //   - POST /auth/qr            open (show the details), approve or deny — only
-//     for a signed-in session on a KNOWN device.
+//     for a signed-in session on a KNOWN device; an approval also needs a FRESH
+//     sign-in (stepup.Fresh), and the browser that started the request cannot
+//     decide it.
 //
 // 🔴 THE PROPERTIES, AND THE TEST THAT PINS EACH (signin_app_pg_test.go):
 //   - the code alone signs nothing in: a redeem needs the requesting browser's
@@ -48,7 +52,19 @@ import (
 //   - in gotrue mode, an approval dies with the approver's session or account
 //     (TestAppSignInDisabledApproverSignsNothingIn);
 //   - every door is throttled (TestAppSignInRateLimits) and refuses another
-//     origin (TestAppSignInRefusesCrossOrigin).
+//     origin (TestAppSignInRefusesCrossOrigin);
+//   - an approval needs a fresh sign-in on the phone, so a stale or copied
+//     session cannot launder itself into a fresh one
+//     (TestAppSignInApprovalNeedsAFreshSignIn, …PasswordMode), and the browser
+//     that started a request cannot approve it
+//     (TestAppSignInTheRequestingBrowserCannotApproveItself);
+//   - the code never rides in a URL, not even across the phone's sign-in
+//     (TestAppSignInTheCodeNeverRidesInAURL);
+//   - the requesting browser is told WHO approved and redeems only on its
+//     person's "Continue as …" (TestAppSignInTheDesktopIsToldWhoApproved; the
+//     click is the page's, qr-signin.spec.ts);
+//   - the gotrue-mode known-device cookie dies with the user's sessions
+//     (TestAppSignInKnownDeviceIsRevocable).
 //
 // 🔴 A SESSION THIS FLOW ISSUES DOES NOT MARK ITS BROWSER A KNOWN DEVICE. A
 // browser signed in by a phone's approval can therefore not approve another
@@ -71,8 +87,10 @@ const (
 const appSignInCookie = "muster_signin_app"
 
 // appSignInPollInterval is the poll interval the page is told (RFC 8628's
-// `interval`); a client polling faster than appSignInPollLimit a minute is
-// answered 429 with a longer one (its `slow_down`).
+// `interval`); a request polled more than appSignInPollLimit times a minute is
+// answered 429 with a longer one (its `slow_down`). The count is per REQUEST
+// (its binding), not per address, so desktops behind one NAT do not trip each
+// other; a poll with no valid binding is counted per address.
 const (
 	appSignInPollInterval = 2 * time.Second
 	appSignInSlowInterval = 10 * time.Second
@@ -115,7 +133,17 @@ const (
 	AppSignInInvalid  = "This code is invalid, already used or expired. Start again on the other screen."
 	AppSignInApproved = "Approved. The other browser is signing in now."
 	AppSignInDenied   = "Denied. Nothing was signed in."
+	// AppSignInSameBrowser refuses a browser deciding the request it started.
+	AppSignInSameBrowser = "This browser started this sign-in, so it cannot approve it. Scan the code with your phone."
 )
+
+// AppSignInStale is the approval's step-up refusal, and appSignInStepUpWhy the
+// confirm dialog's sentence about it.
+var AppSignInStale = "Approving a sign-in needs a recent sign-in on this phone. Confirm it's you, then approve again."
+
+func appSignInStepUpWhy() string {
+	return "Approving a sign-in on another browser needs a sign-in on this phone from the last " + stepup.WindowText() + "."
+}
 
 // appSignInServed reports whether the option is offered: a store, and a way
 // to sign someone in (an operator password, or GoTrue).
@@ -232,12 +260,17 @@ func (s *Server) handleAppSignInStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// RFC 8628's slow_down: a page polling faster than it was told is told to
 	// wait longer, and is not answered.
-	if !s.appSignIn.poll.take(clientIP(r), time.Now(), appSignInWindow, appSignInPollLimit) {
+	binding := cookieValue(r, s.auth.cookieName(appSignInCookie))
+	key := "binding:" + binding
+	if !signinreq.BindingShapeOK(binding) {
+		key = "addr:" + clientIP(r)
+	}
+	if !s.appSignIn.poll.take(key, time.Now(), appSignInWindow, appSignInPollLimit) {
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "slow_down",
 			"interval": int(appSignInSlowInterval / time.Second)})
 		return
 	}
-	req, err := s.ext.SignInRequests.Status(r.Context(), cookieValue(r, s.auth.cookieName(appSignInCookie)))
+	req, err := s.ext.SignInRequests.Status(r.Context(), binding)
 	switch {
 	case errors.Is(err, signinreq.ErrNotFound):
 		// No cookie, or a request swept away: the page starts again.
@@ -249,8 +282,35 @@ func (s *Server) handleAppSignInStatus(w http.ResponseWriter, r *http.Request) {
 			"interval": int(appSignInSlowInterval / time.Second)})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"state": string(req.State),
-		"interval": int(appSignInPollInterval / time.Second)})
+	out := map[string]any{"state": string(req.State), "interval": int(appSignInPollInterval / time.Second)}
+	if req.State == signinreq.StateApproved {
+		// WHO approved, so the page can ask "Continue as …?" before it redeems:
+		// someone else who saw this code (a screen share, over a shoulder) could
+		// approve it, and the browser would be signed in as THEM. Only the
+		// browser holding the binding reads this, and it is about to be signed
+		// in as that person anyway.
+		out["approver"] = s.appSignInApprover(r.Context(), req.ApprovedBy)
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// appSignInApprover names the account an approval would sign the browser in
+// as: the user's display name and email in gotrue mode; the operator in
+// password mode (one shared account).
+func (s *Server) appSignInApprover(ctx context.Context, uid int64) map[string]string {
+	if !s.auth.goTrueMode() || s.gt == nil {
+		return map[string]string{"name": "the operator (the shared password)", "email": ""}
+	}
+	u, err := s.gt.Users.ByID(ctx, uid)
+	if err != nil {
+		s.logger.Printf("login: sign-in with the muster app: the approver %d: %v", uid, err)
+		return map[string]string{"name": "an unknown account", "email": ""}
+	}
+	name := u.DisplayName
+	if name == "" {
+		name = u.Email
+	}
+	return map[string]string{"name": name, "email": u.Email}
 }
 
 func (s *Server) handleAppSignInRedeem(w http.ResponseWriter, r *http.Request) {
@@ -299,13 +359,34 @@ func (s *Server) handleAppSignInRedeem(w http.ResponseWriter, r *http.Request) {
 		// Password mode has one account, the operator's; the approver was
 		// signed in as it.
 		s.setPasswordSessionCookie(w, r)
-		s.logger.Printf("login: a browser session was issued (approved in the muster app, request %d)", req.ID)
+		s.logger.Printf("login: the muster app approved a browser sign-in (password mode, request %d)", req.ID)
 		s.writeJSON(w, http.StatusOK, map[string]any{"redirect": next})
 		return
 	}
 	sess, u, code, problem := s.issueGoTrueSessionFor(r.Context(), ip, req.ApprovedBy)
 	if problem != "" {
 		s.writeJSON(w, code, map[string]any{"error": problem})
+		return
+	}
+	if s.appSignInAfterMint != nil {
+		s.appSignInAfterMint()
+	}
+	// 🔴 THE APPROVER IS RE-CHECKED AFTER THE MINT. The store checked the
+	// approver under the credentials lock, but that lock is released when the
+	// redeem commits, BEFORE GoTrue issues the session: a Sign out everywhere,
+	// a reset or a disable that committed in between would otherwise leave a
+	// session issued after it, which none of them ends. So the account is read
+	// again now and the new session ended if the approval no longer stands
+	// (TestAppSignInARevocationDuringTheMintEndsTheNewSession). One that
+	// commits after THIS read meets an ordinary session issued before it, which
+	// it ends like any other.
+	if fresh, err := s.gt.Users.ByID(r.Context(), u.ID); err != nil || !approvalStands(fresh, req.ApproverSigninAt) {
+		end, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		_ = s.gt.Client.Logout(end, ip, sess.AccessToken, gotrue.ScopeLocal)
+		cancel()
+		s.logger.Printf("login: refused a sign-in with the muster app: user %d's sessions were ended while it was issued (request %d)", u.ID, req.ID)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"state": string(signinreq.StateDenied),
+			"error": "The phone that approved this has been signed out. Start again."})
 		return
 	}
 	s.setGoTrueCookies(w, sess)
@@ -349,6 +430,8 @@ func (s *Server) issueGoTrueSessionFor(ctx context.Context, ip string, uid int64
 		s.logger.Printf("login: sign-in with the muster app: GoTrue could not read user %d's login: %v", u.ID, err)
 		return gotrue.Session{}, users.User{}, http.StatusBadGateway, unavailable
 	}
+	// One mint at a time, process-wide, across GoTrue's two round trips below
+	// (the mint and the exchange): see appSignInLimits.mint.
 	s.appSignIn.mint.Lock()
 	defer s.appSignIn.mint.Unlock()
 	hashed, err := s.gt.Client.AdminMagicLink(ctx, ip, email)
@@ -389,10 +472,28 @@ func (s *Server) handleAppSignInPhonePage(w http.ResponseWriter, r *http.Request
 	if s.appSignInRefusal(w, r) {
 		return
 	}
-	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "Approve a sign-in",
+	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "Approve a sign-in", appSignInCarryRestoreJS+
 		fragmentForm(AppSignInPhonePath, "Approve a sign-in", "Opening the sign-in request.", "Continue", true,
 			`<input type="hidden" name="step" value="open">`, "", ""))
 }
+
+// appSignInCarryKey is the sessionStorage key a code rides in across the
+// phone's sign-in (appSignInSignInPrompt): this tab only, never a URL.
+const appSignInCarryKey = "muster.signin-app.code"
+
+// appSignInCarryRestoreJS runs before the fragment form's own script: with no
+// fragment and a code carried across a sign-in, it puts the code back as the
+// fragment (history.replaceState sends no request), where linkTokenScript
+// takes it, strips it and posts it. The carried copy is removed at once.
+const appSignInCarryRestoreJS = `<script>
+(function () {
+  try {
+    var c = sessionStorage.getItem('` + appSignInCarryKey + `');
+    sessionStorage.removeItem('` + appSignInCarryKey + `');
+    if (c && !location.hash && /^mqr_[A-Za-z0-9_-]{43}$/.test(c)) { history.replaceState(null, '', location.pathname + '#' + c); }
+  } catch (e) {}
+})();
+</script>`
 
 // handleAppSignInPhonePost is the phone's one POST: step=open shows the
 // request, step=approve / step=deny decides it. A phone with no session is
@@ -403,41 +504,37 @@ func (s *Server) handleAppSignInPhonePost(w http.ResponseWriter, r *http.Request
 	if s.appSignInRefusal(w, r) {
 		return
 	}
-	if !s.looksSignedIn(r) {
-		s.appSignInSignInPrompt(w, r)
-		return
-	}
-	s.requireOperatorWrite(s.handleAppSignInDecide)(w, r)
+	// ONE session check: requireSession's. With no session it answers with the
+	// sign-in prompt instead of its redirect (withSignedOutPage), which would
+	// lose the code the POST carried.
+	s.requireOperatorWrite(s.handleAppSignInDecide)(w, withSignedOutPage(r, s.appSignInSignInPrompt))
 }
 
-// looksSignedIn reports whether r carries a session requireSession would
-// resolve, without resolving it (no refresh is attempted): a valid password
-// session, or a gotrue access token whose signature verifies, expired or not,
-// with a refresh token beside an expired one. requireSession is still the
-// judge; this only decides whether to ask the phone to sign in first.
-func (s *Server) looksSignedIn(r *http.Request) bool {
-	if !s.auth.goTrueMode() {
-		return s.hasValidSession(r)
-	}
-	_, err := s.gt.Verifier.Verify(cookieValue(r, s.auth.cookieName(accessCookieName)))
-	return err == nil || (errors.Is(err, gotrue.ErrExpired) && cookieValue(r, s.auth.cookieName(refreshCookieName)) != "")
-}
-
-// appSignInSignInPrompt asks a signed-out phone to sign in, with a link that
-// comes back to the request: /login?next=/auth/qr#<code> (the sign-in returns
-// to next, and a redirect keeps its fragment).
+// appSignInSignInPrompt asks a signed-out phone to sign in and come back:
+// /login?next=/auth/qr. 🔴 THE CODE IS NOT IN THAT LINK — a query string is
+// written by proxies and kept in history. It is in this page's body (a POST
+// answer), and the link's script keeps it in this tab's sessionStorage, where
+// /auth/qr takes it back after the sign-in (appSignInCarryRestoreJS).
 func (s *Server) appSignInSignInPrompt(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	back := AppSignInPhonePath
-	if code := postedLinkToken(r); signinreq.CodeShapeOK(code) {
-		back += "#" + code
+	code := postedLinkToken(r)
+	if !signinreq.CodeShapeOK(code) {
+		code = ""
 	}
-	href := loginPath + "?next=" + url.QueryEscape(back)
+	href := loginPath + "?next=" + url.QueryEscape(AppSignInPhonePath)
 	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to approve</h1>
 <p class="text-sm text-fg2">Sign in to muster on this phone first. You will come back here to approve the sign-in.</p>
-<a id="qr-signin-phone-login" href="` + html.EscapeString(href) + `" class="press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</a>
-</section>`
+<a id="qr-signin-phone-login" href="` + html.EscapeString(href) + `" data-qr-code="` + html.EscapeString(code) + `" class="press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</a>
+</section>
+<script>
+(function () {
+  var a = document.getElementById('qr-signin-phone-login');
+  var c = a && a.getAttribute('data-qr-code');
+  if (!c) { return; }
+  try { sessionStorage.setItem('` + appSignInCarryKey + `', c); } catch (e) {}
+})();
+</script>`
 	writeAuthDocument(w, http.StatusUnauthorized, s.uiBrand(r.Context()), "Sign in to approve", inner)
 }
 
@@ -468,7 +565,22 @@ func (s *Server) handleAppSignInDecide(w http.ResponseWriter, r *http.Request) {
 		page(http.StatusNotFound, "This code is invalid or expired", AppSignInInvalid)
 	}
 	code := postedLinkToken(r)
-	switch step := r.PostFormValue("step"); step {
+	step := r.PostFormValue("step")
+	// 🔴 NOT THE BROWSER THAT ASKED. It holds the request's binding cookie;
+	// approving its own request would only re-sign itself in, fresh.
+	if step != "deny" {
+		same, err := s.ext.SignInRequests.SameBrowser(r.Context(), code, cookieValue(r, s.auth.cookieName(appSignInCookie)))
+		if err != nil {
+			s.logger.Printf("login: sign-in with the muster app: same-browser check: %v", err)
+			page(http.StatusServiceUnavailable, "Something went wrong", "Try scanning the code again.")
+			return
+		}
+		if same {
+			page(http.StatusForbidden, "Scan this code with your phone", AppSignInSameBrowser)
+			return
+		}
+	}
+	switch step {
 	case "open":
 		req, err := s.ext.SignInRequests.Open(r.Context(), code)
 		if errors.Is(err, signinreq.ErrNotFound) {
@@ -480,8 +592,29 @@ func (s *Server) handleAppSignInDecide(w http.ResponseWriter, r *http.Request) {
 			page(http.StatusServiceUnavailable, "Something went wrong", "Try scanning the code again.")
 			return
 		}
-		s.writeNavDocument(w, r, http.StatusOK, "Approve a sign-in", "", true, appSignInDetailsHTML(req, code, ip))
+		s.writeNavDocument(w, r, http.StatusOK, "Approve a sign-in", "", true,
+			appSignInDetailsHTML(req, code, ip, "")+s.stepUpFormsHTML(r, appSignInStepUpWhy()))
 	case "approve", "deny":
+		// 🔴 AN APPROVAL NEEDS A FRESH SIGN-IN. The session it issues is fresh
+		// for the whole step-up window, so a stale one approving (a laptop left
+		// unlocked, a copied cookie jar) would launder itself into a fresh
+		// session. A denial needs nothing.
+		if step == "approve" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
+			req, err := s.ext.SignInRequests.Open(r.Context(), code)
+			if errors.Is(err, signinreq.ErrNotFound) {
+				invalid()
+				return
+			}
+			if err != nil {
+				s.logger.Printf("login: sign-in with the muster app open: %v", err)
+				page(http.StatusServiceUnavailable, "Something went wrong", "Try scanning the code again.")
+				return
+			}
+			w.Header().Set("X-Muster-Step-Up", "required")
+			s.writeNavDocument(w, r, http.StatusForbidden, "Approve a sign-in", "", true,
+				appSignInDetailsHTML(req, code, ip, AppSignInStale)+s.stepUpFormsHTML(r, appSignInStepUpWhy()))
+			return
+		}
 		// The approving session's sign-in time is recorded with the approval,
 		// so ending that session (Sign out everywhere, a reset, a disable)
 		// ends an approval not yet redeemed.
@@ -516,7 +649,7 @@ func (s *Server) handleAppSignInDecide(w http.ResponseWriter, r *http.Request) {
 // appSignInDetailsHTML is the approval card: what is asking, from where, and
 // Approve / Deny. The phone's own address is shown beside the requester's, so
 // a person can see when the two are on different networks.
-func appSignInDetailsHTML(req signinreq.Request, code, phoneIP string) string {
+func appSignInDetailsHTML(req signinreq.Request, code, phoneIP, problem string) string {
 	agent := req.RequesterAgent
 	if agent == "" {
 		agent = "Unknown browser"
@@ -525,7 +658,13 @@ func appSignInDetailsHTML(req signinreq.Request, code, phoneIP string) string {
 		return `<dt class="text-fg2">` + label + `</dt><dd class="break-all font-semibold text-fg" id="` + id + `">` + html.EscapeString(value) + `</dd>`
 	}
 	form := func(step, id, label, cls string) string {
-		return `<form method="POST" action="` + AppSignInPhonePath + `">
+		gate := ""
+		if step == "approve" {
+			// The confirm dialog asks before a stale sign-in submits it
+			// (stepUpFormsHTML); the server refuses one regardless.
+			gate = ` data-step-up-form`
+		}
+		return `<form method="POST" action="` + AppSignInPhonePath + `"` + gate + `>
 <input type="hidden" name="step" value="` + step + `">
 <input type="hidden" name="token" value="` + html.EscapeString(code) + `">
 <button type="submit" id="` + id + `" class="` + cls + `">` + label + `</button>
@@ -537,6 +676,7 @@ func appSignInDetailsHTML(req signinreq.Request, code, phoneIP string) string {
 	}
 	return `<section id="qr-signin-phone" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in on another device?</h1>
+` + problemNode(problem) + `
 <p class="text-sm text-fg2">A browser is asking to sign in to muster as you. Approve only if you started this yourself, on a screen in front of you.</p>
 <dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
 ` + row("qr-signin-phone-agent", "Browser", agent) + `
@@ -555,15 +695,30 @@ func appSignInDetailsHTML(req signinreq.Request, code, phoneIP string) string {
 // Password mode has the known-device cookie already (known_device.go): it is
 // issued on every operator-password sign-in. gotrue mode issues the same
 // cookie (muster_device) on every sign-in that proved a credential — a
-// password, a passkey, a claim, an invite or a reset — signed with a key
-// derived from MUSTER_GOTRUE_JWT_SECRET and BOUND TO THE USER, so it says
-// "this browser signed in as this person before" and nothing about anyone
-// else. Like the password-mode cookie it admits nothing on its own; it is
-// read only by the app sign-in's approval (knownDeviceFor).
+// password, a passkey, a claim, an invite or a reset. Like the password-mode
+// cookie it admits nothing on its own; it is read only by the app sign-in's
+// approval (knownDeviceFor).
+//
+// 🔴 IT IS BOUND TO THE USER AND TO THEIR SESSION EPOCH, SO IT IS REVOCABLE.
+// Its key is derived from MUSTER_GOTRUE_JWT_SECRET, the user id, and the
+// user's session cutoff (users.sessions_not_before, which every disable and
+// password reset moves) and latest Sign out everywhere (users.signed_out_at),
+// read from the database each time. Any of those events therefore stops every
+// device cookie issued before it from vouching, and a disabled user's never
+// vouches. Signing out on a browser also clears its cookie (handleGoTrueLogout).
+// (TestAppSignInKnownDeviceIsRevocable.)
 
-// gotrueDeviceSecret is user uid's device-cookie key in gotrue mode.
-func (s *Server) gotrueDeviceSecret(uid int64) []byte {
-	sum := sha256.Sum256([]byte("muster-ui-device-gotrue-v1\x00" + string(s.gt.Client.Secret) + "\x00" + strconv.FormatInt(uid, 10)))
+// gotrueDeviceSecret is user u's device-cookie key in gotrue mode, under the
+// user's current session epoch.
+func (s *Server) gotrueDeviceSecret(u users.User) []byte {
+	epoch := func(t *time.Time) string {
+		if t == nil {
+			return "-"
+		}
+		return strconv.FormatInt(t.UnixMicro(), 10)
+	}
+	sum := sha256.Sum256([]byte("muster-ui-device-gotrue-v2\x00" + string(s.gt.Client.Secret) + "\x00" +
+		strconv.FormatInt(u.ID, 10) + "\x00" + epoch(u.SessionsNotBefore) + "\x00" + epoch(u.SignedOutAt)))
 	return sum[:]
 }
 
@@ -579,25 +734,69 @@ func (s *Server) knownDeviceFor(r *http.Request, uid int64) bool {
 	if err != nil || ck.Value == "" {
 		return false
 	}
-	_, err = auth.VerifySession(s.gotrueDeviceSecret(uid), ck.Value, time.Now())
+	u, err := s.gt.Users.ByID(r.Context(), uid)
+	if err != nil || u.Disabled() {
+		return false
+	}
+	_, err = auth.VerifySession(s.gotrueDeviceSecret(u), ck.Value, time.Now())
 	return err == nil
 }
 
 // setGoTrueKnownDevice marks the browser that just signed in as uid with a
-// credential. Secure always, like every gotrue-mode cookie.
+// credential, under the user's current epoch (read now: a reset moves the
+// cutoff before its sign-in). Secure always, like every gotrue-mode cookie.
 func (s *Server) setGoTrueKnownDevice(w http.ResponseWriter, uid int64) {
 	if s.gt == nil || uid <= 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u, err := s.gt.Users.ByID(ctx, uid)
+	if err != nil || u.Disabled() {
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.auth.cookieName(knownDeviceCookieName),
-		Value:    auth.SignSession(s.gotrueDeviceSecret(uid), time.Now(), knownDeviceTTL),
+		Value:    auth.SignSession(s.gotrueDeviceSecret(u), time.Now(), knownDeviceTTL),
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   true,
 		MaxAge:   int(knownDeviceTTL / time.Second),
 	})
+}
+
+// clearGoTrueKnownDevice drops this browser's device cookie: a gotrue sign-out
+// ends what it vouched for. (Password mode keeps its cookie across a sign-out:
+// there it is the sign-in throttle's exemption, known_device.go.)
+func (s *Server) clearGoTrueKnownDevice(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: s.auth.cookieName(knownDeviceCookieName), Value: "", Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: true, MaxAge: -1,
+	})
+}
+
+// approvalStands reports whether an approval given by a session that signed
+// in at signin still stands for the approver u now: not disabled, and the
+// sign-in after the cutoff and the latest Sign out everywhere, in whole
+// seconds (the rule signinreq.Redeem and a paired phone are held to).
+func approvalStands(u users.User, signin *time.Time) bool {
+	if signin == nil || u.Disabled() {
+		return false
+	}
+	after := func(t *time.Time) bool { return t == nil || signin.Unix() > t.Unix() }
+	return after(u.SessionsNotBefore) && after(u.SignedOutAt)
+}
+
+// signedOutPageKey carries the page refuseUnauthenticated answers instead of
+// its redirect (withSignedOutPage).
+type signedOutPageKey struct{}
+
+// withSignedOutPage makes requireSession answer a request with no session by
+// page rather than the sign-in redirect: a POST whose body the redirect would
+// lose (the phone's /auth/qr, whose body carries the code).
+func withSignedOutPage(r *http.Request, page http.HandlerFunc) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), signedOutPageKey{}, page))
 }
 
 // --- the requesting browser's User-Agent ------------------------------------------

@@ -336,7 +336,7 @@ func TestAPrefixedDeploymentRefusesALoopbackHTTPSignIn(t *testing.T) {
 // Fails when either set grows OR shrinks.
 func TestCookieLiteralsAndSignInCallersAreLedgered(t *testing.T) {
 	wantLiterals := []string{
-		"clearGoTrueCookies", "clearPushDeviceCookie", "expireLegacyCookies", "handleLogout",
+		"clearGoTrueCookies", "clearGoTrueKnownDevice", "clearPushDeviceCookie", "expireLegacyCookies", "handleLogout",
 		"setAppSignInCookie", "setGoTrueCookies", "setGoTrueKnownDevice", "setKnownDeviceCookie",
 		"setPasswordSessionCookie", "setPushDeviceCookie",
 	}

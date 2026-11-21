@@ -15,10 +15,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/signinreq"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Sign in with the muster app, end to end over the real store, a gotrue-mode
@@ -382,20 +384,19 @@ func TestAppSignInUnknownDeviceCannotApprove(t *testing.T) {
 
 // otherUsersDevice is a gotrue-mode device cookie for user uid.
 func (s *Server) otherUsersDevice(uid int64) string {
-	w := httptest.NewRecorder()
-	s.setGoTrueKnownDevice(w, uid)
-	return w.Result().Cookies()[0].Value
+	return auth.SignSession(s.gotrueDeviceSecret(users.User{ID: uid}), time.Now(), knownDeviceTTL)
 }
 
 // TestAppSignInSignedOutPhoneSignsInAndComesBack: a phone with no session is
-// asked to sign in with a link back to the request; signing in follows it
-// (the fragment kept); the request then opens.
+// asked to sign in with a link back to the phone page — no code in it (the
+// page's script carries the code in sessionStorage; qr-signin.spec.ts plays
+// that half); signing in follows it; the request then opens.
 func TestAppSignInSignedOutPhoneSignsInAndComesBack(t *testing.T) {
 	a := newAppRig(t)
 	desk := jar{}
 	s := a.start(t, desk)
 	w := a.phonePost(jar{}, "open", s.Code)
-	back := "/auth/qr#" + s.Code
+	back := AppSignInPhonePath
 	wantHref := `href="/login?next=` + url.QueryEscape(back) + `"`
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), wantHref) {
 		t.Fatalf("signed-out phone: %d %s", w.Code, w.Body.String())
@@ -479,9 +480,17 @@ func TestAppSignInRateLimits(t *testing.T) {
 			t.Fatalf("poll %d: %d", i, w.Code)
 		}
 	}
-	w := a.do("GET", appSignInStatusPath, nil, desk, fromIP("203.0.113.6"))
+	// Counted per request (its binding), not per address: the same request
+	// from another address is still past its limit…
+	w := a.do("GET", appSignInStatusPath, nil, desk, fromIP("203.0.113.7"))
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), `"slow_down"`) {
 		t.Fatalf("poll past the limit: %d %s", w.Code, w.Body.String())
+	}
+	// …and another desktop behind the same address is not.
+	other := jar{}
+	a.start(t, other, fromIP("203.0.113.8"))
+	if w := a.do("GET", appSignInStatusPath, nil, other, fromIP("203.0.113.6")); w.Code != http.StatusOK {
+		t.Fatalf("another request from the throttled address: %d", w.Code)
 	}
 }
 
