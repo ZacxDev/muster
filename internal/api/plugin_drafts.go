@@ -156,10 +156,10 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 
 // handlePluginDraftResult is POST /plugin/v1/drafts/{id}/result {ok,
 // external_ref, detail, nothing_sent?, transient?}: settle a draft this plugin
-// claimed as sent (ok) or failed. 200 {draft_id, status}, and — when a failed
-// outbound draft's result said nothing_sent and transient and its chain has
-// time left — retry {draft_id, attempt, not_before}: the successor muster
-// filed (plugins draft_retry.go). The same result again is 200 and changes
+// claimed as sent (ok) or failed. 200 {draft_id, status}; a failed outbound
+// draft whose result said nothing_sent and transient is retried on its own
+// (plugins draft_retry.go), as a new draft the next claim hands out. The same
+// result again is 200 and changes
 // nothing; the other result is 409; a draft never claimed is 409; another
 // plugin's, or none, is 404; nothing_sent or transient with ok true, or
 // transient without nothing_sent, is 400.
@@ -187,15 +187,13 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	switch {
 	case err == nil:
 		s.draftStatusMoved(messagesOwner(p), d.ID)
-		out := map[string]any{"draft_id": d.ID, "status": string(d.Status)}
 		if fresh && d.Status == plugins.DraftFailed {
 			// Once, on the result that made it failed: a repeat changes nothing.
 			// 🔴 A FAILURE WITH A SUCCESSOR (plugin_draft_retry.go) is not a
 			// refusal: its chain goes on, so nothing goes back to the officer
 			// and its item keeps waiting.
-			if next := d.Retry.Next; next != nil {
+			if d.Retry.Next != nil {
 				s.draftRetryScheduled(p, d)
-				out["retry"] = map[string]any{"draft_id": next.ID, "attempt": next.Attempt, "not_before": next.NotBefore.UTC()}
 			} else {
 				if d.Retry.Err != "" {
 					s.logger.Printf("plugins: plugin %d draft %d: its retry could not be filed, so it ends failed: %s", p.ID, d.ID, d.Retry.Err)
@@ -209,7 +207,7 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		if fresh && d.Status == plugins.DraftSent {
 			s.outboundSettled(r.Context(), messagesOwner(p), d, settledByPlugin, nil)
 		}
-		s.writeJSON(w, http.StatusOK, out)
+		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
 	case errors.Is(err, plugins.ErrNotFound):

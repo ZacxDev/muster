@@ -41,7 +41,8 @@ var ownerAuthorityCallers = map[string][]string{
 // gated, is the decision; its card shows the hold), and chief_restart
 // (operator decision "fully ungated": a restart of the owner's own chief runs
 // at once on every machine; its accepted risk is in hostStepUpExempt), and
-// plugin_draft_retry (operator decision 2026-11-21: it re-sends only bytes
+// plugin_draft_retry (from the retry contract derived from the operator's
+// 2026-11-21 ask to approve once and have it retry on its own: it re-sends only bytes
 // the owner already approved, after an attempt its plugin said sent nothing;
 // its reason is in hostStepUpExempt).
 var ownerAuthorityNotGated = []string{agentsListTool, chiefRestartTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftRetryTool, pluginDraftsListTool,

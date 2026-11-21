@@ -37,7 +37,9 @@ import (
 //     session, or the Retry button on the Asks card (POST
 //     /plugins/drafts/{id}/retry). It relays the owner's word and re-sends
 //     exactly the bytes they already approved: no new approval and no step-up
-//     (operator decision, 2026-11-21).
+//     (from the retry contract derived from the operator's 2026-11-21 ask
+//     to approve once and have it retry on its own, with a manual retry via
+//     MCP).
 // ---------------------------------------------------------------------------
 
 const (

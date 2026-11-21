@@ -168,14 +168,14 @@ type Draft struct {
 	// a successor's chain root (nil on a root and on every other draft),
 	// Attempt its number in the chain (1 on a root), NotBefore when a
 	// successor may first be claimed, RetryLastDetail the detail of the
-	// attempt it follows. NothingSent and Transient are a FAILED draft's
-	// result's assertions (DraftResult).
+	// attempt it follows. NothingSent is a FAILED draft's result's assertion
+	// (DraftResult); its transient flag is not stored (it decides the retry,
+	// in the result's transaction, and its audit row records it).
 	RetryOf         *int64     `json:"retryOf,omitempty"`
 	Attempt         int        `json:"attempt,omitempty"`
 	NotBefore       *time.Time `json:"notBefore,omitempty"`
 	RetryLastDetail string     `json:"retryLastDetail,omitempty"`
 	NothingSent     bool       `json:"nothingSent,omitempty"`
-	Transient       bool       `json:"transient,omitempty"`
 	// Retry is what the store DECIDED about a retry in the transaction that
 	// recorded this draft's failed result (FinishDraft), like Refusal: never
 	// stored, never read back. internal/api acts on it.
@@ -582,7 +582,7 @@ const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
 	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
-	retry_of, attempt, not_before, retry_last_detail, nothing_sent, transient`
+	retry_of, attempt, not_before, retry_last_detail, nothing_sent`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
@@ -590,7 +590,7 @@ func draftDest(d *Draft, st *string) []any {
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
 		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
-		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.Transient}
+		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
@@ -1481,8 +1481,8 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 			return err
 		}
 		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-			SET status = $2, finished_at = now(), external_ref = $3, detail = $4, nothing_sent = $5, transient = $6
-			WHERE id = $1 RETURNING `+draftCols, draftID, string(want), r.ExternalRef, r.Detail, r.NothingSent, r.Transient)); err != nil {
+			SET status = $2, finished_at = now(), external_ref = $3, detail = $4, nothing_sent = $5
+			WHERE id = $1 RETURNING `+draftCols, draftID, string(want), r.ExternalRef, r.Detail, r.NothingSent)); err != nil {
 			return err
 		}
 		detail := map[string]any{"plugin_id": pluginID, "external_ref": r.ExternalRef, "late": late || cur.Status == DraftUnconfirmed}

@@ -10,9 +10,9 @@
 --
 --   plugin_reply_drafts.nothing_sent   the plugin's result asserted nothing
 --       reached the venue (refused before any submit, or provably absent).
---       Only on a `failed` row.
---   plugin_reply_drafts.transient      the result said the cause should clear
---       without changing the draft. Only with nothing_sent.
+--       Only on a `failed` row. (The result's transient flag is not stored:
+--       it decides the retry in the result's transaction, and the result's
+--       audit row records it.)
 --   plugin_reply_drafts.retry_of       a successor's chain ROOT (the draft
 --       the owner approved); NULL on the root and on every other draft.
 --   plugin_reply_drafts.attempt        1 on a root, n+1 on the successor of
@@ -56,14 +56,13 @@
 --   ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_retry_shape;
 --   ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_result_flags;
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS retry_of, DROP COLUMN IF EXISTS attempt,
---       DROP COLUMN IF EXISTS not_before, DROP COLUMN IF EXISTS nothing_sent, DROP COLUMN IF EXISTS transient,
+--       DROP COLUMN IF EXISTS not_before, DROP COLUMN IF EXISTS nothing_sent,
 --       DROP COLUMN IF EXISTS retry_last_detail;
 --   DELETE FROM schema_migrations WHERE version = 174;
 
 SET LOCAL lock_timeout = '3s';
 
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS nothing_sent BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS transient BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS retry_of BIGINT;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS not_before TIMESTAMPTZ;
@@ -83,11 +82,10 @@ ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_retry_
     AND (not_before IS NULL OR retry_of IS NOT NULL)
     AND octet_length(retry_last_detail) <= 4096);
 
--- The result's assertions: transient only with nothing_sent, and both only on
--- a failed send.
+-- The result's assertion: nothing_sent only on a failed send.
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_result_flags;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_result_flags CHECK (
-    (NOT transient OR nothing_sent) AND (NOT nothing_sent OR status = 'failed'));
+    NOT nothing_sent OR status = 'failed');
 
 CREATE UNIQUE INDEX IF NOT EXISTS plugin_reply_drafts_retry_attempt
     ON public.plugin_reply_drafts (retry_of, attempt) WHERE retry_of IS NOT NULL;

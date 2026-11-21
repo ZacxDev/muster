@@ -12,8 +12,8 @@ import (
 // FAILED with nothing_sent — so no row can re-send a post that may have gone
 // out — and it carries the ROOT's decided_by_user and requested_by_user
 // whatever the insert wrote. One successor per attempt, one live per chain.
-// The result flags are a failed row's, transient only with nothing_sent. The
-// trigger survives an RLS cycle.
+// nothing_sent is a failed row's only; the result's transient is not stored.
+// The trigger survives an RLS cycle.
 func TestMigration0174DraftRetry(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0174_draft_retry", 173)
@@ -21,6 +21,12 @@ func TestMigration0174DraftRetry(t *testing.T) {
 		t.Fatal("control: before 0174 plugin_reply_drafts.retry_of exists")
 	}
 	applyThroughFrom(ctx, t, pool, 174)
+	if _, err := pool.Exec(ctx, `SELECT transient FROM plugin_reply_drafts`); err == nil {
+		t.Error("0174 stores a transient column: the result's flag decides the retry and is audited, never stored")
+	}
+	if _, err := pool.Exec(ctx, `SELECT nothing_sent, retry_of, attempt, not_before, retry_last_detail FROM plugin_reply_drafts`); err != nil {
+		t.Fatalf("control: 0174's columns: %v", err)
+	}
 	approver := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
 	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'retry-agent', 'ns-retry') RETURNING id`)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities, deliver_to)
@@ -49,7 +55,7 @@ func TestMigration0174DraftRetry(t *testing.T) {
 	if err := successor(2, ""); err == nil {
 		t.Fatal("accepted a successor of a failure that did not say nothing was sent (an unknown outcome)")
 	}
-	mustExec(ctx, t, pool, `UPDATE plugin_reply_drafts SET nothing_sent = true, transient = true WHERE id = $1`, root)
+	mustExec(ctx, t, pool, `UPDATE plugin_reply_drafts SET nothing_sent = true WHERE id = $1`, root)
 	if err := successor(2, ""); err != nil {
 		t.Fatalf("control: a successor of a nothing-sent failure: %v", err)
 	}
@@ -71,7 +77,6 @@ func TestMigration0174DraftRetry(t *testing.T) {
 
 	for _, bad := range []struct{ why, sql string }{
 		{"a not_before on a root", `UPDATE plugin_reply_drafts SET not_before = now() WHERE id = ` + itoa(root)},
-		{"transient without nothing_sent", `UPDATE plugin_reply_drafts SET nothing_sent = false WHERE id = ` + itoa(root)},
 		{"nothing_sent on a draft that is not failed", `UPDATE plugin_reply_drafts SET nothing_sent = true WHERE retry_of = ` + itoa(root)},
 		{"attempt 2 with no retry_of", `UPDATE plugin_reply_drafts SET attempt = 2 WHERE id = ` + itoa(root)},
 	} {

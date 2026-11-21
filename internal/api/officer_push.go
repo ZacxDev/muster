@@ -113,9 +113,10 @@ var officerPushes = map[officerPush]bool{
 	officerPushOutreachBatch:    true,  // tick the follows and likes that go out
 	officerPushConnectorRequest: true,  // approve or deny the access
 	officerPushDraftRefused:     false, // it went back to the officer, which handles it
-	// The owner approved it and it is still not out (operator decision
-	// 2026-11-21: one push at the third failure, one at the end, never per
-	// attempt): clear what blocks the plugin, or stop or retry it on its card.
+	// The owner approved it and it is still not out: one push at the third
+	// failure, one at the end, never per attempt (from the retry
+	// contract derived from the operator's 2026-11-21 ask to approve once and have it retry on its own, with a manual retry via MCP): clear what blocks the
+	// plugin, or stop or retry it on its card.
 	officerPushDraftRetrying:    true,
 	officerPushDraftRetryEnded:  true,
 	officerPushBudget:           true,  // raise the cap for today, or lift the hold (the officer's page)

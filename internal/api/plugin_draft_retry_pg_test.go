@@ -153,13 +153,19 @@ func TestATransientNothingSentFailureRetriesOnItsOwn(t *testing.T) {
 		t.Fatalf("after one transient failure: %d successors, want exactly 1", len(succ))
 	}
 	next := succ[0]
-	retry, _ := out["retry"].(map[string]any)
-	if retry == nil || retry["draft_id"] != float64(next.ID) || retry["attempt"] != float64(2) {
-		t.Fatalf("the result's retry: %v; want draft %d attempt 2", out["retry"], next.ID)
+	// The answer is exactly {draft_id, status}: the next attempt is a new
+	// draft the claim hands out, never named in the result.
+	if len(out) != 2 || out["draft_id"] != float64(root) {
+		t.Fatalf("the result's answer: %v; want exactly {draft_id, status}", out)
 	}
 	r := w.draft(root)
-	if r.Status != plugins.DraftFailed || r.ClaimedAt == nil || !r.NothingSent || !r.Transient {
-		t.Fatalf("the failed root: %s claimed %v nothing_sent %v transient %v; want failed, still claimed, both flags", r.Status, r.ClaimedAt, r.NothingSent, r.Transient)
+	if r.Status != plugins.DraftFailed || r.ClaimedAt == nil || !r.NothingSent {
+		t.Fatalf("the failed root: %s claimed %v nothing_sent %v; want failed, still claimed, nothing_sent", r.Status, r.ClaimedAt, r.NothingSent)
+	}
+	var auditTransient string
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT detail->>'transient' FROM audit_log WHERE action = 'plugin.draft.failed' AND object = $1`,
+		plugins.DraftObject(root)).Scan(&auditTransient); err != nil || auditTransient != "true" {
+		t.Fatalf("the failure's audit row: transient %q (%v); want true", auditTransient, err)
 	}
 	if next.Status != plugins.DraftApproved || next.ClaimedAt != nil || next.Attempt != 2 || next.RetryOf == nil || *next.RetryOf != root ||
 		!next.BindingHolds() || *next.ApprovedBodySHA256 != sumHex([]byte(retryPost)) || next.Body != retryPost ||
@@ -215,9 +221,6 @@ func TestNoRetryWithoutBothFlags(t *testing.T) {
 		if code != http.StatusOK || out["status"] != "failed" {
 			t.Fatalf("%s: %d %v", body, code, out)
 		}
-		if _, ok := out["retry"]; ok {
-			t.Errorf("%s: the result named a retry: %v", body, out)
-		}
 		if s := w.successors(id); len(s) != 0 {
 			t.Errorf("%s: %d successors, want none", body, len(s))
 		}
@@ -255,8 +258,8 @@ func TestNoRetryPastTheChainsExpiry(t *testing.T) {
 	w.claimed(id)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `SET session_replication_role = replica; UPDATE plugin_reply_drafts SET expires_at = now() + interval '30 seconds' WHERE id = `+strconv.FormatInt(id, 10))
 	code, out := w.postResult(id, transientFail)
-	if code != http.StatusOK || out["status"] != "failed" || out["retry"] != nil {
-		t.Fatalf("result: %d %v; want failed with no retry", code, out)
+	if code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("result: %d %v; want failed", code, out)
 	}
 	if s := w.successors(id); len(s) != 0 {
 		t.Fatalf("%d successors past the expiry, want none", len(s))
@@ -292,7 +295,7 @@ func TestARetryChainSettlesItsItemOnceAndPushesTwice(t *testing.T) {
 		w.claimed(cur)
 		before := time.Now()
 		body, _ := json.Marshal(map[string]any{"ok": false, "nothing_sent": true, "transient": true, "detail": step.detail})
-		if code, out := w.postResult(cur, string(body)); code != http.StatusOK || out["retry"] == nil {
+		if code, out := w.postResult(cur, string(body)); code != http.StatusOK || out["status"] != "failed" {
 			t.Fatalf("attempt %d's result: %d %v", step.attempt, code, out)
 		}
 		succ := w.successors(root)
