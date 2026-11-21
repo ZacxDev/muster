@@ -156,7 +156,7 @@ function galOne(sec){
   for(var j=0;j<n;j++){var sl=el("div","mp-viewer-slide",tr),m=el("img","",sl);m.alt=items[j].img?items[j].img.alt:"";m.draggable=false;slides.push({sl:sl,im:m,set:false});}
   var pv=btn("mp-viewer-prev","Previous image","‹",d),nx=btn("mp-viewer-next","Next image","›",d);
   var bot=el("div","mp-viewer-bottom",d),cap=el("p","mp-viewer-cap",bot),pk=null;
-  if(mode){pk=btn("mp-viewer-pick","","Pick",bot);pk.addEventListener("click",function(){toggle(cur);});}
+  if(mode){pk=btn("mp-viewer-pick mp-secondary","","Pick",bot);pk.addEventListener("click",function(){toggle(cur);});}
   vw={d:d,cnt:cnt,x:x,tr:tr,slides:slides,pv:pv,nx:nx,cap:cap,pk:pk};
   x.addEventListener("click",function(){shut(false);});
   pv.addEventListener("click",function(){go(cur-1);});nx.addEventListener("click",function(){go(cur+1);});
