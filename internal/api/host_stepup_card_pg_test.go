@@ -123,20 +123,24 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 	if c == nil {
 		t.Fatalf("the card has no parts: %q", a.Question)
 	}
-	if c.Title != "Post to X?" || c.Why != "Marketing: rebrand announcement" || c.About != "Asked by work:2" || c.Venue != "X" || c.Preview != body || c.Changed ||
+	title := "Post to X? · #" + strconv.FormatInt(r.draft.ID, 10)
+	if c.Title != title || c.Platform != "x" || c.Target != "post" || c.Handle != "" || c.Why != "Marketing: rebrand announcement" || c.About != "Asked by work:2" || c.Venue != "X" || c.Preview != body || c.Changed ||
 		c.DraftID != r.draft.ID || c.Tool != pluginDraftDecideTool {
 		t.Fatalf("the card's parts: %+v", c)
 	}
 	if len(c.Media) != 1 || c.Media[0] != (attention.StepUpMedium{N: 0, Ref: "launch/hero-1", Type: "image/webp", SHA256: sha("launch/hero-1")}) {
 		t.Fatalf("the card's media: %+v", c.Media)
 	}
-	const question = "Post to X?\nMarketing: rebrand announcement\nAsked by work:2\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
+	question := title + "\nMarketing: rebrand announcement\nAsked by work:2\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
 	if a.Question != question {
 		t.Fatalf("the card's question:\n%q\nwant\n%q", a.Question, question)
 	}
-	// The boilerplate is on the record, in Details.
-	if !strings.HasPrefix(c.Details, "A session on tower (") || !strings.Contains(c.Details, "plugin_draft_decide {") ||
-		!strings.Contains(c.Details, "paired phone") || !regexp.MustCompile(`\[[0-9a-f]{12}\]$`).MatchString(c.Details) {
+	// The boilerplate is on the record, in Details: the call in words, with
+	// no hash, media type or size of any kind (the operator: "dont show the
+	// mime, size, sha").
+	if !strings.HasPrefix(c.Details, "A session on tower (") ||
+		!strings.Contains(c.Details, "\nThe call: plugin_draft_decide, with decision “approve”, id "+strconv.FormatInt(r.draft.ID, 10)+".\n") ||
+		!strings.Contains(c.Details, "paired phone") || regexp.MustCompile(`[0-9a-f]{12}`).MatchString(c.Details) || strings.Contains(c.Details, "sha") {
 		t.Fatalf("the card's details:\n%s", c.Details)
 	}
 	// The phone's prompt confirms exactly the question.
@@ -146,7 +150,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 	}
 	// The push: the title and the why and the post, nothing else.
 	n := attentionNotification(askItem(a), false)
-	if n.Title != "Post to X?" || n.Body != "Marketing: rebrand announcement · Asked by work:2 · Big news: acme is now acme-two. Read more on the blog." {
+	if n.Title != title || n.Body != "Marketing: rebrand announcement · Asked by work:2 · Big news: acme is now acme-two. Read more on the blog." {
 		t.Fatalf("the push: %q / %q", n.Title, n.Body)
 	}
 	for _, never := range []string{"tower", "{", "paired phone", "plugin_draft_decide"} {
@@ -165,9 +169,10 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 		t.Fatalf("the page has no Details")
 	}
 	face := page[:open] + page[end:]
-	for _, want := range []string{`data-stepup-title>Post to X?</h2>`, `data-stepup-why>Marketing: rebrand announcement</p>`,
-		"data-stepup-preview-text>Big news: acme is now acme-two.\nRead more on the blog.</p>",
-		`src="/plugins/drafts/` + strconv.FormatInt(r.draft.ID, 10) + `/media/0" data-stepup-image>`} {
+	for _, want := range []string{`data-stepup-title>` + title + `</h2>`, `data-stepup-why>Marketing: rebrand announcement</p>`,
+		"data-stepup-preview-text><p class=\"whitespace-pre-wrap break-words\">Big news: acme is now acme-two.\nRead more on the blog.</p></div>",
+		`data-venue-logo="x"`,
+		`src="/plugins/drafts/` + strconv.FormatInt(r.draft.ID, 10) + `/media/0" data-stepup-medium data-stepup-image>`} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the page's face lacks %s", want)
 		}
@@ -177,8 +182,8 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 			t.Errorf("the page's face carries %q", never)
 		}
 	}
-	if d := page[open:end]; !strings.Contains(d, "A session on tower (") || !strings.Contains(d, "body_sha256") {
-		t.Errorf("Details lacks the boilerplate:\n%s", d)
+	if d := page[open:end]; !strings.Contains(d, "A session on tower (") || strings.Contains(d, "sha256") {
+		t.Errorf("Details lacks the boilerplate, or shows a hash:\n%s", d)
 	}
 	// The decision still runs only from the phone, and runs as asked.
 	if _, err := r.srv.answerAskFrom(dev, a.ID, hostDecisionConfirm, attention.AnswerSource{}); err != nil {
@@ -196,7 +201,7 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 func TestAChangedDraftsStepUpCardSaysRefuse(t *testing.T) {
 	const body = "The real post."
 	r := newStepUpDraftRig(t, body)
-	const question = "This draft changed since it was asked\nRefuse: the draft no longer matches what the session asked you to decide.\nAsked by work:2"
+	question := "This draft changed since it was asked · #" + strconv.FormatInt(r.draft.ID, 10) + "\nRefuse: the draft no longer matches what the session asked you to decide.\nAsked by work:2"
 	for name, args := range map[string]map[string]any{
 		"another body":  {"decision": "approve", "body_sha256": sha("Another post."), "media_sha256": []string{sha("launch/hero-1")}},
 		"another media": {"decision": "approve", "body_sha256": sha(body), "media_sha256": []string{sha("launch/other")}},
@@ -225,7 +230,7 @@ func TestARejectStepUpCardSaysSoPlainly(t *testing.T) {
 	const body = "A post to reject."
 	r := newStepUpDraftRig(t, body)
 	a := r.decideCard(t, map[string]any{"decision": "reject", "body_sha256": sha(body), "reason": "wrong tone"})
-	const question = "Reject this draft?\nReject this draft: wrong tone\nAsked by work:2\n\nA post to reject.\n\nWith 1 image"
+	question := "Reject this draft? · #" + strconv.FormatInt(r.draft.ID, 10) + "\nReject this draft: wrong tone\nAsked by work:2\n\nA post to reject.\n\nWith 1 image"
 	if a.Question != question {
 		t.Fatalf("the reject card:\n%q\nwant\n%q", a.Question, question)
 	}
@@ -251,7 +256,7 @@ func TestARouteReplyStepUpCardIsASentence(t *testing.T) {
 	if a.StepUp == nil || a.StepUp.Title != "Send this answer to a routed message?" || a.StepUp.Preview != "See you Friday." ||
 		a.StepUp.About != "Answers plugin message #"+strconv.FormatInt(m.ID, 10)+", routed to work:1" ||
 		a.Question != "Send this answer to a routed message?\nAsked by work:1\nAnswers plugin message #"+strconv.FormatInt(m.ID, 10)+", routed to work:1\n\nSee you Friday." ||
-		!strings.Contains(a.StepUp.Details, "route_reply {") || !strings.Contains(a.StepUp.Details, "A session on tower (work:1 @ tower)") {
+		!strings.Contains(a.StepUp.Details, "\nThe call: route_reply, with body “See you Friday.”, route_id “"+rid+"”.\n") || !strings.Contains(a.StepUp.Details, "A session on tower (work:1 @ tower)") {
 		t.Fatalf("the route_reply card: %q %+v", a.Question, a.StepUp)
 	}
 }
@@ -271,7 +276,7 @@ func TestAStepUpCardCutsALongRejectReason(t *testing.T) {
 	if a.StepUp == nil || a.StepUp.Why != want || len([]rune(a.StepUp.Why)) != 300 {
 		t.Fatalf("the reject card's why (%d runes): %+v", len([]rune(a.StepUp.Why)), a.StepUp)
 	}
-	if !strings.HasPrefix(a.Question, "Reject this draft?\n"+want+"\nAsked by work:2\n\n") {
+	if !strings.HasPrefix(a.Question, "Reject this draft? · #"+strconv.FormatInt(r.draft.ID, 10)+"\n"+want+"\nAsked by work:2\n\n") {
 		t.Fatalf("the reject card's question:\n%q", a.Question)
 	}
 }
@@ -329,7 +334,7 @@ func TestAStepUpCardCutsALongPluginLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := strings.Repeat("L", 63) + "…"
-	if a.StepUp == nil || a.StepUp.Venue != want || len([]rune(a.StepUp.Venue)) != 64 || a.StepUp.Title != "Send this reply on "+label+"?" {
+	if a.StepUp == nil || a.StepUp.Venue != want || len([]rune(a.StepUp.Venue)) != 64 || a.StepUp.Title != "Send this reply on "+label+"? · #"+strconv.FormatInt(id, 10) {
 		t.Fatalf("the reply card: %+v", a.StepUp)
 	}
 }

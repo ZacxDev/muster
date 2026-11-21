@@ -24,22 +24,28 @@ import (
 //
 // Every step-up card (hostStepUpGate) is filed with its parts
 // (attention.StepUpCard, migration 0171):
-//   - a short action TITLE — "Post to X?" for a draft's approval, a short
-//     action for any other tool — which is the push title;
+//   - a short action TITLE — "Post to X? · #484" for a draft's decision
+//     (the id of the draft the confirm acts on), a short action for any other
+//     tool — which is the push title, the page's heading and the feed's;
 //   - the WHY line: for a draft, its officer item ("<officer>: <what the item
 //     is>"), else the asking session; who asked is a small label beside it;
 //   - the WHERE line, when the title and preview alone would not identify the
 //     call: the route an answer goes on, the outreach batch, the session a
 //     message is routed to, the pairing code, or who asked for a draft's
 //     decision;
-//   - the PREVIEW: for plugin_draft_decide the post itself (venue, exact
-//     text, media), for dispatch_approve its held-start summary and
-//     instructions block, for every other tool one plain sentence — never
-//     the call's JSON;
-//   - the DETAILS, folded away on the page and absent from the push: the
-//     host, the session, the call and its arguments, why the phone is needed
-//     and the call's hash — the text every card carried before, kept on the
-//     record.
+//   - the PREVIEW: for plugin_draft_decide the post itself, drawn as a mock
+//     of it on its venue (stepUpPostHTML: the venue's logo, its exact text as
+//     paragraphs, its media inline), for dispatch_approve its held-start
+//     summary and instructions block, for every other tool one plain
+//     sentence — never the call's JSON;
+//   - the DETAILS, folded away on the page and absent from the push and the
+//     feed: the host, the session, the call and its arguments IN WORDS
+//     (stepUpCallWords) and why the phone is needed.
+//
+// 🔴 NO HASH, MEDIA TYPE OR SIZE ON ANY FACE (the operator: "dont show the
+// mime, size, sha"). The body and media SHA-256 a decision names still bind
+// it (stepUpDraftChanged, and the store again) and a medium's hash is kept in
+// the stored parts; none of them, nor the call's own hash, is ever drawn.
 //
 // 🔴 READ FROM THE EXACT DRAFT THE DECISION IS BOUND TO. A draft card's
 // preview is read from the draft the call names (its id), and shown ONLY when
@@ -67,25 +73,119 @@ const (
 	stepUpRejectTitle   = "Reject this draft?"
 	stepUpRejectWhy     = "Reject this draft"
 	stepUpAskedByPrefix = "Asked by "
-	// stepUpVenuePrefix leads a draft card's venue pill.
-	stepUpVenuePrefix = "Post on "
 )
 
 // stepUpDetails is the card's boilerplate, on the record: what every card's
 // question said before 0171 (less a dispatch_approve card's held start, which
-// is its preview now).
-func stepUpDetails(host, label, what, name, args, why, hash string) string {
-	return fmt.Sprintf("A session on %s (%s) asks to %s: %s %s\n\n%s, and its sessions are named by a header "+
+// is its preview now) — the call in words (stepUpCallWords), never its JSON,
+// and no hash of any kind (the operator: "dont show the mime, size, sha").
+func stepUpDetails(host, label, what, name, args, why string) string {
+	return fmt.Sprintf("A session on %s (%s) asks to %s.\nThe call: %s, %s.\n\n%s, and its sessions are named by a header "+
 		"any process there can set — so this needs you. Confirm on your paired phone to let it happen (a signed action; a browser answer is refused), "+
-		"or decide it in muster's web UI instead. [%s]",
-		host, label, what, name, oneLineArgs(args), why, hash)
+		"or decide it in muster's web UI instead.",
+		host, label, what, name, stepUpCallWords(args), why)
 }
 
-// oneLineArgs is a call's arguments as Details quotes them: one line, at most
-// 600 characters.
-func oneLineArgs(args string) string {
-	s := strings.Join(strings.Fields(strings.TrimSpace(args)), " ")
-	return fence.Cut(s, 600)
+// stepUpCallWords is a call's arguments as Details quotes them: "key value"
+// pairs in the call's own order, on one line, at most 600 characters — a
+// string's line breaks folded to spaces, an array its items joined, a nested
+// object in parentheses. A key naming a hash, a media type or a byte size
+// (stepUpUnshownArg) is left out: the binding it carries is checked, never
+// shown. Never JSON.
+func stepUpCallWords(args string) string {
+	if strings.TrimSpace(args) == "" {
+		return "with no arguments"
+	}
+	dec := json.NewDecoder(strings.NewReader(args))
+	dec.UseNumber()
+	words, err := stepUpJSONWords(dec, 0)
+	if err != nil {
+		return "with arguments muster could not read"
+	}
+	if words == "" {
+		return "with no arguments shown"
+	}
+	return fence.Cut("with "+words, 600)
+}
+
+// stepUpUnshownArg reports whether a call argument named key is left out of
+// Details: a hash (body_sha256, media_sha256, batch_sha256), a media type or
+// a byte size.
+func stepUpUnshownArg(key string) bool {
+	k := strings.ToLower(key)
+	switch {
+	case strings.Contains(k, "sha256"), strings.Contains(k, "hash"), strings.Contains(k, "mime"):
+		return true
+	case k == "content_type", k == "contenttype", k == "size", k == "bytes":
+		return true
+	}
+	return strings.HasSuffix(k, "_size") || strings.HasSuffix(k, "_bytes")
+}
+
+// stepUpJSONWords is the next JSON value of dec in words (stepUpCallWords);
+// depth bounds a nesting no call has.
+func stepUpJSONWords(dec *json.Decoder, depth int) (string, error) {
+	if depth > 8 {
+		return "", fmt.Errorf("too deep")
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return "", err
+	}
+	switch t := tok.(type) {
+	case json.Delim:
+		var parts []string
+		switch t {
+		case '{':
+			for dec.More() {
+				kt, err := dec.Token()
+				if err != nil {
+					return "", err
+				}
+				k, _ := kt.(string)
+				v, err := stepUpJSONWords(dec, depth+1)
+				if err != nil {
+					return "", err
+				}
+				if stepUpUnshownArg(k) {
+					continue
+				}
+				parts = append(parts, strings.Join(strings.Fields(k), " ")+" "+v)
+			}
+			if _, err := dec.Token(); err != nil {
+				return "", err
+			}
+			if depth == 0 {
+				return strings.Join(parts, ", "), nil
+			}
+			return "(" + strings.Join(parts, ", ") + ")", nil
+		case '[':
+			for dec.More() {
+				v, err := stepUpJSONWords(dec, depth+1)
+				if err != nil {
+					return "", err
+				}
+				parts = append(parts, v)
+			}
+			if _, err := dec.Token(); err != nil {
+				return "", err
+			}
+			if len(parts) == 0 {
+				return "none", nil
+			}
+			return strings.Join(parts, ", "), nil
+		}
+		return "", fmt.Errorf("unexpected %v", t)
+	case string:
+		return "“" + strings.Join(strings.Fields(t), " ") + "”", nil
+	case json.Number:
+		return t.String(), nil
+	case bool:
+		return strconv.FormatBool(t), nil
+	case nil:
+		return "none", nil
+	}
+	return "", fmt.Errorf("unexpected token")
 }
 
 // stepUpCardFor is the card's parts for a call of gated tool name with args
@@ -110,23 +210,62 @@ func (s *Server) stepUpCardFor(ctx context.Context, host string, c toolCaller, n
 		}
 		card.Title, card.Preview, card.About = stepUpToolSummary(name, args, what, held, route)
 	}
-	card.Preview = stepUpCutPreview(card.Preview)
+	stepUpCutPreview(card)
 	return card
 }
 
-// stepUpPreviewKept is how many characters of a longer preview a card keeps
-// (attention.MaxStepUpPreviewRunes less room for the note saying so).
-const stepUpPreviewKept = attention.MaxStepUpPreviewRunes - 200
+// stepUpExcerptRefuse ends every excerpt line (attention.StepUpCard.Excerpt).
+const stepUpExcerptRefuse = " Refuse unless you have read the rest in muster's web UI."
 
-// stepUpCutPreview is p, or — longer than the card holds — its first
-// stepUpPreviewKept characters labelled as an excerpt.
-func stepUpCutPreview(p string) string {
+// stepUpCutPreview fits card c's preview to what a card holds
+// (attention.MaxStepUpPreviewRunes), and says so (c.Excerpt) when it had to
+// cut it. An X post's body is split into its thread FIRST (plugins.XParts,
+// the venue rule's own split), so c.Parts is the WHOLE thread's part count
+// and an excerpt keeps whole parts — the first ones that fit, never a part
+// cut through its separator line; any other preview keeps its first
+// characters, ended "…". The excerpt line is a part of its own, drawn outside
+// the preview (never inside a post).
+func stepUpCutPreview(c *attention.StepUpCard) {
+	p := c.Preview
 	n := utf8.RuneCountInString(p)
-	if n <= attention.MaxStepUpPreviewRunes {
-		return p
+	if stepUpIsXPost(c) {
+		parts := plugins.XParts(p, plugins.TargetPost)
+		if len(parts) > 1 {
+			c.Parts = len(parts)
+		}
+		if n <= attention.MaxStepUpPreviewRunes {
+			return
+		}
+		sep := "\n" + plugins.XThreadSeparator + "\n"
+		kept, size := []string(nil), 0
+		for _, part := range parts {
+			add := utf8.RuneCountInString(part)
+			if len(kept) > 0 {
+				add += utf8.RuneCountInString(sep)
+			}
+			if size+add > attention.MaxStepUpPreviewRunes {
+				break
+			}
+			kept, size = append(kept, part), size+add
+		}
+		if len(parts) > 1 && len(kept) > 0 {
+			c.Preview = strings.Join(kept, sep)
+			c.Excerpt = "⚠ AN EXCERPT: the first " + strconv.Itoa(len(kept)) + " of the thread's " + strconv.Itoa(len(parts)) + " posts." + stepUpExcerptRefuse
+			return
+		}
 	}
-	return string([]rune(p)[:stepUpPreviewKept]) + "…\n\n⚠ AN EXCERPT: the first " + strconv.Itoa(stepUpPreviewKept) + " of " + strconv.Itoa(n) +
-		" characters. Refuse unless you have read the rest in muster's web UI."
+	if n <= attention.MaxStepUpPreviewRunes {
+		return
+	}
+	keep := attention.MaxStepUpPreviewRunes - 1
+	c.Preview = string([]rune(p)[:keep]) + "…"
+	c.Excerpt = "⚠ AN EXCERPT: the first " + strconv.Itoa(keep) + " of " + strconv.Itoa(n) + " characters." + stepUpExcerptRefuse
+}
+
+// stepUpIsXPost reports whether card c's preview is an X post's body (which
+// X splits into a thread).
+func stepUpIsXPost(c *attention.StepUpCard) bool {
+	return c.Platform == plugins.VenueX && c.Target == plugins.TargetPost && c.Preview != ""
 }
 
 // stepUpRouteWhere is a route_reply card's where line: the item the route
@@ -263,30 +402,32 @@ func (s *Server) stepUpDraftCard(ctx context.Context, args string, card *attenti
 		Reason      string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(args)), &in); err != nil || in.ID <= 0 || s.ext.Plugins == nil {
-		card.Title, card.Why, card.Changed = stepUpUnreadTitle, stepUpUnreadWhy, true
+		card.Title, card.Why, card.Changed = stepUpWithDraftID(stepUpUnreadTitle, in.ID), stepUpUnreadWhy, true
 		return
 	}
 	card.DraftID = in.ID
 	dc, err := s.ext.Plugins.DraftCard(ctx, in.ID)
 	if err != nil {
-		card.Title, card.Why, card.Changed = stepUpUnreadTitle, stepUpUnreadWhy, true
+		card.Title, card.Why, card.Changed = stepUpWithDraftID(stepUpUnreadTitle, in.ID), stepUpUnreadWhy, true
 		return
 	}
 	d := dc.Draft
 	approve := in.Decision == "approve"
 	if stepUpDraftChanged(d, in.BodySHA256, in.MediaSHA256, approve) {
-		card.Title, card.Why, card.Changed = stepUpChangedTitle, stepUpChangedWhy, true
+		card.Title, card.Why, card.Changed = stepUpWithDraftID(stepUpChangedTitle, in.ID), stepUpChangedWhy, true
 		return
 	}
 	venue := dc.PluginLabel
 	if d.IsOutbound() {
 		venue = venueName(d.VenueText())
+		t := d.Target()
+		card.Platform, card.Target, card.Handle = d.VenueText(), t.Kind, t.Handle
 	}
 	card.Venue = venue
 	card.Why = s.stepUpDraftWhy(ctx, d, card.Why)
-	card.Title = stepUpDraftTitle(d, venue)
+	card.Title = stepUpWithDraftID(stepUpDraftTitle(d, venue), in.ID)
 	if !approve {
-		card.Title, card.Why = stepUpRejectTitle, stepUpRejectWhy
+		card.Title, card.Why = stepUpWithDraftID(stepUpRejectTitle, in.ID), stepUpRejectWhy
 		if r := strings.TrimSpace(in.Reason); r != "" {
 			card.Why += ": " + r
 		}
@@ -301,6 +442,16 @@ func (s *Server) stepUpDraftCard(ctx context.Context, args string, card *attenti
 			card.Media = append(card.Media, attention.StepUpMedium{N: i, Ref: ref, Type: m.ContentType, SHA256: m.SHA256})
 		}
 	}
+}
+
+// stepUpWithDraftID is a draft card's title with the id of the draft the
+// confirm acts on: "Post to X? · #484" (the operator: "do show the id in the
+// title"). id 0 (none named) leaves it as it is.
+func stepUpWithDraftID(title string, id int64) string {
+	if id <= 0 {
+		return title
+	}
+	return title + " · #" + strconv.FormatInt(id, 10)
 }
 
 // stepUpDraftChanged reports whether draft d is NOT what a decision naming
@@ -322,7 +473,16 @@ func stepUpDraftTitle(d plugins.Draft, venue string) string {
 	if !d.IsOutbound() {
 		return "Send this reply on " + venue + "?"
 	}
-	switch d.Target().Kind {
+	return stepUpOutboundTitle(d.Target().Kind, venue)
+}
+
+// stepUpOutboundKinds are the target kinds an outbound draft's title names.
+var stepUpOutboundKinds = []string{plugins.TargetPost, plugins.TargetReply, plugins.TargetDM, plugins.TargetFollow, plugins.TargetLike}
+
+// stepUpOutboundTitle is the approval title of an outbound draft of target
+// kind on venue.
+func stepUpOutboundTitle(kind, venue string) string {
+	switch kind {
 	case plugins.TargetReply:
 		return "Reply on " + venue + "?"
 	case plugins.TargetDM:
@@ -380,11 +540,10 @@ func (s *Server) stepUpDraftWhy(ctx context.Context, d plugins.Draft, fallback s
 const stepUpChangedNote = "Refuse this card. The draft is not the one the session asked about, so nothing of it is shown here; read it again in Asks, Drafts."
 
 // stepUpCardHTML is step-up card c on its ask page: the title, the why and who
-// asked, then the preview — for a draft, its venue, its exact text and its
-// media — or, for a changed draft, the state that says to refuse; and the
-// Details, COLLAPSED, holding the boilerplate. Every part is escaped and drawn
-// as text; a draft's text through flows.VisibleEscape, as its draft card
-// draws it (what is approved is what is seen).
+// asked, then the preview — for a draft, a mock of the post as its venue shows
+// it (stepUpPostHTML) — or, for a changed draft, the state that says to
+// refuse; and the Details, COLLAPSED, holding the boilerplate. Every part is
+// escaped and drawn as text (stepUpParagraphsHTML).
 func stepUpCardHTML(c *attention.StepUpCard) string {
 	esc := html.EscapeString
 	var b strings.Builder
@@ -405,44 +564,281 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 	case c.Changed:
 		b.WriteString(`<p role="alert" class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-stepup-changed>` + esc(stepUpChangedNote) + `</p>
 `)
-	case c.Preview != "" || len(c.Media) > 0:
-		text := c.Preview
-		if c.DraftID > 0 {
-			// Line by line: a line break is the post's own, drawn as one.
-			text = visibleLines(text)
-		}
+	case c.DraftID > 0 && (c.Preview != "" || len(c.Media) > 0):
+		b.WriteString(stepUpPostHTML(c, false))
+	case c.Preview != "":
 		b.WriteString(`<div class="flex min-w-0 flex-col gap-2 rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-stepup-preview>
+<div class="` + ui.StepUpTextClass + `" data-stepup-preview-text>` + stepUpParagraphsHTML(c.Preview) + `</div>
+</div>
 `)
-		if c.Venue != "" {
-			// "Post on X", not "X": a bare venue name read as a close button.
-			b.WriteString(`<span class="` + ui.AsksPillClass + ` self-start" data-stepup-venue>` + esc(stepUpVenuePrefix+c.Venue) + `</span>
-`)
-		}
-		if text != "" {
-			b.WriteString(`<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-stepup-preview-text>` + esc(text) + `</p>
-`)
-		}
-		if len(c.Media) > 0 {
-			b.WriteString(`<ul class="flex flex-col gap-2" data-stepup-media>
-`)
-			for _, m := range c.Media {
-				src := esc(draftMediaLink(c.DraftID, m.N))
-				b.WriteString(`<li class="flex flex-col gap-1" data-stepup-medium data-ref="` + esc(m.Ref) + `" data-sha256="` + esc(m.SHA256) + `">`)
-				if m.Video() {
-					b.WriteString(`<video controls preload="metadata" class="max-h-80 w-full rounded-md bg-bg" src="` + src + `" data-stepup-video></video>`)
-				} else {
-					b.WriteString(`<img alt="` + esc(m.Ref) + `" class="max-h-80 w-auto max-w-full rounded-md object-contain" src="` + src + `" data-stepup-image>`)
-				}
-				b.WriteString("</li>\n")
-			}
-			b.WriteString("</ul>\n")
-		}
-		b.WriteString("</div>\n")
+		b.WriteString(stepUpNotesHTML(c, ui.StepUpNoteClass))
 	}
 	b.WriteString(`<details class="rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line" data-stepup-details>
 <summary class="flex min-h-[44px] cursor-pointer items-center justify-between gap-2 text-sm font-semibold text-fg2" data-stepup-details-toggle>Details` + ui.AsksCardChevron + `</summary>
 <p class="whitespace-pre-wrap break-words pb-2 text-sm text-fg2" data-stepup-details-text>` + esc(c.Details) + `</p>
 </details>
 `)
+	return b.String()
+}
+
+// stepUpParagraphs is untrusted text t as the paragraphs a post reads as (a
+// blank line between two), each line break inside one kept. Every line goes
+// through fence.Sanitize first (CleanStepUp did already: this is the
+// renderer's own guarantee, for any card however it was stored), so a bidi,
+// control or invisible code point is U+FFFD and cannot reorder the text, a tab
+// is a space and a lone carriage return a line break — nothing is ever
+// spelled out as \n, \t or \r. Not yet escaped.
+func stepUpParagraphs(t string) []string {
+	t = strings.ReplaceAll(strings.ReplaceAll(t, "\r\n", "\n"), "\r", "\n")
+	var paras, cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			paras = append(paras, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	for _, l := range strings.Split(t, "\n") {
+		l = strings.TrimRight(fence.Sanitize(l), " ")
+		if strings.TrimSpace(l) == "" {
+			flush()
+			continue
+		}
+		cur = append(cur, l)
+	}
+	flush()
+	return paras
+}
+
+// stepUpParagraphsHTML is t (stepUpParagraphs) drawn as the post reads: one
+// escaped <p> per paragraph, each line break inside one drawn as a break
+// (whitespace-pre-wrap), each word with look-alike letters marked
+// (stepUpMarkedHTML).
+func stepUpParagraphsHTML(t string) string {
+	var b strings.Builder
+	for _, p := range stepUpParagraphs(t) {
+		b.WriteString(`<p class="` + ui.StepUpParaClass + `">` + stepUpMarkedHTML(p) + `</p>`)
+	}
+	return b.String()
+}
+
+// stepUpPostParts is draft card c's text as the posts it becomes: an X post's
+// thread parts (plugins.XParts, the venue rule's own split), else its one
+// text; and how many posts the WHOLE draft becomes — c.Parts when the preview
+// is an excerpt of a longer thread (stepUpCutPreview), else as many as it
+// holds.
+func stepUpPostParts(c *attention.StepUpCard) (parts []string, total int) {
+	parts = []string{c.Preview}
+	if stepUpIsXPost(c) {
+		parts = plugins.XParts(c.Preview, plugins.TargetPost)
+	}
+	return parts, max(len(parts), c.Parts)
+}
+
+// stepUpWithVenue is card c, or — a draft card filed before cards carried
+// their platform and target (both "") — a copy of it with both read back
+// from its title, which muster wrote from them (stepUpOutboundTitle over its
+// venue, venueName of the platform). A title that is not exactly one of
+// those (a reply draft's, a reject's) leaves c as it is.
+func stepUpWithVenue(c *attention.StepUpCard) *attention.StepUpCard {
+	if c.Platform != "" || c.Target != "" || c.DraftID <= 0 || c.Changed || c.Venue == "" {
+		return c
+	}
+	title := strings.TrimSuffix(c.Title, " · #"+strconv.FormatInt(c.DraftID, 10))
+	for _, kind := range stepUpOutboundKinds {
+		if title == stepUpOutboundTitle(kind, c.Venue) {
+			cc := *c
+			cc.Platform, cc.Target = strings.ToLower(c.Venue[:1])+c.Venue[1:], kind
+			return &cc
+		}
+	}
+	return c
+}
+
+// stepUpNotesHTML is the lines a preview of card c carries under it, OUTSIDE
+// the post's mock: that it is an excerpt (c.Excerpt), and that it has
+// look-alike letters (stepUpLookalikeNote); cls is the face's class.
+func stepUpNotesHTML(c *attention.StepUpCard, cls string) string {
+	var b strings.Builder
+	if c.Excerpt != "" {
+		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-excerpt>` + html.EscapeString(c.Excerpt) + `</p>
+`)
+	}
+	if stepUpLookalikeIn(strings.Join(stepUpParagraphs(c.Preview), "\n")) {
+		b.WriteString(`<p role="alert" class="` + cls + `" data-stepup-lookalike-note>` + stepUpLookalikeNote + `</p>
+`)
+	}
+	return b.String()
+}
+
+// stepUpPostKind is the line under a post preview's venue: what the draft
+// does there.
+func stepUpPostKind(c *attention.StepUpCard, parts int) string {
+	at := ""
+	if h := strings.TrimPrefix(strings.TrimSpace(c.Handle), "@"); h != "" {
+		at = " @" + h
+	}
+	switch c.Target {
+	case plugins.TargetPost:
+		if parts > 1 {
+			return "Thread · " + strconv.Itoa(parts) + " posts"
+		}
+		return "New post"
+	case plugins.TargetReply:
+		return "Reply"
+	case plugins.TargetDM:
+		if at != "" {
+			return "Direct message to" + at
+		}
+		return "Direct message"
+	case plugins.TargetFollow:
+		return "Follow" + at
+	case plugins.TargetLike:
+		return "Like"
+	}
+	if c.Platform == "" {
+		return "Reply to a message"
+	}
+	return "Post"
+}
+
+// stepUpPostHTML is draft card c's preview as a mock of the post on its
+// venue: the venue's logo (ui.VenueLogoSVG; a neutral one for a venue muster
+// has none for) and name, what it does there, the text (stepUpParagraphsHTML)
+// and the images or videos inline below it, as the venue shows them. An X
+// thread is drawn part by part, medium i under part i+1 (the venue rule's
+// placement). feed draws the Asks feed's compact one: the first part clamped,
+// the media as thumbnails.
+//
+// 🔴 NO MEDIA TYPE, SIZE OR HASH ON ANY FACE: a medium's type only picks
+// <img> or <video>, and its hash stays in the stored parts (the binding).
+func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
+	esc := html.EscapeString
+	c = stepUpWithVenue(c)
+	parts, total := stepUpPostParts(c)
+	logo := ui.VenueLogoKey(c.Platform)
+	kind := stepUpPostKind(c, total)
+	var b strings.Builder
+	if feed {
+		b.WriteString(`<div class="` + ui.StepUpPostFeedClass + `" data-stepup-preview data-stepup-post data-logo="` + logo + `">
+<div class="` + ui.StepUpPostFeedHeadClass + `" data-stepup-post-head><span class="` + ui.StepUpLogoFeedClass + `" data-stepup-logo>` +
+			ui.VenueLogoSVG(c.Platform, ui.StepUpLogoFeedGlyphClass) + `</span><span class="` + ui.StepUpPostFeedNamesClass + `"><span class="` + ui.StepUpPostFeedVenueClass + `" data-stepup-venue>` + esc(c.Venue) +
+			`</span> · <span data-stepup-post-kind>` + esc(kind) + `</span></span></div>
+`)
+		if parts[0] != "" {
+			// One clamped block (asks-clamp counts lines in one box): its
+			// paragraphs a blank line apart.
+			text := stepUpMarkedHTML(strings.Join(stepUpParagraphs(parts[0]), "\n\n"))
+			b.WriteString(`<p class="` + ui.StepUpFeedTextClass + `" data-stepup-preview-text>` + text + `</p>
+`)
+		}
+		if total > 1 {
+			more := "+1 more post in this thread"
+			if total > 2 {
+				more = "+" + strconv.Itoa(total-1) + " more posts in this thread"
+			}
+			b.WriteString(`<p class="` + ui.StepUpThreadMoreClass + `" data-stepup-thread-more>` + more + `</p>
+`)
+		}
+		if len(c.Media) > 0 {
+			b.WriteString(`<div class="` + ui.StepUpFeedMediaClass + `" data-stepup-media>`)
+			for _, m := range c.Media {
+				b.WriteString(stepUpMediumHTML(c.DraftID, m, ui.StepUpFeedThumbClass))
+			}
+			b.WriteString("</div>\n")
+		}
+		b.WriteString("</div>\n")
+		b.WriteString(stepUpNotesHTML(c, ui.StepUpFeedNoteClass))
+		return b.String()
+	}
+	b.WriteString(`<article class="` + ui.StepUpPostClass + `" data-stepup-preview data-stepup-post data-logo="` + logo + `">
+<header class="` + ui.StepUpPostHeadClass + `" data-stepup-post-head><span class="` + ui.StepUpLogoClass + `" data-stepup-logo>` +
+		ui.VenueLogoSVG(c.Platform, ui.StepUpLogoGlyphClass) + `</span><span class="` + ui.StepUpPostNamesClass + `"><span class="` + ui.StepUpPostVenueClass + `" data-stepup-venue>` +
+		esc(c.Venue) + `</span><span class="` + ui.StepUpPostKindClass + `" data-stepup-post-kind>` + esc(kind) + `</span></span></header>
+`)
+	// Which part each medium goes on: all on the one post, else medium i on
+	// part i+1 of the WHOLE thread (its last part takes any beyond). An
+	// excerpt keeps at least as many parts as a card has media (at most
+	// attention.MaxStepUpMedia, against parts of at most 280 characters), so
+	// the last shown part taking one is a bound never reached.
+	on := make([][]attention.StepUpMedium, len(parts))
+	for i, m := range c.Media {
+		at := 0
+		if total > 1 {
+			at = min(i, total-1, len(parts)-1)
+		}
+		on[at] = append(on[at], m)
+	}
+	for i, p := range parts {
+		cls := ui.StepUpPartClass
+		if i > 0 {
+			cls += " " + ui.StepUpPartRuleClass
+		}
+		b.WriteString(`<div class="` + cls + `" data-stepup-part="` + strconv.Itoa(i+1) + `">
+`)
+		if total > 1 {
+			b.WriteString(`<p class="` + ui.StepUpPartNClass + `" data-stepup-part-n>` + strconv.Itoa(i+1) + "/" + strconv.Itoa(total) + `</p>
+`)
+		}
+		if p != "" {
+			b.WriteString(`<div class="` + ui.StepUpTextClass + `" data-stepup-preview-text>` + stepUpParagraphsHTML(p) + `</div>
+`)
+		}
+		if ms := on[i]; len(ms) > 0 {
+			grid, img := ui.StepUpMediaClass, ui.StepUpMediumOneClass
+			if len(ms) > 1 {
+				grid += " " + ui.StepUpMediaTwoUpClass
+				img = ui.StepUpMediumTileClass
+			}
+			b.WriteString(`<div class="` + grid + `" data-stepup-media>`)
+			for _, m := range ms {
+				b.WriteString(stepUpMediumHTML(c.DraftID, m, img))
+			}
+			b.WriteString("</div>\n")
+		}
+		b.WriteString("</div>\n")
+	}
+	b.WriteString("</article>\n")
+	b.WriteString(stepUpNotesHTML(c, ui.StepUpNoteClass))
+	return b.String()
+}
+
+// stepUpMediumHTML is one medium of draft id, served from the draft's media
+// route, drawn with class cls: a video with its controls, else an image.
+func stepUpMediumHTML(id int64, m attention.StepUpMedium, cls string) string {
+	src := html.EscapeString(draftMediaLink(id, m.N))
+	if m.Video() {
+		return `<video controls preload="metadata" class="` + cls + `" src="` + src + `" data-stepup-medium data-stepup-video></video>`
+	}
+	return `<img alt="Attached image ` + strconv.Itoa(m.N+1) + `" loading="lazy" class="` + cls + `" src="` + src + `" data-stepup-medium data-stepup-image>`
+}
+
+// stepUpFeedHTML is step-up card c on the Asks feed: its title (the draft id
+// in it), its why and where line, and its preview — for a draft the compact
+// mock of the post (stepUpPostHTML), for a changed draft the refuse state —
+// as the one block the card's question is (data-attention-text). No Details:
+// those are the card's page.
+func stepUpFeedHTML(c *attention.StepUpCard) string {
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<div class="` + ui.StepUpFeedClass + `" data-attention-text data-stepup-feed>
+<p class="` + ui.StepUpFeedTitleClass + `" data-stepup-title>` + esc(textplain.Title(c.Title)) + `</p>
+<p class="` + ui.StepUpFeedLineClass + `" data-stepup-why>` + esc(c.Why) + `</p>
+`)
+	if c.About != "" {
+		b.WriteString(`<p class="` + ui.StepUpFeedLineClass + `" data-stepup-about>` + esc(c.About) + `</p>
+`)
+	}
+	switch {
+	case c.Changed:
+		b.WriteString(`<p role="alert" class="` + ui.StepUpFeedChangedClass + `" data-stepup-changed>` + esc(stepUpChangedNote) + `</p>
+`)
+	case c.DraftID > 0 && (c.Preview != "" || len(c.Media) > 0):
+		b.WriteString(stepUpPostHTML(c, true))
+	case c.Preview != "":
+		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-stepup-preview data-stepup-preview-text>` + stepUpMarkedHTML(strings.Join(stepUpParagraphs(c.Preview), "\n\n")) + `</p>
+`)
+		b.WriteString(stepUpNotesHTML(c, ui.StepUpFeedNoteClass))
+	}
+	b.WriteString("</div>\n")
 	return b.String()
 }

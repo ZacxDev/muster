@@ -1740,11 +1740,14 @@ is never gated ([its own section](#chief_restart-is-not-gated)).
 
 A card leads with what is about to happen and why, and folds the rest away.
 
-- **The title** is the action, short: **Post to X?** (or *Reply on …*,
+- **The title** is the action, short: **Post to X? · #484** (or *Reply on …*,
   *Send a DM on …*, *Send this reply on …*) for a draft's approval,
-  **Reject this draft?** for a rejection, and a short action for every other
-  tool (*Start this agent?*, *Answer an ask as you?*, *Destroy an agent?* …).
-  It is the notification's title.
+  **Reject this draft? · #484** for a rejection, and a short action for every
+  other tool (*Start this agent?*, *Answer an ask as you?*, *Destroy an
+  agent?* …). On a draft card it ends with the id of the draft the confirm
+  acts on, the same id the Drafts tab shows; the changed-draft and
+  unreadable-draft titles carry it too. It is the notification's title, the
+  page's heading and the feed card's title.
 - **The why** is one line. For a draft that a builtin officer filed for an
   item, it is the item: the officer's type name and the item's summary or
   subject ("Marketing: rebrand announcement"). Otherwise it is the session
@@ -1758,25 +1761,57 @@ A card leads with what is about to happen and why, and folds the rest away.
   names none), the pairing code a `plugin_request_decide` names, and, on a
   draft card whose why is the officer's item or a reject's reason, who asked
   ("Asked by work:1").
-- **The preview.** For `plugin_draft_decide`: the venue, the post's exact
-  text and its media, read from the draft the call names. For
+- **The preview.** For `plugin_draft_decide`: the post as it will look on
+  its venue, read from the draft the call names. It is a small post card:
+  the venue's logo (X and Reddit have their own; any other venue, and a reply
+  draft, gets a neutral speech-bubble icon) and name, what the draft does
+  there (*New post*, *Reply*, *Direct message to @…*, *Thread · 3 posts*),
+  the exact text as paragraphs with its line breaks, and the images or videos
+  inline below it. An X post with `---8<---` lines is drawn as the thread it
+  becomes, each part numbered, with medium *i* under part *i*+1. On the Asks
+  feed the same card is compact: the first part (clamped until the card is
+  expanded), how many more posts the thread has, and the media as
+  thumbnails. A draft card filed before cards stored their venue is drawn
+  with the venue and kind its title names. For
   `dispatch_approve`: the held start and its instructions block (above).
   For every other tool: one plain sentence built from its arguments, never
-  their JSON. A preview longer than 2,600 characters is cut and labelled as an
-  excerpt.
+  their JSON.
+- **An excerpt says so, outside the post.** A preview longer than 2,600
+  characters is cut. An X thread is split into its posts first, so the card
+  keeps its first whole posts and still counts the whole thread (*Thread · 20
+  posts*, *1/20*, "+19 more posts in this thread"); any other preview keeps
+  its first characters. One line under the post, on the page and the feed,
+  and in the text the phone confirms, says it is an excerpt ("the first 9 of
+  the thread's 20 posts") and to refuse unless you have read the rest.
+- **Look-alike letters are flagged.** The text is drawn as it reads, so a
+  letter that only looks like another would read as the real one. A word that
+  mixes scripts (a Cyrillic а in "pаypal.com"), a link, domain, e-mail
+  address or @handle with any non-ASCII character in it, and a combining
+  overlay mark (a letter struck through with U+0336) are highlighted, and one
+  line under the post says "Contains look-alike letters — check the
+  highlighted words." Ordinary accented words ("café"), a word in one other
+  script, and emoji are not.
 - **A long part is cut, never refused.** The title, why, where line, venue
   and media refs each have a bound (300 characters for the why, 64 for the
   venue, 150 for a media ref), and a longer one ends in "…". A long reject
   reason, plugin label, media ref or item subject still files the card.
-- **Details**, collapsed on the card's page and absent from the notification:
-  the machine, the session, the tool and its exact arguments, why the phone is
-  needed, and the call's hash. They are stored with the card
+- **Details**, collapsed on the card's page and absent from the notification
+  and the feed: the machine, the session, the tool and its arguments in words
+  ("The call: route_reply, with body “See you Friday.”, route_id “r1”."),
+  and why the phone is needed. They are stored with the card
   (`attention_asks.step_up`, [schema](schema.md)).
+- **No hash, media type or size, on any face.** The page, its Details, the
+  feed and the notification never show a SHA-256 (the body's, a medium's, a
+  batch's or the call's own), a media type or a byte size, and Details leaves
+  those arguments out. The hashes still bind the decision (below); they are
+  just not drawn. The post's text is never spelled out either: a line break
+  is drawn as one, never as `\n`, and a hidden, control or bidi character
+  shows as `�` and cannot reorder the text.
 
 The notification's body is the why, the where line and the start of the post.
 The card's text (what the page shows and the phone's prompt confirms, below) is
-the title, the why, the where line, the preview and a media line ("With 1
-image"). All three are built from
+the title, the why, the where line, the preview, the excerpt line when it is
+one, and a media line ("With 1 image"). All three are built from
 the same stored parts.
 
 🔴 **A draft card shows only the draft its decision is bound to.** The

@@ -4,7 +4,8 @@
 --
 --   attention_asks.step_up
 --       a step-up card's parts, as muster built them when it filed the card:
---       {"tool", "title", "why", "asker", "about", "preview", "venue", "draft_id",
+--       {"tool", "title", "why", "asker", "about", "preview", "venue",
+--       "platform", "target", "handle", "parts", "excerpt", "draft_id",
 --       "media": [{"n", "ref", "type", "sha256"}], "changed", "details"} —
 --       the short action title (the push title), the one-line why, who asked,
 --       the one line naming who or where the call is about,
@@ -12,7 +13,7 @@
 --       for a draft decision the draft it is bound to and its media, whether
 --       that draft no longer matched the call when the card was filed, and
 --       the boilerplate on the record (the host, the session, the call and
---       its arguments, why the phone is needed, the call's hash). The card's
+--       its arguments in words, why the phone is needed; no hash). The card's
 --       question is built from these parts (attention.StepUpCard.Text) and
 --       is what its push, its page and the phone's prompt read.
 --       Written only by muster (attention.CleanStepUp), on a system ask.

@@ -1029,8 +1029,10 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 // else — a tab, a carriage return, a bidi control, any non-ASCII letter — is
 // spelled out exactly as VisibleEscape spells it. Split back on "\n" and
 // unescaped line by line it is v again (the mapping stays one-to-one: a
-// literal backslash-n in v is drawn \\n). The step-up card's preview draws a
-// draft's text the same way (stepUpCardHTML).
+// literal backslash-n in v is drawn \\n). The step-up card's preview does NOT
+// draw a draft's text this way: it draws it as the post reads (an em dash a
+// dash, an emoji an emoji; stepUpParagraphsHTML), and instead marks each word
+// with look-alike letters and says so under the preview (stepUpLookalike).
 func visibleLines(v string) string {
 	lines := strings.Split(v, "\n")
 	for i, l := range lines {

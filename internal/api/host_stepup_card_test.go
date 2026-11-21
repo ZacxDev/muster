@@ -17,10 +17,10 @@ func stepUpFixtureAsk(t *testing.T, body string) attention.Ask {
 	t.Helper()
 	n, err := attention.Clean(attention.New{
 		Asker: attention.Asker{System: true, Label: hostDecisionLabel},
-		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X?", Why: "Marketing: rebrand announcement",
-			Asker: "main:1", Preview: body, Venue: "X", DraftID: 41,
+		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · #41", Why: "Marketing: rebrand announcement",
+			Asker: "main:1", Preview: body, Venue: "X", Platform: "x", Target: "post", DraftID: 41,
 			Media:   []attention.StepUpMedium{{N: 0, Ref: "launch/hero-1", Type: "image/webp", SHA256: strings.Repeat("a", 64)}},
-			Details: "A session on host-a (main:1) asks to approve or reject a reply or outbound draft as you: plugin_draft_decide {\"id\":41} [0123456789ab]"},
+			Details: "A session on host-a (main:1) asks to approve or reject a reply or outbound draft as you.\nThe call: plugin_draft_decide, with id 41, decision “approve”."},
 		Options: []string{hostDecisionConfirm, hostDecisionRefuse},
 	})
 	if err != nil {
@@ -33,7 +33,7 @@ func stepUpFixtureAsk(t *testing.T, body string) attention.Ask {
 // the parts — title, why, the post, its media line — and nothing else.
 func TestAStepUpCardsQuestionIsItsWhyAndPreview(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.\nRead more on the blog.")
-	const want = "Post to X?\nMarketing: rebrand announcement\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
+	const want = "Post to X? · #41\nMarketing: rebrand announcement\n\nBig news: acme is now acme-two.\nRead more on the blog.\n\nWith 1 image"
 	if a.Question != want {
 		t.Fatalf("the card's question:\n%q\nwant\n%q", a.Question, want)
 	}
@@ -56,14 +56,14 @@ func TestAStepUpCardsQuestionIsItsWhyAndPreview(t *testing.T) {
 func TestAStepUpCardsPushIsItsTitleWhyAndPost(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.\nRead more on the blog.")
 	n := attentionNotification(askItem(a), false)
-	if n.Title != "Post to X?" {
-		t.Fatalf("the push title %q, want %q", n.Title, "Post to X?")
+	if n.Title != "Post to X? · #41" {
+		t.Fatalf("the push title %q, want %q", n.Title, "Post to X? · #41")
 	}
 	const body = "Marketing: rebrand announcement · Big news: acme is now acme-two. Read more on the blog."
 	if n.Body != body {
 		t.Fatalf("the push body:\n%q\nwant\n%q", n.Body, body)
 	}
-	for _, never := range []string{"host-a", "paired phone", "plugin_draft_decide", "{", "0123456789ab", "Options:"} {
+	for _, never := range []string{"host-a", "paired phone", "plugin_draft_decide", "{", "image/webp", strings.Repeat("a", 64), "Options:"} {
 		if strings.Contains(n.Body, never) || strings.Contains(n.Title, never) {
 			t.Errorf("the push carries %q: %q / %q", never, n.Title, n.Body)
 		}
@@ -74,18 +74,20 @@ func TestAStepUpCardsPushIsItsTitleWhyAndPost(t *testing.T) {
 }
 
 // TestAStepUpCardsPageShowsThePostAndFoldsTheDetails: the page draws the
-// title, the why, who asked, the venue, the post and its medium; the
-// boilerplate is inside a <details> that is closed; the face carries no JSON.
+// title (the draft id in it), the why, who asked, the post as a mock of it on
+// X and its medium; the boilerplate is inside a <details> that is closed; the
+// face carries no JSON.
 func TestAStepUpCardsPageShowsThePostAndFoldsTheDetails(t *testing.T) {
 	a := stepUpFixtureAsk(t, "Big news: acme is now acme-two.")
 	page := askQuestionHTML(a)
 	for _, want := range []string{
-		`<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>Post to X?</h2>`,
+		`<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>Post to X? · #41</h2>`,
 		`data-stepup-why>Marketing: rebrand announcement</p>`,
 		`data-stepup-asker>Asked by main:1</p>`,
-		`data-stepup-venue>Post on X</span>`,
-		`data-stepup-preview-text>Big news: acme is now acme-two.</p>`,
-		`src="/plugins/drafts/41/media/0" data-stepup-image>`,
+		`data-stepup-venue>X</span>`,
+		`data-stepup-post-kind>New post</span>`,
+		`data-stepup-preview-text><p class="whitespace-pre-wrap break-words">Big news: acme is now acme-two.</p></div>`,
+		`src="/plugins/drafts/41/media/0" data-stepup-medium data-stepup-image>`,
 		`<details class="rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line" data-stepup-details>`,
 	} {
 		if !strings.Contains(page, want) {
@@ -101,12 +103,12 @@ func TestAStepUpCardsPageShowsThePostAndFoldsTheDetails(t *testing.T) {
 	if strings.Contains(page[open:strings.Index(page[open:], ">")+open], " open") {
 		t.Fatalf("Details is open by default:\n%s", details)
 	}
-	for _, in := range []string{"host-a", "main:1", "[0123456789ab]", "plugin_draft_decide {&#34;id&#34;:41}"} {
+	for _, in := range []string{"host-a", "main:1", "The call: plugin_draft_decide, with id 41, decision “approve”."} {
 		if !strings.Contains(details, in) {
 			t.Errorf("Details lacks %q:\n%s", in, details)
 		}
 	}
-	for _, never := range []string{"host-a", "{", "0123456789ab", "paired phone"} {
+	for _, never := range []string{"host-a", "{", "paired phone", "Post on X"} {
 		if strings.Contains(face, never) {
 			t.Errorf("the card's face carries %q:\n%s", never, face)
 		}
