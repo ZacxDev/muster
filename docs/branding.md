@@ -55,6 +55,11 @@ Open **Account** as an admin. The **Server name and logo** section has:
 The section shows the current logo and the app icon. A member's
 Account page has no such section, and the routes refuse a member.
 
+The **Theme** section below it sets the server's colours: a preset or an
+accent colour of the admin's own, checked for contrast before it is saved
+([ui-kit.md](ui-kit.md#the-theme)). It is stored in the same row, written by
+the same admin-only store, and audited as `instance.theme.changed`.
+
 In password mode the operator (user 1) is the admin. In GoTrue mode it is any
 user with the admin role ([auth.md](auth.md)).
 
@@ -207,6 +212,12 @@ an app that has not signed in yet:
     "icon192": "/brand/icon-192.png?v=3f2a9c1d0b7e4a65",
     "icon512": "/brand/icon-512.png?v=3f2a9c1d0b7e4a65",
     "etag": "3f2a9c1d0b7e4a65"
+  },
+  "theme": {
+    "preset": "brass",
+    "accent": null,
+    "etag": "d576c4fd23a8d497",
+    "css": "/ui-kit/v1/theme.css?v=d576c4fd23a8d497"
   }
 }
 ```
@@ -223,6 +234,8 @@ an app that has not signed in yet:
   client that caches the images should compare it.
 - `icon192` and `icon512` are the [app icon](#an-app-icon-of-its-own)'s when
   one is set.
+
+- `theme` is the server's [theme](ui-kit.md#the-theme), always present.
 
 These field names are a contract with the Android app's server switcher. (The web app's switcher does not read this document: it draws another server's `/brand/icon-192.png` as an image.)
 

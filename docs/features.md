@@ -60,6 +60,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
 | [Teams](#teams) | people on one server sharing sessions, officers, tasks and a chief | accounts | off | an admin creates one |
 | [Branding](#branding) | the server's own logo and name | the core's database | muster's own | the Account page |
+| [Theme and the plugin UI kit](#theme-and-the-plugin-ui-kit) | the server's colours, and muster's look for plugins' pages | the core's database (to keep a theme) | muster's own | Account → Theme |
 | [Usage page](#usage-page) | what the chief costs, and who handled each plugin message | the core's database | on | nothing |
 | [Browser flows](#browser-flows) | a queue of scripted browser jobs | **a runner you host** | the queue is on | nothing in `.env` |
 | [Telemetry](#telemetry) | front-end monitoring, OpenTelemetry traces | a Faro collector or an OTLP endpoint | off | 1 line each |
@@ -683,6 +684,21 @@ for the apps. [branding.md](branding.md).
 - **Turn it on:** **Account** page, as an admin
   ([branding.md](branding.md#setting-it)).
 - **Check:** the header shows the logo; `GET /api/instance` names it.
+
+### Theme and the plugin UI kit
+
+The server's colours: a preset or an admin's own accent, checked for contrast
+before it is saved, drawn on muster's pages and served with muster's component
+styles, icons and a small script at `/ui-kit/v1/`, so a plugin's own page
+matches muster and follows the theme. [ui-kit.md](ui-kit.md).
+
+- **Needs:** the core's database to keep a theme; the kit is served without
+  one, in the default theme.
+- **Turn it on:** **Account → Theme**, as an admin
+  ([ui-kit.md](ui-kit.md#the-theme)); a plugin links the kit
+  ([plugins.md](plugins.md#app-tab)).
+- **Check:** `GET /ui-kit/v1/kit.css` answers; `GET /api/instance` names the
+  theme.
 
 ### Usage page
 

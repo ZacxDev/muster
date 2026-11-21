@@ -264,6 +264,7 @@ cookie POST /ui/connector-requests/{id}/deny
 cookie POST /uploads
 cookie POST /uploads/{id}/revoke
 cookie PUT /api/instance/branding
+cookie PUT /api/instance/theme
 unauthenticated /llm/
 unauthenticated POST /api/device/pair
 unauthenticated POST /auth/claim
