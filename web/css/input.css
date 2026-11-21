@@ -743,6 +743,15 @@ html:has([data-asks-feed]) {
   -webkit-line-clamp: unset;
   overflow: visible;
 }
+/*
+ * The Asks page's search (internal/ui asks_search.go): while the results
+ * region holds results — drawn by the server for ?q=, or swapped in as you
+ * type — the page's tabs after it are hidden; emptied, they are back, with no
+ * reload. The server draws the empty region with nothing between its tags.
+ */
+[data-asks-search-region]:not(:empty) ~ [data-asks-main] {
+  display: none;
+}
 .asks-more {
   display: grid;
   grid-template-rows: 0fr;

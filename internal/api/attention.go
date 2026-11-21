@@ -1709,6 +1709,13 @@ func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The same URL answers a navigation and the search box's live request
+	// differently (asksSearchLive).
+	w.Header().Add("Vary", "HX-Request, HX-Target")
+	if asksSearchLive(r) {
+		s.writeAsksSearchLive(w, r)
+		return
+	}
 	s.renderAttentionPage(w, r, http.StatusOK, "")
 }
 
@@ -1721,14 +1728,17 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 // and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
 // (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
 func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
-	// THE SEARCH (asks_search.go): ?q= on the page itself. An id that finds
-	// exactly one thing goes straight to it; anything else lists its results
-	// where the tabs would be.
+	// THE SEARCH (asks_search.go): ?q= on the page itself. Submitted (Enter,
+	// or a link), an id that finds exactly one thing goes straight to it;
+	// anything else lists its results where the tabs would be. (The box's
+	// live request never reaches here: handleAttentionPage answers it.)
 	searchRaw, search, searching := asksSearchRequest(r)
 	var found asksSearchResult
 	if searching && r.URL.Path == attentionPath {
 		found = s.searchAsks(r.Context(), search)
-		if to := asksSearchJump(search, found); to != "" && code == http.StatusOK && problem == "" {
+		// Not when htmx restores a history entry it holds no copy of (Back to
+		// an address the typing set): Back draws the list it left, not the ask.
+		if to := asksSearchJump(search, found); to != "" && code == http.StatusOK && problem == "" && r.Header.Get("HX-History-Restore-Request") != "true" {
 			http.Redirect(w, r, to, http.StatusSeeOther)
 			return
 		}
@@ -1770,21 +1780,20 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		// under it, so the feed starts where it did but for a few pixels.
 		ui.AsksSearchFormHTML(attentionPath, searchRaw) + `</div>
 `)
+	b.WriteString(problemNode(problem))
+	// THE RESULTS REGION, then THE PAGE (tabs and what goes over them), both
+	// always drawn: while the region holds results the stylesheet hides the
+	// page, so the search as you type can empty it and the page is back, live,
+	// with no reload (ui/asks_search.go).
+	results := ""
 	if searching {
-		// The results, in the tabs' place; the page's own scripts find no
-		// feed to keep live and stand down. The id chips' script still runs.
-		b.WriteString(problemNode(problem))
-		b.WriteString(asksSearchHTML(searchRaw, found, now))
-		b.WriteString(`
-</section>
-` + ui.IDCopyScriptHTML())
-		s.writeNavDocument(w, r, code, "Search asks", ui.NavAttention, false, b.String(), navWide)
-		return
+		results = asksSearchHTML(searchRaw, found, now)
 	}
+	b.WriteString(ui.AsksSearchRegionHTML(results))
+	b.WriteString(`<div class="` + ui.AsksMainClass + `" data-asks-main>`)
 	if filtered {
 		b.WriteString(ui.AsksFilterHTML(flt.label, attentionPath))
 	}
-	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
 	// The feed's notice: a card post refused after the card left the page.
 	b.WriteString(ui.AsksFeedNoticeHTML)
@@ -1816,7 +1825,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		logPanel = askLogLazyHTML(r.URL.Query())
 	}
 	b.WriteString(s.asksTabsHTML(askList, answered, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
-	b.WriteString(`
+	b.WriteString(`</div>
 </section>
 <template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
 <template id="asks-drafts-wait-tpl">` + ui.AsksDraftsWaitHTML(2) + `</template>
@@ -1836,12 +1845,18 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(ui.IDCopyScriptHTML())
 	// The feed area's tab swipe (ui/tab_swipe.go, the session panel's too).
 	b.WriteString(ui.TabSwipeScriptHTML())
+	// The search box's script (ui/asks_search.go).
+	b.WriteString(ui.AsksSearchScriptHTML())
 	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.
 	b.WriteString(s.draftStepUpHTML(r))
+	title := "Asks"
+	if searching {
+		title = "Search asks"
+	}
 	// The Asks page is a page of cards: the wide column on a desktop.
-	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String(), navWide)
+	s.writeNavDocument(w, r, code, title, ui.NavAttention, false, b.String(), navWide)
 }
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
