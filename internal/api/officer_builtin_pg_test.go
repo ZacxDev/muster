@@ -154,8 +154,8 @@ func TestABuiltinOfficerWithNoDatabaseIsRefusedAtBoot(t *testing.T) {
 }
 
 // TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields: a builtin officer's
-// instance is not offered authors, attributed_prs, attribution or tickets
-// (its backend has none of those features), and one it sends anyway is
+// instance is not offered authors, attributed_prs, attribution, tickets or
+// ask (its backend has none of those features), and one it sends anyway is
 // refused by muster, the item still held — never completed with the field
 // silently dropped. The same complete without it is served.
 func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
@@ -188,6 +188,10 @@ func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
 	out := srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"drafted","tickets":[]}`)
 	if !isToolErr(out) || !strings.Contains(out, "tickets is not served by officer "+builtinOfficerID+"'s builtin backend") {
 		t.Fatalf("tickets from a builtin instance: %s, want muster's refusal naming tickets", out)
+	}
+	out = srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"escalated","summary":"a grant is waiting","ask":{"kind":"connector_grant","ref":"35"}}`)
+	if !isToolErr(out) || !strings.Contains(out, "ask is not served by officer "+builtinOfficerID+"'s builtin backend") {
+		t.Fatalf("ask from a builtin instance: %s, want muster's refusal naming ask", out)
 	}
 	var status string
 	if err := f.pool.QueryRow(ctx, `SELECT status FROM officer_items WHERE id = $1`, id).Scan(&status); err != nil {
