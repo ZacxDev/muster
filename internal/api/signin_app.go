@@ -45,7 +45,7 @@ import (
 //   - only a signed-in session on a known device may approve
 //     (TestAppSignInUnknownDeviceCannotApprove), and a signed-out phone is sent
 //     to sign in and back (TestAppSignInSignedOutPhoneSignsInAndComesBack);
-//   - an approval dies with the approver's session or account
+//   - in gotrue mode, an approval dies with the approver's session or account
 //     (TestAppSignInDisabledApproverSignsNothingIn);
 //   - every door is throttled (TestAppSignInRateLimits) and refuses another
 //     origin (TestAppSignInRefusesCrossOrigin).
@@ -271,7 +271,7 @@ func (s *Server) handleAppSignInRedeem(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, code, map[string]any{"state": string(state), "error": msg})
 	}
 	binding := cookieValue(r, s.auth.cookieName(appSignInCookie))
-	req, err := s.ext.SignInRequests.Redeem(r.Context(), strings.TrimSpace(r.PostFormValue("code")), binding)
+	req, err := s.ext.SignInRequests.Redeem(r.Context(), strings.TrimSpace(r.PostFormValue("code")), binding, s.auth.goTrueMode())
 	switch {
 	case errors.Is(err, signinreq.ErrNotApproved):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"state": string(signinreq.StatePending), "error": "Not approved yet."})

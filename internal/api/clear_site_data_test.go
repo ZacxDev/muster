@@ -19,6 +19,7 @@ import (
 // clearSiteCachesCallers are the responses that start or end a session, each
 // of which sends Clear-Site-Data: "cache" (clearSiteCaches).
 var clearSiteCachesCallers = []string{
+	"handleAppSignInRedeem",     // a sign-in approved in the muster app
 	"handleClaimSubmit",         // the admin claim's sign-in
 	"handleGoTrueLoginSubmit",   // GoTrue sign-in
 	"handleGoTrueLogout",        // GoTrue sign-out

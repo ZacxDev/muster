@@ -192,6 +192,15 @@ var publicRouteTeamGuard = map[string]string{
 	"POST /auth/reset":           guardSignIn,
 	"POST /auth/passkey/options": guardSignIn,
 	"POST /auth/passkey/verify":  guardSignIn,
+	// Sign in with the muster app: starting, polling and the phone's page
+	// carry no identity; a signed-in phone's POST goes through admit, which
+	// refuses a team; the redeem issues a session for the approver, who
+	// signinreq.Redeem checks is a person (users.PersonIDs) in gotrue mode.
+	"POST /login/app":        guardNoIdentity,
+	"GET /login/app/status":  guardNoIdentity,
+	"POST /login/app/redeem": guardSignIn,
+	"GET /auth/qr":           guardNoIdentity,
+	"POST /auth/qr":          guardNoIdentity,
 	// Pairing is started by an ANONYMOUS caller naming its owner by email or
 	// display name — a team's name is one — so the owner lookup finds persons
 	// only (users.PersonIDs): a team's name yields a decoy

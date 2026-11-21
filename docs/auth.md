@@ -703,8 +703,10 @@ model are in [design/qr-sign-in.md](design/qr-sign-in.md).
   ⚠ GoTrue keeps one such token per user, shared with the password-reset link,
   so signing in this way **ends a reset link** an admin handed you and you have
   not used yet. Ask for a new one.
-- **An approval dies with its session.** If the account is disabled, reset, or
-  signed out everywhere after the approval, the redeem is refused. A session
+- **An approval dies with its session** (gotrue mode). If the account is
+  disabled, reset, or signed out everywhere after the approval, the redeem is
+  refused. Password mode has no such revocation for its one stateless session,
+  so none applies to an approval either. A session
   issued this way is an ordinary session: Sign out and Sign out everywhere end
   it.
 - **Logged.** Each approval, denial and sign-in is in the audit log

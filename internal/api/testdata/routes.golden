@@ -129,6 +129,7 @@ GET /attention/items
 GET /attention/log
 GET /attention/open/{key}
 GET /auth/claim
+GET /auth/qr
 GET /auth/reset
 GET /brand/icon-192.png
 GET /brand/icon-512.png
@@ -141,6 +142,7 @@ GET /flows
 GET /health
 GET /invite
 GET /login
+GET /login/app/status
 GET /manifest.webmanifest
 GET /mirror/connect
 GET /mirror/host
@@ -330,6 +332,7 @@ POST /auth/confirm/passkey/options
 POST /auth/confirm/passkey/verify
 POST /auth/passkey/options
 POST /auth/passkey/verify
+POST /auth/qr
 POST /auth/reset
 POST /chief/provision
 POST /connectors
@@ -343,6 +346,8 @@ POST /flows/runner-tokens/{id}/revoke
 POST /invite
 POST /llm/v1/messages
 POST /login
+POST /login/app
+POST /login/app/redeem
 POST /logout
 POST /mcp
 POST /mirror/ask

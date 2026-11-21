@@ -555,6 +555,21 @@ func TestAppSignInPasswordMode(t *testing.T) {
 	if w := a.phonePost(noDevice, "open", st.Code); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), AppSignInUnknownDevice) {
 		t.Fatalf("a session with no device cookie: %d", w.Code)
 	}
+	// User 1 as a gotrue-mode server may have left it: signed out everywhere
+	// and past a cutoff, both after this phone's sign-in. Password sessions do
+	// not read those columns, so the approval must not either (the CI leg that
+	// runs the gotrue specs first failed this way).
+	var cut, out *time.Time
+	sys := authz.System(context.Background())
+	if err := pool.QueryRow(sys, `SELECT sessions_not_before, signed_out_at FROM users WHERE id = 1`).Scan(&cut, &out); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(sys, `UPDATE users SET sessions_not_before = $1, signed_out_at = $2 WHERE id = 1`, cut, out)
+	})
+	if _, err := pool.Exec(sys, `UPDATE users SET sessions_not_before = now() + interval '2 seconds', signed_out_at = now() + interval '2 seconds' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
 	a.approve(t, ph, st.Code)
 	w := a.redeem(desk, st.Code)
 	if w.Code != http.StatusOK || desk[sessionCookieName] == "" || desk[knownDeviceCookieName] != "" {

@@ -14,7 +14,7 @@ func TestCookieSignInPathsAreExactly(t *testing.T) {
 		got = append(got, p)
 	}
 	sort.Strings(got)
-	want := []string{"/auth/claim", "/auth/confirm", "/auth/confirm/passkey/verify", "/auth/passkey/verify", "/auth/reset", "/invite", "/login"}
+	want := []string{"/auth/claim", "/auth/confirm", "/auth/confirm/passkey/verify", "/auth/passkey/verify", "/auth/reset", "/invite", "/login", "/login/app", "/login/app/redeem"}
 	if !slices.Equal(got, want) {
 		t.Errorf("cookieSignInPaths %q, want %q", got, want)
 	}
