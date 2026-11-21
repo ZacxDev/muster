@@ -84,3 +84,22 @@ func TestTheContextLineSaysWhoseWordsItIsAndEscapesThem(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAskPagesImagesAreLarge: AskMediaStripLarge (the ask page's) draws an
+// image at most 20rem tall at its own aspect, not a 56px thumbnail, and keeps
+// every other rule of the strip — the link to itself full-size, a chip for
+// any other file, an SVG never an image.
+func TestTheAskPagesImagesAreLarge(t *testing.T) {
+	got := AskMediaStripLarge([]AskFile{
+		{Name: "shot.png", Type: "image/png", Size: "12 KB", URL: "/attention/asks/7/attachments/AAAAAAAAAAAAAAAAAAAAAA", Image: true},
+		{Name: "x.svg", Type: "image/svg+xml", Size: "1 KB", URL: "/attention/asks/7/attachments/CCCCCCCCCCCCCCCCCCCCCC"},
+	})
+	big := `<a role="listitem" href="/attention/asks/7/attachments/AAAAAAAAAAAAAAAAAAAAAA" target="_blank" rel="noopener noreferrer" class="press block max-w-full overflow-hidden rounded-lg bg-s2 ring-1 ring-inset ring-line"` +
+		` title="shot.png (12 KB)" data-ask-media-image><img src="/attention/asks/7/attachments/AAAAAAAAAAAAAAAAAAAAAA" alt="shot.png" loading="lazy" decoding="async" class="max-h-80 w-auto max-w-full object-contain"></a>`
+	if !strings.Contains(got, big) {
+		t.Fatalf("the image is not drawn large:\n%s", got)
+	}
+	if strings.Contains(got, "h-14 w-14") || strings.Count(got, "<img") != 1 || !strings.Contains(got, `download="x.svg"`) {
+		t.Fatalf("a thumbnail, or the SVG drawn as an image:\n%s", got)
+	}
+}

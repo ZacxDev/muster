@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -111,12 +112,40 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// A notice (attention.KindNotice) is drawn as one: no options, no answer
 	// box, only its session and Dismiss.
 	notice := a.Kind == attention.KindNotice
-	verb, heading, dismiss := "asks", source+" is asking", "Dismiss without answering"
-	if notice {
-		verb, heading, dismiss = "notice", source+noticePushTitleSuffix, "Dismiss"
+	heading, dismiss := source+" is asking", "Dismiss without answering"
+	switch {
+	case a.Status != attention.Open:
+		// A settled ask is not asking any more: its state is the heading.
+		heading = askClosedState(a.Status)
+	case a.StepUp != nil:
+		// A step-up card is muster's own: its action is the heading.
+		heading = textplain.Title(a.StepUp.Title)
+	case notice:
+		heading = source + noticePushTitleSuffix
 	}
+	if notice {
+		dismiss = "Dismiss"
+	}
+	// The badge row: the badge, where (when it is not the heading's name) and
+	// how long ago — and, on a settled page only, who asked: an open ask's
+	// heading says who is asking, a settled one's says only its state.
+	where := ""
 	if place != "" && place != source {
-		verb += " · " + esc(place)
+		where = esc(place) + " · "
+	}
+	if a.Status != attention.Open {
+		verb := "asked"
+		if notice {
+			verb = "sent a notice"
+		}
+		where = `<span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · ` + where
+	}
+	// With options to tap, they are the primary action: Answer is quiet and
+	// Dismiss is a text link (a step-up card draws neither options nor box).
+	optioned := a.StepUp == nil && !notice && len(withoutProposalStarts(it.proposal, a.Options)) > 0
+	dismissClass := flowsQuietButton + ` w-full`
+	if optioned {
+		dismissClass = askDismissLinkClass
 	}
 	// The footer's links (askContextLinkList), known now: a lone ⓘ (no context
 	// words beside it) goes there, after them, as on the feed's card
@@ -131,17 +160,18 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
-<div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
+<div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2">` + where + `<time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p></div>
-` + officerNoteLabelHTML(a.Context) + askQuestionHTML(a) + asksCardContextRow(inner, info) + asksCardMediaSlot(slot[0]))
+` + officerNoteLabelHTML(a.Context) + askQuestionHTML(a) + asksCardContextRow(inner, info) + askPageMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
 	// What a builtin officer's ask is about, apart from its note.
 	b.WriteString(officerContextHTML(a.Context))
-	// A closed ask has no answer box, where the notices show: an answer or a
-	// dismissal refused because the ask closed meanwhile (?notice=ask-closed)
-	// is said here instead.
-	if note, _ := composerNotice(r); note != "" && a.Status != attention.Open {
+	// A closed ask — and a step-up card — has no answer box, where the notices
+	// show: an answer or a dismissal refused because the ask closed meanwhile
+	// (?notice=ask-closed), or a step-up card's answer refused
+	// (?notice=ask-needs-phone), is said here instead.
+	if note, _ := composerNotice(r); note != "" && (a.Status != attention.Open || a.StepUp != nil) {
 		b.WriteString(`<p role="status" class="rounded-2xl bg-s1 px-4 py-3 text-sm text-fg ring-1 ring-line" data-ask-notice>` + esc(note) + `</p>
 `)
 	}
@@ -154,7 +184,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if a.Status == attention.Open {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" data-ask-dismiss-form>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
-<button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>` + dismiss + `</button></form>
+<button type="submit" class="` + dismissClass + `" data-ask-dismiss>` + dismiss + `</button></form>
 `)
 	}
 	b.WriteString(`</article>
@@ -164,8 +194,10 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	b.WriteString(askPageScript)
 
 	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading}
-	if a.Status == attention.Open && !notice {
-		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff())
+	if a.Status == attention.Open && !notice && a.StepUp == nil {
+		// 🔴 NO ANSWER BOX ON A STEP-UP CARD: only the paired phone answers it
+		// (errHostDecisionNeedsPhone refuses every other door).
+		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff(), optioned)
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
@@ -178,6 +210,44 @@ func askQuestionHTML(a attention.Ask) string {
 		return stepUpCardHTML(a.StepUp)
 	}
 	return `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + html.EscapeString(a.Question) + "</p>\n"
+}
+
+// The ask page's own words and classes.
+const (
+	// askStepUpPhoneLine replaces a step-up card's options and answer box:
+	// the browser can never answer one (errHostDecisionNeedsPhone).
+	askStepUpPhoneLine = "Confirm this on your phone."
+	// askSendClass is Answer when it is the page's primary action (no options).
+	askSendClass = "press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90 " + ui.AsksSendDisabledClass
+	// askDismissLinkClass is Dismiss drawn as a text link, beside options
+	// that are the primary action.
+	askDismissLinkClass = "inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+)
+
+// askClosedState is a settled ask's state in words: the ask page's heading and
+// its live region's outcome line.
+func askClosedState(st attention.Status) string {
+	switch st {
+	case attention.Answered:
+		return "Answered"
+	case attention.AnsweredInSession:
+		return "Answered in the session"
+	case attention.Cancelled:
+		return "Dismissed"
+	case attention.Expired:
+		return "Expired"
+	}
+	return "No longer open"
+}
+
+// askPageMediaSlot is the ask page's media slot: the feed card's
+// (asksCardMediaSlot), its images drawn large (ui.AskMediaStripLarge) — the
+// page is where an attachment is looked at.
+func askPageMediaSlot(it attentionItem) string {
+	if it.Kind != attentionKindAsk || len(it.Attachments) == 0 {
+		return asksCardMediaSlot(it)
+	}
+	return ui.AskMediaStripLarge(askMediaView(it.AskID, it.Attachments)) + "\n" + pageAskOpenHTML(it.pageOpen)
 }
 
 // askContextLinkList is the ask's way to its context, the ask page's footer
@@ -204,11 +274,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	if a.Status != attention.Open {
-		state := map[attention.Status]string{attention.Answered: "Answered", attention.AnsweredInSession: "Answered in the session",
-			attention.Cancelled: "Dismissed", attention.Expired: "Expired"}[a.Status]
-		if state == "" {
-			state = "No longer open"
-		}
+		state := askClosedState(a.Status)
 		b.WriteString(`<div class="flex flex-col gap-2 rounded-2xl bg-s1 px-4 py-3 ring-1 ring-line" data-ask-closed data-status="` + esc(string(a.Status)) + `">
 <p class="text-base font-semibold text-fg">` + esc(state) + `</p>
 `)
@@ -228,6 +294,11 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 </div>`)
 		return b.String()
 	}
+	if a.StepUp != nil {
+		// A step-up card is answered only from the paired phone
+		// (errHostDecisionNeedsPhone): no options, no suggestions, one line.
+		return `<p class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-ask-stepup-phone>` + askStepUpPhoneLine + `</p>`
+	}
 	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
 		b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
 `)
@@ -239,7 +310,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 	}
 	if len(it.suggestions) > 0 {
 		b.WriteString(`<div role="group" aria-label="` + suggestLabel + `" class="flex flex-col gap-2" data-ask-suggestions>
-<p class="text-xs text-fg2"><span class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-fg">AI</span> Suggested replies — a tap puts one in your answer, to edit or send</p>
+<p class="text-xs text-fg2">` + ui.AsksAIPillHTML + ` suggestions — tap to edit</p>
 <div class="flex flex-wrap gap-2">
 `)
 		for _, t := range it.suggestions {
@@ -259,7 +330,12 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 // (ui.DictateSendHTML), so only Answer sends. Its script is
 // the composer's LAST child: the composer is drawn after the page's content,
 // and the script's first run reveals only the mics already parsed.
-func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOff bool) string {
+//
+// quiet: the ask has options to tap, which are its primary action, so Answer
+// is drawn quiet (ui.AsksCardSendQuietClass). Answer starts OFF (aria-disabled:
+// ui.AsksSendDisabledClass says why not disabled) — the box is empty — and
+// askPageScript turns it on while the box holds text.
+func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOff, quiet bool) string {
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
 	note, ok := composerNotice(r)
@@ -270,6 +346,10 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 			noteAttrs = ` data-ok`
 		}
 	}
+	send := askSendClass
+	if quiet {
+		send = ui.AsksCardSendQuietClass + " " + ui.AsksSendDisabledClass
+	}
 	return `<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
 ` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
@@ -278,18 +358,31 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 		"Your answer…" + `" class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl bg-s1 px-4 py-2.5 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-fg2 focus:outline-none focus:ring-2 focus:ring-focus"></textarea>
 ` + ui.DictateWaveHTML(dictate, "ask-dictate") + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") +
 		ui.DictateSendHTML(dictate, "ask-dictate", "ask-send", ui.DictateSendPill) +
-		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
+		`<button type="submit" id="ask-send" class="` + send + `" aria-disabled="true" data-ask-send>Answer</button>
 </form>` + ui.DictateScriptHTML(dictate)
 }
 
 // askPageScript: a suggestion chip fills the answer box (and grows it to its
-// text); the box grows as it is typed in. Nothing here sends.
+// text); the box grows as it is typed in; Answer is enabled only while the box
+// holds text (it is drawn aria-disabled: the box starts empty), and a blank
+// answer is not posted. Nothing here sends.
 const askPageScript = `<script>
 (function () {
   // The answer box is drawn AFTER this script (it is pinned below the
   // content), so it is looked up when used, never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
-  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') grow(e.target); });
+  function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
+  // A blank answer is not posted (Answer is aria-disabled, not disabled:
+  // ui.AsksSendDisabledClass says why): the box is focused instead.
+  document.addEventListener('submit', function (e) {
+    var b = document.getElementById('ask-input');
+    if (!b || e.target.id !== 'ask-answer' || !e.submitter || e.submitter.id !== 'ask-send' || b.value.trim()) return;
+    e.preventDefault();
+    b.focus();
+  });
+  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') { grow(e.target); gate(e.target); } });
+  // A box the browser restored (back, a reload) holds text: Answer follows it.
+  window.addEventListener('pageshow', function () { var b = document.getElementById('ask-input'); if (b) gate(b); });
   document.addEventListener('click', function (e) {
     var chip = e.target.closest && e.target.closest('[data-ask-suggestion]');
     var b = document.getElementById('ask-input');
@@ -298,6 +391,7 @@ const askPageScript = `<script>
     var t = chip.getAttribute('data-text') || '';
     b.value = b.value.trim() ? b.value.replace(/\s+$/, '') + '\n' + t : t;
     grow(b);
+    gate(b);
     b.focus();
     try { b.setSelectionRange(b.value.length, b.value.length); } catch (err) {}
   });

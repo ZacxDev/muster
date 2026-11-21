@@ -138,7 +138,7 @@ func TestEachCardDrawsTheActionsItsKindHas(t *testing.T) {
 	out := attentionItemsHTML(items, designNow)
 	has := map[string]string{
 		"options": `data-attention-option>`, "chips": `data-asks-suggestion data-text=`, "box": `<textarea id="answer-`, "mic": `data-dictate-input="answer-`,
-		"answer": `">Answer</button>`, "view": `data-asks-view-session>View in session</a>`, "task": `data-asks-task>`, "dismiss": `data-attention-dismiss>`,
+		"answer": `>Answer</button>`, "view": `data-asks-view-session>View in session</a>`, "task": `data-asks-task>`, "dismiss": `data-attention-dismiss>`,
 		"held": `data-attention-held-cue>Answer in session</span>`,
 	}
 	order := []string{"options", "chips", "box", "mic", "answer", "view", "task", "dismiss", "held"}
@@ -203,10 +203,10 @@ func TestEachCardDrawsTheActionsItsKindHas(t *testing.T) {
 // card was the loudest thing on the page).
 func TestTheAnswerFormIsQuietBesideOptions(t *testing.T) {
 	out := attentionItemsHTML(designItems(), designNow)
-	if li := itemLi(t, out, "ask-1"); !strings.Contains(li, `id="answer-1-submit" class="`+ui.AsksCardSendQuietClass+`">Answer</button>`) {
+	if li := itemLi(t, out, "ask-1"); !strings.Contains(li, `id="answer-1-submit" class="`+ui.AsksCardSendQuietClass+` `+ui.AsksSendDisabledClass+`" aria-disabled="true" data-asks-send>Answer</button>`) {
 		t.Errorf("Answer beside options is not quiet:\n%s", li)
 	}
-	if li := itemLi(t, out, "ask-2"); !strings.Contains(li, `id="answer-2-submit" class="`+ui.AsksCardSendClass+`">Answer</button>`) {
+	if li := itemLi(t, out, "ask-2"); !strings.Contains(li, `id="answer-2-submit" class="`+ui.AsksCardSendClass+` `+ui.AsksSendDisabledClass+`" aria-disabled="true" data-asks-send>Answer</button>`) {
 		t.Errorf("Answer with no options is not the primary:\n%s", li)
 	}
 }
@@ -484,14 +484,15 @@ func TestADraftCardIsTheFeedCardWithItsFactsAsPills(t *testing.T) {
 		`data-draft-plugin>Example inbox</span>`,
 		`data-draft-state>Awaiting your decision</span>`,
 		`>expires in 6d</time></span>`,
-		`data-draft-runes>53 characters</span>`,
 		`<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>It is on by default at 600 requests a minute per key.</p>`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the draft card lacks %q:\n%s", want, got)
 		}
 	}
-	for _, bad := range []string{"marketing-acme-1", "UTC", "font-mono", "break-all font-mono", "approving sends exactly this", "message 3", "Reply · "} {
+	// No length pill (the asks audit: "53 characters" was noise beside the
+	// text itself; the length is the box's data-runes).
+	for _, bad := range []string{"marketing-acme-1", "UTC", "font-mono", "break-all font-mono", "approving sends exactly this", "message 3", "Reply · ", "characters</span>", "data-draft-runes"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("the draft card still draws %q:\n%s", bad, got)
 		}

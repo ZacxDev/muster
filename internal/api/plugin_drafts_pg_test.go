@@ -272,7 +272,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	page := d.do("GET", "/attention?tab=drafts", "", d.session(d.a, false, true)).Body.String()
 	card := cardOf(t, page, draftID)
 	for _, want := range []string{`data-draft-status="pending"`, "Are you free? &lt;script&gt;alert(1)&lt;/script&gt;",
-		"Yes, noon works.", "16 characters", "data-draft-approve", "data-draft-reject", "data-step-up-form"} {
+		"Yes, noon works.", `data-runes="16"`, "data-draft-approve", "data-draft-reject", "data-step-up-form"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the pending card lacks %q:\n%s", want, card)
 		}

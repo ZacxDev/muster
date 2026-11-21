@@ -53,7 +53,8 @@ test.describe('phone 390×844', () => {
     await expect(card.locator('[data-stepup-title]')).toHaveText('Post to X?');
     await expect(card.locator('[data-stepup-why]')).toHaveText('Marketing: rebrand announcement');
     await expect(card.locator('[data-stepup-asker]')).toHaveText('Asked by work:1');
-    await expect(card.locator('[data-stepup-venue]')).toHaveText('X');
+    // "Post on X": a bare "X" pill read as a close button.
+    await expect(card.locator('[data-stepup-venue]')).toHaveText('Post on X');
     const preview = card.locator('[data-stepup-preview-text]');
     await expect(preview).toBeVisible();
     await expect(preview).toHaveText('Big news: acme is now acme-two.\nRead more on the blog. <b>not bold</b>');
@@ -74,15 +75,28 @@ test.describe('phone 390×844', () => {
     }
     await expect(page.locator('[data-ask-question]')).toHaveCount(0);
 
+    // 🔴 THE BROWSER CANNOT ANSWER IT (errHostDecisionNeedsPhone): no
+    // Confirm/Refuse, no answer box, no mic — one line says where it is
+    // answered — and it is headed by its action, never "step-up is asking".
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Post to X?');
+    await expect(page.locator('[data-ask-stepup-phone]')).toHaveText('Confirm this on your phone.');
+    await expect(page.locator('[data-ask-option]')).toHaveCount(0);
+    await expect(page.locator('#ask-input, #ask-send')).toHaveCount(0);
+    expect(await page.locator('body').innerText(), 'the internal asker label is on screen').not.toContain('step-up');
+
     const { sw, iw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
     expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(iw);
     const shut = testInfo.outputPath('stepup-card-phone.png');
     await page.screenshot({ path: shut, fullPage: true });
     await testInfo.attach('stepup-card-phone.png', { path: shut, contentType: 'image/png' });
 
-    // Tapped open: the record is all there.
+    // Tapped open: the record is all there, and the chevron has turned.
+    const chevron = card.locator('[data-stepup-details-toggle] .asks-chevron');
+    await expect(chevron).toBeVisible();
+    expect(await chevron.evaluate((e) => getComputedStyle(e).transform), 'closed: the chevron points down').toBe('none');
     await card.locator('[data-stepup-details-toggle]').tap();
     await expect(detailsText).toBeVisible();
+    await expect.poll(() => chevron.evaluate((e) => getComputedStyle(e).transform), { message: 'open: the chevron has turned' }).not.toBe('none');
     await expect(detailsText).toContainText('A session on host-a (work:1 @ host-a)');
     await expect(detailsText).toContainText('plugin_draft_decide {"id":41,"decision":"approve"}');
     await expect(detailsText).toContainText('[0123456789ab]');

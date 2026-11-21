@@ -2123,6 +2123,11 @@ func attentionHeadLines(it attentionItem, now time.Time) string {
 // (textplain.TitleKeeping): a session named "_scratch_" is typed as
 // "_scratch_", never as the "scratch" a markdown stripper reads.
 func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
+	if it.stepUp != nil {
+		// A step-up card is muster's own question: never its internal asker
+		// label ("step-up").
+		return stepUpCardSource, "", true
+	}
 	if host := attentionPlaceHost(it); host != "" {
 		src = mirror.PlaceWords(host)
 		if !it.Offline && strings.HasSuffix(it.Source, whereHostOffline) {
@@ -2146,6 +2151,9 @@ func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
 	}
 	return textplain.TitleKeeping(it.Source, it.target), "", true
 }
+
+// stepUpCardSource is what a step-up card's head calls who asks.
+const stepUpCardSource = "muster"
 
 // attentionPlaceHost is the computer the window an item names runs on: its
 // Place's host (every producer sets at with target); "" for an item that
@@ -2506,7 +2514,14 @@ func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, boo
 	switch a.Delivery {
 	case attention.DeliveryQueued:
 		if a.DeliveryDetail != "" {
-			return "Queued for " + who + " — waiting: " + a.DeliveryDetail + ". muster keeps trying.", false
+			// A reason that never clears on its own (the agent stopped, no
+			// agent gateway) is the owner's to act on, so it is said, with
+			// what to do; a transient one (busy, mid-turn, being replaced,
+			// the runtime took nothing) is muster's to retry.
+			if t := deliveryWaitStuckText(a.DeliveryDetail, who); t != "" {
+				return t, false
+			}
+			return "Will reach " + who + " when it's back.", false
 		}
 		return "Queued for " + who + ": delivering it as a new message in its session.", false
 	case attention.DeliveryDelivering:

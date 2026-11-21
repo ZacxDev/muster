@@ -83,7 +83,7 @@ func TestAStepUpCardsPageShowsThePostAndFoldsTheDetails(t *testing.T) {
 		`<h2 class="break-words text-xl font-semibold leading-snug text-fg" data-stepup-title>Post to X?</h2>`,
 		`data-stepup-why>Marketing: rebrand announcement</p>`,
 		`data-stepup-asker>Asked by main:1</p>`,
-		`data-stepup-venue>X</span>`,
+		`data-stepup-venue>Post on X</span>`,
 		`data-stepup-preview-text>Big news: acme is now acme-two.</p>`,
 		`src="/plugins/drafts/41/media/0" data-stepup-image>`,
 		`<details class="rounded-lg bg-s1 px-3 py-2 ring-1 ring-inset ring-line" data-stepup-details>`,
@@ -225,9 +225,11 @@ func TestAStepUpCardsWhereLineIsOnEveryFace(t *testing.T) {
 	if got := attentionNotification(askItem(a), false).Body; got != "Asked by work:1 · Outreach batch b-17: 3 entries to send · Send 3 of the batch's follows and likes; reject the rest." {
 		t.Fatalf("the push body %q", got)
 	}
+	// Who asked, ONCE: the why already says it, so no asker label under it
+	// (it said "Asked by work:1" twice until the asks audit).
 	if page := askQuestionHTML(a); !strings.Contains(page, `data-stepup-about>Outreach batch b-17: 3 entries to send</p>`) ||
-		!strings.Contains(page, `data-stepup-asker>Asked by work:1</p>`) {
-		t.Fatalf("the page lacks the where line or the asker:\n%s", page)
+		!strings.Contains(page, `data-stepup-why>Asked by work:1</p>`) || strings.Count(page, "Asked by work:1") != 1 {
+		t.Fatalf("the page lacks the where line, or does not say who asked exactly once:\n%s", page)
 	}
 	// A draft card: the where line is who asked, drawn once.
 	d := stepUpFixtureAsk(t, "Big news.")

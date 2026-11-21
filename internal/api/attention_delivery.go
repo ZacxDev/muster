@@ -233,6 +233,47 @@ const (
 	answerNotTaken    = "not_taken"
 )
 
+// The reasons a delivery stays queued that never clear on their own: the agent
+// is stopped (or stopped with an error) until someone starts it, and a muster
+// with no agent gateway never gets one without its operator. They are the
+// stored DeliveryDetail (deliverAnswer's leave), so answerDeliveryText reads
+// them back by these values, not by the wording of the transient ones.
+const (
+	deliveryWaitNoGateway        = "this muster has no agent gateway"
+	deliveryWaitNotRunningPrefix = "the agent is not running ("
+	deliveryWaitNotRunningSuffix = ")"
+)
+
+// deliveryWaitNotRunning is the queued reason for an agent in status.
+func deliveryWaitNotRunning(status string) string {
+	return deliveryWaitNotRunningPrefix + status + deliveryWaitNotRunningSuffix
+}
+
+// deliveryWaitStuckText is what the owner reads for a queued answer whose
+// reason never clears on its own — why it waits and what to do — and "" for a
+// transient one (busy, mid-turn, being replaced, the runtime took nothing, an
+// agent still being set up), which muster retries until it lands.
+func deliveryWaitStuckText(detail, who string) string {
+	if detail == deliveryWaitNoGateway {
+		return "Not delivered: this server has no agent gateway, so it cannot send answers to " + who + ". Whoever runs this server must set one up; until then, give the answer in " + who + "'s session."
+	}
+	status, ok := strings.CutPrefix(detail, deliveryWaitNotRunningPrefix)
+	if !ok {
+		return ""
+	}
+	status, ok = strings.CutSuffix(status, deliveryWaitNotRunningSuffix)
+	if !ok {
+		return ""
+	}
+	switch status {
+	case agents.StatusStopped:
+		return "Waiting: " + who + " is stopped. Start it again and muster delivers the answer."
+	case agents.StatusError:
+		return "Waiting: " + who + " stopped with an error. Restart it and muster delivers the answer."
+	}
+	return "" // pending, provisioning: it starts on its own
+}
+
 // deliverAnswer pushes ask id's answer into the asking agent's session, once.
 // It runs as owner (attentionPrincipal: row-level security shows that owner's
 // rows only), and every check that can fail without contacting the runtime
@@ -301,11 +342,11 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	case ag.OwnerID != a.Owner:
 		return settle(false, 0, "the agent is not the owner's")
 	case !agentCanBeSent(ag.Status):
-		return leave("the agent is not running (" + ag.Status + ")")
+		return leave(deliveryWaitNotRunning(ag.Status))
 	case agents.KickoffOwed(ag):
 		return leave("the agent has not had its first turn yet")
 	case s.answerTurn == nil:
-		return leave("this muster has no agent gateway")
+		return leave(deliveryWaitNoGateway)
 	}
 	sess, err := s.answerSession(ctx, ag, a.AskedSession)
 	if err != nil {

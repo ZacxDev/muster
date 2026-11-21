@@ -38,8 +38,10 @@ type AskWhy struct {
 const (
 	AskMediaClass = "flex min-w-0 flex-wrap gap-2"
 	AskThumbClass = "press block h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-s2 ring-1 ring-inset ring-line"
-	AskChipClass  = "press inline-flex min-h-[44px] max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-bg px-3 text-xs text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
-	AskWhyClass   = "break-words text-xs text-fg2"
+	// AskImageLargeClass is AskMediaStripLarge's image link.
+	AskImageLargeClass = "press block max-w-full overflow-hidden rounded-lg bg-s2 ring-1 ring-inset ring-line"
+	AskChipClass       = "press inline-flex min-h-[44px] max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-bg px-3 text-xs text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
+	AskWhyClass        = "break-words text-xs text-fg2"
 )
 
 // askFileIcon is a file chip's glyph (a page).
@@ -50,6 +52,19 @@ const askFileIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="non
 // that downloads it. "" for none. data-asks-media keeps the Asks card's script
 // from taking a tap or a swipe that starts on it (ui/asks_card.go).
 func AskMediaStrip(files []AskFile) string {
+	return askMediaStrip(files, AskThumbClass, "h-full w-full object-cover")
+}
+
+// AskMediaStripLarge is AskMediaStrip with each image drawn large — at most
+// 20rem tall at its own aspect, as a step-up card's media are — not as a
+// thumbnail: the ask page's (the feed's card keeps the thumbnails).
+func AskMediaStripLarge(files []AskFile) string {
+	return askMediaStrip(files, AskImageLargeClass, "max-h-80 w-auto max-w-full object-contain")
+}
+
+// askMediaStrip is the strip with thumb the image link's class and img the
+// image's own.
+func askMediaStrip(files []AskFile, thumb, img string) string {
 	if len(files) == 0 {
 		return ""
 	}
@@ -58,9 +73,9 @@ func AskMediaStrip(files []AskFile) string {
 	for _, f := range files {
 		label := f.Name + " (" + f.Size + ")"
 		if f.Image {
-			out += `<a role="listitem" href="` + esc(f.URL) + `" target="_blank" rel="noopener noreferrer" class="` + AskThumbClass +
+			out += `<a role="listitem" href="` + esc(f.URL) + `" target="_blank" rel="noopener noreferrer" class="` + thumb +
 				`" title="` + esc(label) + `" data-ask-media-image><img src="` + esc(f.URL) + `" alt="` + esc(f.Name) +
-				`" loading="lazy" decoding="async" class="h-full w-full object-cover"></a>`
+				`" loading="lazy" decoding="async" class="` + img + `"></a>`
 			continue
 		}
 		out += `<a role="listitem" href="` + esc(f.URL) + `" download="` + esc(f.Name) + `" class="` + AskChipClass + `" title="` + esc(label+" · "+f.Type) +

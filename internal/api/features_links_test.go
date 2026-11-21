@@ -198,7 +198,7 @@ func TestEveryHowToTurnItOnLinkOpensAFeatureSheet(t *testing.T) {
 	sheets, _ := sheetIDs(t, featuresPageAs(t, s, authz.RoleAdmin))
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
 	surfaces := map[string]string{
-		"ask page composer": askComposerHTML(r, attention.Ask{ID: 9}, "", true),
+		"ask page composer": askComposerHTML(r, attention.Ask{ID: 9}, "", true, false),
 		"Account page":      sessionGet(h, s, "/account", true).Body.String(),
 		"Credentials page":  sessionGet(h, s, "/account/credentials", true).Body.String(),
 	}

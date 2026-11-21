@@ -407,9 +407,12 @@ func outboundCardHTML(c plugins.DraftCard) string {
 		} else {
 			b.WriteString(`<img alt="` + esc(ref) + `" class="max-h-80 w-auto max-w-full rounded-md object-contain" src="` + src + `" data-draft-image>`)
 		}
+		// Its file name; its type, size and SHA-256 behind Details.
 		b.WriteString(`
-<span class="break-all font-mono text-xs text-fg2">` + esc(ref) + ` · ` + esc(m.ContentType) + ` · ` + esc(uploads.HumanSize(m.Size)) +
-			` · sha256 ` + esc(m.SHA256) + `</span></li>
+<span class="break-all text-xs text-fg2" data-draft-medium-name>` + esc(ref) + `</span>
+<details class="` + ui.AsksDetailsClass + `" data-draft-medium-details><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>
+<span class="break-all font-mono text-xs text-fg2" data-draft-medium-facts>` + esc(m.ContentType) + ` · ` + esc(uploads.HumanSize(m.Size)) +
+			` · sha256 ` + esc(m.SHA256) + `</span></details></li>
 `)
 	}
 	b.WriteString("</ul>\n")

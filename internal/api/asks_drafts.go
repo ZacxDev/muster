@@ -423,6 +423,9 @@ const asksPageScript = `<script>
     var lazy = root.querySelector('[data-asklog-lazy]');
     if (!lazy || lazy.hasAttribute('data-loading')) return;
     lazy.setAttribute('data-loading', '');
+    // Drawn hidden (askLogLazyHTML): only a page that runs this says Loading….
+    var shown = lazy.querySelector('[data-asklog-loading]');
+    if (shown) shown.hidden = false;
     fetch(lazy.getAttribute('data-src'), { credentials: 'same-origin' }).then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.text();
@@ -433,7 +436,21 @@ const asksPageScript = `<script>
     }).catch(function () {
       lazy.removeAttribute('data-loading');
       var p = lazy.querySelector('[data-asklog-loading]');
-      if (p) p.insertAdjacentText('afterbegin', 'The log could not be loaded. ');
+      if (!p) return;
+      // What failed, and a Retry: a link to the tab's own page (it works
+      // without this script), which here loads the panel again.
+      var a = document.createElement('a');
+      a.className = 'underline';
+      a.href = lazy.getAttribute('data-href') || '';
+      a.textContent = 'Retry';
+      a.setAttribute('data-asklog-retry', '');
+      a.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        p.textContent = "` + askLogLoadingText + `";
+        loadLog();
+      });
+      p.textContent = "` + askLogFailedText + ` ";
+      p.appendChild(a);
     });
   }
   if (window.location.pathname !== '` + attentionPath + `') syncURL();

@@ -65,7 +65,7 @@ const (
 	// the same full-width buttons, half as many rows (the design review's
 	// density target). A long option keeps the column.
 	AsksOptionsPairClass = "grid grid-cols-2 gap-1.5"
-	AsksOptionClass      = "press min-h-[44px] w-full rounded-lg bg-bg px-3 py-2 text-left text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
+	AsksOptionClass      = "press min-h-[44px] w-full rounded-lg bg-bg px-3 py-2 text-left text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
 	AsksActionsClass = "flex min-w-0 items-center gap-2"

@@ -160,6 +160,11 @@ const (
 var (
 	// ErrInvalid: the ask or answer breaks a bound (its text says which).
 	ErrInvalid = errors.New("attention: invalid")
+	// ErrAnswerTooLong: an answer over MaxAnswerRunes (CleanAnswer), always
+	// with ErrInvalid — the one refusal a form can name on its own, since a
+	// dictated answer can run past the bound.
+	// Its text is the refusal's own words, as every other bound's.
+	ErrAnswerTooLong = fmt.Errorf("the answer is longer than %d characters", MaxAnswerRunes)
 	// ErrNotFound: no such ask among the caller's.
 	ErrNotFound = errors.New("attention: no such ask")
 	// ErrNotOpen: the ask was already answered, cancelled or expired.
@@ -530,7 +535,7 @@ func CleanAnswer(s string) (string, error) {
 		return "", fmt.Errorf("%w: the answer is empty", ErrInvalid)
 	}
 	if utf8.RuneCountInString(s) > MaxAnswerRunes {
-		return "", fmt.Errorf("%w: the answer is longer than %d characters", ErrInvalid, MaxAnswerRunes)
+		return "", fmt.Errorf("%w: %w", ErrInvalid, ErrAnswerTooLong)
 	}
 	return s, nil
 }
