@@ -102,6 +102,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -399,6 +400,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Paired phones (migration 0039): the Android app's mdv_ credential on
 		// /api/device/*, and Account → Devices.
 		ext.Devices = devices.NewPG(pool)
+		// Sign in with the muster app (migration 0173): a phone that is signed
+		// in approves a browser's sign-in by scanning its QR code.
+		ext.SignInRequests = signinreq.NewPG(pool)
 		ext.AllowPINKeys = cfg.AndroidAllowPINKeys
 		ext.NotifyLinkHosts = cfg.notifyLinkHosts()
 		// Browser flows (migration 0012): the owner-scoped job queue and the

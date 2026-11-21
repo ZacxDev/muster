@@ -124,6 +124,7 @@ it off. The full list of features, with every `.env` line, is
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [design/meetings.md](design/meetings.md) — proposed: a meetings plugin (voice, video, screen share, live per-track transcript and action items, guest lobby by link) on a new core `app` capability that adds a sidebar tab with a camera- and microphone-capable frame
+- [design/qr-sign-in.md](design/qr-sign-in.md) — built ([auth.md](auth.md#sign-in-with-the-muster-app)): sign in with the muster app — a QR code a signed-in phone approves; the research (RFC 8628, Discord/WhatsApp/Telegram/Steam, QRLjacking, FIDO hybrid) and the threat model
 - [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
 
 **The project**
