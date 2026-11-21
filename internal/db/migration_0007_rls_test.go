@@ -199,9 +199,9 @@ var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "team_membe
 // policy is pinned by TestMigration0105InstanceBranding.
 //
 //   - instance_branding (0105, the instance's logo and name).
-//   - signin_requests (0173, a browser's "Sign in with the muster app":
+//   - signin_requests (0174, a browser's "Sign in with the muster app":
 //     anonymous until a phone approves it; policy pinned by
-//     TestMigration0173SigninRequests).
+//     TestMigration0174SigninRequests).
 var instanceTables = []string{"instance_branding", "signin_requests"}
 
 // TestRLSCoversExactlyTheOwnedTables is the LEDGER: the set of public tables

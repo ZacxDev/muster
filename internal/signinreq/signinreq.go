@@ -1,5 +1,5 @@
 // Package signinreq is the store behind "Sign in with the muster app"
-// (migration 0173; docs/design/qr-sign-in.md): a signed-out browser starts a
+// (migration 0174; docs/design/qr-sign-in.md): a signed-out browser starts a
 // REQUEST and shows its code as a QR; a phone already signed in to muster
 // opens the code, is shown the request's details and approves or denies it;
 // the browser that started it redeems the approval for a session of the
@@ -132,7 +132,7 @@ type Store interface {
 	SameBrowser(ctx context.Context, code, binding string) (bool, error)
 }
 
-// PGStore is Store over Postgres (migration 0173).
+// PGStore is Store over Postgres (migration 0174).
 type PGStore struct{ pool *pgxpool.Pool }
 
 // NewPG returns the store over pool.

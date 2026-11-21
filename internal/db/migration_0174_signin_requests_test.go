@@ -5,23 +5,23 @@ import (
 	"testing"
 )
 
-// TestMigration0173SigninRequests: a database at 0172 has no signin_requests
-// (the control); at 0173 it does, empty, under forced row-level security whose
+// TestMigration0174SigninRequests: a database at 0173 has no signin_requests
+// (the control); at 0174 it does, empty, under forced row-level security whose
 // only policy is scope_all (a user's principal reads and writes nothing; the
 // store runs as the system). The checks refuse what the store never writes: a
 // hash of the wrong size, an unknown state, an approval without its approver
 // or sign-in time, an approver on a denial, a redeemed row with no redeemed_at.
 // Then the header's ROLLBACK block runs as written and leaves no table, and the
 // file applies again after it.
-func TestMigration0173SigninRequests(t *testing.T) {
+func TestMigration0174SigninRequests(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0173_signin", 172)
+	pool := freshAt(ctx, t, "ms_0174_signin", 173)
 	if _, err := pool.Exec(ctx, `SELECT 1 FROM signin_requests`); err == nil || !strings.Contains(err.Error(), "signin_requests") {
-		t.Fatalf("control: before 0173 signin_requests exists: %v", err)
+		t.Fatalf("control: before 0174 signin_requests exists: %v", err)
 	}
-	applyThroughFrom(ctx, t, pool, 173)
+	applyThroughFrom(ctx, t, pool, 174)
 	if n := countRows(ctx, t, pool, "signin_requests"); n != 0 {
-		t.Fatalf("0173 wrote %d row(s); want none", n)
+		t.Fatalf("0174 wrote %d row(s); want none", n)
 	}
 
 	var rls, forced bool
@@ -70,7 +70,7 @@ func TestMigration0173SigninRequests(t *testing.T) {
 	mustExec(ctx, t, pool, `UPDATE signin_requests SET state = 'approved', approved_by = 1, approver_signin_at = now(), requester_agent = repeat('😀', 120)`)
 	mustExec(ctx, t, pool, `UPDATE signin_requests SET state = 'redeemed', redeemed_at = now()`)
 
-	for _, q := range asksRollbackSQL(t, "0173_signin_requests.sql") {
+	for _, q := range asksRollbackSQL(t, "0174_signin_requests.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}
@@ -78,7 +78,7 @@ func TestMigration0173SigninRequests(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT 1 FROM signin_requests`); err == nil {
 		t.Error("after the rollback signin_requests still exists")
 	}
-	applyThroughFrom(ctx, t, pool, 173)
+	applyThroughFrom(ctx, t, pool, 174)
 	if n := countRows(ctx, t, pool, "signin_requests"); n != 0 {
 		t.Errorf("re-applied after the rollback: %d row(s)", n)
 	}

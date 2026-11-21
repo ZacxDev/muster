@@ -86,7 +86,7 @@ type Extensions struct {
 	// no device is paired or admitted anywhere (503).
 	Devices devices.Store
 	// SignInRequests is the "Sign in with the muster app" store (migration
-	// 0173; signin_app.go). Nil: the option is not offered and its routes
+	// 0174; signin_app.go). Nil: the option is not offered and its routes
 	// answer 404.
 	SignInRequests signinreq.Store
 	// AllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS: a phone with no strong

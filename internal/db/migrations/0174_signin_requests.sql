@@ -1,4 +1,4 @@
--- muster 0173 — SIGN IN WITH THE MUSTER APP (docs/design/qr-sign-in.md;
+-- muster 0174 — SIGN IN WITH THE MUSTER APP (docs/design/qr-sign-in.md;
 -- docs/auth.md#sign-in-with-the-muster-app).
 --
 --   signin_requests   one row per "Sign in with the muster app" a signed-out
@@ -41,7 +41,7 @@
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE IF EXISTS public.signin_requests;
---   DELETE FROM schema_migrations WHERE version = 173;
+--   DELETE FROM schema_migrations WHERE version = 174;
 
 SET LOCAL lock_timeout = '3s';
 

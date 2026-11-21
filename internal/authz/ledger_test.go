@@ -205,7 +205,7 @@ var (
 		// device_pairing_codes are under FORCE RLS). Only the row's owner and
 		// the device record are handed on.
 		"internal/devices.sys",
-		// Sign in with the muster app (migration 0173): signin_requests has no
+		// Sign in with the muster app (migration 0174): signin_requests has no
 		// owner (a request is anonymous until a phone approves it) and is under
 		// FORCE RLS with a scope_all policy only, so every read and write is the
 		// system's. Each is keyed by the hash of a secret the caller holds — the

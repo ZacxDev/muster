@@ -400,7 +400,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Paired phones (migration 0039): the Android app's mdv_ credential on
 		// /api/device/*, and Account → Devices.
 		ext.Devices = devices.NewPG(pool)
-		// Sign in with the muster app (migration 0173): a phone that is signed
+		// Sign in with the muster app (migration 0174): a phone that is signed
 		// in approves a browser's sign-in by scanning its QR code.
 		ext.SignInRequests = signinreq.NewPG(pool)
 		ext.AllowPINKeys = cfg.AndroidAllowPINKeys
