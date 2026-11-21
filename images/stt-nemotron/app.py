@@ -150,14 +150,17 @@ class Stream:
     def constant_so_far(self) -> bool:
         """True when every sample of the segment so far had ONE value (or none
         arrived) — a dead capture, which the model answers with invented text.
-        Not an energy gate: quiet real speech still varies."""
-        lo = self.seg_min
-        hi = self.seg_max
-        if self.pending is not None and self.pending.size:
-            plo, phi = int(self.pending.min()), int(self.pending.max())
-            lo = plo if lo is None else min(lo, plo)
-            hi = phi if hi is None else max(hi, phi)
-        return lo is None or lo == hi
+        Not an energy gate: quiet real speech still varies.
+
+        The held-back frame is NOT counted: until the next frame, a flush or
+        `end` arrives it may be the zero-padded last one, and its padding
+        would make a constant non-zero stream look varied and let partials of
+        invented words out before `end`. It counts once settle() folds it in
+        (trimmed to its real samples on `end`). Cost: when ONLY the newest
+        frame varies (speech starting after a constant stretch), that step's
+        partial is skipped and the words arrive with the next step's (560 ms
+        later); finals are unaffected."""
+        return self.seg_min is None or self.seg_min == self.seg_max
 
     def emit(self, msg: dict | None) -> None:
         """Hand a message (or None = close normally) to the handler."""
