@@ -182,11 +182,11 @@ search is the page's own query, `/attention?q=…`, so a search is a link and
   results are listed newest first — at most 50 asks and 50 drafts, the count
   saying when there are more — each linking to its ask's page (a draft: its
   card). Nothing found is one line, *No asks match "…"*, with **Clear**.
-- **Text is searched only within the [ask log](asks.md)'s text window**
-  (`MUSTER_ASK_LOG_TEXT_TTL`, 30 days by default, whether or not the log is
-  on): the log forgets question and answer text after it, and search keeps
-  the same promise. An older ask is **not found by its words, but still by
-  its id**.
+- **Text is searched in every ask, whatever its age.** An ask keeps its
+  text for as long as you can open it, so an old ask is found by its words
+  as well as by its id. (The separate [ask log](asks.md) forgets its own
+  copy of question and answer text after `MUSTER_ASK_LOG_TEXT_TTL`; that
+  does not limit this search.)
 - **Your own, and only your own.** A team's asks and drafts you can read as
   its member are not in your results, nor is a question a session put to
   your chief: the search names you as the owner in its query, not only

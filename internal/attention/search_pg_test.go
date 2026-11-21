@@ -52,28 +52,27 @@ func TestSearchFindsAnAskByIdAndByEachTextField(t *testing.T) {
 	other := mustAsk(t, s, owner, New{Asker: Asker{System: true, Label: SystemAskerLabel}, StepUp: &StepUpCard{Tool: "plugin_draft_decide",
 		Title: "Post to X? · Draft #485", Why: "Marketing", Preview: "Another post", Details: "D", DraftID: 485}})
 
-	since := time.Now().Add(-time.Hour)
 	for _, c := range []struct {
 		name string
 		q    Search
 		want []int64
 	}{
-		{"the question, another case", Search{Text: "kestrel", TextSince: since}, []int64{question.ID}},
-		{"an option", Search{Text: "WALRUS", TextSince: since}, []int64{option.ID}},
-		{"the answer", Search{Text: "osprey", TextSince: since}, []int64{answered.ID}},
-		{"the why's text", Search{Text: "heron", TextSince: since}, []int64{whyText.ID}},
-		{"the why's focus title", Search{Text: "badger", TextSince: since}, []int64{whyFocus.ID}},
-		{"the why's last message", Search{Text: "marmot", TextSince: since}, []int64{whyLast.ID}},
-		{"who asked: the stored label", Search{Text: "falcon", TextSince: since}, []int64{label.ID}},
-		{"who asked: the mirrored session", Search{Text: "lynx-window", TextSince: since}, []int64{sess.ID}},
-		{"a step-up card's post", Search{Text: "ibis", TextSince: since}, []int64{stepUp.ID}},
-		{"a step-up card's why", Search{Text: "otter", TextSince: since}, []int64{stepUp.ID}},
-		{"a step-up card's title", Search{Text: "Draft #484", TextSince: since}, []int64{stepUp.ID}},
+		{"the question, another case", Search{Text: "kestrel"}, []int64{question.ID}},
+		{"an option", Search{Text: "WALRUS"}, []int64{option.ID}},
+		{"the answer", Search{Text: "osprey"}, []int64{answered.ID}},
+		{"the why's text", Search{Text: "heron"}, []int64{whyText.ID}},
+		{"the why's focus title", Search{Text: "badger"}, []int64{whyFocus.ID}},
+		{"the why's last message", Search{Text: "marmot"}, []int64{whyLast.ID}},
+		{"who asked: the stored label", Search{Text: "falcon"}, []int64{label.ID}},
+		{"who asked: the mirrored session", Search{Text: "lynx-window"}, []int64{sess.ID}},
+		{"a step-up card's post", Search{Text: "ibis"}, []int64{stepUp.ID}},
+		{"a step-up card's why", Search{Text: "otter"}, []int64{stepUp.ID}},
+		{"a step-up card's title", Search{Text: "Draft #484"}, []int64{stepUp.ID}},
 		{"the ask's id", Search{AskID: option.ID}, []int64{option.ID}},
 		{"a draft's id: its step-up card alone", Search{DraftID: 484}, []int64{stepUp.ID}},
 		{"an id and a draft id: both, newest first", Search{AskID: question.ID, DraftID: 485}, []int64{other.ID, question.ID}},
-		{"a word in several, newest first", Search{Text: "?", TextSince: since, Limit: 3}, []int64{other.ID, stepUp.ID, sess.ID}},
-		{"control: a word no ask holds", Search{Text: "pelican", TextSince: since}, []int64{}},
+		{"a word in several, newest first", Search{Text: "?", Limit: 3}, []int64{other.ID, stepUp.ID, sess.ID}},
+		{"control: a word no ask holds", Search{Text: "pelican"}, []int64{}},
 		{"control: an id no ask has", Search{AskID: other.ID + 1000}, []int64{}},
 		{"control: nothing asked for", Search{}, []int64{}},
 	} {
@@ -93,7 +92,6 @@ func TestSearchTextIsLiteralNotAPattern(t *testing.T) {
 	pct := mustAsk(t, s, owner, New{Asker: session, Question: "Raise it by 50% now?"})
 	under := mustAsk(t, s, owner, New{Asker: session, Question: "Rename a_c?"})
 	slash := mustAsk(t, s, owner, New{Asker: session, Question: `Use C:\temp\x?`})
-	since := time.Now().Add(-time.Hour)
 	for _, c := range []struct {
 		text string
 		want []int64
@@ -106,28 +104,25 @@ func TestSearchTextIsLiteralNotAPattern(t *testing.T) {
 		{`\`, []int64{slash.ID}},
 		{"abc", []int64{plain.ID}},
 	} {
-		if got := searchIDs(t, s, as(owner), Search{Text: c.text, TextSince: since}); !slices.Equal(got, c.want) {
+		if got := searchIDs(t, s, as(owner), Search{Text: c.text}); !slices.Equal(got, c.want) {
 			t.Errorf("%q: %v, want %v", c.text, got, c.want)
 		}
 	}
 }
 
-// TestSearchTextKeepsToTheTextWindow: an ask created before TextSince is not
-// found by its words, and still is by its id. The window's edge is measured
-// on both sides: an ask a minute inside it is found by its words.
-func TestSearchTextKeepsToTheTextWindow(t *testing.T) {
+// TestSearchTextFindsAnAskOfAnyAge: an ask created well over 30 days ago is
+// found by its words (operator decision: search matches every ask the owner
+// can still open, with no age limit; attention_asks never purges its text).
+// RED while search kept to a 30-day text window: only the recent ask was
+// listed.
+func TestSearchTextFindsAnAskOfAnyAge(t *testing.T) {
 	s, _, dsn := pgStore(t)
 	const owner = int64(2)
 	old := mustAsk(t, s, owner, New{Asker: session, Question: "the albatross question"})
 	recent := mustAsk(t, s, owner, New{Asker: session, Question: "the albatross follow-up"})
-	dbtest.OwnerExec(t, dsn, `UPDATE attention_asks SET created_at = now() - interval '40 days' WHERE id = `+strconv.FormatInt(old.ID, 10))
-	dbtest.OwnerExec(t, dsn, `UPDATE attention_asks SET created_at = now() - interval '29 days 23 hours' WHERE id = `+strconv.FormatInt(recent.ID, 10))
-	since := time.Now().Add(-30 * 24 * time.Hour)
-	if got := searchIDs(t, s, as(owner), Search{Text: "albatross", TextSince: since}); !slices.Equal(got, []int64{recent.ID}) {
-		t.Errorf("by text: %v, want only the ask inside the window %d", got, recent.ID)
-	}
-	if got := searchIDs(t, s, as(owner), Search{AskID: old.ID, TextSince: since}); !slices.Equal(got, []int64{old.ID}) {
-		t.Errorf("by id: %v, want the old ask %d", got, old.ID)
+	dbtest.OwnerExec(t, dsn, `UPDATE attention_asks SET created_at = now() - interval '400 days' WHERE id = `+strconv.FormatInt(old.ID, 10))
+	if got := searchIDs(t, s, as(owner), Search{Text: "albatross"}); !slices.Equal(got, []int64{recent.ID, old.ID}) {
+		t.Errorf("by text: %v, want the recent ask %d and the 400-day-old ask %d", got, recent.ID, old.ID)
 	}
 }
 
@@ -179,15 +174,14 @@ func TestSearchIsTheOwnersOwnAsksOnly(t *testing.T) {
 		t.Fatalf("control: the member reads the team's ask %d: %+v %v", teams.ID, a, err)
 	}
 	// Control: each owner's own search finds its own.
-	since := time.Now().Add(-time.Hour)
-	if got := searchIDs(t, s, asTeam, Search{Text: "puffin", TextSince: since}); !slices.Equal(got, []int64{teams.ID}) {
+	if got := searchIDs(t, s, asTeam, Search{Text: "puffin"}); !slices.Equal(got, []int64{teams.ID}) {
 		t.Fatalf("control: the team's own search: %v, want %d", got, teams.ID)
 	}
-	if got := searchIDs(t, s, as(3), Search{Text: "puffin", TextSince: since}); !slices.Equal(got, []int64{others.ID}) {
+	if got := searchIDs(t, s, as(3), Search{Text: "puffin"}); !slices.Equal(got, []int64{others.ID}) {
 		t.Fatalf("control: the other owner's own search: %v, want %d", got, others.ID)
 	}
 
-	if got := searchIDs(t, s, me, Search{Text: "puffin", TextSince: since}); !slices.Equal(got, []int64{mine.ID}) {
+	if got := searchIDs(t, s, me, Search{Text: "puffin"}); !slices.Equal(got, []int64{mine.ID}) {
 		t.Errorf("the member's search by text: %v, want only their own %d (not the team's %d, the other owner's %d or the chief's %d)",
 			got, mine.ID, teams.ID, others.ID, chief.ID)
 	}

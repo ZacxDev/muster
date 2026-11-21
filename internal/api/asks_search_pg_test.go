@@ -301,21 +301,18 @@ func TestEveryAskCardShowsItsLabelledId(t *testing.T) {
 	}
 }
 
-// TestASearchKeepsToTheAskLogsTextWindow: the page passes the ask log's text
-// window (30 days, its default with the log off) to the search: an ask older
-// than it is not found by its words, while its id still goes straight to it;
-// an ask a day inside it is found by its words (the control).
-func TestASearchKeepsToTheAskLogsTextWindow(t *testing.T) {
+// TestASearchFindsAnAskOfAnyAge: the page searches every ask the owner can
+// still open by its words, whatever its age (operator decision): an ask
+// created 400 days ago is listed beside a recent one. RED while the page
+// passed the ask log's 30-day text window to the search.
+func TestASearchFindsAnAskOfAnyAge(t *testing.T) {
 	f := newAttnFixture(t)
 	old := f.mirrorAsk(t, "Retire the osprey cluster?")
 	recent := f.mirrorAsk(t, "Resize the osprey pool?")
-	f.setCreated(t, "attention_asks", old.ID, time.Now().Add(-31*24*time.Hour))
-	f.setCreated(t, "attention_asks", recent.ID, time.Now().Add(-29*24*time.Hour))
+	f.setCreated(t, "attention_asks", old.ID, time.Now().Add(-400*24*time.Hour))
 	_, _, page := f.searchGet(t, "osprey")
-	if got := searchResults(page); strings.Join(got, ",") != "ask:"+strconv.FormatInt(recent.ID, 10) {
-		t.Errorf("by its words: %v, want only the ask inside the window (%d)", got, recent.ID)
-	}
-	if code, loc, _ := f.searchGet(t, strconv.FormatInt(old.ID, 10)); code != http.StatusSeeOther || loc != "/attention/asks/"+strconv.FormatInt(old.ID, 10) {
-		t.Errorf("the old ask by its id: %d %q, want 303 to its page", code, loc)
+	want := "ask:" + strconv.FormatInt(recent.ID, 10) + ",ask:" + strconv.FormatInt(old.ID, 10)
+	if got := searchResults(page); strings.Join(got, ",") != want {
+		t.Errorf("by its words: %v, want %s", got, want)
 	}
 }

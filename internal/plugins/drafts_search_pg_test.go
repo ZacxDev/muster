@@ -15,9 +15,9 @@ import (
 )
 
 // draftSearchIDs is SearchDraftCards' answer as ctx's principal, as ids.
-func draftSearchIDs(t *testing.T, s *PGStore, ctx context.Context, id int64, text string, since time.Time) []int64 {
+func draftSearchIDs(t *testing.T, s *PGStore, ctx context.Context, id int64, text string) []int64 {
 	t.Helper()
-	cards, err := s.SearchDraftCards(ctx, id, text, since, 0)
+	cards, err := s.SearchDraftCards(ctx, id, text, 0)
 	if err != nil {
 		t.Fatalf("search drafts (%d, %q): %v", id, text, err)
 	}
@@ -29,9 +29,8 @@ func draftSearchIDs(t *testing.T, s *PGStore, ctx context.Context, id int64, tex
 }
 
 // TestSearchDraftCardsByIdAndLiteralText: a draft is found by its id and by a
-// piece of its text, case folded, newest first; % and _ are themselves; text
-// older than the window is not searched while the id still is; a word no
-// draft holds finds none (the control).
+// piece of its text, case folded, newest first; % and _ are themselves; a
+// word no draft holds finds none (the control).
 func TestSearchDraftCardsByIdAndLiteralText(t *testing.T) {
 	w := newDraftWorld(t)
 	a := w.file(t, w.m, "The Heron launch is Tuesday.")
@@ -39,7 +38,6 @@ func TestSearchDraftCardsByIdAndLiteralText(t *testing.T) {
 	b := w.file(t, m2, "Raise it by 50% for the heron crew")
 	m3 := w.delivered(t, "m-3", false)
 	c := w.file(t, m3, "rename a_c please")
-	since := time.Now().Add(-time.Hour)
 	me := session(2)
 	for _, x := range []struct {
 		name string
@@ -54,17 +52,25 @@ func TestSearchDraftCardsByIdAndLiteralText(t *testing.T) {
 		{"control: a word no draft holds", 0, "pelican", []int64{}},
 		{"control: an id no draft has", c.ID + 1000, "", []int64{}},
 	} {
-		if got := draftSearchIDs(t, w.s, me, x.id, x.text, since); !slices.Equal(got, x.want) {
+		if got := draftSearchIDs(t, w.s, me, x.id, x.text); !slices.Equal(got, x.want) {
 			t.Errorf("%s: %v, want %v", x.name, got, x.want)
 		}
 	}
+}
+
+// TestSearchDraftCardsFindsADraftOfAnyAge: a draft created well over 30 days
+// ago is found by its text (operator decision: search has no age limit).
+// RED while search kept to a 30-day text window: only the recent draft was
+// listed.
+func TestSearchDraftCardsFindsADraftOfAnyAge(t *testing.T) {
+	w := newDraftWorld(t)
+	old := w.file(t, w.m, "The Heron launch is Tuesday.")
+	m2 := w.delivered(t, "m-2", false)
+	recent := w.file(t, m2, "Move the heron launch")
 	dbtest.OwnerExec(t, w.dsn, `SET session_replication_role = replica;
-		UPDATE plugin_reply_drafts SET created_at = now() - interval '40 days' WHERE id = `+strconv.FormatInt(a.ID, 10))
-	if got := draftSearchIDs(t, w.s, me, 0, "heron", time.Now().Add(-30*24*time.Hour)); !slices.Equal(got, []int64{b.ID}) {
-		t.Errorf("text past the window: %v, want only %d", got, b.ID)
-	}
-	if got := draftSearchIDs(t, w.s, me, a.ID, "", time.Now().Add(-30*24*time.Hour)); !slices.Equal(got, []int64{a.ID}) {
-		t.Errorf("an old draft by id: %v, want %d", got, a.ID)
+		UPDATE plugin_reply_drafts SET created_at = now() - interval '400 days' WHERE id = `+strconv.FormatInt(old.ID, 10))
+	if got := draftSearchIDs(t, w.s, session(2), 0, "heron"); !slices.Equal(got, []int64{recent.ID, old.ID}) {
+		t.Errorf("by text: %v, want the recent draft %d and the 400-day-old draft %d", got, recent.ID, old.ID)
 	}
 }
 
@@ -138,15 +144,14 @@ func TestSearchDraftCardsIsTheOwnersOwnOnly(t *testing.T) {
 	if c, err := s.DraftCard(me, teams.ID); err != nil || c.Draft.ID != teams.ID {
 		t.Fatalf("control: the member reads the team's draft %d: %v", teams.ID, err)
 	}
-	since := time.Now().Add(-time.Hour)
-	if got := draftSearchIDs(t, s, asTeam, 0, "gannet", since); !slices.Equal(got, []int64{teams.ID}) {
+	if got := draftSearchIDs(t, s, asTeam, 0, "gannet"); !slices.Equal(got, []int64{teams.ID}) {
 		t.Fatalf("control: the team's own search: %v, want %d", got, teams.ID)
 	}
-	if got := draftSearchIDs(t, s, me, 0, "gannet", since); !slices.Equal(got, []int64{mine.ID}) {
+	if got := draftSearchIDs(t, s, me, 0, "gannet"); !slices.Equal(got, []int64{mine.ID}) {
 		t.Errorf("the member's search by text: %v, want only their own %d (not the team's %d or another owner's %d)", got, mine.ID, teams.ID, others.ID)
 	}
 	for _, id := range []int64{teams.ID, others.ID} {
-		if got := draftSearchIDs(t, s, me, id, "", since); len(got) != 0 {
+		if got := draftSearchIDs(t, s, me, id, ""); len(got) != 0 {
 			t.Errorf("the member's search for draft %d: %v, want none", id, got)
 		}
 	}

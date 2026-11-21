@@ -38,10 +38,10 @@ import (
 //     the why line, an option, the answer, who asked, a step-up card's title,
 //     why and post, and a draft's text. % _ and \ are themselves, never
 //     wildcards (db.LikeEscape).
-//   - TEXT IS SEARCHED ONLY WITHIN THE ASK LOG'S TEXT WINDOW
-//     (MUSTER_ASK_LOG_TEXT_TTL, askLogTextTTL): the log forgets question and
-//     answer text after it, and search keeps to the same promise — an older
-//     ask is found by its id, not by its words.
+//   - TEXT IS SEARCHED IN EVERY ASK, WHATEVER ITS AGE (operator decision):
+//     attention_asks keeps an ask's text as long as the ask, so an ask the
+//     owner can still open is found by its words. The ask log's text TTL
+//     (MUSTER_ASK_LOG_TEXT_TTL) is the separate log's, not search's.
 //
 // 🔴 THE OWNER'S OWN, NEVER A TEAM'S: both stores name the owner in the query
 // (attention.Search, plugins.SearchDraftCards), since row-level security alone
@@ -112,9 +112,8 @@ func (r asksSearchResult) count() int { return len(r.asks) + len(r.drafts) }
 // (plugins served).
 func (s *Server) searchAsks(ctx context.Context, q askQuery) asksSearchResult {
 	var out asksSearchResult
-	since := s.now().Add(-s.askLogTextTTL())
 	if s.ext.Attention != nil {
-		asks, err := s.ext.Attention.Search(ctx, attention.Search{AskID: q.AskID, DraftID: q.DraftID, Text: q.Text, TextSince: since, Limit: asksSearchShown + 1})
+		asks, err := s.ext.Attention.Search(ctx, attention.Search{AskID: q.AskID, DraftID: q.DraftID, Text: q.Text, Limit: asksSearchShown + 1})
 		if err != nil {
 			s.logger.Printf("asks: search: %v", err)
 			out.failed = true
@@ -126,7 +125,7 @@ func (s *Server) searchAsks(ctx context.Context, q askQuery) asksSearchResult {
 	}
 	// A draft is found by its own id or its text; "ask N" names no draft.
 	if s.ext.Plugins != nil && (q.DraftID > 0 || q.Text != "") {
-		cards, err := s.ext.Plugins.SearchDraftCards(ctx, q.DraftID, q.Text, since, asksSearchShown+1)
+		cards, err := s.ext.Plugins.SearchDraftCards(ctx, q.DraftID, q.Text, asksSearchShown+1)
 		if err != nil {
 			s.logger.Printf("asks: search drafts: %v", err)
 			out.failed = true
