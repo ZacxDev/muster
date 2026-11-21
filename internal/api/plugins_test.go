@@ -331,7 +331,8 @@ func TestPluginDoorRoutesListsEveryPluginRoute(t *testing.T) {
 func TestAPluginTokenIsRefusedOnEveryOtherRoute(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
 	for via, routes := range routeVias {
-		if via == authz.ViaPlugin {
+		// The plugin door is both a personal plugin's and a server app's.
+		if authz.IsPluginVia(via) {
 			continue
 		}
 		for _, pattern := range routes {

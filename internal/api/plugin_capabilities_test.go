@@ -30,11 +30,11 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/messages/{id}/owner-answered": "messages",
 	"POST /plugin/v1/handoffs/redeem":              "viewer or app",
 	// The knock notification and its withdrawal (plugin_notify.go, meetings PR 1e).
-	"POST /plugin/v1/notify":            "app",
-	"DELETE /plugin/v1/notify/{ref}":    "app",
+	"POST /plugin/v1/notify":         "app",
+	"DELETE /plugin/v1/notify/{ref}": "app",
 	// Which of a server app's subjects are live (plugin_server.go, core PR
 	// 1h): a server app's token alone; every personal token is 403.
-	"POST /plugin/v1/owners/check": "server app",
+	"POST /plugin/v1/owners/check":      "server app",
 	"GET /plugin/v1/drafts/checks":      "draft_checks",
 	"POST /plugin/v1/drafts/{id}/check": "draft_checks",
 	"POST /plugin/v1/drafts/{id}/media": "draft_checks",

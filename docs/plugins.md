@@ -326,6 +326,8 @@ code lives 60 s and is spent once. The redeem answers:
   else. The person is re-checked on the redeem itself: hidden, disabled, or
   a code minted by a session a later Sign out everywhere ended is the same
   `404` as an unknown code, and the code is spent all the same.
+  A redeem writes no audit row; it is counted in
+  `muster_plugin_server_grants_total{outcome}` (`granted`, `not_found`).
 
 **Acting for a person: `Muster-Act-For: <subject>`.** On the act-for routes
 the header names the person; the request then runs as that person, under
