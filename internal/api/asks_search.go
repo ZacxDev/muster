@@ -21,9 +21,9 @@ import (
 // text content … make it searchable and also show it on the cards";
 // docs/attention.md "Searching your asks").
 //
-// ONE BOX at the top of /attention. It searches EVERY ask the signed-in owner
-// has — open, answered, dismissed, expired, notices too — and the owner's
-// plugin drafts, and lists what matches, each result linking to its ask's
+// ONE BOX at the top of /attention. It searches the signed-in person's asks
+// — open, answered, dismissed, expired, notices too — and plugin drafts, and
+// lists what matches, each result linking to its ask's
 // page (a draft: its card on the Drafts tab). The query is the page's ?q=,
 // so a search is a link and Back works; an empty one is the page as before.
 //
@@ -43,9 +43,15 @@ import (
 //     owner can still open is found by its words. The ask log's text TTL
 //     (MUSTER_ASK_LOG_TEXT_TTL) is the separate log's, not search's.
 //
-// 🔴 THE OWNER'S OWN, NEVER A TEAM'S: both stores name the owner in the query
-// (attention.Search, plugins.SearchDraftCards), since row-level security alone
-// lets a team's member read the team's asks and drafts.
+// 🔴 WHAT EACH REACHES (operator decision). AN ID finds what the person can
+// already OPEN where the search sends them: an ask the ask page opens (their
+// own, never one put to the chief — handleAskPage's rule, which opens no team
+// ask) and any draft the Drafts tab's card reads (row-level security, a
+// team's draft its member reads included). Another owner's id finds nothing,
+// drawn exactly as an id nobody has. TEXT is the owner's OWN, never a team's:
+// both stores name the owner in the query (attention.Search,
+// plugins.SearchDraftCards), since row-level security alone lets a team's
+// member read the team's asks and drafts.
 // ---------------------------------------------------------------------------
 
 // asksSearchParam is the search's query parameter.

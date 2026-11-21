@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -107,6 +108,14 @@ func TestAnIdSearchFindsOnlyTheOwnersOwnAsk(t *testing.T) {
 		if code != http.StatusOK || loc != "" || len(searchResults(body)) != 0 || !strings.Contains(body, "data-asks-search-empty") {
 			t.Errorf("?q=%q (another owner's ask): %d %q %v, want 200 and no result", q, code, loc, searchResults(body))
 		}
+	}
+	// No existence leak: another owner's ask id reads exactly as an id no ask
+	// (and no draft) has.
+	theirsQ, missingQ := "ask "+strconv.FormatInt(theirs.ID, 10), "ask "+strconv.FormatInt(theirs.ID+1_000_000, 10)
+	c1, _, p1 := f.searchGet(t, theirsQ)
+	c2, _, p2 := f.searchGet(t, missingQ)
+	if a, b := searchResultsSection(p1, theirsQ), searchResultsSection(p2, missingQ); a == "" || a != b || c1 != c2 {
+		t.Errorf("another owner's ask id reads differently from a missing one (%d, %d):\n%s\n---\n%s", c1, c2, a, b)
 	}
 }
 
@@ -314,5 +323,51 @@ func TestASearchFindsAnAskOfAnyAge(t *testing.T) {
 	want := "ask:" + strconv.FormatInt(recent.ID, 10) + ",ask:" + strconv.FormatInt(old.ID, 10)
 	if got := searchResults(page); strings.Join(got, ",") != want {
 		t.Errorf("by its words: %v, want %s", got, want)
+	}
+}
+
+// searchResultsSection is the page's search results, the query's own spelling
+// replaced by Q: what two searches for different ids must draw identically.
+func searchResultsSection(page, raw string) string {
+	return strings.ReplaceAll(htmlRegion(page, `data-testid="asks-search-results"`, `</section>`), raw, "Q")
+}
+
+// TestAnIdSearchFindsATeamDraftTheMemberCanOpen: an id is looked up in every
+// draft the signed-in person can already OPEN (operator decision) — so a
+// team's operator, who reads the team's draft on the Drafts tab (the control),
+// pasting its "Draft #N" chip goes straight to that card. Text is still the
+// person's own: the team draft's words find nothing. Another person, outside
+// the team, gets exactly what an id no draft has gets — no existence leak.
+// RED at 2244c0e1 (an id search was the owner's own only): "No asks match".
+func TestAnIdSearchFindsATeamDraftTheMemberCanOpen(t *testing.T) {
+	w := newIsoWorld(t)
+	f, _ := newFanTeam(t, w)
+	dm, _, _ := fanDrafts(t, w, f.team)
+	dn := strconv.FormatInt(dm, 10)
+	search := func(uid int64, raw string) *httptest.ResponseRecorder {
+		return w.do(w.h, http.MethodGet, "/attention?q="+url.QueryEscape(raw), "", cred{sessionUser: uid})
+	}
+	// Control: the member opens the team's draft on the Drafts tab.
+	if rec := w.do(w.h, http.MethodGet, "/attention?tab=drafts&draft="+dn, "", cred{sessionUser: f.ben}); rec.Code != http.StatusOK || liByID(rec.Body.String(), "draft-"+dn) == "" {
+		t.Fatalf("control: the member's Drafts tab does not draw the team's draft %s (%d)", dn, rec.Code)
+	}
+	for _, q := range []string{"draft " + dn, "Draft #" + dn} {
+		if rec := search(f.ben, q); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/attention?tab=drafts&draft="+dn+"#draft-"+dn {
+			t.Errorf("the member's ?q=%q: %d %q, want 303 to the team draft's card\n%.300s", q, rec.Code, rec.Header().Get("Location"), rec.Body.String())
+		}
+	}
+	// Text stays the member's own: the team draft's words find nothing.
+	if rec := search(f.ben, "synthetic hello"); rec.Code != http.StatusOK || len(searchResults(rec.Body.String())) != 0 || !strings.Contains(rec.Body.String(), "data-asks-search-empty") {
+		t.Errorf("the member's text search listed the team's draft: %d %v", rec.Code, searchResults(rec.Body.String()))
+	}
+	// An outsider: the team draft's id reads exactly as an id nobody has.
+	missing := strconv.FormatInt(dm+1_000_000, 10)
+	theirs, none := search(f.dee, "draft "+dn), search(f.dee, "draft "+missing)
+	if theirs.Code != http.StatusOK || theirs.Header().Get("Location") != "" || len(searchResults(theirs.Body.String())) != 0 {
+		t.Fatalf("an outsider's search for the team draft: %d %q %v", theirs.Code, theirs.Header().Get("Location"), searchResults(theirs.Body.String()))
+	}
+	a, b := searchResultsSection(theirs.Body.String(), "draft "+dn), searchResultsSection(none.Body.String(), "draft "+missing)
+	if a == "" || a != b || none.Code != theirs.Code {
+		t.Errorf("another owner's draft id reads differently from a missing one:\n%s\n---\n%s", a, b)
 	}
 }

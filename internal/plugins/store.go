@@ -112,8 +112,8 @@ type Store interface {
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
 	// DraftCard is one of the principal's drafts as a card.
 	DraftCard(ctx context.Context, id int64) (DraftCard, error)
-	// SearchDraftCards is the principal's OWN drafts by id or by text (the
-	// Asks page's search), newest first.
+	// SearchDraftCards is the Asks page's search over drafts: by id, any the
+	// principal can open (row-level security); by text, its OWN; newest first.
 	SearchDraftCards(ctx context.Context, draftID int64, text string, limit int) ([]DraftCard, error)
 	// DecideDraftFrom approves or rejects a pending draft, recording where the
 	// decision was made (the Asks page or a mirrored session over MCP).

@@ -7,7 +7,11 @@ import (
 
 // AN ASK'S ID ON ITS CARD (docs/attention.md "Ids on the cards"). Agents name
 // asks by id ("I asked in ask 859"); the id is drawn on every card so the
-// owner can find the one they mean, and the Asks page's search box takes it.
+// owner can find the one they mean, and the Asks page's search box takes it:
+// pasted there, an id goes straight to its ask or draft — any the signed-in
+// person can already open (the ask page, the Drafts tab), so a chip on a team
+// draft a member reads finds that draft. Words are searched in the person's
+// own asks and drafts only (docs/attention.md "Searching your asks").
 //
 // 🔴 TWO NAMESPACES, ALWAYS LABELLED. An ask (attention_asks) and a plugin
 // draft (plugin_reply_drafts) are numbered apart, so "#484" alone could be
@@ -19,7 +23,10 @@ import (
 // it as PLAIN TEXT (a <span data-id-copy>): without script that is all it is.
 // The id script (IDCopyScriptHTML) turns each one into a real <button> —
 // keyboard reachable, named "Copy Ask #859" — whose tap copies the label to
-// the clipboard and says "Copied" for a moment. It is a control (a <button>),
+// the clipboard and says "Copied" for a moment. The button keeps its name
+// while it says so; the copy is ANNOUNCED through one polite live region the
+// script keeps on the page ([data-id-copy-status]: "Copied Ask #859"), since
+// a focused control's changing name is not reliably read out. It is a control (a <button>),
 // so the Asks feed's script never takes a tap on it for the card's expand
 // (asksFeedJS CONTROLS). The chip is never inside a card's head toggle: a
 // button cannot hold a button.
@@ -82,7 +89,21 @@ var idCopyJS = `(function () {
       s.replaceWith(b);
     });
   }
-  function all() { upgrade(document.body || document.documentElement); }
+  // The one polite live region a copy is announced in (made at start, so it
+  // is on the page before anything is said in it).
+  function status() {
+    var r = document.querySelector('[data-id-copy-status]');
+    if (!r && document.body) {
+      r = document.createElement('div');
+      r.setAttribute('data-id-copy-status', '');
+      r.setAttribute('role', 'status');
+      r.setAttribute('aria-live', 'polite');
+      r.className = 'sr-only';
+      document.body.appendChild(r);
+    }
+    return r;
+  }
+  function all() { status(); upgrade(document.body || document.documentElement); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', all); else all();
   document.addEventListener('htmx:load', function (e) { upgrade(e.target); });
   try {
@@ -102,12 +123,17 @@ var idCopyJS = `(function () {
       // The chip keeps its width while it says Copied: nothing beside it moves.
       if (!b.style.minWidth) b.style.minWidth = b.offsetWidth + 'px';
       b.textContent = '` + IDCopiedText + `';
-      b.setAttribute('aria-label', '` + IDCopiedText + `');
       b.setAttribute('data-id-copied', '');
+      // Said once in the live region: emptied first, so a second copy of the
+      // same id is announced again.
+      var r = status();
+      if (r) {
+        r.textContent = '';
+        setTimeout(function () { r.textContent = '` + IDCopiedText + ` ' + label; }, 50);
+      }
       clearTimeout(b.__idCopyTimer);
       b.__idCopyTimer = setTimeout(function () {
         b.textContent = label;
-        b.setAttribute('aria-label', '` + IDCopyLabelPrefix + `' + label);
         b.removeAttribute('data-id-copied');
       }, 1500);
     }, function () {});

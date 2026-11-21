@@ -158,14 +158,15 @@ plugin drafts are numbered apart, so a bare number could be either.
 | A search result | its **Ask #** or **Draft #** |
 
 Tap it (or focus it and press <kbd>Enter</kbd>) to copy the label —
-`Ask #859`, `Draft #484` — to the clipboard; it says **Copied** for a moment.
-It is a real button named *Copy Ask #859*, and it never expands its card.
-Without JavaScript it is plain text.
+`Ask #859`, `Draft #484` — to the clipboard; it says **Copied** for a moment,
+and a screen reader hears *Copied Ask #859* (a polite live region). It is a
+real button named *Copy Ask #859*, keeps that name while it says Copied, and
+never expands its card. Without JavaScript it is plain text.
 
 ### Searching your asks
 
-The box on the page heading's row searches **every ask you own** — open,
-answered, dismissed, expired, notices too — and your plugin drafts. The
+The box on the page heading's row searches your asks — open, answered,
+dismissed, expired, notices too — and your plugin drafts. The
 search is the page's own query, `/attention?q=…`, so a search is a link and
 **Back** leaves it; an empty box is the page as before.
 
@@ -175,6 +176,11 @@ search is the page's own query, `/attention?q=…`, so a search is a link and
   with that id. `draft 484` finds the draft **and every step-up card that
   confirms it**. When an id finds exactly one thing, the page goes straight
   to it: the ask's page, or the draft's card on the Drafts tab.
+- **An id finds anything you can already open** there: an ask whose page
+  opens for you (your own — the ask page opens no one else's, a team's
+  included), and any draft the Drafts tab shows you, a team's draft you read
+  as its member included. Another owner's id finds nothing, exactly as an id
+  that does not exist.
 - **Anything else is text**: a case-insensitive piece of the question, the
   why-it's-here line, an option, the answer, who asked (the session's or
   agent's name as stored with the ask), a step-up card's title, why and post,
@@ -187,10 +193,11 @@ search is the page's own query, `/attention?q=…`, so a search is a link and
   as well as by its id. (The separate [ask log](asks.md) forgets its own
   copy of question and answer text after `MUSTER_ASK_LOG_TEXT_TTL`; that
   does not limit this search.)
-- **Your own, and only your own.** A team's asks and drafts you can read as
-  its member are not in your results, nor is a question a session put to
-  your chief: the search names you as the owner in its query, not only
-  through row-level security.
+- **Text searches your own, and only your own.** A team's asks and drafts
+  you can read as its member are not in your text results: the search names
+  you as the owner in its query, not only through row-level security. A
+  question a session put to your chief is never in any result (its ask page
+  is not found either).
 
 ### The Nudges tab
 
