@@ -267,6 +267,7 @@ cookie PUT /api/instance/branding
 unauthenticated /llm/
 unauthenticated POST /api/device/pair
 unauthenticated POST /auth/claim
+unauthenticated POST /auth/clear-caches
 unauthenticated POST /auth/passkey/options
 unauthenticated POST /auth/passkey/verify
 unauthenticated POST /auth/reset
