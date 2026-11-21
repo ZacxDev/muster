@@ -343,6 +343,41 @@ func TestNothingTheOwnerSeesSaysPreview(t *testing.T) {
 	}
 }
 
+// TestTheOwnersHeaderHasCrumbsTheTitlePopoverAndShare: the owner's view of
+// their own page draws "Pages ›" (a link to /pages) before the title, the
+// title as its popover's button — the whole title, "Page #<id> · v<n> ·
+// updated …" and Copy ID — and Share at the header's end; a link's viewer
+// gets the brand and the title, none of them.
+func TestTheOwnersHeaderHasCrumbsTheTitlePopoverAndShare(t *testing.T) {
+	f := newPageFixture(t)
+	const title = "Spring launch checklist for the whole crew, every step"
+	id := f.create(t, f.agent, title, `[{"type":"markdown","text":"one"}]`)
+	sid := strconv.FormatInt(id, 10)
+	view := f.get(t, "/pages/"+sid+"/view", f.ownerHdr()).Body.String()
+	for _, want := range []string{
+		`<nav class="crumbs" aria-label="Breadcrumb" data-page-crumbs><a class="cr" href="/pages" data-page-crumb>Pages</a><span class="sep" aria-hidden="true">›</span></nav>` +
+			`<button type="button" class="t" data-page-title title="` + title + `" aria-haspopup="dialog" aria-expanded="false" aria-controls="page-about">` + title + `</button>`,
+		`<p class="ft" data-page-about-title>` + title + `</p><p class="meta" data-page-about-meta>Page #` + sid + ` · v1 · updated <time data-plain-when="`,
+		`<button type="button" data-copy-page-id="` + sid + `">Copy ID</button>`,
+		`<form method="POST" action="/pages/` + sid + `/share" class="contents"><button type="submit" data-page-share="" data-page-id="` + sid + `"`,
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the owner's view lacks %q", want)
+		}
+	}
+	if !regexp.MustCompile(`data-page-share="" data-page-id="` + sid + `"[^>]*>.*?</button></form></header>`).MatchString(view) {
+		t.Error("Share does not end the owner's header")
+	}
+	l := f.liveLink(t, f.owner, id)
+	shell := f.get(t, pages.LinkPath(l.Token), nil).Body.String()
+	markup := shell[:strings.Index(shell, "<script nonce=")]
+	for _, banned := range []string{"data-page-crumb", "Breadcrumb", "data-page-about", "data-copy-page-id", "data-page-share", `href="/pages`} {
+		if strings.Contains(markup, banned) {
+			t.Errorf("a link's shell draws the owner's %s", banned)
+		}
+	}
+}
+
 // TestTheChipIsTheOwnersAndListsTheVersions: the owner's view draws the
 // version chip — v<shown> — and a popover listing every version, newest
 // first, marking the page's current one and the one shown, each opening

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Browser, BrowserContext, Page } from '@playwright/test';
+import type { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { dsn, pagesDeclutterConnectPort, pagesDeclutterPort, repoRoot, versionA } from '../lib/env';
@@ -25,6 +25,10 @@ import { clumsyCounts, pageWords, setupJargon } from '../lib/plainwords';
 //     revoke one only with a live one, its versions newest first, and a tap
 //     on one opens it;
 //   - a long title wraps whole words and never overflows;
+//   - the owner's view's header: "Pages ›" goes to the list, the title opens
+//     a popover with the whole title, the page's id and Copy ID, Share
+//     copies the page's link (or hands it to the share sheet), and a title
+//     far wider than a phone keeps the header one row inside the screen;
 //   - no screen scrolls sideways, every target is at least 44px, and on a
 //     desktop the list is at least 600px wide.
 //
@@ -351,6 +355,154 @@ for (const [size, viewport] of sizes) {
       await layout(page, 'header', "a link's header");
     } finally {
       await ctx.close();
+    }
+  });
+}
+
+// THE OWNER'S HEADER (internal/pages render.go Shell; docs/pages.md "The
+// owner's view"): "Pages ›" in the brand name's place, a link to the Pages
+// screen; the title a button whose popover holds the whole title wrapped,
+// "Page #<id> · v<n> · updated <when>" and Copy ID; Share at the header's
+// end. At 390px a title far wider than the phone stays one row, cut short,
+// with nothing past the screen's edge.
+const press = (viewport: { width: number }, l: Locator) => (viewport === PHONE ? l.tap() : l.click());
+const noShareSheet = () => {
+  try {
+    delete (Navigator.prototype as unknown as { share?: unknown }).share;
+  } catch {
+    /* none to delete */
+  }
+};
+
+for (const [size, viewport] of sizes) {
+  test(`the owner's header (${size}): Pages ›, the title's popover with its id and Copy ID, one row at any title`, async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport, baseURL: origin, hasTouch: viewport === PHONE, isMobile: viewport === PHONE,
+      permissions: ['clipboard-read', 'clipboard-write'] });
+    try {
+      await ctx.addInitScript(noShareSheet);
+      const page = await ctx.newPage();
+      await signIn(page, origin);
+      await page.goto(`/pages/${seeded.long}/view`);
+      const header = page.locator('header[data-page-brand]');
+      const crumb = header.locator('a[data-page-crumb]');
+      await expect(crumb).toHaveText('Pages');
+      await expect(crumb).toHaveAttribute('href', '/pages');
+      await expect(header.locator('[data-brand-name]'), 'the brand name is drawn beside the crumbs').toHaveCount(0);
+      await expect(header.getByRole('button', { name: `Share “${FIXTURE[0]}”` })).toBeVisible();
+      await shot(page, `${size}-05-owner-header`);
+
+      // 1. One row; the title cut short but there; nothing past the edge.
+      const fit = await header.evaluate((h) => {
+        const t = h.querySelector('[data-page-title]') as HTMLElement;
+        const items = Array.from(h.querySelectorAll('img, .cr, .sep, [data-page-title], .sess, .chip, form>button')).map((e) => e.getBoundingClientRect());
+        return {
+          doc: document.documentElement.scrollWidth - window.innerWidth,
+          past: items.filter((r) => r.width > 0 && (r.left < 0 || r.right > window.innerWidth + 0.5)).length,
+          rows: new Set(items.filter((r) => r.width > 0).map((r) => Math.round(r.top + r.height / 2))).size <= 2,
+          height: h.getBoundingClientRect().height,
+          titleW: t.getBoundingClientRect().width,
+          cut: t.scrollWidth > t.clientWidth,
+        };
+      });
+      expect(fit.doc, 'the page scrolls sideways').toBeLessThanOrEqual(0);
+      expect(fit.past, 'a header item past the screen').toBe(0);
+      expect(fit.height, 'the header is one slim row').toBeLessThanOrEqual(44);
+      expect(fit.titleW, 'the title is squeezed out').toBeGreaterThanOrEqual(48);
+      expect(fit.cut, 'the long title is cut short').toBe(true);
+
+      // 2. The title opens its popover: the whole title, wrapped; the id,
+      // version and when; Copy ID copies the id.
+      const title = header.locator('[data-page-title]');
+      const about = page.locator('#page-about');
+      await expect(title).toHaveAttribute('aria-expanded', 'false');
+      await press(viewport, title);
+      await expect(about).toBeVisible();
+      await expect(title).toHaveAttribute('aria-expanded', 'true');
+      await expect(about.locator('[data-page-about-title]')).toHaveText(FIXTURE[0]);
+      const wrap = await about.locator('[data-page-about-title]').evaluate((e) => ({ sw: e.scrollWidth, cw: e.clientWidth, h: e.getBoundingClientRect().height }));
+      expect(wrap.sw, 'the full title overflows the popover').toBeLessThanOrEqual(wrap.cw);
+      expect(wrap.h, 'the full title is not wrapped onto several lines').toBeGreaterThan(30);
+      await expect(about.locator('[data-page-about-meta]')).toHaveText(new RegExp(`^Page #${seeded.long} · v1 · updated ${WHEN}$`));
+      const pb = (await about.boundingBox())!;
+      if (viewport === PHONE) {
+        expect(Math.round(pb.y + pb.height), 'on a phone the popover is a bottom sheet').toBe(viewport.height);
+        expect(Math.round(pb.width)).toBe(viewport.width);
+      } else {
+        expect(Math.round(pb.y), 'on a desktop the popover hangs under the header').toBe(44);
+        expect(Math.round(pb.x), 'on a desktop the popover is under the title, at the left').toBe(8);
+      }
+      await shot(page, `${size}-06-title-popover`);
+      const copy = about.getByRole('button', { name: 'Copy ID' });
+      await expect(copy).toBeFocused();
+      expect((await copy.boundingBox())!.height, 'Copy ID is at least 44px').toBeGreaterThanOrEqual(44);
+      await page.evaluate(() => navigator.clipboard.writeText('cleared'));
+      await press(viewport, copy);
+      await expect(page.locator('[data-page-toast]').filter({ hasText: 'ID copied' })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(String(seeded.long));
+      await page.keyboard.press('Escape');
+      await expect(about).toBeHidden();
+      await expect(title).toHaveAttribute('aria-expanded', 'false');
+      await expect(title).toBeFocused();
+
+      // 3. One popover at a time: the title's opening closes the chip's.
+      // A tap outside (the scrim) closes it.
+      const chip = header.locator('[data-version-chip]');
+      await press(viewport, chip);
+      await expect(page.locator('#page-versions')).toBeVisible();
+      await title.dispatchEvent('click');
+      await expect(about).toBeVisible();
+      await expect(page.locator('#page-versions')).toBeHidden();
+      await expect(chip).toHaveAttribute('aria-expanded', 'false');
+      await page.mouse.click(viewport.width - 12, 120);
+      await expect(about).toBeHidden();
+      await expect(title).toHaveAttribute('aria-expanded', 'false');
+
+      // 4. Pages › goes to the Pages screen.
+      await Promise.all([page.waitForURL(`${origin}/pages`), press(viewport, crumb)]);
+      await expect(page.locator(`li[data-page-id="${seeded.long}"]`)).toBeVisible();
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  test(`the owner's header Share (${size}): copies the page's link with a toast, or hands it to the share sheet`, async ({ browser }) => {
+    // Launch notes already has its live link: Share hands out that one.
+    const name = `Share “${FIXTURE[2]}”`;
+    const copying = await browser.newContext({ viewport, baseURL: origin, hasTouch: viewport === PHONE, isMobile: viewport === PHONE,
+      permissions: ['clipboard-read', 'clipboard-write'] });
+    const sharing = await browser.newContext({ viewport, baseURL: origin, hasTouch: viewport === PHONE, isMobile: viewport === PHONE });
+    try {
+      // No share sheet: the link goes on the clipboard, and a toast says so.
+      await copying.addInitScript(noShareSheet);
+      const page = await copying.newPage();
+      await signIn(page, origin);
+      const link = (await (await page.request.post(origin + `/pages/${seeded.notes}/share`, { headers: { Origin: origin, Accept: 'application/json' } })).json()).url as string;
+      expect(link).toMatch(new RegExp(`^${origin}/s/[A-Za-z0-9_-]+$`));
+      await page.goto(`/pages/${seeded.notes}/view`);
+      const share = page.locator('header').getByRole('button', { name });
+      await page.evaluate(() => navigator.clipboard.writeText('cleared'));
+      await press(viewport, share);
+      await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(link);
+      await shot(page, `${size}-07-share-copied`);
+
+      // A share sheet (stubbed): called with the title and the same link.
+      await sharing.addInitScript(() => {
+        const w = window as unknown as { __shared: unknown[] };
+        w.__shared = [];
+        Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value: (d: unknown) => (w.__shared.push(d), Promise.resolve()) });
+        Object.defineProperty(Navigator.prototype, 'canShare', { configurable: true, value: () => true });
+      });
+      const sp = await sharing.newPage();
+      await signIn(sp, origin);
+      await sp.goto(`/pages/${seeded.notes}/view`);
+      await press(viewport, sp.locator('header').getByRole('button', { name }));
+      await expect.poll(() => sp.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared.length)).toBe(1);
+      expect(await sp.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared[0])).toEqual({ title: FIXTURE[2], url: link });
+      await expect(sp.locator('[data-page-toast]')).toHaveCount(0);
+    } finally {
+      await copying.close();
+      await sharing.close();
     }
   });
 }

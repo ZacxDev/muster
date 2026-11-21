@@ -402,12 +402,33 @@ while the bar is open, is refused (*Another send is waiting for your
 answer.*). A viewer through a link sees no bar: what they send is recorded
 as before, turned into JSON the same way.
 
+Your header starts with **breadcrumbs** where the instance's name would be:
+**Pages ›**, a tap back to the Pages screen, and on a team's page the team's
+name after it (as words: there is no screen of one team's pages). On a narrow
+screen the team's name is cut short first, then the title; the header stays
+one row.
+
+**Tap the title** to read all of it: a small popover with the whole title,
+wrapped, then *Page #12 · v3 · updated today at 9:14* (the page's id, the
+version you are viewing, and when the page last changed, in your own time
+zone), and **Copy ID**, which puts the id on your clipboard.
+
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
 version, when it was made in words (*today at 9:14*, in your own time zone)
 and which is current (the one links show); tapping
-one views it. Under the list are **Share** (the same Share as everywhere else)
-and **Page details**, the page's screen. On a phone the list is a sheet from
-the bottom; Escape, a tap outside or the chip closes it.
+one views it. Under the list is **Page details**, the page's screen. Both
+popovers are a sheet from the bottom on a phone and hang under the header on
+a wider screen; one is open at a time, and Escape, a tap outside or its own
+button closes it.
+
+**Share** ends the header (the same Share as everywhere else): on a device
+with a share sheet it opens it with the page's link; otherwise it copies the
+link and says *Link copied*. It is drawn only for someone who may manage the
+page — its owner, or on a team's page the person who started the agent that
+made it (a manager of the team, once that person has left it); any other
+team member does not see it here, and shares from the Pages screen instead.
+A link's viewer sees none of these: their header is the instance's brand
+and the title.
 
 Beside the chip is the **session that made the page**: a button with its
 name, one tap to it. For a page a mirrored Claude Code session made, that is
@@ -534,7 +555,8 @@ the team (viewer and up) sees it:
   the team, as the page is.
 - **Share** works for anyone on the team: one tap makes the page's link
   public, or shows it again if it already has one. The link's row names who
-  tapped.
+  tapped. (The page's own view draws Share only for whoever may manage the
+  page; the others share from the Pages screen or the page's screen.)
 
 **The page's creator manages it**: the person who started the team agent that
 made it (the person whose say-so the team chief's start was). Only they see,

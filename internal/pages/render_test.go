@@ -461,7 +461,7 @@ func TestTheShellDrawsBrandingAndTheSandboxedFrame(t *testing.T) {
 // TestTheOwnersShellDrawsTheVersionChipAndItsPopover: the owner's chrome —
 // the chip, a real button, names the version shown; the popover lists every
 // version (literal values), marks the one shown and the page's current one,
-// and carries the Share button and Page details as given.
+// and carries Page details; the Share button, as given, ends the header.
 func TestTheOwnersShellDrawsTheVersionChipAndItsPopover(t *testing.T) {
 	out := Shell(ShellView{Title: "Plan", FrameSrc: "/pages/7/versions/2/content", Base: "/pages/7/versions/2", Nonce: "N",
 		Owner: &OwnerChrome{Version: 2, DetailHref: "/pages/7", ShareButton: `<form class="contents"><button data-page-share>Share</button></form>`,
@@ -471,15 +471,16 @@ func TestTheOwnersShellDrawsTheVersionChipAndItsPopover(t *testing.T) {
 				{Version: 1, Made: "2000-01-01 08:00", Href: "/pages/7/view?v=1"},
 			}}})
 	for _, want := range []string{
-		`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" aria-label="Version 2: show versions">v2 <span aria-hidden="true">▾</span></button></header>`,
+		`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" aria-label="Version 2: show versions">v2 <span aria-hidden="true">▾</span></button>` +
+			`<form class="contents"><button data-page-share>Share</button></form></header>`,
 		`<div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>`,
 		`<li><a href="/pages/7/view?v=3" data-version-link="3">Version 3<span class="w">current · 2000-01-03 10:00</span></a></li>` +
 			`<li><a href="/pages/7/view?v=2" data-version-link="2" aria-current="page">Version 2<span class="w">2000-01-02 09:00</span></a></li>` +
 			`<li><a href="/pages/7/view?v=1" data-version-link="1">Version 1<span class="w">2000-01-01 08:00</span></a></li></ul>`,
-		`<hr><form class="contents"><button data-page-share>Share</button></form><a href="/pages/7" data-page-details>Page details</a></div>`,
+		`<hr><a href="/pages/7" data-page-details>Page details</a></div>`,
 		`<div class="scrim" data-versions-scrim hidden></div>`,
 		`/*share-script*/</script>`,
-		`if(e.key==="Escape"&&!pop.hidden){e.preventDefault();set(false,true);}`,
+		`pairs.forEach(function(p){if(!p.pop.hidden){e.preventDefault();set(p,false,true);}});`,
 		`credentials:"same-origin"`,
 	} {
 		if !strings.Contains(out, want) {
@@ -513,5 +514,92 @@ func TestTheOwnersHeaderLinksTheSessionThatMadeThePage(t *testing.T) {
 		if strings.Contains(doc, "data-page-session") || strings.Contains(doc, "data-page-made-by") {
 			t.Errorf("%s shell draws a session link", name)
 		}
+	}
+}
+
+// TestTheOwnersHeaderDrawsCrumbsTheTitlePopoverAndShare: the owner's header
+// draws its breadcrumbs in the brand name's place (Pages a link, a team's
+// name words), the title as the button of its popover, which holds the whole
+// title, "Page #<id> · v<n> · updated <when>" and Copy ID; Share, as given,
+// ends the header, and none is drawn when none is given. A link's header
+// keeps the brand and draws none of it. Literal values throughout.
+func TestTheOwnersHeaderDrawsCrumbsTheTitlePopoverAndShare(t *testing.T) {
+	const title = `Quarterly plan for the <north> region, with every line item spelled out`
+	const etitle = `Quarterly plan for the &lt;north&gt; region, with every line item spelled out`
+	share := `<form class="contents"><button data-page-share>Share</button></form>`
+	owner := func(crumbs []Crumb, share string, embed bool) string {
+		return Shell(ShellView{Title: title, BrandName: "Acme", FrameSrc: "/c", Base: "/pages/37/versions/2", Nonce: "N", Embed: embed,
+			Owner: &OwnerChrome{PageID: 37, Crumbs: crumbs, Updated: "today", UpdatedMS: 946684800000, Version: 2, DetailHref: "/pages/37", ShareButton: share}})
+	}
+	personal := owner([]Crumb{{Label: "Pages", Href: "/pages"}}, share, false)
+	team := owner([]Crumb{{Label: "Pages", Href: "/pages"}, {Label: "Alpha <t>"}}, "", false)
+	embedded := owner([]Crumb{{Label: "Pages", Href: "/pages"}}, share, true)
+	titleBtn := `<button type="button" class="t" data-page-title title="` + etitle + `" aria-haspopup="dialog" aria-expanded="false" aria-controls="page-about">` + etitle + `</button>`
+	for name, c := range map[string]struct {
+		doc  string
+		want []string
+	}{
+		"personal": {personal, []string{
+			`<header data-page-brand><nav class="crumbs" aria-label="Breadcrumb" data-page-crumbs><a class="cr" href="/pages" data-page-crumb>Pages</a>` +
+				`<span class="sep" aria-hidden="true">›</span></nav>` + titleBtn,
+			`aria-label="Version 2: show versions">v2 <span aria-hidden="true">▾</span></button>` + share + `</header>`,
+			`<div class="scrim" data-about-scrim hidden></div>`,
+			`<div class="pop about" id="page-about" role="dialog" aria-label="About this page" data-page-about hidden>` + "\n" +
+				`<p class="ft" data-page-about-title>` + etitle + `</p>` +
+				`<p class="meta" data-page-about-meta>Page #37 · v2 · updated <time data-plain-when="946684800000" data-plain-when-prefix="">today</time></p>` +
+				`<button type="button" data-copy-page-id="37">Copy ID</button></div>`,
+		}},
+		"team": {team, []string{
+			`<a class="cr" href="/pages" data-page-crumb>Pages</a><span class="sep" aria-hidden="true">›</span>` +
+				`<span class="cr team" title="Alpha &lt;t&gt;" data-page-crumb>Alpha &lt;t&gt;</span><span class="sep" aria-hidden="true">›</span></nav>` + titleBtn,
+			`aria-label="Version 2: show versions">v2 <span aria-hidden="true">▾</span></button></header>`,
+		}},
+		"embedded": {embedded, []string{
+			`<a class="cr" href="/pages" target="_blank" rel="noopener" data-page-crumb>Pages</a>`,
+		}},
+	} {
+		for _, w := range c.want {
+			if !strings.Contains(c.doc, w) {
+				t.Errorf("%s: the owner's shell lacks %q", name, w)
+			}
+		}
+		if strings.Contains(c.doc, "data-brand-name") {
+			t.Errorf("%s: the owner's crumbs did not take the brand name's place", name)
+		}
+	}
+	if strings.Contains(team, "data-page-share") {
+		t.Error("a shell given no Share button draws one")
+	}
+
+	// A link's viewer: the brand and the title as words; no crumb, no
+	// title popover, no Share.
+	link := Shell(ShellView{Title: title, BrandName: "Acme", FrameSrc: "/s/T/content", Base: "/s/T", Nonce: "N"})
+	markup := link[:strings.Index(link, "<script nonce=")]
+	if want := `<header data-page-brand><span class="n" data-brand-name>Acme</span><span class="t" data-page-title title="` + etitle + `">` + etitle + `</span></header>`; !strings.Contains(markup, want) {
+		t.Errorf("a link's header is not the brand and the title:\n%s", markup[strings.Index(markup, "<header"):])
+	}
+	for _, banned := range []string{"data-page-crumb", "Breadcrumb", "page-about", "data-copy-page-id", "data-page-share", `href="/pages`} {
+		if strings.Contains(markup, banned) {
+			t.Errorf("a link's shell draws the owner's %s", banned)
+		}
+	}
+}
+
+// TestOneHeaderPopoverIsOpenAtATime: the owner script opens one popover at a
+// time (opening one closes any other), and the header stays shown while
+// either is open (ShellScript's popOpen reads every header popover button,
+// not only the chip).
+func TestOneHeaderPopoverIsOpenAtATime(t *testing.T) {
+	for _, want := range []string{
+		`if(open)pairs.forEach(function(q){if(q!==p&&!q.pop.hidden)set(q,false,false);});`,
+		`wire(document.querySelector("[data-version-chip]"),document.getElementById("page-versions"),document.querySelector("[data-versions-scrim]"));`,
+		`wire(document.querySelector("button[data-page-title]"),document.getElementById("page-about"),document.querySelector("[data-about-scrim]"));`,
+	} {
+		if !strings.Contains(ownerScript, want) {
+			t.Errorf("the owner script lacks %q", want)
+		}
+	}
+	if want := `function popOpen(){return !!document.querySelector('header [aria-haspopup="dialog"][aria-expanded="true"]');}`; !strings.Contains(ShellScript("/b", true), want) {
+		t.Errorf("the shell's popOpen does not read every header popover: lacks %q", want)
 	}
 }

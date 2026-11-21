@@ -91,6 +91,19 @@ for (const size of sizes) {
       // confirms the send; it is recorded as theirs.
       await Promise.all([page.waitForURL(origin + `/pages/${f.page}/view`), page.locator('[data-page-view]').click()]);
       const frame = page.frameLocator('iframe#page');
+      // 3a. Its header: "Pages › <team> ›" before the title, Pages a link;
+      // no Share for a member who may only view (pages.MayManage); one row,
+      // nothing past the screen's edge.
+      const header = page.locator('header[data-page-brand]');
+      await expect(header.locator('[data-page-crumb]')).toHaveText(['Pages', f.name]);
+      await expect(header.locator('a[data-page-crumb]')).toHaveAttribute('href', '/pages');
+      await expect(page.locator('[data-page-share]'), 'Share is drawn for a member who may only view').toHaveCount(0);
+      const past = await header.evaluate((h) =>
+        Array.from(h.querySelectorAll('img, .cr, .sep, [data-page-title], .sess, .chip'))
+          .map((e) => e.getBoundingClientRect())
+          .filter((r) => r.width > 0 && (r.left < 0 || r.right > window.innerWidth + 0.5)).length,
+      );
+      expect(past, 'a header item past the screen').toBe(0);
       const pick = frame.locator('[data-muster-component="pick"]');
       await pick.locator('input[name="answer"]').fill('Thursday, from ' + size.name);
       await pick.getByRole('button', { name: 'Send pick' }).click();
