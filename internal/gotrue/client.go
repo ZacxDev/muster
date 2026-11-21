@@ -309,6 +309,42 @@ func decodeError(status int, raw []byte) error {
 // AdminRecoveryLink mints a single-use recovery token for email and returns its
 // hashed form (GoTrue's `hashed_token`), which /verify accepts as token_hash.
 func (c *Client) AdminRecoveryLink(ctx context.Context, clientIP, email string) (string, error) {
+	return c.generateLink(ctx, clientIP, "recovery", email)
+}
+
+// AdminMagicLink mints a single-use sign-in token for the EXISTING user email
+// and returns its hashed form, which VerifyMagicLink exchanges for a session.
+// muster uses it for one thing: issuing a session to a user who has already
+// proved who they are on another device ("Sign in with the muster app";
+// internal/api signin_app.go). Nothing is emailed: the token never leaves
+// muster.
+//
+// ⚠ IT SHARES GoTrue's ONE RECOVERY-TOKEN SLOT WITH AdminRecoveryLink.
+// Measured against v2.197.0: minting either invalidates an outstanding token of
+// the other (and an earlier one of its own type), so a magic link spent by
+// muster ends any reset link an admin has handed this user and not yet used.
+// The admin path has no send-frequency limit (two back to back both mint).
+func (c *Client) AdminMagicLink(ctx context.Context, clientIP, email string) (string, error) {
+	return c.generateLink(ctx, clientIP, "magiclink", email)
+}
+
+// AdminUserEmail reads user userID's email as GoTrue holds it: what
+// AdminMagicLink must be given to name that user, whatever muster's own copy
+// of the address says.
+func (c *Client) AdminUserEmail(ctx context.Context, clientIP, userID string) (string, error) {
+	var u struct {
+		Email string `json:"email"`
+	}
+	if err := c.admin(ctx, clientIP, http.MethodGet, "/admin/users/"+url.PathEscape(userID), nil, &u); err != nil {
+		return "", err
+	}
+	if u.Email == "" {
+		return "", errors.New("gotrue: /admin/users answered with no email")
+	}
+	return u.Email, nil
+}
+
+func (c *Client) generateLink(ctx context.Context, clientIP, typ, email string) (string, error) {
 	var out struct {
 		HashedToken string `json:"hashed_token"`
 		Properties  struct {
@@ -316,7 +352,7 @@ func (c *Client) AdminRecoveryLink(ctx context.Context, clientIP, email string) 
 		} `json:"properties"`
 	}
 	if err := c.admin(ctx, clientIP, http.MethodPost, "/admin/generate_link",
-		map[string]any{"type": "recovery", "email": email}, &out); err != nil {
+		map[string]any{"type": typ, "email": email}, &out); err != nil {
 		return "", err
 	}
 	h := out.HashedToken
@@ -332,9 +368,19 @@ func (c *Client) AdminRecoveryLink(ctx context.Context, clientIP, email string) 
 // VerifyRecovery exchanges a recovery token_hash for a session. GoTrue spends
 // the token: a second exchange is refused.
 func (c *Client) VerifyRecovery(ctx context.Context, clientIP, tokenHash string) (Session, error) {
+	return c.verifyOTP(ctx, clientIP, "recovery", tokenHash)
+}
+
+// VerifyMagicLink exchanges an AdminMagicLink token_hash for a session (amr
+// "otp"). GoTrue spends the token: a second exchange is refused (403).
+func (c *Client) VerifyMagicLink(ctx context.Context, clientIP, tokenHash string) (Session, error) {
+	return c.verifyOTP(ctx, clientIP, "magiclink", tokenHash)
+}
+
+func (c *Client) verifyOTP(ctx context.Context, clientIP, typ, tokenHash string) (Session, error) {
 	var s Session
 	err := c.do(ctx, clientIP, http.MethodPost, "/verify", "",
-		map[string]string{"type": "recovery", "token_hash": tokenHash}, &s)
+		map[string]string{"type": typ, "token_hash": tokenHash}, &s)
 	if err == nil && s.AccessToken == "" {
 		err = errors.New("gotrue: /verify answered with no session")
 	}

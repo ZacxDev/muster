@@ -58,6 +58,17 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 			_, err := c.VerifyRecovery(ctx, ip, f.RecoveryHash(id))
 			return err
 		},
+		// Sign in with the muster app: a session for a user who proved who
+		// they are on their phone.
+		"AdminUserEmail": func(ip string) error { _, err := c.AdminUserEmail(ctx, ip, id); return err },
+		"AdminMagicLink": func(ip string) error {
+			_, err := c.AdminMagicLink(ctx, ip, "a@example.com")
+			return err
+		},
+		"VerifyMagicLink": func(ip string) error {
+			_, err := c.VerifyMagicLink(ctx, ip, f.RecoveryHash(id))
+			return err
+		},
 		"AdminSetPassword":       func(ip string) error { return c.AdminSetPassword(ctx, ip, id, "a-long-enough-password") },
 		"AdminSignOutEverywhere": func(ip string) error { return c.AdminSignOutEverywhere(ctx, ip, id) },
 		// Passkeys (GoTrue v2.197.0's /passkeys API).

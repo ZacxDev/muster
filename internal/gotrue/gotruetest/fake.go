@@ -10,7 +10,8 @@
 // at sign-in, carried unchanged by every refresh), admin create (with
 // email_confirm required to sign in and the 12-character floor — enforced on
 // the admin path since v2.197.0), ban, delete, a service_role check on
-// /admin/*, and (accounts PR 5) admin/generate_link for recovery, POST /verify
+// /admin/*, and (accounts PR 5) admin/generate_link for recovery (and magiclink,
+// sharing its one slot as GoTrue does), POST /verify
 // with a single-use token_hash, and an admin password update (which revokes
 // the user's sessions). A ban does NOT revoke sessions — refreshes are
 // refused only while it stands, as measured. The e2e suite
@@ -94,7 +95,11 @@ type Fake struct {
 	refresh         map[string]*refreshToken
 	// recovery is each live recovery token_hash → user id (accounts PR 5).
 	recovery map[string]string
-	calls    []Call
+	// linkMinted marks the recovery hashes /admin/generate_link minted (the
+	// ones a later mint for the same user ends); linksMinted counts them.
+	linkMinted  map[string]bool
+	linksMinted int
+	calls       []Call
 	// Passkeys (GoTrue v2.197.0's /passkeys API; see passkeys.go).
 	passkeysEnabled bool
 	passkeys        map[string]*FakePasskey
@@ -131,6 +136,7 @@ func New(t interface {
 		sessions:   map[string]*session{},
 		refresh:    map[string]*refreshToken{},
 		recovery:   map[string]string{},
+		linkMinted: map[string]bool{},
 		passkeys:   map[string]*FakePasskey{},
 		challenges: map[string]*challenge{},
 	}
@@ -261,6 +267,13 @@ func (f *Fake) RecoveryHash(id string) string {
 	h := randHex(28)
 	f.recovery[h] = id
 	return h
+}
+
+// LinksMinted is how many tokens /admin/generate_link has minted.
+func (f *Fake) LinksMinted() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.linksMinted
 }
 
 // Verifier returns a verifier matching what this fake signs, on its clock.
@@ -562,20 +575,33 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPost && p == "/admin/generate_link":
 		// Modelled on v2.189.0: the response is the user's fields FLAT, plus
-		// action_link / hashed_token / verification_type. Only recovery is
-		// modelled; an unknown email is 404.
+		// action_link / hashed_token / verification_type. recovery and
+		// magiclink are modelled; an unknown email is 404.
+		//
+		// The two SHARE ONE SLOT, as measured on v2.197.0 (both set the user's
+		// recovery token): minting either ends every token this route minted
+		// for that user before. RecoveryHash, which a test calls directly,
+		// leaves the others alone.
 		typ, _ := body["type"].(string)
 		email, _ := body["email"].(string)
-		if typ != "recovery" {
+		if typ != "recovery" && typ != "magiclink" {
 			writeErr(w, 422, "validation_failed", "unsupported link type")
 			return
 		}
 		for _, u := range f.users {
 			if strings.EqualFold(u.Email, email) {
+				for old := range f.linkMinted {
+					if f.recovery[old] == u.ID {
+						delete(f.recovery, old)
+						delete(f.linkMinted, old)
+					}
+				}
 				h := randHex(28)
 				f.recovery[h] = u.ID
+				f.linkMinted[h] = true
+				f.linksMinted++
 				writeJSON(w, 200, map[string]any{"id": u.ID, "email": u.Email, "hashed_token": h,
-					"verification_type": "recovery", "action_link": f.URL + "/verify?token=" + h + "&type=recovery"})
+					"verification_type": typ, "action_link": f.URL + "/verify?token=" + h + "&type=" + typ})
 				return
 			}
 		}
@@ -585,7 +611,7 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// verify is POST /verify for type=recovery + token_hash: single use, and a
+// verify is POST /verify for type=recovery or magiclink + token_hash: single use, and a
 // banned user gets no session.
 func (f *Fake) verify(w http.ResponseWriter, r *http.Request) {
 	var body map[string]string
@@ -593,11 +619,13 @@ func (f *Fake) verify(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.recovery[body["token_hash"]]
-	if body["type"] != "recovery" || !ok {
+	// recovery and magiclink both look the token up in the recovery slot.
+	if (body["type"] != "recovery" && body["type"] != "magiclink") || !ok {
 		writeErr(w, 403, "otp_expired", "Email link is invalid or has expired")
 		return
 	}
 	delete(f.recovery, body["token_hash"])
+	delete(f.linkMinted, body["token_hash"])
 	u := f.users[id]
 	if u == nil || u.Banned {
 		writeErr(w, 403, "user_banned", "User is banned")

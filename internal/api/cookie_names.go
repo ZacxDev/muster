@@ -25,6 +25,7 @@ var cookieBases = []string{
 	refreshCookieName,
 	knownDeviceCookieName,
 	pushDeviceCookie,
+	appSignInCookie,
 }
 
 // HostPrefixedCookies reports whether this deployment names its cookies with
@@ -79,6 +80,8 @@ var cookieSignInPaths = map[string]bool{
 	passkeySignInVerifyPath:               true,
 	stepUpConfirmPath:                     true,
 	stepUpConfirmPath + "/passkey/verify": true,
+	appSignInStartPath:                    true,
+	appSignInRedeemPath:                   true,
 }
 
 // hostCookieNames is the middleware half of the `__Host-` rename. On a prefixed

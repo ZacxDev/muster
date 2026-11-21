@@ -319,6 +319,8 @@ var wantForeignKeys = []string{
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0105: the instance's branding names the admin who changed it last.
 	"instance_branding|instance_branding_updated_by_fkey|FOREIGN KEY (updated_by) REFERENCES users(id)",
+	// 0174: an approved app sign-in names its approver.
+	"signin_requests|signin_requests_approved_by_fkey|FOREIGN KEY (approved_by) REFERENCES users(id)",
 	// 0126: a membership names its team, its person and who added it — all
 	// users rows (a team is one); the KIND each must be is a trigger's job.
 	// 0127: an audit row names the team it acted on.

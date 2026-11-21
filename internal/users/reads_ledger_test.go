@@ -48,6 +48,7 @@ var usersReads = map[string]string{
 	"internal/chiefnudge PG.TeamHostOwners":                readTeam, // the session-state pass's team arm (2b.3): teams holding an unrevoked mirror token
 	"internal/devices PGStore.Redeem":                      readByID,
 	"internal/devices PGStore.Authenticate":                readPerson,
+	"internal/signinreq PGStore.Redeem":                    readPerson, // the approver of an app sign-in: a person (PersonIDs), checked live
 	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,
 	"internal/focus PGStore.Owners":                        readEnabledPerson,
 	"internal/morning PG.Owners":                           readEnabledPerson,       // the morning report's owners: a disabled account gets no report

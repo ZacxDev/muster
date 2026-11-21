@@ -74,8 +74,10 @@ type User struct {
 	// reset, never cleared.
 	SessionsNotBefore *time.Time
 	// SignedOutAt is the latest "sign out everywhere" (migration 0019), nil
-	// for none. Only the send queue reads it: a message queued under a sign-in
-	// at or before it is not sent. It is NOT a session cutoff — the session
+	// for none. The send queue reads it (a message queued under a sign-in at or
+	// before it is not sent), and so does the app sign-in (an approval given
+	// before it is refused; the known-device cookie is keyed on it). It is NOT
+	// a session cutoff — the session
 	// tier keeps its own, in memory (internal/api gotrueState.notBefore).
 	SignedOutAt *time.Time
 }

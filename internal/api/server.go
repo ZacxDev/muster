@@ -158,6 +158,12 @@ type Server struct {
 	// inviteLimits throttles invite redemption and the password reset
 	// (accounts PR 5; login_invite.go).
 	inviteLimits inviteLimits
+	// appSignIn throttles "Sign in with the muster app" (signin_app.go).
+	appSignIn appSignInLimits
+	// appSignInAfterMint, when set, runs between the GoTrue mint of an app
+	// sign-in's session and its re-check. TEST-ONLY: nothing in production
+	// sets it; it lets a test land a revocation in that gap.
+	appSignInAfterMint func()
 	// loginRateAddr counts wrong operator passwords per client address;
 	// loginRefusedLog rate-limits the log of refused unknown devices
 	// (known_device.go, passwordGate).

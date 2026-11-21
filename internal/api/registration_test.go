@@ -41,6 +41,7 @@ import (
 	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -177,6 +178,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		PluginGateway:   stubPluginGateway{},
 		Push:            stubPush{},
 		Devices:         principalDevices{},
+		SignInRequests:  stubSignInRequests{},
 		AllowPINKeys:    true,
 		AssetLinks:      []byte(`[]`),
 		SSOOrigins:      []string{"https://auth.example.test"},
@@ -192,6 +194,10 @@ func fullyWiredServer(t *testing.T) *Server {
 	s.UseRouter(stubRouter{})
 	return s
 }
+
+// stubSignInRequests satisfies signinreq.Store for registration only; any
+// method panics.
+type stubSignInRequests struct{ signinreq.Store }
 
 // stubAccountFailover satisfies AccountFailover for registration only; any
 // method but UseHooks (which UseExtensions calls) panics.

@@ -203,6 +203,11 @@ var isolationClasses = map[string]routeClass{
 	// The sign-in pages' background cache clear: a header to the asking
 	// browser, no cookie read, nothing returned.
 	"POST /auth/clear-caches": classPublic,
+	"POST /login/app":         classPublic,
+	"GET /login/app/status":   classPublic,
+	"POST /login/app/redeem":  classPublic,
+	"GET /auth/qr":            classPublic,
+	"POST /auth/qr":           classPublic,
 	"GET /account/passkeys":   classList,
 	// The feature registry's page: server configuration, the same for every user.
 	"GET /account/features":              classList,

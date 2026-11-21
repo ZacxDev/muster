@@ -397,6 +397,12 @@ func (s *Server) isSameOrigin(r *http.Request) bool {
 // page with no way forward. A 303 lands the operator on the login form. For the
 // XHR case the 401 is correct and is what __cgAuthGate is already listening for.
 func (s *Server) refuseUnauthenticated(w http.ResponseWriter, r *http.Request) {
+	// A route that asked for its own signed-out page (withSignedOutPage) gets
+	// it: a POST whose body the redirect would drop.
+	if page, ok := r.Context().Value(signedOutPageKey{}).(http.HandlerFunc); ok {
+		page(w, r)
+		return
+	}
 	if isDocumentNavigation(r) {
 		http.Redirect(w, r, loginPathFor(r), http.StatusSeeOther)
 		return

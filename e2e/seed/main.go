@@ -84,6 +84,10 @@ var accountsReset = []string{
 	// its members (team_members_team_id_fkey) — cls.spec makes one for the team
 	// page, and it must go before the users do.
 	`DELETE FROM team_members`,
+	// Sign in with the muster app (0174): an approved request names its
+	// approver (signin_requests_approved_by_fkey), so they go before the
+	// members do. They live two minutes; none is worth keeping.
+	`DELETE FROM signin_requests`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }

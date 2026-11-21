@@ -64,6 +64,8 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /invite': { where: 'public', url: '/invite', ready: '#frag-form' },
   'GET /auth/claim': { where: 'public', url: '/auth/claim', ready: '#claim-form' },
   'GET /auth/reset': { where: 'public', url: '/auth/reset', ready: '#frag-form' },
+  // The page a sign-in QR opens (signin_app.go): with no fragment, its paste field.
+  'GET /auth/qr': { where: 'public', url: '/auth/qr', ready: '#frag-form' },
   // Signed in as a GoTrue admin, against a real GoTrue (passkeys on, plugins on).
   'GET /account/passkeys': { where: 'signed-in', url: '/account/passkeys', ready: '#passkey-add' },
   'GET /plugins': { where: 'signed-in', url: '/plugins', ready: 'h1' },
@@ -129,6 +131,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /morning': 'measured in morning-report.spec.ts (the report is off on these servers)',
   'GET /morning/{date}': 'measured in morning-report.spec.ts (the report is off on these servers)',
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
+  'GET /login/app/status': "the app sign-in's status poll (JSON)",
   'GET /agent/approvals/{id}': 'agent API (JSON)',
   'GET /agent/connectors': 'agent API (JSON)',
   'GET /agent/connectors/{name}': 'agent API (JSON)',

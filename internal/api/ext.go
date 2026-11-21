@@ -39,6 +39,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -84,6 +85,10 @@ type Extensions struct {
 	// Devices is the paired-device store (the Android app; devices.go). Nil:
 	// no device is paired or admitted anywhere (503).
 	Devices devices.Store
+	// SignInRequests is the "Sign in with the muster app" store (migration
+	// 0174; signin_app.go). Nil: the option is not offered and its routes
+	// answer 404.
+	SignInRequests signinreq.Store
 	// AllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS: a phone with no strong
 	// biometric may pair with a biometric-or-PIN step-up key. False (the
 	// default): such a phone pairs read-only.
