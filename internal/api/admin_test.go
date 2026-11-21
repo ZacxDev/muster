@@ -208,9 +208,11 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	// admin controls are TestFlowLifecycleOverHTTP and
 	// TestAMemberGetsAskYourAdminOnFlows) + /admin/apps' 4 (server-installed
 	// apps, whose admin controls are
-	// TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn).
-	if len(routes) != 21 {
-		t.Fatalf("the admin-only class has %d routes, want 21: %v", len(routes), routes)
+	// TestAdminAppsIsAnAdminsAndInstallAndRotateNeedAFreshSignIn) + the
+	// server theme's save and preview (theme.go, whose admin controls are
+	// TestOnlyAnAdminSavesATheme: this world has no branding store).
+	if len(routes) != 23 {
+		t.Fatalf("the admin-only class has %d routes, want 23: %v", len(routes), routes)
 	}
 	cs, ts := strconv.FormatInt(cID, 10), strconv.FormatInt(team.ID, 10)
 	concrete := func(route string) (string, string, string) {
