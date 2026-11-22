@@ -15,10 +15,11 @@ import (
 // it. TWO READERS, NO THIRD LIST:
 //
 //   - the sidebar draws its More section from it (sidebarIn, navPageLink),
-//     every link byte for byte as the hand-written links before it
-//     (TestTheSidebarIsUnchangedByTheNavList, goldens the old code wrote);
+//     (byte for byte the hand-written links it replaced, proven once by
+//     goldens in the change that made it);
 //   - the command palette searches it (paletteBox, palettePagesTemplate): its
-//     label, its route's words and its own words.
+//     label, its route's words and its own words. The two read the same set
+//     in the same order (TestThePaletteSearchesExactlyTheSidebarsPages).
 //
 // So a page added here is in the sidebar and found by the palette, and a page
 // a viewer's sidebar does not draw (Admin for a member, a feature that is

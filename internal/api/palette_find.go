@@ -1,11 +1,9 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -38,18 +36,15 @@ import (
 // screen lists (pages.Store.Pages: row-level security, a team's page its
 // member reads included), and its link is that screen's (/pages/{id}).
 //
-// RANKED: an ask named by its id first; then open asks above answered,
-// dismissed or expired ones; then those whose QUESTION holds the text above
-// those that match elsewhere (an answer, an option, who asked); then newest.
-// Each kind is cut to paletteFindShown.
+// RANKED: an ask named by its id is the only one (an id is never text); text
+// lists open asks above answered, dismissed or expired ones, newest first
+// within each — ordered by the store BEFORE the cut (attention.Search's
+// OpenFirst), so an old open ask is never lost behind newer closed ones. Each
+// kind is cut to paletteFindShown.
 // ---------------------------------------------------------------------------
 
 // paletteFindShown is how many asks, and how many pages, one search answers.
 const paletteFindShown = 5
-
-// paletteFindRead is how many asks a text search reads before it ranks them:
-// the open ones must not be cut by newer answered ones before the rank.
-const paletteFindRead = 50
 
 // paletteFindMaxRunes is the longest text searched (the stores' own bound).
 const paletteFindMaxRunes = attention.MaxSearchTextRunes
@@ -136,18 +131,17 @@ func (s *Server) paletteAsks(ctx context.Context, q paletteFindQuery) []paletteA
 	if s.ext.Attention == nil || (q.AskID <= 0 && q.Text == "") {
 		return nil
 	}
-	found, err := s.ext.Attention.Search(ctx, attention.Search{AskID: q.AskID, Text: q.Text, Limit: paletteFindRead})
+	// An id names one ask, looked up by id alone (no text), so it is the only
+	// result; text is ordered by the store, open first and then newest, BEFORE
+	// the cut (OpenFirst), so an old open ask is never lost behind newer
+	// closed ones.
+	found, err := s.ext.Attention.Search(ctx, attention.Search{AskID: q.AskID, Text: q.Text, Limit: paletteFindShown, OpenFirst: true})
 	if err != nil {
 		s.logger.Printf("palette: search asks: %v", err)
 		return nil
 	}
 	viewer := requestOwner(ctx)
-	text := strings.ToLower(q.Text)
-	type ranked struct {
-		a        paletteAsk
-		question bool
-	}
-	var rs []ranked
+	out := make([]paletteAsk, 0, len(found))
 	for _, a := range found {
 		// 🔴 Only an ask whose page opens for the caller (their own, never
 		// the chief's): a result is a link, and no link may be a 404.
@@ -158,27 +152,8 @@ func (s *Server) paletteAsks(ctx context.Context, q paletteFindQuery) []paletteA
 		if a.StepUp != nil {
 			title = textplain.Title(stepUpTitleText(a.StepUp))
 		}
-		rs = append(rs, ranked{
-			a: paletteAsk{ID: a.ID, Href: askPagePath(a.ID), Title: firstNonBlank(title, askerLabel(a)), State: askSearchState(a),
-				Open: a.Status == attention.Open, ByID: q.AskID > 0 && a.ID == q.AskID},
-			question: text != "" && strings.Contains(strings.ToLower(title), text),
-		})
-	}
-	slices.SortStableFunc(rs, func(x, y ranked) int {
-		switch {
-		case x.a.ByID != y.a.ByID:
-			return boolFirst(x.a.ByID)
-		case x.a.Open != y.a.Open:
-			return boolFirst(x.a.Open)
-		case x.question != y.question:
-			return boolFirst(x.question)
-		}
-		// Newest first (Search's own order; the ids rise with time).
-		return compareDesc(x.a.ID, y.a.ID)
-	})
-	out := make([]paletteAsk, 0, min(len(rs), paletteFindShown))
-	for i := 0; i < len(rs) && i < paletteFindShown; i++ {
-		out = append(out, rs[i].a)
+		out = append(out, paletteAsk{ID: a.ID, Href: askPagePath(a.ID), Title: firstNonBlank(title, askerLabel(a)), State: askSearchState(a),
+			Open: a.Status == attention.Open, ByID: q.AskID > 0 && a.ID == q.AskID})
 	}
 	return out
 }
@@ -212,14 +187,3 @@ func (s *Server) palettePages(ctx context.Context, q paletteFindQuery) []palette
 	}
 	return out
 }
-
-// boolFirst orders true before false (x and y differ).
-func boolFirst(x bool) int {
-	if x {
-		return -1
-	}
-	return 1
-}
-
-// compareDesc orders larger first.
-func compareDesc(x, y int64) int { return cmp.Compare(y, x) }

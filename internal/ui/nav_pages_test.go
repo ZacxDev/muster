@@ -11,6 +11,27 @@ import (
 // and the palette's template of screens — so they compile on the commit before
 // the list, and are RED there by assertion: the palette had no screens.
 
+// navListCases are sidebars across the nav list's gates: every entry's gate on
+// and off, an admin and a member, each kind of entry marked current.
+var navListCases = []struct {
+	name               string
+	active, current    string
+	hasPanels, overlay bool
+	feat               Features
+}{
+	{name: "bare", active: "tasks", current: "tasks", hasPanels: true},
+	{name: "member-all-on", active: NavPages, current: NavPages,
+		feat: Features{Connectors: true, Attention: true, Pages: true, Officers: true,
+			Apps: []AppTab{{ID: 7, Label: "Board", Icon: "B"}, {ID: 9, Label: "Ledger", Icon: "L"}}}},
+	{name: "admin-connectors-off", active: NavAdmin, current: NavAdmin, overlay: true,
+		feat: Features{Admin: true, Setup: true, Attention: true, Officers: true}},
+	{name: "setup-asks-current", active: NavAttention, current: NavAttention,
+		feat: Features{Setup: true, Attention: true, Pages: true, Apps: []AppTab{{ID: 3, Label: "Notes", Icon: "N"}}}},
+	{name: "app-current", active: NavAppEntry(9), current: NavAppEntry(9), hasPanels: true,
+		feat: Features{Connectors: true, Admin: true, Setup: true, Attention: true, Pages: true, Officers: true,
+			Apps: []AppTab{{ID: 9, Label: "Ledger", Icon: "L"}}}},
+}
+
 // sidebarMoreHrefs is the hrefs of the links in the sidebar's More section, in
 // order, less a feature-off hint (it links to the Features page's sheet, not
 // to a page of the app).
@@ -47,12 +68,12 @@ func paletteScreenHrefs(h string) (hrefs, found []string) {
 }
 
 // TestThePaletteSearchesExactlyTheSidebarsPages: for every feature set the
-// sidebar golden covers, the screens the palette searches are the sidebar's
+// cases cover, the screens the palette searches are the sidebar's
 // More links — the same set in the same order, so a page added to (or gated
 // out of) one is added to (or gated out of) the other. Fails when either side
 // GROWS or SHRINKS.
 func TestThePaletteSearchesExactlyTheSidebarsPages(t *testing.T) {
-	for _, c := range sidebarGoldenCases {
+	for _, c := range navListCases {
 		h := renderString(t, sidebarIn(c.active, c.current, c.hasPanels, c.feat, c.overlay))
 		side := sidebarMoreHrefs(t, h)
 		pal, _ := paletteScreenHrefs(h)

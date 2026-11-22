@@ -89,7 +89,8 @@ const PaletteHistoryRoute = "/ui/palette/history"
 
 // PaletteFindRoute is the palette's search of the caller's asks and Pages
 // documents (internal/api's handlePaletteFind), asked for once typing pauses
-// on a query of PaletteServerMinRunes or more, or on an id ("1001", "#7").
+// on any non-empty query: the server decides what it searches (an id, or text
+// of PaletteServerMinRunes or more) and answers the rest empty without a read.
 const PaletteFindRoute = "/ui/palette/find"
 
 // The palette's server search waits for typing to pause this long, and asks
@@ -462,9 +463,11 @@ const paletteJS = `
   //     raises one the page matched only by its words, and leaves one it
   //     matched better), and a hit whose entry is not on the page (the page's
   //     own session) is dropped;
-  //   - the caller's ASKS AND PAGES (handlePaletteFind), for the same queries
-  //     and for an id however short ("7", "#7", "ask 7": IDQ, the server's
-  //     own shape): {asks, pages}, each ranked and cut by the server.
+  //   - the caller's ASKS AND PAGES (handlePaletteFind), for ANY non-empty
+  //     query: {asks, pages}, each ranked and cut by the server. The server
+  //     alone decides what is searchable (an id however short, text of its
+  //     floor or more) and answers anything else empty without a read, so no
+  //     copy of its rule lives here.
   //
   // srv is the query they answer and what each answered.
   //
@@ -473,14 +476,13 @@ const paletteJS = `
   // only if its sequence number is the latest and the input still holds its
   // query — so an out-of-order response can never overwrite newer results.
   var ROUTE = '` + PaletteHistoryRoute + `', FIND = '` + PaletteFindRoute + `', DEBOUNCE = ` + paletteServerDebounceMS + `, MIN = ` + paletteServerMinRunesJS + `;
-  var IDQ = /^(ask|page|doc)?\s*#?\s*[0-9]{1,18}$/i;
   var srv = { q: '', hits: [], asks: [], pages: [] }, seq = 0, timer = 0, ctl = null;
   function ask(q) {
     clearTimeout(timer);
     seq++;
     if (ctl) { try { ctl.abort(); } catch (e) {} ctl = null; }
-    var hist = Array.from(q).length >= MIN, find = hist || IDQ.test(q);
-    if (!find) return;
+    if (!q) return;
+    var hist = Array.from(q).length >= MIN;
     var mine = seq;
     timer = setTimeout(function () {
       if (mine !== seq) return;

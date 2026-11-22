@@ -173,16 +173,14 @@ func TestThePaletteFindsATeamsPageButNeverATeamsAsk(t *testing.T) {
 }
 
 // TestThePaletteRanksOpenAsksFirstAndAnIdAlone: open asks above answered and
-// dismissed ones, and within each those whose QUESTION holds the words above
-// those matched elsewhere (an option), newest first among equals. An id is
-// looked up by id ONLY — never as text, so a question holding the number does
-// not appear — whatever its length.
+// dismissed ones, newest first within each (a match in an option counts as
+// much as one in the question). An id is looked up by id ONLY — never as
+// text, so a question holding the number does not appear — whatever its
+// length.
 func TestThePaletteRanksOpenAsksFirstAndAnIdAlone(t *testing.T) {
 	f := newPageFixture(t)
 	attn := attention.NewPG(f.pool)
 	answeredQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Ship the plover build?")
-	// The question match is OLDER than the option match, so newest-first
-	// alone would put the option first: the question rank must win.
 	openQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Retire the plover queue?")
 	openOpt := f.paletteAskAs(t, f.owner, f.agent.ID, "Which branch?", "plover", "main")
 	dismissedQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Rename plover?")
@@ -192,10 +190,12 @@ func TestThePaletteRanksOpenAsksFirstAndAnIdAlone(t *testing.T) {
 	if _, err := attn.Cancel(f.as(f.owner, authz.ViaSession), dismissedQ.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Newest first among equals: dismissedQ is newer than answeredQ.
+	// Newest first within each: openOpt is newer than openQ, dismissedQ than
+	// answeredQ; and the newest of all (dismissedQ) is closed, so newest-first
+	// alone would put it first.
 	_, asks, _, out := f.paletteFind(t, "PLOVER")
-	if got, want := joined(asks), joined(kindIDs("ask", openQ.ID, openOpt.ID, dismissedQ.ID, answeredQ.ID)); got != want {
-		t.Fatalf("asks %s, want %s (open: question, then option; then closed newest first)", got, want)
+	if got, want := joined(asks), joined(kindIDs("ask", openOpt.ID, openQ.ID, dismissedQ.ID, answeredQ.ID)); got != want {
+		t.Fatalf("asks %s, want %s (open newest first, then closed newest first)", got, want)
 	}
 	states := []string{}
 	for _, a := range out["asks"] {
@@ -239,6 +239,33 @@ func TestThePaletteFindHoldsItsLengthGuards(t *testing.T) {
 	p := f.create(t, f.agent, "Sanderling notes", `[{"type":"markdown","text":"x"}]`)
 	if _, _, pages, _ := f.paletteFind(t, "#"+strconv.FormatInt(p, 10)); joined(pages) != joined(kindIDs("page", p)) {
 		t.Errorf("?q=#%d: pages %v", p, pages)
+	}
+}
+
+// TestThePaletteFindsAnOpenAskBehindManyNewerClosedOnes: one OLD open ask and
+// fifty-one NEWER answered ones hold the words — more than any newest-first
+// read the search could rank afterwards. The open ask is listed first.
+func TestThePaletteFindsAnOpenAskBehindManyNewerClosedOnes(t *testing.T) {
+	f := newPageFixture(t)
+	attn := attention.NewPG(f.pool)
+	open := f.paletteAskAs(t, f.owner, f.agent.ID, "Calibrate the whimbrel sensor?")
+	for i := 0; i < 51; i++ {
+		a := f.paletteAskAs(t, f.owner, f.agent.ID, "Whimbrel batch "+strconv.Itoa(i)+"?")
+		if _, err := attn.Answer(f.as(f.owner, authz.ViaSession), a.ID, "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, asks, _, out := f.paletteFind(t, "whimbrel")
+	if len(asks) != 5 {
+		t.Fatalf("asks %v, want five", asks)
+	}
+	if asks[0] != "ask:"+strconv.FormatInt(open.ID, 10) || out["asks"][0]["open"] != true {
+		t.Errorf("asks %v, want the open ask %d first", asks, open.ID)
+	}
+	for _, a := range out["asks"][1:] {
+		if a["open"] != false {
+			t.Errorf("a second open ask in %v", asks)
+		}
 	}
 }
 

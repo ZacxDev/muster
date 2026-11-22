@@ -36,6 +36,10 @@ type Search struct {
 	Text string
 	// Limit is how many asks at most, newest first (≤ 0: MaxSearchResults).
 	Limit int
+	// OpenFirst orders the asks still open (not answered, cancelled or past
+	// their expiry) before the rest, newest first within each, BEFORE the
+	// limit cuts: an old open ask is never cut by newer closed ones.
+	OpenFirst bool
 }
 
 // MaxSearchResults bounds one search.
@@ -58,7 +62,8 @@ const searchText = `(question ILIKE $3 ESCAPE '\'
 		OR coalesce(step_up->>'why', '') ILIKE $3 ESCAPE '\'
 		OR coalesce(step_up->>'preview', '') ILIKE $3 ESCAPE '\')`
 
-// Search is the caller's own asks matching q, newest first.
+// Search is the caller's own asks matching q, newest first (open ones first
+// with q.OpenFirst).
 func (s *PGStore) Search(ctx context.Context, q Search) ([]Ask, error) {
 	text := truncateRunes(strings.TrimSpace(q.Text), MaxSearchTextRunes)
 	if q.AskID <= 0 && q.DraftID <= 0 && text == "" {
@@ -73,11 +78,16 @@ func (s *PGStore) Search(ctx context.Context, q Search) ([]Ask, error) {
 		// 🔴 ESCAPED (db.LikeEscape): a search for "%" must not match every ask.
 		pattern = "%" + db.LikeEscape(text) + "%"
 	}
+	// A constant ORDER BY, chosen here: never a caller's words.
+	order := `id DESC`
+	if q.OpenFirst {
+		order = `(status = 'open' AND expires_at > now()) DESC, id DESC`
+	}
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
 		WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 		  AND NOT to_chief
 		  AND (($1::bigint > 0 AND id = $1)
 		    OR ($2::bigint > 0 AND step_up IS NOT NULL AND step_up->>'draft_id' = $2::bigint::text)
 		    OR ($3::text <> '' AND `+searchText+`))
-		ORDER BY id DESC LIMIT $4`, q.AskID, q.DraftID, pattern, limit))
+		ORDER BY `+order+` LIMIT $4`, q.AskID, q.DraftID, pattern, limit))
 }

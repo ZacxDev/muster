@@ -3,8 +3,9 @@ package ui
 // keyboardViewportJS is THE ONE reading of how much of the screen a soft
 // keyboard covers, spliced into each script that needs it (each runs in its
 // own function scope, so each gets its own copy of the two functions, from
-// this one text): the Rendered view's pinned composer (composerPinScript), the
-// bar's keyboard mark (switcherKeyboardJS) and the switcher dock (dockJS).
+// this one text) — four of them: the Rendered view's pinned composer
+// (composerPinScript), the bar's keyboard mark (switcherKeyboardJS), the
+// switcher dock (dockJS) and the command palette (paletteJS).
 //
 //   - kbWin() is the window whose viewport a keyboard shrinks: the TOP window
 //     inside the view switch's frame (view_swap.go). The frame is laid over the

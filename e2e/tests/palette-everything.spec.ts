@@ -203,6 +203,35 @@ for (const vp of [
       await expect(pal(page).locator('[data-switcher-search-empty]')).toBeVisible();
     });
 
+    // THE KEYBOARD (as switcher-dock.spec.ts 13k emulates it): where a soft
+    // keyboard shrinks only the VISUAL viewport, the phone's box sits on top
+    // of it, so the input being typed into stays in sight.
+    if (vp.phone) test('with the visual viewport shortened by a keyboard, the box sits on top of it', async ({ page }) => {
+      await page.addInitScript(() => {
+        const real = window.visualViewport!;
+        const fake = new EventTarget() as any;
+        for (const k of ['width', 'offsetLeft', 'pageLeft', 'pageTop', 'scale']) Object.defineProperty(fake, k, { get: () => (real as any)[k] });
+        Object.defineProperty(fake, 'height', { get: () => (window as any).__vvH ?? real.height });
+        Object.defineProperty(fake, 'offsetTop', { get: () => 0 });
+        real.addEventListener('resize', () => fake.dispatchEvent(new Event('resize')));
+        Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+      });
+      await open(page);
+      await expect(pal(page)).toHaveCSS('transform', 'none');
+      const inner = await page.evaluate(() => window.innerHeight);
+      const before = (await pal(page).boundingBox())!;
+      expect(before.y + before.height, 'CONTROL: no keyboard, the box is on the bottom edge').toBeGreaterThan(inner - 48);
+      await page.evaluate(() => { (window as any).__vvH = 420; window.visualViewport!.dispatchEvent(new Event('resize')); });
+      await expect.poll(async () => { const b = (await pal(page).boundingBox())!; return Math.round(b.y + b.height); }, 'the box’s foot is just above the keyboard').toBeLessThanOrEqual(420);
+      const b = (await pal(page).boundingBox())!;
+      expect(b.y + b.height, 'and close to it, not far above').toBeGreaterThan(420 - 48);
+      const inp = (await input(page).boundingBox())!;
+      expect(inp.y >= 0 && inp.y + inp.height <= 420, 'the input is above the keyboard').toBe(true);
+      // The keyboard gone: back on the bottom edge.
+      await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
+      await expect.poll(async () => { const b2 = (await pal(page).boundingBox())!; return b2.y + b2.height; }).toBeGreaterThan(inner - 48);
+    });
+
     test(vp.phone ? 'the input is below the results, the pills between, the best match nearest' : 'the input is above the pills and the results', async ({ page }) => {
       await open(page);
       // "a": many sessions and screens, so the list has several rows.
