@@ -295,7 +295,7 @@ for (const vp of [
       await input(page).fill('zzqx');
       await expect(options(page)).toHaveCount(0);
       await expect(pal(page).locator('[data-switcher-search-empty]')).toBeVisible();
-      await expect(pal(page).locator('[data-switcher-search-empty]')).toHaveText('No session matches');
+      await expect(pal(page).locator('[data-switcher-search-empty]')).toHaveText('No matches');
       // BY HOST (the retired Agents list's host tabs became a word the palette
       // finds by): the mirrored host's name finds its windows (all but the
       // page's own) and not the dispatched agent; "cluster", a dispatched
@@ -312,13 +312,18 @@ for (const vp of [
       // Arrows move (wrapping); Enter opens the highlighted one — its own view.
       await input(page).fill('wheat');
       await expect.poll(() => optionLabels(page)).toEqual([label('wheat'), label('buckwheat'), AGENT_TITLE]);
-      await page.keyboard.press('ArrowDown');
+      // The arrows follow the list as drawn: on the phone it runs bottom-up
+      // (the best match nearest the input at the foot, palette.go), so Up is
+      // the next match there.
+      const next = vp.w === 390 ? 'ArrowUp' : 'ArrowDown';
+      const prev = vp.w === 390 ? 'ArrowDown' : 'ArrowUp';
+      await page.keyboard.press(next);
       await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true');
-      await page.keyboard.press('ArrowUp');
-      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press(prev);
+      await page.keyboard.press(prev);
       await expect(options(page).nth(2)).toHaveAttribute('aria-selected', 'true');
-      await page.keyboard.press('ArrowDown');
-      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press(next);
+      await page.keyboard.press(next);
       await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true');
       await Promise.all([
         page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'buckwheat'),
@@ -351,10 +356,12 @@ for (const vp of [
       // layout opens the switcher dock (a modal, under which "/" stands down):
       // the phone taps the transcript instead, which IS outside.
       if (vp.w === 390) {
+        // The phone's palette sits on the bottom edge (palette.go): the
+        // transcript shows ABOVE it.
         const log = (await page.locator('#mv-log').boundingBox())!;
         const p = (await pal(page).boundingBox())!;
-        const y = p.y + p.height + 20;
-        expect(y, 'the transcript shows below the palette').toBeLessThan(log.y + log.height);
+        const y = p.y - 20;
+        expect(y, 'the transcript shows above the palette').toBeGreaterThan(log.y);
         await page.mouse.click(log.x + log.width / 2, y);
         await expect(pal(page)).toBeHidden();
         expect(await page.evaluate(() => (document.getElementById('switcher-dock') as HTMLDialogElement).open), 'the tap outside opened nothing').toBe(false);
@@ -423,10 +430,16 @@ for (const vp of [
       // And focus never left it.
       await page.keyboard.press('/');
       await expect(input(page)).toBeFocused();
+      // Its two stops are the input and the checked type pill (All).
+      const all = pal(page).getByRole('radio', { name: 'All' });
       await page.keyboard.press('Tab');
-      await expect(input(page), 'Tab stays in the open palette').toBeFocused();
+      await expect(all, 'Tab stays in the open palette: the checked pill').toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(input(page), 'and back to the input').toBeFocused();
       await page.keyboard.press('Shift+Tab');
-      await expect(input(page), 'and so does Shift+Tab').toBeFocused();
+      await expect(all, 'and so does Shift+Tab').toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(input(page)).toBeFocused();
       await page.keyboard.press('Escape');
       await expect(pal(page)).toBeHidden();
       await expect(sheet).toBeVisible();

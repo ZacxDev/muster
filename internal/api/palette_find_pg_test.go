@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -124,6 +125,53 @@ func TestThePaletteFindsOnlyTheCallersAsksAndPages(t *testing.T) {
 	}
 }
 
+// TestThePaletteFindsATeamsPageButNeverATeamsAsk: row-level security lets a
+// team's member READ the team's asks and pages (the control: the member's own
+// read of the team ask succeeds). The palette lists the team's page — the
+// member's Pages screen lists it too — but never the team's ask: an ask is the
+// caller's OWN (attention.Search names the owner; askHasPage). An outsider
+// finds neither.
+func TestThePaletteFindsATeamsPageButNeverATeamsAsk(t *testing.T) {
+	f := newTeamPageFixture(t)
+	page := f.teamPage(t, "Curlew roadmap")
+	attn := attention.NewPG(f.pool)
+	ask, err := attn.Create(f.asTeam(f.teamA), attention.New{Asker: attention.Asker{AgentID: f.teamAgent.ID, Label: "team agent"}, Question: "Curlew budget sign-off?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The member's principal as a request door builds it: with the team
+	// memberships row-level security reads.
+	acct, err := f.users.Account(authz.System(context.Background()), f.creator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.creator, Role: acct.Role, Via: authz.ViaSession, Teams: acct.Teams})
+	if got, err := attn.Get(member, ask.ID); err != nil || got.ID != ask.ID {
+		t.Fatalf("control: the member cannot read the team's ask %d owned by %d (team %d) (%v): the owner rule below would be untested", ask.ID, ask.Owner, f.teamA, err)
+	}
+	n := strconv.FormatInt(ask.ID, 10)
+	f.session = f.creator
+	_, asks, pages, _ := f.paletteFind(t, "curlew")
+	if len(asks) != 0 {
+		t.Errorf("the member finds the team's ask by its words: %v", asks)
+	}
+	if joined(pages) != joined(kindIDs("page", page)) {
+		t.Errorf("the member's pages %v, want the team's page %d", pages, page)
+	}
+	for _, q := range []string{n, "#" + n, "ask " + n} {
+		if _, asks, _, _ := f.paletteFind(t, q); len(asks) != 0 {
+			t.Errorf("the member's ?q=%q finds the team's ask: %v", q, asks)
+		}
+	}
+	f.session = f.outsider
+	if _, asks, pages, _ := f.paletteFind(t, "curlew"); len(asks) != 0 || len(pages) != 0 {
+		t.Errorf("an outsider finds asks %v pages %v", asks, pages)
+	}
+	if _, _, pages, _ := f.paletteFind(t, "page "+strconv.FormatInt(page, 10)); len(pages) != 0 {
+		t.Errorf("an outsider finds the team's page by id: %v", pages)
+	}
+}
+
 // TestThePaletteRanksOpenAsksFirstAndAnIdAlone: open asks above answered and
 // dismissed ones, and within each those whose QUESTION holds the words above
 // those matched elsewhere (an option), newest first among equals. An id is
@@ -133,8 +181,10 @@ func TestThePaletteRanksOpenAsksFirstAndAnIdAlone(t *testing.T) {
 	f := newPageFixture(t)
 	attn := attention.NewPG(f.pool)
 	answeredQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Ship the plover build?")
-	openOpt := f.paletteAskAs(t, f.owner, f.agent.ID, "Which branch?", "plover", "main")
+	// The question match is OLDER than the option match, so newest-first
+	// alone would put the option first: the question rank must win.
 	openQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Retire the plover queue?")
+	openOpt := f.paletteAskAs(t, f.owner, f.agent.ID, "Which branch?", "plover", "main")
 	dismissedQ := f.paletteAskAs(t, f.owner, f.agent.ID, "Rename plover?")
 	if _, err := attn.Answer(f.as(f.owner, authz.ViaSession), answeredQ.ID, "yes"); err != nil {
 		t.Fatal(err)

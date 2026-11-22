@@ -235,6 +235,28 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   [tags](#session-tags) on it (`needs-review`). The Sessions dock's filter
   matches the same words. The arrows move and Enter opens
   it. On a page with no switcher it searches the sidebar's list.
+
+  The same box finds more than sessions. It also lists:
+
+  - **Screens**, the app's own pages from the sidebar's menu, by their name
+    or their address's words: `pages` lists the Pages screen, `asks` the Asks
+    page, `settings` the Account and Features pages. A page your sidebar does
+    not show (Admin for a member, or a feature that is off) is not listed.
+  - **Asks**, your own asks, by their id (`1001`, `#1001`, `ask 1001`) or by
+    their words. An ask you name by id comes first, then open asks, then
+    answered and expired ones.
+  - **Pages**, the shareable documents your Pages screen lists, by their id
+    (`page 7`) or their title.
+
+  Every result says what kind it is ("Screen · /pages", "Ask #12 · Open",
+  "Page #7"), and at most five of each kind other than sessions are listed.
+  Asks and pages are looked up a moment after you stop typing, once a query
+  has three characters or is an id. The pills under the box narrow the list
+  to one kind: **All** (every time the box opens), **Sessions**, **Screens**,
+  **Asks** and **Pages**. Tab moves between the box and the pills, and the
+  arrows move between pills. On a phone or a narrow window the box sits at the
+  bottom of the screen, above the keyboard: the input is at the bottom, the
+  pills are just above it, and the best match is just above the pills.
 - **Host icons.** Every entry draws its host's icon beside its name — in the
   sidebar, its session-switcher entry and the badge on its own pages — with the
   host's name in the icon's tooltip. Dispatched pod agents draw the cluster's

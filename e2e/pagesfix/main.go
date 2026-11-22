@@ -10,8 +10,11 @@
 //	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=… \
 //	  go run ./e2e/pagesfix phone <owner>    the phone page (pages-phone.spec.ts), {page, token}
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix phone-clear <owner>
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled <owner> <title>   one plain page (palette-everything.spec.ts); prints its id
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled-clear <owner> <title>
 //
-// phone and phone-clear touch only the page titled PhoneTitle.
+// phone and phone-clear touch only the page titled PhoneTitle; titled and
+// titled-clear only the pages titled <title>.
 //
 // The pages (all synthetic), each made by a mirrored session ("Release
 // helper" on host "laptop"), times set back so each reads as a real age:
@@ -61,8 +64,9 @@ func run(args []string) error {
 	if err := e2edb.Check(dsn); err != nil {
 		return err
 	}
-	if len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear") {
-		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner>")
+	titled := len(args) == 3 && (args[0] == "titled" || args[0] == "titled-clear")
+	if !titled && (len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear")) {
+		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -82,6 +86,13 @@ func run(args []string) error {
 	// AS the owner, never the system scope: row-level security confines the
 	// seed to that owner's rows.
 	as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
+	if titled {
+		// Only the pages titled args[2]: every other page is left alone.
+		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, args[2]); err != nil || args[0] == "titled-clear" {
+			return err
+		}
+		return titledPage(as, pages.NewPG(pool), args[2])
+	}
 	if strings.HasPrefix(args[0], "phone") {
 		// Only the phone page: every other page of the owner's is left alone.
 		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, PhoneTitle); err != nil || args[0] == "phone-clear" {
@@ -258,6 +269,22 @@ func phoneBlocks() []pages.Block {
 		table + "\n\n" +
 		"![status chart](data:image/png;base64," + PhonePNG + ")"
 	return []pages.Block{{Type: pages.BlockMarkdown, Text: text}}
+}
+
+// titledPage publishes a one-paragraph page titled title (the palette spec's,
+// palette-everything.spec.ts) and prints its id.
+func titledPage(ctx context.Context, st *pages.PGStore, title string) error {
+	cr := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-session", Label: "Release helper"}
+	blocks, size, err := pages.Validate([]pages.Block{{Type: pages.BlockMarkdown, Text: "# " + title}})
+	if err != nil {
+		return err
+	}
+	p, _, err := st.Create(ctx, cr, title, blocks, size)
+	if err != nil {
+		return err
+	}
+	fmt.Println(p.ID)
+	return nil
 }
 
 // phone publishes the phone page with a live link and prints {page, token}.
