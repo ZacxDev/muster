@@ -112,6 +112,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
+	if a.Status == attention.Open && a.StepUp != nil {
+		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
+	}
 	now := time.Now()
 	live := askLiveHTML(a, it)
 	if r.URL.Query().Get("part") == "live" {
@@ -215,6 +218,11 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
+	if it.stepUpDraft != nil {
+		// The draft's Approve asks "Confirm it's you" on a stale sign-in, as
+		// on the Asks page (draftStepUpHTML); the server checks it either way.
+		b.WriteString(s.draftStepUpHTML(r))
+	}
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
 
@@ -356,7 +364,16 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 	if a.StepUp != nil {
 		// A step-up card is answered only from the paired phone
 		// (errHostDecisionNeedsPhone): no options, no suggestions, one line —
-		// a status line, never drawn as a control (askStepUpPhoneHTML).
+		// a status line, never drawn as a control (askStepUpPhoneHTML) — with,
+		// for a card about a draft the owner may decide, the DRAFT's own
+		// decision controls under it (askStepUpDraftHTML), back to this page.
+		review := ""
+		if it.stepUpDraft != nil {
+			review = draftTabLink(it.stepUpDraft.Draft.ID)
+		}
+		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now()); d != "" {
+			return d
+		}
 		return askStepUpPhoneHTML("text-base")
 	}
 	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {

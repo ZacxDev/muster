@@ -59,6 +59,14 @@ import (
 // returns).
 type cardPlace struct {
 	back string
+	// rejectLead: the place asks to REJECT the draft (a "Reject this draft?"
+	// step-up card), so draftDecisionHTML draws Reject as the primary action
+	// and Approve under it — the same forms, on the same guards.
+	rejectLead bool
+	// reviewHref, when set, says this face does NOT show the whole draft:
+	// draftDecisionHTML draws a "Review and approve" link to it in place of
+	// the Approve form (Reject stays).
+	reviewHref string
 }
 
 // backField is the place's hidden `return` field ("" on the Asks page).

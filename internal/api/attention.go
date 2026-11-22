@@ -299,6 +299,11 @@ type attentionItem struct {
 	// 0171: its push title is its Title and its push body its why and the
 	// start of its preview (stepUpPushText) — never its Details.
 	stepUp *attention.StepUpCard
+	// stepUpDraft is the draft a step-up card is about, as the reader may
+	// decide it (Server.stepUpDraftFor), nil for none: its card draws the
+	// draft's own decision controls (askStepUpDraftHTML). Set by withAskBoxes
+	// and the ask page; not serialised.
+	stepUpDraft *plugins.DraftCard
 	// Context is what a builtin officer's ask is about (attention.Ask's,
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
@@ -1029,6 +1034,9 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			items[i].watchOnly = TeamAskViewerNote
 		} else {
 			items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
+			if items[i].stepUp != nil && items[i].owner == owner {
+				items[i].stepUpDraft = s.stepUpDraftFor(ctx, items[i].stepUp)
+			}
 		}
 		if items[i].ownerCard && owner > 0 {
 			items[i].pageOpen = s.pageAskOpen(ctx, items[i].AskID)
