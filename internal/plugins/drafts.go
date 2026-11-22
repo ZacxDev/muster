@@ -720,7 +720,7 @@ func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) (retryEnded []Draf
 			"plugin.draft.expired", "not sent within 7 days of being written", OutboundExpired},
 		{`UPDATE plugin_reply_drafts SET status = 'unconfirmed'
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
-			              WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now()
+			              WHERE ` + lapsedLeaseSQL("plugin_reply_drafts") + `
 			              ORDER BY id FOR UPDATE)
 			RETURNING ` + draftCols,
 			"plugin.draft.unconfirmed", "lease lapsed without a result", OutboundUnconfirmed},
@@ -1003,10 +1003,25 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, order draftOrder,
 	return out, nil
 }
 
+// lapsedLeaseSQL is the condition, over table alias t, of a draft whose claim
+// lapsed without a result: what the sweep's second step makes `unconfirmed`.
+// ONE PLACE: the sweep and unconfirmedSQL both spell it from here.
+func lapsedLeaseSQL(t string) string {
+	return t + ".status = 'approved' AND " + t + ".claimed_at IS NOT NULL AND " + t + ".lease_until <= now()"
+}
+
+// unconfirmedSQL is the condition, over alias t, of a draft that IS
+// unconfirmed — stored so, or a lapsed lease no sweep has settled yet
+// (lapsedLeaseSQL): a read that does not sweep (DraftCardsByID) must still
+// warn that the sender may get both.
+func unconfirmedSQL(t string) string {
+	return t + ".status = 'unconfirmed' OR (" + lapsedLeaseSQL(t) + ")"
+}
+
 func (s *PGStore) replyDraftCards(ctx context.Context, tail string, args ...any) ([]DraftCard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
-		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
+		                WHERE o.message_id = d.message_id AND o.id <> d.id AND (`+unconfirmedSQL("o")+`)),
 		       coalesce(r.target_kind, ''), coalesce(r.target_key, ''), coalesce(r.target_label, '')
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
