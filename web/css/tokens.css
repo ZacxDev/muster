@@ -65,19 +65,22 @@
     --mu-st-warning-fg: 255 174 94; /* #FFAE5E */
     --mu-st-warning-bg: 58 38 21; /* #3A2615 */
     --mu-st-running-fg: 95 224 192; /* #5FE0C0 */
-    --mu-st-running-bg: 18 51 47; /* #12332F */    /* The recency dot's scale (internal/ui/list_signals.go recencySteps): the
-       operator's tmux idle-fade window colours, Gruvbox, freshest first —
-       tmux-idle-update.sh's 8 buckets. The SAME in both themes, so a window
-       reads the same colour here as in tmux; the dot is decoration beside
-       words that carry the fact, so it is not in the contrast table. */
-    --mu-idle-0: 184 187 38; /* #B8BB26 */
-    --mu-idle-1: 152 151 26; /* #98971A */
-    --mu-idle-2: 104 157 106; /* #689D6A */
-    --mu-idle-3: 215 153 33; /* #D79921 */
-    --mu-idle-4: 214 93 14; /* #D65D0E */
-    --mu-idle-5: 204 36 29; /* #CC241D */
-    --mu-idle-6: 177 98 134; /* #B16286 */
-    --mu-idle-7: 102 92 84; /* #665C54 */
+    --mu-st-running-bg: 18 51 47; /* #12332F */
+    /* The recency dot's scale (internal/ui/list_signals.go recencySteps),
+       freshest first: a NEUTRAL grey ramp, bright to muted — never a hue.
+       Being idle is not trouble, so no step may read as red/danger (operator
+       decision; it used to be tmux's Gruvbox idle-fade colours,
+       whose 4-8 h step was red). Per theme, so every step stays >= 3:1 on
+       bg, s1 and s2; TestIdleDotsAreNeutral (list_signals_test.go) asserts
+       that, the neutrality, and the monotonic fade. */
+    --mu-idle-0: 236 234 242; /* #ECEAF2 */
+    --mu-idle-1: 220 217 228; /* #DCD9E4 */
+    --mu-idle-2: 203 200 213; /* #CBC8D5 */
+    --mu-idle-3: 187 183 199; /* #BBB7C7 */
+    --mu-idle-4: 170 167 184; /* #AAA7B8 */
+    --mu-idle-5: 154 150 170; /* #9A96AA */
+    --mu-idle-6: 137 133 155; /* #89859B */
+    --mu-idle-7: 121 116 141; /* #79748D */
     /* The servers' colours (web/static/servers.js PALETTE; ui server_switcher.go
        serverMonogramClasses): the Android app's palette, the SAME in both themes,
        so a server is one colour on every device. A monogram's black letters
@@ -121,14 +124,17 @@
     --mu-st-warning-fg: 154 75 0; /* #9A4B00 */
     --mu-st-warning-bg: 255 238 219; /* #FFEEDB */
     --mu-st-running-fg: 13 107 90; /* #0D6B5A */
-    --mu-st-running-bg: 221 245 239; /* #DDF5EF */    --mu-idle-0: 184 187 38; /* #B8BB26 */
-    --mu-idle-1: 152 151 26; /* #98971A */
-    --mu-idle-2: 104 157 106; /* #689D6A */
-    --mu-idle-3: 215 153 33; /* #D79921 */
-    --mu-idle-4: 214 93 14; /* #D65D0E */
-    --mu-idle-5: 204 36 29; /* #CC241D */
-    --mu-idle-6: 177 98 134; /* #B16286 */
-    --mu-idle-7: 102 92 84; /* #665C54 */
+    --mu-st-running-bg: 221 245 239; /* #DDF5EF */
+    /* The recency dot's neutral ramp (see the dark block): dark to muted on a
+       light surface. */
+    --mu-idle-0: 40 37 56; /* #282538 */
+    --mu-idle-1: 53 49 69; /* #353145 */
+    --mu-idle-2: 65 62 82; /* #413E52 */
+    --mu-idle-3: 78 74 95; /* #4E4A5F */
+    --mu-idle-4: 90 86 107; /* #5A566B */
+    --mu-idle-5: 103 98 120; /* #676278 */
+    --mu-idle-6: 115 111 133; /* #736F85 */
+    --mu-idle-7: 128 123 146; /* #807B92 */
     /* The servers' colours (web/static/servers.js PALETTE; ui server_switcher.go
        serverMonogramClasses): the Android app's palette, the SAME in both themes,
        so a server is one colour on every device. A monogram's black letters

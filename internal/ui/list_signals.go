@@ -20,12 +20,13 @@ import (
 // RECENCY: a small dot on an entry's sidebar row, tinted by how long ago it was
 // last active.
 //
-// The palette and the thresholds are the operator's tmux idle-fade window
-// colours — the 8-step Gruvbox scale their tmux status bar tints each window
-// with (the "Idle-Fade Window Colors" block of their tmux config and the
-// tmux-idle-update.sh script it runs: `idle_secs < 600` bright green, … , else
-// grey). Mirroring it means a window reads the same colour in tmux and here.
-// The colours are Gruvbox's published palette; nothing in the table is private.
+// The thresholds are the operator's tmux idle-fade window buckets (the
+// "Idle-Fade Window Colors" block of their tmux config and the
+// tmux-idle-update.sh script it runs: `idle_secs < 600`, …). The COLOURS are
+// not tmux's: they are a neutral grey ramp, bright to muted (--mu-idle-<i> in
+// web/css/tokens.css, per theme). 🔴 Being idle is not trouble, so no step may
+// read as red — red means an error (the operator's decision; tmux's
+// Gruvbox scale put red on the 4-8 h step). TestIdleDotsAreNeutral pins it.
 //
 // 🔴 THE DOT IS NOT THE ROW'S EDGE. The coloured edge is reserved for a
 // per-window tmux identity colour (a separate design); recency must not claim
@@ -39,10 +40,9 @@ import (
 // bound, the last bucket) is drawn with Class.
 type recencyStep struct {
 	Under time.Duration
-	// Class is the dot's colour utility: a role token, bg-idle-<i>, whose
-	// value is tmux-idle-update.sh's colour for the bucket, defined once in
-	// web/css/input.css (--mu-idle-<i>, both themes) — this package names no
-	// hue (TestNoHardCodedColourInUI).
+	// Class is the dot's colour utility: a role token, bg-idle-<i>, a grey
+	// defined once per theme in web/css/tokens.css (--mu-idle-<i>) — this
+	// package names no hue (TestNoHardCodedColourInUI).
 	Class string
 	// Name is the dot's tooltip: how long ago, in words — not the script's
 	// own word for the bucket ("ancient"), which is jargon to a reader.
@@ -51,8 +51,8 @@ type recencyStep struct {
 
 // recencySteps is the scale, freshest first. Its boundaries are the script's
 // `(( idle_secs < N ))` tests, exclusive, in seconds: 600, 1800, 3600, 7200,
-// 14400, 28800, 86400 — and its colours, in order: bright green, green, aqua,
-// yellow, orange, red, purple, grey.
+// 14400, 28800, 86400 — and its colours fade, in order, from the brightest
+// grey to the most muted.
 var recencySteps = []recencyStep{
 	{10 * time.Minute, "bg-idle-0", "Last active under 10 minutes ago"},
 	{30 * time.Minute, "bg-idle-1", "Last active 10 to 30 minutes ago"},
