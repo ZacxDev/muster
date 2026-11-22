@@ -137,6 +137,21 @@ const (
 	AppSignInSameBrowser = "This browser started this sign-in, so it cannot approve it. Scan the code with your phone."
 )
 
+// The hand-off to the Android app (appSignInPhoneJS): on Android, outside the
+// app, the phone page offers AppSignInOpenInApp first and AppSignInContinueHere
+// (the in-browser approval) beneath it.
+const (
+	AppSignInOpenInApp    = "Open in the muster app"
+	AppSignInContinueHere = "Continue in this browser"
+	AppSignInHandoffNote  = "Approve this sign-in in the muster app. Without the app, continue in this browser."
+)
+
+// appSignInIntentCodeSuffix names the intent string extra that carries the
+// code: <package> + this. The code cannot ride in the intent URL's fragment,
+// which the intent: syntax uses for itself. The package is the configured one
+// (MUSTER_ANDROID_PACKAGE, Extensions.AndroidPackage), never a literal here.
+const appSignInIntentCodeSuffix = ".QR_CODE"
+
 // AppSignInStale is the approval's step-up refusal, and appSignInStepUpWhy the
 // confirm dialog's sentence about it.
 var AppSignInStale = "Approving a sign-in needs a recent sign-in on this phone. Confirm it's you, then approve again."
@@ -480,34 +495,92 @@ func (s *Server) issueGoTrueSessionFor(ctx context.Context, ip string, uid int64
 
 // handleAppSignInPhonePage is what the QR opens. The code is in the URL
 // fragment, which no request carries, so the page moves it into a form and
-// posts it (fragmentForm); with no fragment (a QR read by an app that drops
-// it, or a sign-in page in between) it asks for the link to be pasted.
+// posts it (fragmentForm, then appSignInPhoneJS); with no fragment (a QR read
+// by an app that drops it, or a sign-in page in between) it asks for the link
+// to be pasted. On Android outside the app, with the app configured
+// (Extensions.AndroidPackage), it first offers the app (appSignInHandoffHTML).
 func (s *Server) handleAppSignInPhonePage(w http.ResponseWriter, r *http.Request) {
 	if s.appSignInRefusal(w, r) {
 		return
 	}
-	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "Approve a sign-in", appSignInCarryRestoreJS+
-		fragmentForm(AppSignInPhonePath, "Approve a sign-in", "Opening the sign-in request.", "Continue", true,
-			`<input type="hidden" name="step" value="open">`, "", ""))
+	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "Approve a sign-in",
+		fragmentForm(AppSignInPhonePath, "Approve a sign-in", "Opening the sign-in request.", "Continue", false,
+			`<input type="hidden" name="step" value="open">`+appSignInHandoffHTML(s.ext.AndroidPackage), "", "")+appSignInPhoneJS())
 }
 
-// appSignInCarryKey is the sessionStorage key a code rides in across the
-// phone's sign-in (appSignInSignInPrompt): this tab only, never a URL.
+// appSignInCarryKey is the sessionStorage key a code rides in across a detour
+// away from the phone page and back: the phone's sign-in
+// (appSignInSignInPrompt), or the Android app's hand-off when the app is not
+// installed (the intent's browser_fallback_url). This tab only, never a URL.
 const appSignInCarryKey = "muster.signin-app.code"
 
-// appSignInCarryRestoreJS runs before the fragment form's own script: with no
-// fragment and a code carried across a sign-in, it puts the code back as the
-// fragment (history.replaceState sends no request), where linkTokenScript
-// takes it, strips it and posts it. The carried copy is removed at once.
-const appSignInCarryRestoreJS = `<script>
+// appSignInHandoffHTML is the hand-off's markup for the app pkg, hidden until
+// appSignInPhoneJS shows it; "" with no app configured, and the page then
+// offers none. Its href is written by the script, from the code and
+// data-package.
+func appSignInHandoffHTML(pkg string) string {
+	if pkg == "" {
+		return ""
+	}
+	return `
+<div id="qr-signin-handoff" class="space-y-2" data-package="` + html.EscapeString(pkg) + `" hidden>
+<p class="text-sm text-fg2">` + html.EscapeString(AppSignInHandoffNote) + `</p>
+<a id="qr-signin-open-app" href="#" rel="noreferrer" class="press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">` + html.EscapeString(AppSignInOpenInApp) + `</a>
+</div>`
+}
+
+// appSignInPhoneJS runs after the fragment form's script (linkTokenScript,
+// which has moved a fragment into the token field and stripped it) and decides
+// what the page does with the code:
+//
+//   - no fragment, and a code carried in this tab's sessionStorage: the phone
+//     is back from a detour (its sign-in, or the app's fallback), so the page
+//     posts the carried code and the approval goes on in this browser. The
+//     carried copy is removed at once;
+//   - a code from the fragment, the app configured (the hand-off markup is
+//     there, with its data-package), on Android (the User-Agent) and NOT
+//     inside the muster app (whose WebView injects window.musterApp): the page
+//     keeps the code in sessionStorage and offers AppSignInOpenInApp, an
+//     intent: link to that package with the code as its <package>.QR_CODE
+//     string extra, and beneath it
+//     AppSignInContinueHere, the form's own button. If the app is not
+//     installed, the browser opens the intent's fallback, /auth/qr with NO
+//     code, which lands in the case above. With no sessionStorage there is no
+//     way back, so no hand-off is offered;
+//   - otherwise: the page posts the code at once, as it always has.
+//
+// 🔴 THE CODE IS IN NO URL A SERVER RECEIVES. The intent: URL is read by the
+// phone's browser and the app, never requested; its fallback carries no code
+// (qr-signin.spec.ts checks it).
+func appSignInPhoneJS() string {
+	return `<script>
 (function () {
-  try {
-    var c = sessionStorage.getItem('` + appSignInCarryKey + `');
-    sessionStorage.removeItem('` + appSignInCarryKey + `');
-    if (c && !location.hash && /^mqr_[A-Za-z0-9_-]{43}$/.test(c)) { history.replaceState(null, '', location.pathname + '#' + c); }
-  } catch (e) {}
+  var f = document.getElementById('frag-form'), t = document.getElementById('frag-token'),
+      wrap = document.getElementById('frag-token-paste'), box = document.getElementById('qr-signin-handoff'),
+      open = document.getElementById('qr-signin-open-app'), KEY = '` + appSignInCarryKey + `', SHAPE = /^mqr_[A-Za-z0-9_-]{43}$/,
+      pkg = box ? box.getAttribute('data-package') || '' : '';
+  var carried = '';
+  try { carried = sessionStorage.getItem(KEY) || ''; sessionStorage.removeItem(KEY); } catch (e) {}
+  if (!t.value) {
+    if (SHAPE.test(carried)) { t.value = carried; if (wrap) { wrap.style.display = 'none'; } f.submit(); }
+    return;
+  }
+  var code = '';
+  if (pkg && /Android/i.test(navigator.userAgent) && !window.musterApp && SHAPE.test(t.value)) {
+    try { sessionStorage.setItem(KEY, t.value); code = sessionStorage.getItem(KEY) || ''; } catch (e) { code = ''; }
+  }
+  if (!code) { f.submit(); return; }
+  var host = location.host;
+  open.setAttribute('href', 'intent://' + host + '` + AppSignInPhonePath + `#Intent;scheme=https;package=' + pkg + ';S.' + pkg + '` + appSignInIntentCodeSuffix +
+		`=' + encodeURIComponent(code) + ';S.browser_fallback_url=' + encodeURIComponent('https://' + host + '` + AppSignInPhonePath + `') + ';end');
+  var here = f.querySelector('button[type=submit]');
+  here.textContent = ` + strconv.Quote(AppSignInContinueHere) + `;
+  here.className = 'press min-h-[44px] rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge';
+  f.addEventListener('submit', function () { try { sessionStorage.removeItem(KEY); } catch (e) {} });
+  box.hidden = false;
 })();
 </script>`
+}
 
 // handleAppSignInPhonePost is the phone's one POST: step=open shows the
 // request, step=approve / step=deny decides it. A phone with no session is
@@ -528,7 +601,7 @@ func (s *Server) handleAppSignInPhonePost(w http.ResponseWriter, r *http.Request
 // /login?next=/auth/qr. 🔴 THE CODE IS NOT IN THAT LINK — a query string is
 // written by proxies and kept in history. It is in this page's body (a POST
 // answer), and the link's script keeps it in this tab's sessionStorage, where
-// /auth/qr takes it back after the sign-in (appSignInCarryRestoreJS).
+// /auth/qr takes it back after the sign-in (appSignInPhoneJS).
 func (s *Server) appSignInSignInPrompt(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	code := postedLinkToken(r)

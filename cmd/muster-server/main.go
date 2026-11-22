@@ -760,6 +760,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, err
 	}
 	ext.AssetLinks = assetLinks
+	if len(assetLinks) > 0 {
+		// The QR sign-in's hand-off to the app names the same package.
+		ext.AndroidPackage = cfg.AndroidPackage
+	}
 	// The Android shell's sign-in origins (MUSTER_ANDROID_SSO_ORIGINS): empty,
 	// GET /api/device/web answers `[]`. validate has already refused a bad one.
 	ssoOrigins, err := cfg.ssoOrigins()

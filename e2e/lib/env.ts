@@ -583,6 +583,10 @@ export const uiKitParityPort = port + 488;
 export const qrMainPort = port + 490;
 export const qrBrowserPort = port + 491;
 export const qrGotruePort = Number(process.env.MUSTER_E2E_QR_GOTRUE_PORT ?? port + 492);
+// …and the hand-off to the Android app: its own password-mode server with
+// MUSTER_ANDROID_PACKAGE set, so no other spec's server names an app. +493:
+// clear of the blocks above.
+export const qrHandoffPort = port + 493;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

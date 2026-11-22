@@ -771,17 +771,35 @@ model are in [design/qr-sign-in.md](design/qr-sign-in.md).
 - **Refused from another origin.** Starting, approving and redeeming are POSTs
   checked like every sign-in. In gotrue mode they are served on the browser
   listener only.
-- **The Android app** does not open the link itself yet: the phone's browser
-  or the installed web app does.
-  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app) says what the
-  app needs.
+- **On Android the phone's browser hands off to the muster app**, when the
+  server names the app: `MUSTER_ANDROID_PACKAGE` (with
+  `MUSTER_ANDROID_CERT_SHA256`, [configuration.md](configuration.md)). A
+  phone camera opens the QR's link in the browser. On Android, and not
+  already inside the app, the page shows **Open in the muster app** first,
+  with **Continue in this browser** (the approval described above) beneath
+  it. Nothing is opened on the server until you choose. Inside the app, on
+  any other phone or browser, or with no app configured, the page opens the
+  request at once, as before.
+  - **Open in the muster app** is an Android `intent:` link to that package.
+    The code travels as the intent's string extra `<package>.QR_CODE`, since
+    the `intent:` syntax uses the URL's fragment for itself. The browser reads
+    that link and never requests it, so the code is still in no URL muster
+    receives.
+  - **Without the app installed**, the browser opens the intent's fallback,
+    `https://<host>/auth/qr` with no code in it. The page keeps the code in the
+    tab's `sessionStorage` while it offers the app, so the fallback picks it
+    up and the approval goes on in the browser.
+  - The page detects Android by its User-Agent and the app by
+    `window.musterApp`, the bridge the app's WebView adds. Neither is a
+    security check: a wrong guess changes only which button comes first.
+  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app) has the design.
 
 | route | what it does |
 |---|---|
 | `POST /login/app` | Starts a sign-in: sets the browser's binding cookie, answers `{code, url, svg, expires_in, interval}`. |
 | `GET /login/app/status` | The request's state by the cookie: `pending`, `scanned`, `approved` (with `approver`: `{name, email}`), `denied`, `redeemed` or `expired`, with `interval`. Too fast: 429 `slow_down`. |
 | `POST /login/app/redeem` | `code` and `next`, with the cookie: sets the session and answers `{redirect}`. |
-| `GET /auth/qr` | The phone's page: moves `#<code>` into a form and posts it. |
+| `GET /auth/qr` | The phone's page: moves `#<code>` into a form and posts it (on Android outside the app, after offering **Open in the muster app**). |
 | `POST /auth/qr` | `step=open` (the details), `step=approve` or `step=deny`, with `token`. |
 
 ## Cross-origin writes
