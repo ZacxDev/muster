@@ -23,8 +23,13 @@ func TestAnEndCardWhoseProposalCannotBeReadOffersNoEnd(t *testing.T) {
 	if page := f.ownerGet(t, f.srv.handleAttentionItems, "/attention/items", 0); !strings.Contains(page, endIt) {
 		t.Fatalf("control: the readable card draws no End it:\n%s", page)
 	}
-	if page := f.ownerGet(t, f.srv.handleAskPage, askPagePath(x.AskID)+"?part=live", x.AskID); !strings.Contains(page, endIt) {
+	if page := f.ownerGet(t, f.srv.handleAskPage, askPagePath(x.AskID), x.AskID); !strings.Contains(page, endIt) {
 		t.Fatalf("control: the readable ask page draws no End it:\n%s", page)
+	}
+	// The page's options are its answer form's (askAnswerFormHTML), drawn
+	// with the page; its live part re-reads only the chips and the state.
+	if live := f.ownerGet(t, f.srv.handleAskPage, askPagePath(x.AskID)+"?part=live", x.AskID); strings.Contains(live, `name="option"`) {
+		t.Fatalf("the ask page's live part draws options:\n%s", live)
 	}
 	saved := f.srv.ext.ChiefDispatch
 	f.srv.ext.ChiefDispatch = unreadProposals{f.plugins}
@@ -35,7 +40,6 @@ func TestAnEndCardWhoseProposalCannotBeReadOffersNoEnd(t *testing.T) {
 	}{
 		{"the Attention view", f.ownerGet(t, f.srv.handleAttentionItems, "/attention/items", 0), true},
 		{"the ask page", f.ownerGet(t, f.srv.handleAskPage, askPagePath(x.AskID), x.AskID), true},
-		{"the ask page's live part", f.ownerGet(t, f.srv.handleAskPage, askPagePath(x.AskID)+"?part=live", x.AskID), false},
 	} {
 		if strings.Contains(pg.body, endIt) || !strings.Contains(pg.body, `value="Not now"`) {
 			t.Errorf("%s of an unreadable end card: End it drawn, or Not now missing:\n%s", pg.name, pg.body)
