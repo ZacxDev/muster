@@ -1450,12 +1450,36 @@ records the session on the item (`officer_items.requested_host` /
 call names**: the host of the mirror token the call came in on and the session
 that host lists running in the calling window now. The tool takes no session
 argument (an unknown one is refused), a payload that spells one is only the
-officer's payload, and the first session to ask for a live item keeps it. An
-item enqueued any other way — the CLI (a personal or hook token names no
-session), the officers page, a plugin, a schedule — names no session and wakes
-none. On a machine the [step-up gate](mirroring.md) covers, the enqueue is
+officer's payload, and the first session to ask for a live item keeps it.
+
+**`muster officer item enqueue` run inside such a session records it too**,
+by the same route: the command calls `officer_item_enqueue` on this machine's
+muster-mirror MCP endpoint (`MUSTER_MIRROR_MCP_LISTEN` in
+`~/.config/muster-mirror/env`, its secret from `$MUSTER_MIRROR_MCP_SECRET` or
+the secret file), naming its pane and tmux server (`$TMUX_PANE`, `$TMUX`) as
+Claude Code's MCP config does, so muster-mirror binds the call to the session
+that pane runs. The command has no flag that names a session. When it cannot
+resolve one — not inside a Claude Code session or a tmux pane, no MCP
+endpoint here, the machine mirrored to a different muster than the one the
+command talks to, the secret unreadable, the endpoint not answering, or the
+tool refusing the call — it enqueues through the admin API as before, records
+no session, and says why on stderr (`note: no session recorded on this item —
+…`). A step-up card from the endpoint is the answer: the command prints it and
+enqueues nothing around it.
+
+An item enqueued any other way — the admin API (a personal or hook token names
+no session), the officers page, a plugin, a schedule — names no session and
+wakes none. On a machine the [step-up gate](mirroring.md) covers, the enqueue is
 itself a card on your phone (it makes an owner item), run once as the session
 that asked when you confirm it.
+
+🔴 **A rejection of a draft for such an item is that session's alone.** The
+rejection and your reason are pasted into the session, which is told the
+officer will not redraft; the officer gets no `draft.refused` item and no
+escalation, and the item is finished `no_action`
+([plugins.md](plugins.md#outbound-drafts-officer_post_draft)). When no wake
+could reach the session (its host no longer mirrors here) the rejection goes
+back to the officer as for any other item.
 
 🔴 **Only muster's words and yours.** One function builds every one of these
 messages, and it reads only ids, a decision word, a count, a page component's

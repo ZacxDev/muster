@@ -27,8 +27,10 @@ import (
 // handleMirrorMCP) — the identity session_wake.go pins every wake to. The
 // arguments name no session (unknown fields are refused), and a payload that
 // spells one is the item's payload, read by the officer, never by this.
-// The CLI's enqueue (a personal or hook token, which names no session)
-// records none.
+// The admin API's enqueue (a personal or hook token, which names no session)
+// records none; `muster officer item enqueue` run inside a mirrored session
+// records one only by calling THIS tool through that session's muster-mirror
+// endpoint (cmd/muster officer_enqueue_session.go), bound like any other call.
 //
 //   - LISTED ONLY on the mirror door (mirrorTools) and dispatched there by
 //     name, never in dispatchCallerTool, so no dispatched agent — the chief
@@ -58,7 +60,7 @@ func officerItemEnqueueToolDef() agents.ToolDef {
 		Description: "Queue an item for one of your owner's officers, on your owner's behalf, as `muster officer item enqueue` does — " +
 			"but recorded as asked for by THIS session, so when your owner approves or rejects a draft the officer files for it " +
 			"(and when that draft is sent, fails or may have been sent), muster tells this session, with your owner's reason for a " +
-			"rejection. Use it instead of the CLI when you want to hear back. One live item per officer, kind and subject_key: " +
+			"rejection — which then goes to this session only: the officer does not redraft it. (`muster officer item enqueue` run in this session's shell calls this tool too.) One live item per officer, kind and subject_key: " +
 			"created false returns the live item's id (this session is recorded on it only if no session already is). " +
 			"Answers {id, created, requested_by_this_session}.",
 		Parameters: objSchema(map[string]any{

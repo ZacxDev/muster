@@ -16,9 +16,10 @@ import (
 // 🔴 ONLY THE BOUND CALLER WRITES IT. SetItemRequester's one caller passes the
 // host of the mirror token the call came in on and the session that host lists
 // running in the calling window NOW — never a field of the call's arguments or
-// a request header. The admin API (`muster officer item enqueue`, a personal
-// or hook token, which names no session), the owner's pages, plugins and
-// schedules never write it.
+// a request header. The admin API (a personal or hook token, which names no
+// session), the owner's pages, plugins and schedules never write it; `muster
+// officer item enqueue` inside a mirrored session reaches it only through the
+// session's own MCP door (cmd/muster officer_enqueue_session.go).
 
 // SetItemRequester records that the mirrored session (host, session) asked for
 // owner's item id, unless the item already names one (FIRST REQUESTER WINS: an

@@ -304,6 +304,12 @@ func newOfficerItemCmd(a *app) *cobra.Command {
 				}
 				body["not_before"] = t
 			}
+			// Inside a mirrored Claude Code session: through that session's own
+			// MCP door, so the session is recorded as the item's requester
+			// (officer_enqueue_session.go). Else, as always, the admin API.
+			if done, err := a.enqueueAsSession(cmd.Context(), args[0], body); done || err != nil {
+				return err
+			}
 			return a.officerCall(cmd, http.MethodPost, officerItemsRoute, map[string]string{"officer": args[0]}, nil, body)
 		},
 	}
