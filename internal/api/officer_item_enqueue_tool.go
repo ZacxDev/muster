@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -27,6 +28,10 @@ import (
 // handleMirrorMCP) — the identity session_wake.go pins every wake to. The
 // arguments name no session (unknown fields are refused), and a payload that
 // spells one is the item's payload, read by the officer, never by this.
+// 🔴 expect_session CAN ONLY REFUSE, NEVER NAME: a caller may say which session
+// it believes it is (`muster officer item enqueue` passes its environment's
+// Claude Code session id), and a call bound to any OTHER session is refused
+// with nothing queued or recorded. It never writes the requester.
 // The admin API's enqueue (a personal or hook token, which names no session)
 // records none; `muster officer item enqueue` run inside a mirrored session
 // records one only by calling THIS tool through that session's muster-mirror
@@ -44,12 +49,20 @@ import (
 
 const officerItemEnqueueTool = "officer_item_enqueue"
 
+// orNoneSession is a bound session as a refusal names it.
+func orNoneSession(sid string) string {
+	if sid == "" {
+		return "(none)"
+	}
+	return sid
+}
+
 // officerItemEnqueueMirrorOnly refuses a caller that is not one of the
 // owner's mirrored sessions.
 const officerItemEnqueueMirrorOnly = "officer_item_enqueue is available only to your owner's own mirrored Claude Code sessions"
 
 // officerItemEnqueueArgs is the arguments refusal.
-const officerItemEnqueueArgs = "arguments are {officer, kind, subject_key, payload?, tier?, priority?, not_before?}"
+const officerItemEnqueueArgs = "arguments are {officer, kind, subject_key, payload?, tier?, priority?, not_before?, expect_session?}"
 
 // officerItemEnqueueOn reports whether the tool is listed: the built-in
 // officer store, where the item and its requester are kept.
@@ -71,6 +84,8 @@ func officerItemEnqueueToolDef() agents.ToolDef {
 			"tier":        strProp("routine or judgement (default judgement)."),
 			"priority":    strProp("urgent, high, normal or low (default normal)."),
 			"not_before":  strProp("Not claimable before this RFC 3339 time."),
+			"expect_session": strProp("Optional: the Claude Code session id you believe this is. A call muster binds to any other " +
+				"session is refused, nothing queued. It never names the session recorded: muster binds that itself."),
 		}, "officer", "kind", "subject_key")}
 }
 
@@ -90,6 +105,7 @@ func (s *Server) toolOfficerItemEnqueue(ctx context.Context, c toolCaller, argum
 		Tier       string          `json:"tier"`
 		Priority   string          `json:"priority"`
 		NotBefore  *time.Time      `json:"not_before"`
+		Expect     string          `json:"expect_session"`
 	}
 	dec := json.NewDecoder(bytes.NewReader([]byte(orEmptyJSON(arguments))))
 	dec.DisallowUnknownFields()
@@ -98,6 +114,13 @@ func (s *Server) toolOfficerItemEnqueue(ctx context.Context, c toolCaller, argum
 	}
 	if len(in.Payload) > 0 && (in.Payload[0] != '{' || !json.Valid(in.Payload)) {
 		return toolErr("payload is a JSON object")
+	}
+	if in.Expect != "" && in.Expect != c.asker.MirrorSession {
+		// Before anything is written: the caller is not the session it
+		// believes it is (an environment inherited from another session, a
+		// pane that changed hands), so nothing is queued and nothing recorded.
+		return toolErr("this call is bound to Claude Code session %s (the one muster-mirror lists in the calling pane), not to %s, "+
+			"the one expect_session names: nothing was queued or recorded", orNoneSession(c.asker.MirrorSession), strconv.Quote(in.Expect))
 	}
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 || p.All() || s.officerStore == nil {

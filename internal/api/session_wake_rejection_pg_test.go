@@ -206,3 +206,36 @@ func TestAReplyDraftRejectedAfterItsApprovalWakesTheSessionTwice(t *testing.T) {
 		t.Fatalf("the second line:\n%s\nwant it to start %q and carry the reason fenced", got[1].text, pre)
 	}
 }
+
+// TestAnExpectedSessionOnlyRefuses: expect_session (what `muster officer item
+// enqueue` passes from its environment) names a session the call is NOT bound
+// to: refused, nothing queued, nothing recorded. Naming the bound session, the
+// call goes through and the requester is still the binding's.
+func TestAnExpectedSessionOnlyRefuses(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	out := w.mirrorCall(routeSID, officerItemEnqueueTool, map[string]any{"officer": builtinOfficerID, "kind": "owner.plan",
+		"subject_key": "plan-expect-other", "expect_session": wakeOtherSID})
+	if !strings.HasPrefix(out, "tool error: ") || !strings.Contains(out, "this call is bound to Claude Code session "+routeSID+" (") ||
+		!strings.Contains(out, "nothing was queued or recorded") {
+		t.Fatalf("a call bound to another session than the expected one: %s", out)
+	}
+	var n int
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM officer_items WHERE subject_key = 'plan-expect-other'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d items queued by a refused call", n)
+	}
+	out = w.mirrorCall(routeSID, officerItemEnqueueTool, map[string]any{"officer": builtinOfficerID, "kind": "owner.plan",
+		"subject_key": "plan-expect-mine", "expect_session": routeSID})
+	if strings.HasPrefix(out, "tool error") || !strings.Contains(out, `"requested_by_this_session":true`) {
+		t.Fatalf("the call naming its own session: %s", out)
+	}
+	var item int64
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT id FROM officer_items WHERE subject_key = 'plan-expect-mine'`).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	if h, s := w.itemRequester(item); h != "tower" || s != routeSID {
+		t.Fatalf("the requester is %q/%q; want the bound caller tower/%s", h, s, routeSID)
+	}
+}

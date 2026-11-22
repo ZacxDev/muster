@@ -60,6 +60,13 @@ const (
 	// feature and the line that turns it on. Distinct from exitRouteAbsent (7),
 	// which is a server that predates the route.
 	exitFeatureDisabled = 12
+
+	// exitAwaitingConfirmation: the request was taken, but as a step-up card
+	// on the owner's paired phone, so NOTHING HAS HAPPENED YET (`officer item
+	// enqueue` inside a mirrored session on a machine the step-up gate
+	// covers). Not 0: a script reading 0 as "queued" would be wrong. stdout
+	// carries the card. New in this binary; the upstream table has no 13.
+	exitAwaitingConfirmation = 13
 )
 
 // cliError carries the exit code alongside the message. Every failure path in
@@ -142,6 +149,9 @@ const exitCodeHelp = `Exit codes:
      host. Not a failure: stdout is empty
  12  feature disabled — the route exists but its feature is off on that server (a typed
      404). The message names the feature and the .env line that enables it
+ 13  awaiting the owner's confirmation — ` + "`officer item enqueue`" + ` in a mirrored session on a
+     machine the step-up gate covers made a card on the owner's phone instead: nothing is
+     queued until they confirm it. stdout carries the card ({"status", "card"})
 
 Output discipline: JSON goes to stdout and NOTHING else ever goes to stdout.
 Diagnostics, warnings and version-skew notices go to stderr, so piping stdout

@@ -150,18 +150,23 @@ func TestEnqueueInsideASessionGoesThroughItsMirrorDoor(t *testing.T) {
 	}
 	sort.Strings(keys)
 	if rpc.Method != "tools/call" || rpc.Params.Name != "officer_item_enqueue" ||
-		strings.Join(keys, ",") != "kind,not_before,officer,payload,priority,subject_key" {
+		strings.Join(keys, ",") != "expect_session,kind,not_before,officer,payload,priority,subject_key" {
 		t.Fatalf("the call: %s %s %v", rpc.Method, rpc.Params.Name, keys)
 	}
 	a := rpc.Params.Arguments
 	if a["officer"] != "marketing:example" || a["kind"] != "owner.plan" || a["subject_key"] != "plan-cli" || a["priority"] != "high" ||
-		a["not_before"] != "2030-01-02T03:04:05Z" {
+		a["not_before"] != "2030-01-02T03:04:05Z" || a["expect_session"] != doorSID {
 		t.Fatalf("the arguments: %v", a)
 	}
 	if p, _ := a["payload"].(map[string]any); p["goal"] != "launch" {
 		t.Fatalf("the payload: %v", a["payload"])
 	}
-	for _, s := range []string{doorSID, doorPane, doorSecret} {
+	// The session id is in the body ONCE, as expect_session (which can only
+	// refuse a call bound elsewhere); the pane and the secret not at all.
+	if n := strings.Count(c.body, doorSID); n != 1 {
+		t.Fatalf("the call's body names the session %d times; want once, as expect_session: %s", n, c.body)
+	}
+	for _, s := range []string{doorPane, doorSecret} {
 		if strings.Contains(c.body, s) {
 			t.Fatalf("the call's body names %q; the session is muster-mirror's to bind: %s", s, c.body)
 		}
@@ -195,6 +200,9 @@ func TestEnqueueWithNoSessionUsesTheAdminAPIAndSaysWhy(t *testing.T) {
 		{"not loopback", sessionEnv(), func(_ *fakeDoor, url string) string {
 			return envMirrorMCPListen + "=192.0.2.7:47823\n" + envMirrorURL + "=" + url + "\n"
 		}, "is not a loopback address"},
+		{"a name, not a loopback literal", sessionEnv(), func(_ *fakeDoor, url string) string {
+			return envMirrorMCPListen + "=localhost:47823\n" + envMirrorURL + "=" + url + "\n"
+		}, "MUSTER_MIRROR_MCP_LISTEN=localhost:47823 is not a loopback address"},
 		{"mirrored to another muster", sessionEnv(), func(d *fakeDoor, _ string) string {
 			return mirrorSettings(d, "https://other-muster.example")
 		}, "mirrored to https://other-muster.example, and this command talks to"},
@@ -252,15 +260,42 @@ func TestEnqueueTheDoorRefusesOrMissesFallsBack(t *testing.T) {
 
 // TestEnqueueAStepUpCardIsNotRetriedElsewhere: on a machine the step-up gate
 // covers, the door answers with a card on the owner's phone. That is the
-// answer — the command never enqueues around it through the admin API.
+// answer — the command never enqueues around it through the admin API — and,
+// nothing being queued yet, it exits 13, not 0, the card still on stdout.
 func TestEnqueueAStepUpCardIsNotRetriedElsewhere(t *testing.T) {
 	h := newHarness(t)
 	h.json(enqRoute, http.StatusCreated, `{"id":5,"created":true}`)
 	d := newFakeDoor(t, `{"status":"awaiting_owner_confirmation","card":91}`, false)
 	got := runEnqueue(t, h, sessionEnv(), mirrorSettings(d, h.srv.URL))
-	if got.code != exitOK || adminEnqueues(h) != 0 || !strings.Contains(got.stdout, "awaiting_owner_confirmation") ||
-		!strings.Contains(got.stderr, "card #91 on your owner's phone") {
-		t.Fatalf("exit %d, admin %d, stdout %q, stderr %q", got.code, adminEnqueues(h), got.stdout, got.stderr)
+	if got.code != 13 || adminEnqueues(h) != 0 || !strings.Contains(got.stdout, `"card": 91`) && !strings.Contains(got.stdout, `"card":91`) ||
+		!strings.Contains(got.stdout, "awaiting_owner_confirmation") ||
+		!strings.Contains(got.stderr, "nothing is queued yet") || !strings.Contains(got.stderr, "card #91 on your owner's phone") {
+		t.Fatalf("exit %d (want 13), admin %d, stdout %q, stderr %q", got.code, adminEnqueues(h), got.stdout, got.stderr)
+	}
+}
+
+// TestEnqueueHelpDocumentsTheStepUpExit: `officer item enqueue --help` names
+// exit 13 and what it means.
+func TestEnqueueHelpDocumentsTheStepUpExit(t *testing.T) {
+	root := newRootCmd(&app{stdout: io.Discard, stderr: io.Discard, getenv: func(string) string { return "" }})
+	cmd, _, err := root.Find([]string{"officer", "item", "enqueue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd.Long, "Exit 13: on a machine the step-up gate covers") || !strings.Contains(cmd.Long, "NOTHING IS QUEUED until it is confirmed") {
+		t.Fatalf("enqueue's help does not document exit 13:\n%s", cmd.Long)
+	}
+}
+
+// TestLoopbackListenTakesOnlyLoopbackLiterals: the secret goes only to a
+// loopback IP literal — never to a name, however loopback it sounds.
+func TestLoopbackListenTakesOnlyLoopbackLiterals(t *testing.T) {
+	for listen, want := range map[string]bool{"127.0.0.1:47823": true, "127.8.9.10:1": true, "[::1]:47823": true,
+		"localhost:47823": false, "LOCALHOST:47823": false, "localhost.:47823": false, "127.0.0.1.nip.io:47823": false,
+		"192.0.2.7:47823": false, "[::]:47823": false, "0.0.0.0:47823": false, "127.0.0.1": false} {
+		if got := loopbackListen(listen); got != want {
+			t.Errorf("loopbackListen(%q) = %v; want %v", listen, got, want)
+		}
 	}
 }
 

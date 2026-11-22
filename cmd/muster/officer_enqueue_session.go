@@ -35,7 +35,11 @@ import (
 // it lists running there NOW and muster binds the call to it
 // (handleMirrorMCP, mirrorSessionOf): the same identity source and session
 // pin as every session wake. The most a caller can do is act as one of this
-// host's own sessions — the reach its MCP client already has.
+// host's own sessions — the reach its MCP client already has. The call does
+// carry the session id this process's environment names, as expect_session:
+// it can only REFUSE (the tool queues and records nothing when muster-mirror
+// bound the pane to any other session — an environment inherited from another
+// session, a pane that changed hands), never name the session recorded.
 //
 // When the session cannot be resolved — not inside a Claude Code session or
 // a tmux pane, no muster-mirror MCP endpoint here, this machine mirrored to a
@@ -47,7 +51,9 @@ import (
 //
 // On a machine the step-up gate covers, the enqueue is a confirmation card on
 // the owner's phone (the tool's own gate, as from the session's MCP client):
-// the command prints the card's words and queues nothing itself.
+// the command prints the card's words on stdout, queues nothing itself, and
+// exits exitAwaitingConfirmation (13) — nothing is queued YET, so a script
+// must not read it as success.
 // ---------------------------------------------------------------------------
 
 const (
@@ -58,7 +64,7 @@ const (
 	envMirrorURL       = "MUSTER_MIRROR_URL"
 	// mirrorPaneHeader / mirrorTmuxHeader are how a caller names its pane and
 	// tmux server to muster-mirror (internal/mirrorhost MCPPaneHeader,
-	// MCPTmuxHeader; TestTheSessionDoorHeadersAreMirrorHosts pins the two).
+	// MCPTmuxHeader; TestTheSessionDoorSpellsMirrorHostsNames pins the two).
 	mirrorPaneHeader = "X-Muster-Pane"
 	mirrorTmuxHeader = "X-Muster-Tmux"
 	// sessionDoorMaxBody bounds the endpoint's answer read here.
@@ -118,15 +124,15 @@ func orNone(s string) string {
 	return s
 }
 
-// loopbackListen reports whether listen (host:port) is a loopback address:
-// the secret is never sent anywhere else.
+// loopbackListen reports whether listen (host:port) is a loopback IP LITERAL:
+// the secret is never sent anywhere else. A name — `localhost` included — is
+// refused, not resolved: what it resolves to is the resolver's answer (a hosts
+// file, a search domain), and muster-mirror itself listens only on a literal
+// (MUSTER_MIRROR_MCP_LISTEN, docs/configuration.md).
 func loopbackListen(listen string) bool {
 	h, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return false
-	}
-	if strings.EqualFold(h, "localhost") {
-		return true
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
@@ -233,7 +239,9 @@ func (a *app) enqueueAsSession(ctx context.Context, officer string, body map[str
 	}
 	d, why := a.sessionDoorFor(c.cfg.apiURL)
 	if why == "" {
-		args := map[string]any{"officer": officer}
+		// The session this environment names, which the tool only checks
+		// (see the header): sessionDoorFor has already refused an empty one.
+		args := map[string]any{"officer": officer, "expect_session": sessionIDFrom(a.getenv)}
 		for k, v := range body {
 			if s, ok := v.(string); ok && s == "" {
 				continue
@@ -275,10 +283,16 @@ func (a *app) sessionEnqueued(text string) error {
 		out, _ := json.Marshal(map[string]any{"answer": text})
 		return a.emit(out)
 	}
-	switch {
-	case got.Status == stepUpAwaiting:
-		fmt.Fprintf(a.stderr, "note: this machine's step-up gate made the enqueue card #%d on your owner's phone; once it is confirmed, the item is queued as this session's\n", got.Card)
-	case got.Mine != nil && !*got.Mine:
+	if got.Status == stepUpAwaiting {
+		// The card's line stays on stdout; NOTHING IS QUEUED YET, so the exit
+		// is not 0 (exitAwaitingConfirmation).
+		if err := a.emit([]byte(text)); err != nil {
+			return err
+		}
+		return failf(exitAwaitingConfirmation, "nothing is queued yet: this machine's step-up gate made the enqueue card #%d on your owner's phone; "+
+			"once it is confirmed, the item is queued as this session's", got.Card)
+	}
+	if got.Mine != nil && !*got.Mine {
 		fmt.Fprintf(a.stderr, "note: item %d was already live with another session recorded on it; this session is not told how its drafts are decided\n", got.ID)
 	}
 	return a.emit([]byte(text))
