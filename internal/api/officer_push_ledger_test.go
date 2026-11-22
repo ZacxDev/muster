@@ -46,6 +46,8 @@ var officerRouted = map[string]string{
 	"outreach_batch.go Server.notifyBatchAwaiting -> goNotify":           string(officerPushOutreachBatch),
 	"reply_draft_tool.go Server.notifyDraftAwaitingNoting -> goNotify":   string(officerPushDraft),
 	"plugin_drafts.go Server.notifyDraftRefused -> goNotify":             string(officerPushDraftRefused),
+	"plugin_draft_retry.go Server.draftRetryScheduled -> goNotify":       string(officerPushDraftRetrying),
+	"plugin_draft_retry.go Server.notifyRetryChainEnded -> goNotify":     string(officerPushDraftRetryEnded),
 	"officer_cap_hold.go Server.officerBudgetNotice -> goNotify":         string(officerPushBudget),
 	"officer_cap_hold.go Server.officerCapHoldNotice -> goNotify":        string(officerPushCapHold),
 	"officer_autorestart.go Server.officerAutoRestartNotice -> goNotify": string(officerPushRestartHeld),

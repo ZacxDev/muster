@@ -264,6 +264,9 @@ var thePluginOwnerReadSites = []string{
 	// task-writes and mail paths, none of which serverPluginRoutes serves a
 	// server app.
 	"internal/api Server.draftRefused#1",
+	"internal/api Server.draftRetryScheduled#1",
+	"internal/api Server.draftRetryScheduled#2",
+	"internal/api Server.draftRetryScheduled#3",
 	"internal/api Server.handlePluginDraftCheck#1",
 	"internal/api Server.handlePluginDraftCheck#2",
 	"internal/api Server.handlePluginDraftCheck#3",
@@ -273,6 +276,8 @@ var thePluginOwnerReadSites = []string{
 	"internal/api Server.handlePluginDraftMedia#1",
 	"internal/api Server.handlePluginDraftResult#1",
 	"internal/api Server.handlePluginDraftResult#2",
+	"internal/api Server.handlePluginDraftResult#3",
+	"internal/api Server.handlePluginDraftResult#4",
 	"internal/api Server.handlePluginTaskWriteResult#1",
 	"internal/api Server.handlePluginTaskWritesClaim#1",
 	"internal/api Server.notifyDraftRefused#1",

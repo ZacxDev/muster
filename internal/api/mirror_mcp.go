@@ -193,7 +193,7 @@ const (
 var remoteMirrorTools = map[string]bool{
 	attentionAnswerTool: true, agentDestroyTool: true, agentsListTool: true, chiefRestartTool: true,
 	connectorRequestsListTool: true, connectorRequestDecideTool: true,
-	pluginDraftsListTool: true, pluginDraftDecideTool: true, pluginRequestsListTool: true, pluginRequestDecideTool: true,
+	pluginDraftsListTool: true, pluginDraftDecideTool: true, pluginDraftRetryTool: true, pluginRequestsListTool: true, pluginRequestDecideTool: true,
 	dispatchRequestTool: true, dispatchApproveTool: true,
 	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
 }

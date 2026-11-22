@@ -53,7 +53,7 @@ func TestARemoteCallerIsOfferedTheAdminToolsOnly(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "tasks_list task_get task_comment task_set_status attention_answer agent_destroy agents_list connector_requests_list connector_request_decide plugin_drafts_list plugin_draft_decide plugin_requests_list plugin_request_decide muster_help"
+	want := "tasks_list task_get task_comment task_set_status attention_answer agent_destroy agents_list connector_requests_list connector_request_decide plugin_drafts_list plugin_draft_decide plugin_draft_retry plugin_requests_list plugin_request_decide muster_help"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}

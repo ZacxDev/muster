@@ -25,6 +25,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 	"github.com/ZacxDev/muster/internal/users"
@@ -67,6 +68,8 @@ type outboundWorld struct {
 	onHost bool
 	mirror *hostOfficerMirror
 	spawn  officers.HostSpawn
+	// pusher records the pushes, when the fixture asked for them (pushes).
+	pusher *payloadPusher
 }
 
 // call runs an officer tool as the world's instance: through the agent door
@@ -135,6 +138,11 @@ type outboundFixture struct {
 	// (createAndDispatchAgent), so a test must never swap them after.
 	provisioner Provisioner
 	gateway     Gateway
+	// pushes, when set, gives the server a push service and user 1 a device
+	// (retryEP), recorded on the world's pusher — configured BEFORE anything
+	// starts: UseExtensions after the officer fleet started races its
+	// goroutines' reads of s.ext (production calls it once, before serving).
+	pushes bool
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -192,6 +200,13 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	if fx.gateway != nil {
 		ext.Gateway = fx.gateway
 	}
+	var pusher *payloadPusher
+	if fx.pushes {
+		store := &memPush{}
+		pusher = &payloadPusher{}
+		claim(t, store, 1, retryEP)
+		ext.Push = push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
+	}
 	var hm *hostOfficerMirror
 	if onHost {
 		// The Compose shape: no provisioner, no kinds; a mirror hub.
@@ -220,7 +235,8 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	if _, err := srv.EnableOfficers(ocfg); err != nil {
 		t.Fatal(err)
 	}
-	w := &outboundWorld{t: t, f: f, srv: srv, h: srv.Handler(), store: store, ps: ps, objects: objs, ctx: ctx, other: other, onHost: onHost, mirror: hm}
+	w := &outboundWorld{t: t, f: f, srv: srv, h: srv.Handler(), store: store, ps: ps, objects: objs, ctx: ctx, other: other, onHost: onHost, mirror: hm,
+		pusher: pusher}
 	if onHost {
 		w.agent, w.spawn = startHostInstance(t, srv, hm, ocfg.HostSpawns.(*officers.MemHostSpawnStore), builtinOfficerID)
 	} else {

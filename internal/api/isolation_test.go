@@ -666,6 +666,7 @@ var isolationClasses = map[string]routeClass{
 	// its result names A's draft — which B's plugin must not settle.
 	"POST /plugins/drafts/{id}/approve":          classParam,
 	"POST /plugins/drafts/{id}/reject":           classParam,
+	"POST /plugins/drafts/{id}/retry":            classParam,
 	"POST /plugins/outreach-batches/{id}/decide": classParam,
 	"POST /plugins/messages/{id}/retry":          classParam,
 	"POST /plugin/v1/drafts/claim":               classPlugin,

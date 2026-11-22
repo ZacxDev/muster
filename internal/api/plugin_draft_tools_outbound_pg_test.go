@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -101,5 +103,95 @@ func TestPluginDraftDecideBindsAnOutboundDraftsMedia(t *testing.T) {
 	stored, err := f.plugins.Draft(f.asOwner, d.ID)
 	if err != nil || stored.ApprovedMediaSHA256 == nil || strings.Join(stored.ApprovedMediaSHA256, ",") != sha("launch/hero-1")+","+sha("launch/demo-2") {
 		t.Fatalf("the approval's binding: %v (%v)", stored.ApprovedMediaSHA256, err)
+	}
+}
+
+// TestPluginDraftRetryRelaysTheOwnersRetry (the MCP door, plugin_draft_retry):
+// an outbound draft whose send failed with nothing sent is listed under
+// plugin_drafts_list's retries (can_retry), and plugin_draft_retry files its
+// next attempt, claimable at once, audited as MCP from the host and session;
+// the list then shows it waiting, and a second retry is refused while it is
+// out (one live attempt). Another owner's session reads it as no such draft.
+func TestPluginDraftRetryRelaysTheOwnersRetry(t *testing.T) {
+	f := newDraftToolFixture(t)
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET deliver_to = 'officer:example:main', capabilities = '{messages,draft_checks}' WHERE id = `+
+		strconv.FormatInt(f.plugin.ID, 10))
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dsn, `UPDATE plugins SET deliver_to = NULL WHERE id = `+strconv.FormatInt(f.plugin.ID, 10))
+	})
+	const body = "A post the plugin could not send."
+	d, err := f.plugins.FileOutbound(f.asOwner, f.chief.ID, f.owner, f.chief.Name, plugins.NewOutbound{Officer: "example:main",
+		Plugin: f.plugin.Name, Venue: "example.forum", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.plugins.CheckDraft(f.asOwner, f.plugin.ID, d.ID, plugins.DraftCheck{Sendable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if text, isErr := f.mcp(t, f.tok, otherRouteSID, "plugin_draft_decide", map[string]any{"id": d.ID, "decision": "approve",
+		"body_sha256": sha(body), "media_sha256": []string{}}); isErr {
+		t.Fatalf("approve: %s", text)
+	}
+	retry := func(tok string, id int64) (string, bool) {
+		return f.mcp(t, tok, otherRouteSID, "plugin_draft_retry", map[string]any{"id": id})
+	}
+	if text, isErr := retry(f.tok, d.ID); !isErr || !strings.Contains(text, "already on its way") {
+		t.Fatalf("retrying an approved, unsent draft: %s; want refused (one live attempt)", text)
+	}
+	if c, ok, err := f.plugins.ClaimDraft(f.asOwner, f.plugin.ID); err != nil || !ok || c.DraftID != d.ID {
+		t.Fatalf("claim: %v %v %v", c, ok, err)
+	}
+	if _, _, err := f.plugins.FinishDraft(f.asOwner, f.plugin.ID, d.ID, plugins.DraftResult{Detail: "logged in as another account; nothing sent",
+		NothingSent: true}); err != nil {
+		t.Fatal(err)
+	}
+	entry := func() map[string]any {
+		t.Helper()
+		text, isErr := f.mcp(t, f.tok, otherRouteSID, "plugin_drafts_list", map[string]any{})
+		var out struct {
+			Retries []map[string]any `json:"retries"`
+		}
+		if isErr || json.Unmarshal([]byte(text), &out) != nil {
+			t.Fatalf("plugin_drafts_list: %s", text)
+		}
+		for _, r := range out.Retries {
+			if id, _ := r["retry_of"].(float64); int64(id) == d.ID || r["id"] == float64(d.ID) {
+				return r
+			}
+		}
+		return nil
+	}
+	if e := entry(); e == nil || e["state"] != "failed_nothing_sent" || e["can_retry"] != true || e["attempt"] != float64(1) ||
+		!strings.Contains(e["last_detail"].(string), "another account") {
+		t.Fatalf("the failed draft in retries: %v", e)
+	}
+	if text, isErr := retry(f.strangers, d.ID); !isErr || !strings.Contains(text, "No such draft") {
+		t.Fatalf("another owner's session retrying it: %s; want no such draft", text)
+	}
+	text, isErr := retry(f.tok, d.ID)
+	var got struct {
+		ID      int64  `json:"id"`
+		RetryOf int64  `json:"retry_of"`
+		Attempt int    `json:"attempt"`
+		Status  string `json:"status"`
+		Via     string `json:"retried_via"`
+	}
+	if isErr || json.Unmarshal([]byte(text), &got) != nil || got.RetryOf != d.ID || got.Attempt != 2 || got.Status != "approved" || got.Via != "mcp" {
+		t.Fatalf("plugin_draft_retry: %s", text)
+	}
+	if e := entry(); e == nil || e["id"] != float64(got.ID) || e["state"] != "waiting" || e["can_retry"] != false {
+		t.Fatalf("the retried draft in retries: %v; want its attempt 2 waiting", e)
+	}
+	if text, isErr := retry(f.tok, d.ID); !isErr || !strings.Contains(text, "already on its way") {
+		t.Fatalf("a second retry while attempt 2 is out: %s; want refused", text)
+	}
+	if c, ok, err := f.plugins.ClaimDraft(f.asOwner, f.plugin.ID); err != nil || !ok || c.DraftID != got.ID || c.BodySHA256 != sha(body) {
+		t.Fatalf("claim of the retry: %v %v %v; want attempt 2 at once, the approved body", c, ok, err)
+	}
+	var via string
+	if err := f.pool.QueryRow(authz.System(f.asOwner), `SELECT detail->>'via' FROM audit_log WHERE action = 'plugin.draft.retry_scheduled' AND object = $1`,
+		plugins.DraftObject(got.ID)).Scan(&via); err != nil || !strings.HasPrefix(via, "mcp from ") {
+		t.Fatalf("the retry's audit row: %q (%v); want via mcp from <host>/<session>", via, err)
 	}
 }

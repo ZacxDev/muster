@@ -198,6 +198,7 @@ cookie POST /plugin-handoffs
 cookie POST /plugins
 cookie POST /plugins/drafts/{id}/approve
 cookie POST /plugins/drafts/{id}/reject
+cookie POST /plugins/drafts/{id}/retry
 cookie POST /plugins/messages/{id}/retry
 cookie POST /plugins/outreach-batches/{id}/decide
 cookie POST /plugins/pair/{id}/approve

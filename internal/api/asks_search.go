@@ -147,6 +147,7 @@ func (s *Server) searchAsks(ctx context.Context, q askQuery) asksSearchResult {
 		}
 		s.withDraftAgentNames(ctx, cards)
 		s.withDraftOfficerNames(cards)
+		s.withRetryOpen(ctx, cards)
 		out.drafts = cards
 	}
 	return out
