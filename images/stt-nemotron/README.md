@@ -85,9 +85,23 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
   when the flush arrived; for `end`, it is `N`. The model decodes in 560 ms
   chunks, so the last **< 560 ms before a `flush`** is decoded after it, and
   words in that tail land in the **next** segment. The plugin flushes about
-  700 ms into silence, so that tail is silence; the `final` arrives within
-  milliseconds of the `flush` (measured below). `end` pads and decodes the tail,
-  so the `end` final carries the last words.
+  700 ms into silence, so that tail is silence. `end` pads and decodes the
+  tail, so the `end` final carries the last words.
+- **A `flush`'s final lags it by up to one model step.** The model emits a
+  sentence's closing mark one step after its last word, so at a sentence-final
+  `flush` the `.`/`?` is decoded in the step AFTER it. The server therefore
+  holds a flush's final until that stream's next model step (a client streaming
+  continuously supplies the next 560 ms chunk within 560 ms) and moves the
+  marks that step opens the next segment with (`. , ; : ! ? …`) onto the held
+  final: `"Can Carol book the room?"`, not `"Can Carol book the room"` plus a
+  next segment `"? Thanks"`. The hold is released by that step, the next
+  `flush`, `end`, a failed step, or after `STT_FINAL_HOLD_SECONDS` (default
+  1.0) of wall time with no step, whichever comes first; finals stay one per
+  `flush`, in order. A mark is never appended to an empty final.
+- **No leading punctuation:** a `partial`'s or `final`'s `text` never starts
+  with whitespace or `. , ; : ! ? …`. A mark that still opens a segment (it
+  came two steps late, or after a timed-out hold) is dropped, so its sentence's
+  final ends without it. Punctuation inside the text is never touched.
 - **Constant signal:** a segment in which every sample has the same value (a
   dead capture, e.g. bit-exact zeros) yields `text: ""` and no partials,
   whatever the model produced: the model invents words on such input. This is
@@ -133,6 +147,7 @@ The server listens only after the model has loaded.
 | `STT_RETRY_AFTER` | 30 | seconds, in the capacity `503` |
 | `STT_MAX_BACKLOG_SECONDS` | 30 | undecoded audio one stream may queue |
 | `STT_IDLE_SECONDS` | 30 | a stream with no frame for this long is closed 1001 and frees its slot |
+| `STT_FINAL_HOLD_SECONDS` | 1.0 | longest a `flush`'s final waits for the next model step to bring a late closing mark |
 | `STT_PORT` | 8000 | |
 | `HF_HOME` | `/models` | where the weights are cached: mount a volume |
 
@@ -184,6 +199,10 @@ into it.
 | 1 | **1892 MiB** | 3.5% | 0.001 / 0.017 s | 1.06 s |
 | 4 | **1902 MiB** | 4.8% | 0.000 / 0.021 s | 1.07 s |
 | 8 | **1960 MiB** | 4.4% | 0.000 / 0.031 s | 1.63 s |
+
+The `flush` → `final` column was measured BEFORE finals were held for the
+late closing mark (above); a held final now arrives after the next model
+step, so expect up to ~560 ms plus one step's decode time. Not re-measured.
 
 The streaming rows are the idle process figure plus the rise in total GPU
 memory while streams ran (the GPU had another tenant whose use did not
