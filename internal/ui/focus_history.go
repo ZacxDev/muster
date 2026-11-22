@@ -35,34 +35,19 @@ import (
 // change starts a new group; the same title again later is a new group too,
 // since something else was worked on between.
 //
-// 🔴 A GROUP CAN SPAN A PAGE BOUNDARY, and is still one group. The sentinel's
-// URL carries the title the page ended on (FocusHistoryPagePath's prev); a
-// page whose first group has that title draws it as a CONTINUATION — no
-// title, just its steps, marked data-focus-history-continued — and the loader
-// moves those steps into the group already on the list and drops the empty
-// row. So the list reads as if it had been drawn whole.
+// ⚠ GROUPS ARE PER PAGE (operator decision on #999: "Drop it"). A run that a
+// 20-row page boundary cuts is two groups, its title drawn again where the
+// next page begins; nothing carries a title across the pages.
 
 // FocusHistoryRoute is the history fragment's route.
 const FocusHistoryRoute = "/ui/focus/history"
 
 // FocusHistoryPath is one page of subject's ("agent:12", "mirror:<sid>")
 // history: the newest page for cursor "", else the page after cursor.
-func FocusHistoryPath(subject, cursor string) string { return FocusHistoryPagePath(subject, cursor, "") }
-
-// FocusHistoryPrevParam is the page URL's parameter naming the title the page
-// before it ended on (FocusHistoryPagePath).
-const FocusHistoryPrevParam = "prev"
-
-// FocusHistoryPagePath is FocusHistoryPath for the page after one whose last
-// group's title was prev ("" for none): that page draws a first group with the
-// same title as its continuation (see the file's header).
-func FocusHistoryPagePath(subject, cursor, prev string) string {
+func FocusHistoryPath(subject, cursor string) string {
 	q := url.Values{"subject": {subject}}
 	if cursor != "" {
 		q.Set("cursor", cursor)
-	}
-	if prev != "" {
-		q.Set(FocusHistoryPrevParam, prev)
 	}
 	return FocusHistoryRoute + "?" + q.Encode()
 }
@@ -76,14 +61,11 @@ type FocusHistoryEntry struct {
 
 // FocusHistoryPageView is one fetched page: its entries, newest first, and the
 // next page's URL ("" = this page reaches the oldest). First is true for the
-// newest page, so an empty one says so instead of ending a list. Prev is the
-// title the page before this one ended on ("" for none): a first group with
-// that title continues it.
+// newest page, so an empty one says so instead of ending a list.
 type FocusHistoryPageView struct {
 	Entries []FocusHistoryEntry
 	Next    string
 	First   bool
-	Prev    string
 }
 
 // FocusHistoryGroup is a run of consecutive entries with one title.
@@ -109,15 +91,6 @@ func GroupFocusHistory(entries []FocusHistoryEntry) []FocusHistoryGroup {
 	return out
 }
 
-// LastFocusHistoryTitle is the plained title of the last of entries ("" for
-// none): what the next page's prev names.
-func LastFocusHistoryTitle(entries []FocusHistoryEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	return textplain.Title(entries[len(entries)-1].Title)
-}
-
 // RenderFocusHistoryPage writes one page as list rows: what the sentinel it
 // was fetched for is replaced with.
 func RenderFocusHistoryPage(w io.Writer, v FocusHistoryPageView) error {
@@ -130,7 +103,7 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 	}
 	groups := GroupFocusHistory(v.Entries)
 	rows := make([]g.Node, 0, len(groups)+1)
-	for i, gr := range groups {
+	for _, gr := range groups {
 		steps := make([]g.Node, 0, len(gr.Entries))
 		for _, e := range gr.Entries {
 			d := textplain.Title(e.Description)
@@ -142,16 +115,6 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 			))
 		}
 		list := Ol(g.Attr("data-focus-history-steps", ""), Class("flex flex-col gap-1.5"), g.Group(steps))
-		// A run the page before this one ended in: its steps alone, which the
-		// loader moves into that run's group (see the file's header).
-		if i == 0 && !v.First && v.Prev != "" && gr.Title == v.Prev {
-			rows = append(rows, Li(
-				g.Attr("data-focus-history-continued", ""),
-				Class("flex flex-col border-b border-line px-4 pb-3"),
-				list,
-			))
-			continue
-		}
 		rows = append(rows, Li(
 			g.Attr("data-focus-history-item", ""),
 			Class("flex flex-col gap-1.5 border-b border-line px-4 py-3"),
@@ -279,13 +242,6 @@ func focusHistoryScript() g.Node {
         var tpl = document.createElement('template');
         tpl.innerHTML = html;
         var list = li.parentNode;
-        // A run the last page ended in continues here: its steps join that
-        // run's group (the row before the sentinel), and the empty row goes.
-        var cont = tpl.content.firstElementChild, prev = li.previousElementSibling;
-        if (cont && cont.hasAttribute('data-focus-history-continued') && prev && prev.hasAttribute('data-focus-history-item')) {
-          var to = prev.querySelector('[data-focus-history-steps]'), from = cont.querySelector('[data-focus-history-steps]');
-          if (to && from) { while (from.firstChild) to.appendChild(from.firstChild); cont.remove(); }
-        }
         li.replaceWith(tpl.content);
         scan(list);
       })

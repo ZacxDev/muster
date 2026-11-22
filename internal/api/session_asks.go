@@ -67,15 +67,31 @@ func (s *Server) sessionAsks(ctx context.Context, q attention.SessionAsksQuery) 
 	return list
 }
 
-// openAskCount is how many of list are open.
-func openAskCount(list []attention.Ask) int {
-	n := 0
-	for _, a := range list {
-		if a.Status == attention.Open {
-			n++
-		}
+// sessionAskCounts is how many of the asks sessionAsks would list for q are
+// open, and how many there are (uncapped): the Open button's numbers, read
+// as counts (the button's slot polls every 10 s; the rows are the tab's).
+// Zero with the queue off, for a q that names no session, or on a store
+// error (logged).
+func (s *Server) sessionAskCounts(ctx context.Context, q attention.SessionAsksQuery) (open, total int) {
+	if !s.asksOn() || !q.Valid() {
+		return 0, 0
 	}
-	return n
+	open, total, err := s.ext.Attention.SessionAskCounts(ctx, q)
+	if err != nil {
+		s.logger.Printf("attention: a session's ask counts: %v", err)
+		return 0, 0
+	}
+	return open, total
+}
+
+// sessionAsksMore is the Asks tab's "More on the Asks page" link for asker
+// r — the Asks page filtered to it (askerRef.asksHref) — when the session has
+// more asks than the tab lists (attention.MaxSessionAsks); "" otherwise.
+func (s *Server) sessionAsksMore(ctx context.Context, q attention.SessionAsksQuery, r askerRef) string {
+	if _, total := s.sessionAskCounts(ctx, q); total > attention.MaxSessionAsks {
+		return r.asksHref()
+	}
+	return ""
 }
 
 // sessionAsksView is list as the Asks tab draws it: each ask linked to its
@@ -101,11 +117,14 @@ func (s *Server) handleSessionAsks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	q := r.URL.Query()
 	var list []attention.Ask
+	more := ""
 	if h, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window")); ok && listed {
-		list = s.sessionAsks(r.Context(), windowAsksQuery(h, e))
+		aq := windowAsksQuery(h, e)
+		list = s.sessionAsks(r.Context(), aq)
+		more = s.sessionAsksMore(r.Context(), aq, askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.SessionAsksList(sessionAsksView(r.Context(), list)).Render(w); err != nil {
+	if err := ui.SessionAsksList(sessionAsksView(r.Context(), list), more).Render(w); err != nil {
 		s.logger.Printf("session asks: render: %v", err)
 	}
 }
@@ -120,9 +139,11 @@ func (s *Server) handleAgentSessionAsks(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	list := s.sessionAsks(r.Context(), attention.SessionAsksQuery{AgentID: a})
+	aq := attention.SessionAsksQuery{AgentID: a}
+	list := s.sessionAsks(r.Context(), aq)
+	more := s.sessionAsksMore(r.Context(), aq, askerRef{agent: r.PathValue("name")})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.SessionAsksList(sessionAsksView(r.Context(), list)).Render(w); err != nil {
+	if err := ui.SessionAsksList(sessionAsksView(r.Context(), list), more).Render(w); err != nil {
 		s.logger.Printf("session asks: render: %v", err)
 	}
 }

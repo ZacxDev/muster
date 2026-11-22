@@ -97,12 +97,12 @@ func viewerFrameSrc(ps []plugins.Plugin) string {
 // pages feature that is on (pagesOn), and asks — the window's sessions' asks
 // (sessionAsks, session_asks.go) — while the queue is served (asksOn). nil
 // when there is neither a plugin to open nor pages or asks to list.
-func pluginChips(ps []plugins.Plugin, e mirror.SessionView, pagesOn bool, pages int, asksOn bool, asks []attention.Ask, viewer int64) *ui.PluginChips {
+func pluginChips(ps []plugins.Plugin, e mirror.SessionView, pagesOn bool, pages int, asksOn bool, openAsks, asks int, viewer int64) *ui.PluginChips {
 	if len(ps) == 0 && !pagesOn && !asksOn {
 		return nil
 	}
 	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews,
-		PagesOn: pagesOn, Pages: pages, AsksOn: asksOn, Asks: openAskCount(asks), AsksListed: len(asks), Viewer: viewer}
+		PagesOn: pagesOn, Pages: pages, AsksOn: asksOn, Asks: openAsks, AsksListed: asks, Viewer: viewer}
 	for _, p := range ps {
 		label := p.Label
 		if label == "" {
@@ -125,7 +125,8 @@ func (s *Server) sessionOpenChips(ctx context.Context, vp []plugins.Plugin, h mi
 	}
 	// Nor asks (windowAsksQuery): a team window's asks are the team's.
 	asksOn := s.asksOn() && e.Owner == 0
-	return pluginChips(vp, e, on, n, asksOn, s.sessionAsks(ctx, windowAsksQuery(h, e)), draftUser(ctx))
+	open, all := s.sessionAskCounts(ctx, windowAsksQuery(h, e))
+	return pluginChips(vp, e, on, n, asksOn, open, all, draftUser(ctx))
 }
 
 // windowPagesRef is what a mirrored window's pages are listed by: its host,
@@ -221,8 +222,7 @@ func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
 			o.Previews = e.Previews
 		}
 		o.Pages = len(s.sessionPages(r.Context(), windowPagesRef(h, e)))
-		asks := s.sessionAsks(r.Context(), windowAsksQuery(h, e))
-		o.Asks, o.AsksListed = openAskCount(asks), len(asks)
+		o.Asks, o.AsksListed = s.sessionAskCounts(r.Context(), windowAsksQuery(h, e))
 	}
 	if err := ui.RenderOpenButton(w, o); err != nil {
 		s.logger.Printf("open button: render: %v", err)
@@ -281,9 +281,9 @@ func (s *Server) handleAgentOpenButton(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := s.sessionPages(r.Context(), pages.SessionRef{AgentID: id})
-	asks := s.sessionAsks(r.Context(), attention.SessionAsksQuery{AgentID: id})
+	open, all := s.sessionAskCounts(r.Context(), attention.SessionAsksQuery{AgentID: id})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderOpenButton(w, ui.OpenCounts{Pages: len(list), Asks: openAskCount(asks), AsksListed: len(asks)}); err != nil {
+	if err := ui.RenderOpenButton(w, ui.OpenCounts{Pages: len(list), Asks: open, AsksListed: all}); err != nil {
 		s.logger.Printf("open button: render: %v", err)
 	}
 }
@@ -312,8 +312,15 @@ func (s *Server) agentOpenChips(ctx context.Context, a agents.Agent) *ui.PluginC
 		return nil
 	}
 	n := len(s.sessionPages(ctx, pages.SessionRef{AgentID: a.ID}))
-	asks := s.sessionAsks(ctx, attention.SessionAsksQuery{AgentID: a.ID})
-	return &ui.PluginChips{PagesOn: s.pagesOn(), Pages: n, AsksOn: s.asksOn(), Asks: openAskCount(asks), AsksListed: len(asks), Agent: a.Name, Viewer: draftUser(ctx)}
+	open, all := s.sessionAskCounts(ctx, attention.SessionAsksQuery{AgentID: a.ID})
+	// AsksCoverBadge: the button's asks (the viewer's OWN, attention.
+	// SessionAsks) are every ask the header's badge counts only on a
+	// personal agent of the viewer's. A team agent's badge counts the team's
+	// asks waiting on the viewer (askerAsksBadge, waitingOnReader), which the
+	// button does not, so there the badge stays at every width.
+	cover := a.OwnerID != 0 && a.OwnerID == requestOwner(ctx)
+	return &ui.PluginChips{PagesOn: s.pagesOn(), Pages: n, AsksOn: s.asksOn(), Asks: open, AsksListed: all, AsksCoverBadge: cover,
+		Agent: a.Name, Viewer: draftUser(ctx)}
 }
 
 // TeamNoViewerPlugin is what a team session's Preview says when the team has

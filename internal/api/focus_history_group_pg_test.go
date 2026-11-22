@@ -12,19 +12,17 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// TestFocusHistoryRouteContinuesAGroupAcrossItsPages: a run of one title that
-// a page boundary cuts in two (the write rule appends a row for each new
-// description, internal/focus) is one group: the first page draws its title
-// once over its steps, and names the title it ended on in its sentinel's URL;
-// the second page draws the run's rest as a continuation (no title) and its
-// next title as a group of its own. RED before grouping: every row drew its
-// own title, 20 on the first page.
-func TestFocusHistoryRouteContinuesAGroupAcrossItsPages(t *testing.T) {
+// TestFocusHistoryRouteGroupsEachPageByTitle: a run of one title (the write
+// rule appends a row for each new description, internal/focus) is drawn as one
+// group per page: the first page draws the run's title ONCE over its 20 newest
+// steps; the next page, groups being per page (operator decision on #999),
+// draws the title again over the run's rest, then the earlier title as its own
+// group. RED before grouping: every row drew its own title, 20 on the first
+// page.
+func TestFocusHistoryRouteGroupsEachPageByTitle(t *testing.T) {
 	h := newHistoryFixture(t)
 	sub := focus.AgentSubject(h.agent(t, 1, "hist-run-"+strconv.FormatInt(time.Now().UnixNano(), 36)).ID)
-	// Oldest first: 3 rows of "hist other", then 22 steps of "hist run": the
-	// newest page (20 rows) is the run alone, the next holds its 2 oldest
-	// steps and the 3 others.
+	// Oldest first: 3 rows of "hist other", then 22 steps of "hist run".
 	write := func(title, desc string) {
 		t.Helper()
 		if _, err := h.store.Upsert(asUser(1), sub, focus.Write{Title: title, Description: desc, Source: focus.SourceSummarizer}); err != nil {
@@ -51,31 +49,15 @@ func TestFocusHistoryRouteContinuesAGroupAcrossItsPages(t *testing.T) {
 	if m == nil {
 		t.Fatalf("the first page names no next page:\n%s", body)
 	}
-	next := strings.ReplaceAll(m[1], "&amp;", "&")
-	if !strings.Contains(next, ui.FocusHistoryPrevParam+"=hist+run") {
-		t.Errorf("the next page's URL does not carry the run's title: %s", next)
-	}
-	code, body = h.get(t, next)
+	code, body = h.get(t, strings.ReplaceAll(m[1], "&amp;", "&"))
 	if code != http.StatusOK {
 		t.Fatalf("second page: %d %s", code, body)
 	}
-	cont := strings.Index(body, "data-focus-history-continued")
-	other := strings.Index(body, "hist other")
-	if cont < 0 || other < 0 || cont > other {
-		t.Fatalf("second page: the run's rest is not a continuation before the next group:\n%s", body)
+	got := historyTitle.FindAllStringSubmatch(body, -1)
+	if len(got) != 2 || got[0][1] != "hist run" || got[1][1] != "hist other" {
+		t.Errorf("second page's titles: %v, want the run's again, then the other's", got)
 	}
-	if got := historyTitle.FindAllStringSubmatch(body, -1); len(got) != 1 || got[0][1] != "hist other" {
-		t.Errorf("second page's titles: %v, want the other's alone", got)
-	}
-	for _, want := range []string{"run step 02", "run step 01", "other step 03", "other step 01"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("second page lacks %q", want)
-		}
-	}
-	// The same page with another title as prev: the run's rest is an
-	// ordinary group, titled.
-	bare := strings.Replace(next, ui.FocusHistoryPrevParam+"=hist+run", ui.FocusHistoryPrevParam+"=hist+else", 1)
-	if _, body := h.get(t, bare); strings.Contains(body, "data-focus-history-continued") || len(historyTitle.FindAllString(body, -1)) != 2 {
-		t.Errorf("a page whose prev is another title continues nothing:\n%s", body)
+	if n := strings.Count(body, `data-focus-history-step=""`); n != 5 {
+		t.Errorf("second page: %d steps, want 5", n)
 	}
 }

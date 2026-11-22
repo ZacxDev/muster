@@ -208,7 +208,8 @@ type focusSpec struct {
 	// TitleSteps, when set, are written AFTER the History ones and before the
 	// focus itself, oldest first: earlier steps of the focus's OWN title, each
 	// with its own description (a change, so each is a history row), so the
-	// history holds a run of one title (the "What it worked on" grouping).
+	// history holds a run of one title (the "What it worked on" grouping,
+	// focus.spec.ts's agent dialog).
 	TitleSteps []string `json:"titleSteps"`
 	// AgeHours, when > 0, backdates the focus that many hours (its
 	// agent_focus.updated_at; its history is left as written), so a spec can

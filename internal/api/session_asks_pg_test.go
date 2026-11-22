@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -144,6 +145,81 @@ func TestTheAsksTabListsTheWindowsOwnAsksOpenFirst(t *testing.T) {
 	}
 	if b := f.get(t, ui.SessionAsksPath+"?host=workstation&session=main&window=%4099", f.ownerHdr()).Body.String(); !strings.Contains(b, ui.SessionAsksNone) || len(listedAsks(b)) != 0 {
 		t.Errorf("an unlisted window's Asks tab = %q", b)
+	}
+}
+
+// TestASessionWithMoreAsksThanTheTabListsLinksToTheAsksPage: past
+// attention.MaxSessionAsks the Open button still counts every ask (the count
+// query is uncapped), the tab lists the newest MaxSessionAsks, and its last
+// line links to the Asks page filtered to this window; at the cap or under,
+// no such line.
+func TestASessionWithMoreAsksThanTheTabListsLinksToTheAsksPage(t *testing.T) {
+	f, _ := newSessionPageFixture(t)
+	ctx := f.as(f.owner, authz.ViaSession)
+	sessionAskOf(t, f, f.owner, windowAsker(makerSID), "still open")
+	answer := func(n int) {
+		t.Helper()
+		for i := range n {
+			a := sessionAskOf(t, f, f.owner, windowAsker(makerSID), "answered "+strconv.Itoa(i))
+			if _, err := f.srv.ext.Attention.Answer(ctx, a.ID, "ok"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	answer(attention.MaxSessionAsks - 1) // 50 in all: the tab lists every one
+	tab := func() string {
+		t.Helper()
+		return f.get(t, ui.SessionAsksPath+"?"+windowQuery("@3"), f.ownerHdr()).Body.String()
+	}
+	if b := tab(); len(listedAsks(b)) != attention.MaxSessionAsks || strings.Contains(b, "data-session-asks-more") {
+		t.Errorf("at the cap: %d listed, More %v", len(listedAsks(b)), strings.Contains(b, "data-session-asks-more"))
+	}
+	answer(2) // 52
+	b := tab()
+	if n := len(listedAsks(b)); n != attention.MaxSessionAsks {
+		t.Errorf("past the cap the tab lists %d, want %d", n, attention.MaxSessionAsks)
+	}
+	want := `href="` + html.EscapeString(askerRef{mirror: ui.MirrorRef{Host: "workstation", Session: "main", Window: "@3"}}.asksHref()) + `" hx-boost="false" data-session-asks-more`
+	if !strings.Contains(b, want) || !strings.Contains(b, ui.SessionAsksMore) {
+		t.Errorf("past the cap the tab has no More line (%s):\n%s", want, b[len(b)-600:])
+	}
+	btn := f.get(t, ui.PreviewButtonPath+"?"+windowQuery("@3"), f.ownerHdr()).Body.String()
+	if !strings.Contains(btn, `data-open-asks="1"`) || !strings.Contains(btn, `data-open-asks-listed="52"`) {
+		t.Errorf("the button past the cap: %s", btn)
+	}
+}
+
+// TestATeamAgentsAsksBadgeStaysOnAPhone: on a TEAM agent's page an operator's
+// asks badge counts the team's asks waiting on them, which the Open button
+// (the viewer's own asks) does not, so the badge is drawn at every width — not
+// max-sm:hidden. (The other side, a personal agent of the viewer's whose
+// badge the button covers and which IS hidden below sm, is
+// TestAnAgentWithNoOpenAsksDrawsNoBadge's.) RED before: the team
+// agent's badge was max-sm:hidden too, and a phone lost a waiting team ask.
+func TestATeamAgentsAsksBadgeStaysOnAPhone(t *testing.T) {
+	td := newTeamDispatchWorld(t)
+	if _, err := td.w.srv.ext.Attention.Create(td.teamCtx, attention.New{Asker: attention.Asker{AgentID: td.chief.ID}, Question: "A team ask?"}); err != nil {
+		t.Fatal(err)
+	}
+	slot := func(body string) string {
+		t.Helper()
+		i := strings.Index(body, `<span id="`+ui.AskerAsksBadgeID+`" class="`)
+		if i < 0 {
+			t.Fatalf("no asks badge slot on the page")
+		}
+		rest := body[i:]
+		return rest[:strings.Index(rest, ">")]
+	}
+	rec := isoBrowserAs(td.w, http.MethodGet, "/agents/"+td.chief.Name, td.w.b.uid, time.Now())
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("B's page of the team chief: %d", rec.Code)
+	}
+	if _, n := badgeOf(t, body); n != 1 {
+		t.Fatalf("control: B's badge on the team chief counts %d, want the team's 1", n)
+	}
+	if s := slot(body); strings.Contains(s, "max-sm:hidden") {
+		t.Errorf("the team agent's badge is hidden on a phone: %s", s)
 	}
 }
 

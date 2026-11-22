@@ -236,6 +236,12 @@ type PluginChips struct {
 	AsksOn     bool
 	Asks       int
 	AsksListed int
+	// AsksCoverBadge: the asks this control counts are every ask the page
+	// header's asks badge counts (a personal agent's page, the viewer's own:
+	// agentAsksBadge hides the badge on a phone then). false on a team
+	// agent's page, whose badge also counts the team's asks waiting on the
+	// viewer.
+	AsksCoverBadge bool
 	// Agent is a dispatched agent's name on ITS page (no window, no
 	// previews): the button's and the list's routes are the agent's.
 	Agent string
@@ -718,7 +724,11 @@ type SessionAsk struct {
 // 🔴 A FULL NAVIGATION (hx-boost="false"): the ask page is a standalone
 // document, never a body swap of the agent page's shell (AskerAsksBadgeHTML's
 // rule).
-func SessionAsksList(as []SessionAsk) g.Node {
+//
+// more, when set, is the Asks page filtered to this session: the session has
+// more asks than the tab lists (attention.MaxSessionAsks), and a last line
+// links there.
+func SessionAsksList(as []SessionAsk, more string) g.Node {
 	if len(as) == 0 {
 		return P(g.Attr("data-open-empty", OpenTabAsks), Class("px-4 py-6 text-sm text-fg2"), g.Text(SessionAsksNone))
 	}
@@ -749,8 +759,17 @@ func SessionAsksList(as []SessionAsk) g.Node {
 		items = append(items, Li(A(Href(a.Page), hx("hx-boost", "false"), g.Attr("data-session-ask", id), g.Attr("aria-label", label),
 			Class("press "+cls+" transition hover:bg-s2"), body)))
 	}
+	if more != "" {
+		items = append(items, Li(A(Href(more), hx("hx-boost", "false"), g.Attr("data-session-asks-more", ""),
+			Class("press flex min-h-[44px] w-full items-center px-4 py-2.5 text-sm font-semibold text-accent transition hover:bg-s2"),
+			g.Text(SessionAsksMore))))
+	}
 	return Ul(g.Attr("data-session-asks", ""), Class("divide-y divide-line"), g.Group(items))
 }
+
+// SessionAsksMore is the Asks tab's last line when it lists only the newest
+// attention.MaxSessionAsks of a session's asks.
+const SessionAsksMore = "More on the Asks page"
 
 // previewPanelScriptSrc opens and closes the panel, mints at click time and
 // sends the frame or the new tab on (see the file comment for the tab). A

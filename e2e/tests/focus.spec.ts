@@ -64,10 +64,9 @@ const FILLERS = Array.from({ length: 14 }, (_, i) => `Sorting batch ${String(i +
 const MIRROR_HISTORY = 45;
 const AGENT_HISTORY = 3;
 // The agent's current title has AGENT_STEPS earlier steps of its own before
-// the focus itself (e2e/mkchat titleSteps): a run of AGENT_STEPS + 1 rows,
-// which the history draws as ONE group — and which the 20-row page cuts in
-// two, so its second page continues the group.
-const AGENT_STEPS = Array.from({ length: 22 }, (_, i) => `Ledger step ${String(i + 1).padStart(2, '0')}.`);
+// the focus itself (e2e/mkchat titleSteps): a run of AGENT_STEPS + 1 rows on
+// the first page, which the history draws as ONE group.
+const AGENT_STEPS = ['Pulled the bank export.', 'Matched the first payouts.'];
 const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY, titleSteps: AGENT_STEPS },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
@@ -539,30 +538,19 @@ for (const vp of [
       await expect(dialog).toBeVisible();
       await expect(open).toHaveAttribute('aria-expanded', 'true');
       const items = dialog.locator('[data-focus-history-item]');
-      // The first page: the current title's run alone, its title ONCE over
-      // its 20 newest steps; the newest step is the current focus, whole.
-      await expect(items).toHaveCount(1);
-      await expect(items.first().locator('[data-focus-history-title]')).toHaveText('Reconciling the quarterly ledgers');
-      const steps = items.first().locator('[data-focus-history-step]');
-      await expect(steps).toHaveCount(20);
-      await expect(steps.first().locator('[data-focus-history-description]')).toHaveText('Matching payouts to the bank export. Two left.');
-      await expect(steps.first().locator('[data-focus-history-at]')).toContainText('ago');
-      // Scrolled to its end: the next page CONTINUES the run (its oldest
-      // steps join the group, no second title), then the earlier titles.
-      const scroller = dialog.locator('#focus-history-scroll');
-      for (let i = 0; i < 4 && (await dialog.locator('[data-focus-history-end]').count()) === 0; i++) {
-        await scroller.evaluate((p) => { p.scrollTop = p.scrollHeight; });
-        await page.waitForTimeout(300);
-      }
-      await expect(dialog.locator('[data-focus-history-end]')).toBeVisible();
+      // The current title's run is ONE group: its title once, over its steps,
+      // newest first — the newest the current focus, whole. Then each earlier
+      // title as its own group.
       await expect(items).toHaveCount(AGENT_HISTORY + 1);
-      await expect(dialog.locator('[data-focus-history-continued]'), 'the continuation was merged into its group').toHaveCount(0);
       expect(await dialog.locator('[data-focus-history-title]').allTextContents()).toEqual(
         ['Reconciling the quarterly ledgers', 'Earlier focus 03', 'Earlier focus 02', 'Earlier focus 01']);
+      const steps = items.first().locator('[data-focus-history-step]');
       await expect(steps).toHaveCount(AGENT_STEPS.length + 1);
       expect(await steps.locator('[data-focus-history-description]').allTextContents()).toEqual(
         ['Matching payouts to the bank export. Two left.', ...[...AGENT_STEPS].reverse()]);
+      await expect(steps.first().locator('[data-focus-history-at]')).toContainText('ago');
       await expect(items.last()).toContainText('Earlier focus 01');
+      await expect(dialog.locator('[data-focus-history-end]')).toBeVisible();
       const db = (await dialog.boundingBox())!;
       expect(db.x).toBeGreaterThanOrEqual(0);
       expect(db.x + db.width).toBeLessThanOrEqual(vp.use.viewport.width);

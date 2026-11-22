@@ -31,6 +31,33 @@ func sessionAskIDs(t *testing.T, s *PGStore, ctx context.Context, q SessionAsksQ
 	return ids
 }
 
+// countsMatchList asserts SessionAskCounts for q is (open, total), and — while
+// the list is not capped — that the list it counts agrees: total rows, open
+// of them open.
+func countsMatchList(t *testing.T, s *PGStore, ctx context.Context, q SessionAsksQuery, open, total int) {
+	t.Helper()
+	o, n, err := s.SessionAskCounts(ctx, q)
+	if err != nil {
+		t.Fatalf("counts %+v: %v", q, err)
+	}
+	if o != open || n != total {
+		t.Errorf("counts %+v: open %d of %d, want %d of %d", q, o, n, open, total)
+	}
+	list, err := s.SessionAsks(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := 0
+	for _, a := range list {
+		if a.Status == Open {
+			lo++
+		}
+	}
+	if total <= MaxSessionAsks && (len(list) != n || lo != o) {
+		t.Errorf("counts %+v: %d of %d, the list %d of %d", q, o, n, lo, len(list))
+	}
+}
+
 // The session under test runs two keys on host "desk"; another session runs a
 // third on the same host; the same key on host "attic" is another host's.
 const (
@@ -94,6 +121,11 @@ func TestSessionAsksListsOneSessionsOpenThenAnsweredNewestFirst(t *testing.T) {
 	if got := sessionAskIDs(t, s, ctx, q); !slices.Equal(got, want) {
 		t.Fatalf("the session's asks: %v, want %v (open newest first, then answered newest first)", got, want)
 	}
+	// The counts are the list's, by the same predicate: 2 open of 5.
+	countsMatchList(t, s, ctx, q, 2, 5)
+	countsMatchList(t, s, ctx, SessionAsksQuery{MirrorHost: sessHost, MirrorSessions: []string{sessKeyB}}, 1, 2)
+	countsMatchList(t, s, ctx, SessionAsksQuery{AgentID: agentAsk.Asker.AgentID}, 1, 1)
+	countsMatchList(t, s, ctx, SessionAsksQuery{}, 0, 0)
 	// One key of the two: only that key's.
 	if got := sessionAskIDs(t, s, ctx, SessionAsksQuery{MirrorHost: sessHost, MirrorSessions: []string{sessKeyB}}); !slices.Equal(got, []int64{openOld.ID, inSession.ID}) {
 		t.Errorf("key B alone: %v, want [%d %d]", got, openOld.ID, inSession.ID)
@@ -153,6 +185,8 @@ func TestSessionAsksIsCapped(t *testing.T) {
 	if got := sessionAskIDs(t, s, ctx, q); len(got) != MaxSessionAsks {
 		t.Errorf("limit 10000 listed %d, want MaxSessionAsks (%d)", len(got), MaxSessionAsks)
 	}
+	// The counts are uncapped: every one of the 3 + MaxSessionAsks + 2.
+	countsMatchList(t, s, ctx, q, 3, 3+MaxSessionAsks+2)
 }
 
 // TestSessionAsksIsTheOwnersOwnOnly: a team's ask from the SAME host and
@@ -206,4 +240,7 @@ func TestSessionAsksIsTheOwnersOwnOnly(t *testing.T) {
 	if got := sessionAskIDs(t, s, me, q); !slices.Equal(got, []int64{mine.ID}) {
 		t.Errorf("the member's list: %v, want only their own %d (not the team's %d or the other person's %d)", got, mine.ID, teams.ID, others.ID)
 	}
+	// And the counts: their own one, not the team's.
+	countsMatchList(t, s, me, q, 1, 1)
+	countsMatchList(t, s, asTeam, q, 1, 1)
 }

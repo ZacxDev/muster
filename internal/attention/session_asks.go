@@ -51,17 +51,40 @@ func (s *PGStore) SessionAsks(ctx context.Context, q SessionAsksQuery) ([]Ask, e
 	if limit <= 0 || limit > MaxSessionAsks {
 		limit = MaxSessionAsks
 	}
-	sessions := q.MirrorSessions
-	if sessions == nil {
-		sessions = []string{}
-	}
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		WHERE `+sessionAsksWhere+`
+		ORDER BY (status = 'open') DESC, created_at DESC, id DESC
+		LIMIT $4`, q.AgentID, q.MirrorHost, q.sessions(), limit))
+}
+
+// sessions is q.MirrorSessions as the query's text[] ($3): never NULL.
+func (q SessionAsksQuery) sessions() []string {
+	if q.MirrorSessions == nil {
+		return []string{}
+	}
+	return q.MirrorSessions
+}
+
+// sessionAsksWhere is ONE predicate for which rows are a session's asks
+// ($1 agent id, $2 mirror host, $3 session keys): SessionAsks lists them,
+// SessionAskCounts counts them, so the button's count and the tab's list
+// cannot disagree about what a session's ask is.
+const sessionAsksWhere = `owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 		  AND NOT to_chief
 		  AND kind = 'ask'
 		  AND (($1::bigint > 0 AND agent_id = $1)
 		    OR ($2::text <> '' AND mirror_host = $2 AND mirror_session = ANY($3::text[])))
-		  AND ((status = 'open' AND expires_at > now()) OR status IN ('answered', 'answered_in_session'))
-		ORDER BY (status = 'open') DESC, created_at DESC, id DESC
-		LIMIT $4`, q.AgentID, q.MirrorHost, sessions, limit))
+		  AND ((status = 'open' AND expires_at > now()) OR status IN ('answered', 'answered_in_session'))`
+
+// SessionAskCounts is how many of the asks SessionAsks would list for q are
+// open, and how many there are in all — UNCAPPED (MaxSessionAsks bounds the
+// list, not the count): the Open button's numbers, read without the rows.
+// Zero for a q that names no session.
+func (s *PGStore) SessionAskCounts(ctx context.Context, q SessionAsksQuery) (open, total int, err error) {
+	if !q.Valid() {
+		return 0, 0, nil
+	}
+	err = s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status = 'open'), count(*) FROM attention_asks
+		WHERE `+sessionAsksWhere, q.AgentID, q.MirrorHost, q.sessions()).Scan(&open, &total)
+	return open, total, err
 }

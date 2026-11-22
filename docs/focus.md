@@ -483,11 +483,9 @@ the description changes, so one piece of work is usually many rows under one
 title. Consecutive rows with the same title are drawn as one group: the title
 once, and under it each step's description and how long ago it was written,
 newest first. A different title starts a new group, and the same title coming
-back later (after other work) is a group of its own. A group that the 20-row
-page cuts in two is still one group: the next page's URL carries the title the
-previous page ended on (`prev`), that page draws its first rows of that title
-as a continuation (no title), and the list moves them into the group already
-shown. Pages come from `GET /ui/focus/history`, which reads
+back later (after other work) is a group of its own. Groups are per page: a
+run the 20-row page cuts in two shows its title again where the next page
+begins. Pages come from `GET /ui/focus/history`, which reads
 under your own row-level security and answers 404 for a session that is not
 yours (a mirrored session is yours while you hold its history or an online
 window of it).

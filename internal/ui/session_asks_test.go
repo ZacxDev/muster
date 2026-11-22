@@ -79,7 +79,7 @@ func TestTheAsksTabListsEachAskLinkedToItsPage(t *testing.T) {
 		{ID: 41, Question: "Ship **it** now?", Open: true, When: "today", Page: "/attention/asks/41"},
 		{ID: 17, Question: "Which branch?", Answer: `the <b>main</b> one & "its" tag`, When: "yesterday", Page: "/attention/asks/17"},
 		{ID: 9, Question: "No page for this one", Answer: "ok"},
-	}))
+	}, ""))
 	doc := parseFragment(t, list)
 	rows := allAttr(doc, "data-session-ask")
 	if len(rows) != 3 {
@@ -110,20 +110,33 @@ func TestTheAsksTabListsEachAskLinkedToItsPage(t *testing.T) {
 	if unlinked.Data != "div" || attrOf(unlinked, "href") != "" {
 		t.Errorf("an ask with no page is a <%s href=%q>, want an unlinked row", unlinked.Data, attrOf(unlinked, "href"))
 	}
-	if none := renderString(t, SessionAsksList(nil)); !strings.Contains(none, SessionAsksNone) || strings.Contains(none, "data-session-ask=") {
+	if none := renderString(t, SessionAsksList(nil, "")); !strings.Contains(none, SessionAsksNone) || strings.Contains(none, "data-session-ask=") {
 		t.Errorf("no asks: %s", none)
+	}
+	if strings.Contains(list, "data-session-asks-more") {
+		t.Error("a More line with no more to see")
+	}
+	// More than the tab lists: a last line to the Asks page filtered to the
+	// session, a full navigation.
+	more := parseFragment(t, renderString(t, SessionAsksList([]SessionAsk{{ID: 1, Question: "q", Open: true, Page: "/attention/asks/1"}}, "/attention?from=agent%3Ax")))
+	m := findAttr(more, "data-session-asks-more")
+	if m == nil || m.Data != "a" || attrOf(m, "href") != "/attention?from=agent%3Ax" || attrOf(m, "hx-boost") != "false" || focusNodeText(m) != SessionAsksMore {
+		t.Errorf("the More line: %v", m)
 	}
 }
 
 // TestAnAgentsAsksBadgeIsNotDrawnOnAPhoneWhileTheOpenButtonListsItsAsks: the
-// header's asks badge is max-sm:hidden while the Open control lists the
-// agent's asks (agentAsksBadge), and drawn at every width otherwise.
+// header's asks badge is max-sm:hidden while the Open control lists every ask
+// the badge counts (agentAsksBadge: AsksOn and AsksCoverBadge, a personal
+// agent of the viewer's), and drawn at every width otherwise — a team
+// agent's (AsksCoverBadge false) included.
 func TestAnAgentsAsksBadgeIsNotDrawnOnAPhoneWhileTheOpenButtonListsItsAsks(t *testing.T) {
 	inner := AskerAsksBadgeHTML(2, "/attention?from=agent%3Ax", false)
-	if got := renderString(t, agentAsksBadge(inner, &PluginChips{AsksOn: true, Agent: "x"})); !strings.Contains(got, `class="`+html.EscapeString(AskerAsksSlotClass)+` max-sm:hidden"`) {
+	if got := renderString(t, agentAsksBadge(inner, &PluginChips{AsksOn: true, AsksCoverBadge: true, Agent: "x"})); !strings.Contains(got, `class="`+html.EscapeString(AskerAsksSlotClass)+` max-sm:hidden"`) {
 		t.Errorf("with the Asks tab: %s", got)
 	}
-	for name, c := range map[string]*PluginChips{"no Open control": nil, "pages only": {PagesOn: true, Agent: "x"}} {
+	for name, c := range map[string]*PluginChips{"no Open control": nil, "pages only": {PagesOn: true, Agent: "x"},
+		"a team agent's": {AsksOn: true, Agent: "x"}} {
 		if got := renderString(t, agentAsksBadge(inner, c)); !strings.Contains(got, `class="`+html.EscapeString(AskerAsksSlotClass)+`"`) {
 			t.Errorf("%s: %s", name, got)
 		}

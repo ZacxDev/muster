@@ -703,6 +703,9 @@ type Store interface {
 	// session (never a team's, never one put to the chief, never a notice),
 	// open first, newest first (session_asks.go).
 	SessionAsks(ctx context.Context, q SessionAsksQuery) ([]Ask, error)
+	// SessionAskCounts is how many of those asks are open, and how many
+	// there are in all, uncapped (session_asks.go).
+	SessionAskCounts(ctx context.Context, q SessionAsksQuery) (open, total int, err error)
 }
 
 // PGStore is Store on Postgres.

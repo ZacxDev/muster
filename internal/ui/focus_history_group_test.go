@@ -10,12 +10,10 @@ import (
 )
 
 // WHAT IT WORKED ON, GROUPED BY TITLE (focus_history.go): consecutive rows
-// with one title are one group — the title once, its steps under it — a
-// title change starts a group, and a group a page boundary cut in two is
-// drawn on the later page as a continuation of the earlier one.
+// with one title are one group — the title once, its steps under it — and a
+// title change starts a group. Groups are per page.
 
-// historyShape is a page's rows as "title: step|step" ("+" leading a
-// continuation's), in order.
+// historyShape is a page's rows as "title: step|step", in order.
 func historyShape(t *testing.T, v FocusHistoryPageView) []string {
 	t.Helper()
 	var b strings.Builder
@@ -26,11 +24,8 @@ func historyShape(t *testing.T, v FocusHistoryPageView) []string {
 	var out []string
 	var walk func(n *html.Node)
 	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "li" && (hasAttr(n, "data-focus-history-item") || hasAttr(n, "data-focus-history-continued")) {
-			head := "+"
-			if hasAttr(n, "data-focus-history-item") {
-				head = focusNodeText(findAttr(n, "data-focus-history-title"))
-			}
+		if n.Type == html.ElementNode && n.Data == "li" && hasAttr(n, "data-focus-history-item") {
+			head := focusNodeText(findAttr(n, "data-focus-history-title"))
 			var steps []string
 			for _, s := range allAttr(n, "data-focus-history-step") {
 				steps = append(steps, focusNodeText(findAttr(s, "data-focus-history-description")))
@@ -90,58 +85,5 @@ func TestFocusHistoryGroupsConsecutiveRowsByTitle(t *testing.T) {
 	// is the same title.
 	if got := GroupFocusHistory([]FocusHistoryEntry{histEntry("<b>Same</b> work", "a", 1), histEntry("Same work", "b", 2)}); len(got) != 1 || got[0].Title != "Same work" || len(got[0].Entries) != 2 {
 		t.Errorf("plained titles: %+v, want one group", got)
-	}
-}
-
-// TestFocusHistoryContinuesAGroupAcrossAPage: the page after one that ended
-// in a title (Prev) draws a first group with that title as a continuation —
-// no title, its steps alone — and only that: a later group of the title, a
-// first group of another title, and the FIRST page whatever Prev says are
-// ordinary groups. The sentinel names the title this page ends on.
-func TestFocusHistoryContinuesAGroupAcrossAPage(t *testing.T) {
-	later := []FocusHistoryEntry{
-		histEntry("Fixing the tunnel", "Reading the reconnect loop.", 30),
-		histEntry("Fixing the tunnel", "First look.", 31),
-		histEntry("Writing the release notes", "Outline.", 32),
-		histEntry("Fixing the tunnel", "Older still.", 33),
-	}
-	next := FocusHistoryPagePath("agent:12", "1700000000000000.9", "Fixing the tunnel")
-	for name, c := range map[string]struct {
-		v    FocusHistoryPageView
-		want []string
-	}{
-		"continues the run": {FocusHistoryPageView{Prev: "Fixing the tunnel", Entries: later, Next: next}, []string{
-			"+: Reading the reconnect loop.|First look.",
-			"Writing the release notes: Outline.",
-			"Fixing the tunnel: Older still.",
-		}},
-		"another title before": {FocusHistoryPageView{Prev: "Triaging the queue", Entries: later}, []string{
-			"Fixing the tunnel: Reading the reconnect loop.|First look.",
-			"Writing the release notes: Outline.",
-			"Fixing the tunnel: Older still.",
-		}},
-		"the first page has no page before it": {FocusHistoryPageView{First: true, Prev: "Fixing the tunnel", Entries: later}, []string{
-			"Fixing the tunnel: Reading the reconnect loop.|First look.",
-			"Writing the release notes: Outline.",
-			"Fixing the tunnel: Older still.",
-		}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := historyShape(t, c.v); !slices.Equal(got, c.want) {
-				t.Errorf("rows:\n  %q\nwant\n  %q", got, c.want)
-			}
-		})
-	}
-	if got := LastFocusHistoryTitle(later); got != "Fixing the tunnel" {
-		t.Errorf("the page ends on %q", got)
-	}
-	if got := LastFocusHistoryTitle(nil); got != "" {
-		t.Errorf("no entries end on %q", got)
-	}
-	if got, want := next, "/ui/focus/history?cursor=1700000000000000.9&prev=Fixing+the+tunnel&subject=agent%3A12"; got != want {
-		t.Errorf("FocusHistoryPagePath = %q, want %q", got, want)
-	}
-	if got := FocusHistoryPagePath("agent:12", "", ""); got != FocusHistoryPath("agent:12", "") || strings.Contains(got, "prev=") {
-		t.Errorf("no prev: %q", got)
 	}
 }

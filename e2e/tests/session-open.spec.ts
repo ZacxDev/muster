@@ -485,10 +485,12 @@ test.describe.serial('the Open button and its panel', () => {
     await swipe('left', 'header');
     await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
     await expect(page.locator('#preview-panel [data-session-page]').first()).toBeVisible();
-    // Leftwards again: the Asks tab, the last; there a leftwards swipe goes
-    // nowhere.
-    await swipe('left', 'list');
+    // Leftwards again, on the header: the Asks tab, the last; there a
+    // leftwards swipe on its list goes nowhere.
+    await swipe('left', 'header');
     await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
+    // @1 has asked nothing: its Asks tab says so.
+    await expect(page.locator('#preview-panel [data-open-empty="asks"]')).toBeVisible();
     await swipe('left', 'list');
     await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
     // And the tab chosen by swiping is remembered, as a tap's is.
