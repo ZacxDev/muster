@@ -47,6 +47,13 @@ func accountAppCan(p plugins.Plugin) string {
 	return can + "; it learns your display name when you open it."
 }
 
+// AccountAppsLinkedLine is a linked server app's added line on Account → Apps
+// (docs/design/contacts.md, "What the admin does"): a person sees every pair
+// that knows them as one person.
+func AccountAppsLinkedLine(app, partner string) string {
+	return app + " and " + partner + " know you as the same person."
+}
+
 func (s *Server) handleAccountApps(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	apps, err := s.ext.Plugins.AccountServerApps(r.Context(), s.ext.PluginOrigins, s.now())
@@ -82,6 +89,10 @@ func (s *Server) handleAccountApps(w http.ResponseWriter, r *http.Request) {
 			b.WriteString(`<li class="flex flex-col gap-1" data-account-app="` + id + `" data-app-state="` + state + `">` +
 				`<span class="text-sm font-semibold text-fg"><span aria-hidden="true">` + html.EscapeString(icon) + `</span> ` + html.EscapeString(label) + `</span>` +
 				`<span class="text-sm text-fg2">` + html.EscapeString(accountAppCan(p)) + `</span>`)
+			if a.LinkedWith != nil {
+				b.WriteString(`<span class="text-sm text-fg2" data-app-linked="` + strconv.FormatInt(a.LinkedWith.ID, 10) + `">` +
+					html.EscapeString(AccountAppsLinkedLine(label, a.LinkedWith.Label)) + `</span>`)
+			}
 			switch {
 			case a.Hidden:
 				b.WriteString(`<span class="text-sm text-fg2" data-app-grant="">Hidden: it has no tab and cannot act for you.</span>`)

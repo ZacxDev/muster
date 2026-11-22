@@ -75,7 +75,12 @@ func ValidSubject(s string) bool {
 
 // newSubject is a new pairwise subject: 128 random bits, base64url. Random,
 // never derived from the user id, so it says nothing about who the person
-// is, and a person's subjects under two apps cannot be joined.
+// is, and a person's subjects under two apps cannot be joined — unless an
+// admin LINKED the two apps (server_pairs.go: installed one --link-to the
+// other; the two keep what they shared after an unlink, and neither may then
+// be linked to a third). 🔴 ITS ONE CALLER IS subjectFor,
+// which decides whether a pair's subject is taken instead (internal/api
+// TestOneFunctionChoosesASubject).
 func newSubject() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -276,8 +281,9 @@ type ServerHandoff struct {
 //     hidden or disabled between the mint and the redeem, or a code minted by
 //     a session a later Sign out everywhere ended, is the same ErrNotFound —
 //     and the code is spent all the same.
-//  3. The grant is upserted: the subject kept if the row exists, else a new
-//     random one; signin_at set to THE CODE'S signed_in_at, never now();
+//  3. The grant is upserted: the subject kept if the row exists, else
+//     subjectFor's (the linked partner's subject for the person, or a new
+//     random one); signin_at set to THE CODE'S signed_in_at, never now();
 //     act_until the later of its current value and now + ServerActFor.
 func (s *PGStore) RedeemServerHandoff(ctx context.Context, app Plugin, code string, now time.Time) (ServerHandoff, error) {
 	if !app.IsServer() || !handoffCodeShapeOK(code) {
@@ -333,7 +339,7 @@ func (s *PGStore) RedeemServerHandoff(ctx context.Context, app Plugin, code stri
 		if err != nil {
 			return err
 		}
-		sub, err := newSubject()
+		sub, err := subjectFor(sys, tx, app.ID, h.ownerID)
 		if err != nil {
 			return err
 		}
@@ -373,6 +379,11 @@ type ServerAppIn struct {
 	// Tasks adds CapTasks ("Files tasks"). No other capability is offered: a
 	// server app has no person's chief to act on.
 	Tasks bool
+	// LinkTo, when not 0, is a live server app the new one is LINKED to
+	// (server_pairs.go linkAtInstall), in the install's own transaction: the
+	// two then know each person by one subject. The command line's
+	// `app install --link-to` only.
+	LinkTo int64
 }
 
 // serverAppActor is the audit actor and installed_by of a server-app write:
@@ -389,9 +400,11 @@ func serverAppActor(by users.Actor) (installedBy *int64, via string) {
 
 // InstallServerApp installs a server app and returns its token ONCE. Under
 // authz.System (the row has no owner), serialised by an advisory lock so two
-// installs cannot both see MaxServerApps-1. Audited plugin.server.installed
-// as by. The caller gates who may install (an admin with a fresh step-up, or
-// the command line).
+// installs cannot both see MaxServerApps-1. With in.LinkTo the new app is
+// linked to that app in the same transaction (linkAtInstall): a refused link
+// installs nothing. Audited plugin.server.installed as by (with linked_to).
+// The caller gates who may install (an admin with a fresh step-up, or the
+// command line).
 func (s *PGStore) InstallServerApp(ctx context.Context, in ServerAppIn, by users.Actor) (string, Plugin, error) {
 	label := strings.TrimSpace(in.AppLabel)
 	if err := ValidName(in.Name); err != nil {
@@ -449,7 +462,14 @@ func (s *PGStore) InstallServerApp(ctx context.Context, in ServerAppIn, by users
 		if err := sp.Commit(sys); err != nil {
 			return err
 		}
-		return users.AuditTx(sys, tx, by, "plugin.server.installed", Object(p.ID), serverAppDetail(p))
+		detail := serverAppDetail(p)
+		if in.LinkTo != 0 {
+			if err := linkAtInstall(sys, tx, p.ID, in.LinkTo); err != nil {
+				return err
+			}
+			detail["linked_to"] = in.LinkTo
+		}
+		return users.AuditTx(sys, tx, by, "plugin.server.installed", Object(p.ID), detail)
 	})
 	if err != nil {
 		return "", Plugin{}, err
@@ -503,7 +523,10 @@ func (s *PGStore) RotateServerApp(ctx context.Context, id int64, by users.Actor)
 // UninstallServerApp revokes live server app id and, IN THE SAME
 // TRANSACTION, deletes its grants (plugin_server_users), its task ledger
 // (plugin_server_tasks: the tasks themselves stay in each person's list, with
-// the comments the app wrote) and its unspent codes. Revocation is an UPDATE,
+// the comments the app wrote), its unspent codes and its linked pair
+// (plugin_server_pairs: one DELETE, the mutual key cascading to the mirror;
+// the partner keeps its subjects and is linked to nothing, and a reinstall
+// is a new id, linked only if installed --link-to). Revocation is an UPDATE,
 // so these deletes are explicit: the ON DELETE CASCADE foreign keys fire only
 // if the row itself is ever deleted. From then on the token is 401 on every
 // route. Uninstall is FINAL (fork 7): a reinstall is a new row with new
@@ -532,7 +555,15 @@ func (s *PGStore) UninstallServerApp(ctx context.Context, id int64, by users.Act
 				return err
 			}
 		}
-		return users.AuditTx(sys, tx, by, "plugin.server.uninstalled", Object(p.ID), serverAppDetail(p))
+		detail := serverAppDetail(p)
+		var partner int64
+		switch err := tx.QueryRow(sys, `DELETE FROM plugin_server_pairs WHERE plugin_id = $1 RETURNING partner_id`, id).Scan(&partner); {
+		case err == nil:
+			detail["unlinked_from"] = partner
+		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+		return users.AuditTx(sys, tx, by, "plugin.server.uninstalled", Object(p.ID), detail)
 	})
 	return p, err
 }
@@ -542,8 +573,8 @@ func (s *PGStore) UninstallServerApp(ctx context.Context, id int64, by users.Act
 //
 // 🔴 HIDE ENDS THE GRANT AT ONCE: an upsert on (plugin_id, owner_id) setting
 // hidden_at AND act_until to now. When the person never opened the app there
-// is no row yet, so Hide inserts one with a new random subject, signin_at
-// NULL, act_until and hidden_at now — a row serverGrantLive can never pass
+// is no row yet, so Hide inserts one with subjectFor's subject (a new random
+// one, or a linked partner's for the person), signin_at NULL, act_until and hidden_at now — a row serverGrantLive can never pass
 // (signin_at IS NULL alone fails it), whose subject is sent nowhere.
 // SHOW CLEARS hidden_at ONLY: the tab is back, but the app may not act for
 // the person until a FRESH redeem (they open the tab again). Under
@@ -569,7 +600,7 @@ func (s *PGStore) SetServerAppHidden(ctx context.Context, id int64, hidden bool,
 		var tag pgconn.CommandTag
 		var err error
 		if hidden {
-			sub, serr := newSubject()
+			sub, serr := subjectFor(sys, tx, id, who.UserID)
 			if serr != nil {
 				return serr
 			}
@@ -692,6 +723,9 @@ type ServerAppInfo struct {
 	// TokenHash is the row's current token_hash: never shown, it binds the
 	// page's one-time form nonce to the token a Rotate replaces.
 	TokenHash string
+	// LinkedWith is the other app of its linked pair (server_pairs.go), nil
+	// when it is in none.
+	LinkedWith *LinkedApp
 }
 
 // ServerApps is every live server app, oldest first, for an admin's page or
@@ -717,12 +751,21 @@ func (s *PGStore) ServerApps(ctx context.Context, origins []OriginPattern, now t
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	pairs, err := s.serverPairs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apps := make([]Plugin, len(out))
+	for i := range out {
+		apps[i] = out[i].App
+	}
 	for i := range out {
 		n, err := s.liveGrantCount(ctx, out[i].App, origins, now)
 		if err != nil {
 			return nil, err
 		}
 		out[i].LiveGrants = n
+		out[i].LinkedWith = linkedFor(out[i].App.ID, pairs, apps)
 	}
 	return out, nil
 }
@@ -781,6 +824,9 @@ type AccountServerApp struct {
 	App       Plugin
 	Hidden    bool
 	LiveUntil *time.Time
+	// LinkedWith is the other app of its linked pair, nil when it is in none:
+	// the two know the person as the same person.
+	LinkedWith *LinkedApp
 }
 
 // AccountServerApps is every live server app, oldest first, with ctx's
@@ -815,8 +861,17 @@ func (s *PGStore) AccountServerApps(ctx context.Context, origins []OriginPattern
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	pairs, err := s.serverPairs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apps := make([]Plugin, len(got))
+	for i := range got {
+		apps[i] = got[i].a.App
+	}
 	out := make([]AccountServerApp, 0, len(got))
 	for _, x := range got {
+		x.a.LinkedWith = linkedFor(x.a.App.ID, pairs, apps)
 		if x.subject != "" && !x.a.Hidden {
 			live, err := s.LiveServerGrants(ctx, x.a.App, origins, []string{x.subject}, now)
 			if err != nil {

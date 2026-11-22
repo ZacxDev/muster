@@ -137,6 +137,7 @@ var pluginRowReads = map[string]string{
 	"PGStore.RotateServerApp":       "an admin's rotate, under System: scope = 'server', the app's id",
 	"PGStore.UninstallServerApp":    "an admin's uninstall, under System: scope = 'server', the app's id",
 	"PGStore.SetServerAppHidden":    "a person's Hide/Show, under System: scope = 'server', the app's id",
+	"linkAtInstall":                 "install --link-to, in the install's System transaction: the named source's scope and revoked_at FOR SHARE",
 	// 0172, core PR 1h.2: the server apps' lists. Each reads every live
 	// server app (scope = 'server') under System; the person's own state is
 	// keyed on the principal's id, and the grant counts and states are THE
