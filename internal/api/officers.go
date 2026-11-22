@@ -1650,6 +1650,8 @@ func queueToolDefs() []agents.ToolDef {
 				"question": strProp("The question. Say what you need decided and why."),
 				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 					"description": "Optional answers to pick from: short, unique labels."},
+				"multi": map[string]any{"type": "boolean",
+					"description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended."},
 				"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 					"description": "Optional images, as the ids `ccd ask-image <path>` prints: run it in your shell on a PNG, JPEG or WebP file in your workspace " +
 						"(at most 5 MiB) and pass the \"id\" it prints. For an image on the web, download it into your workspace first. The ask cites them in order."},
@@ -2030,6 +2032,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		To              string          `json:"to"`
 		Question        string          `json:"question"`
 		Options         []string        `json:"options"`
+		Multi           bool            `json:"multi"`
 		ImageIDs        []string        `json:"image_ids"`
 		ContextURL      string          `json:"context_url"`
 		DeadlineSeconds json.RawMessage `json:"deadline_seconds"`
@@ -2245,7 +2248,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
-		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.ImageIDs, ContextURL: in.ContextURL, DeadlineSeconds: in.DeadlineSeconds}
+		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Multi: in.Multi, Images: in.ImageIDs, ContextURL: in.ContextURL, DeadlineSeconds: in.DeadlineSeconds}
 		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask), true
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))

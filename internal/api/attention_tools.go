@@ -291,13 +291,15 @@ func attentionToolDefs(files bool) []agents.ToolDef {
 	defs := []agents.ToolDef{
 		{Type: "function", Name: attentionAskTool,
 			Description: "Ask your owner a question and get their answer. It appears in muster's Attention view and as a notification on their phone. " +
-				"Offer options when the answer is a choice (they can still type a free answer). Returns the ask's id. A dispatched agent (the chief included) " +
+				"Offer options when the answer is a choice (they can still type a free answer); set multi: true to let them pick more than one. Returns the ask's id. A dispatched agent (the chief included) " +
 				"gets the answer delivered as a new message in its default session, so it need not wait (it MAY call attention_wait to block on it); " +
 				"a mirrored Claude Code session gets it ONLY through attention_wait, so it must call attention_wait with the id." + attentionToolNote,
 			Parameters: objSchema(map[string]any{
 				"question": strProp("The question, self-contained: your owner may read it on a lock screen without context."),
 				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": attention.MaxOptions,
 					"description": "Optional answers to offer as buttons, e.g. [\"deploy now\", \"wait until Monday\"]."},
+				"multi": map[string]any{"type": "boolean",
+					"description": "true with options: let your owner pick MORE THAN ONE (checkboxes on the ask's page). Their picks are recorded joined by \"; \", with an optional note of theirs appended. The phone's lock-screen chips stay single-select."},
 				"timeout_seconds": intProp("How long the question stays open (default 24h, 60s to 7 days). After it, the ask expires unanswered.",
 					int(attention.MinTimeout/time.Second), int(attention.MaxTimeout/time.Second)),
 				"context": map[string]any{"type": "string", "maxLength": attention.MaxWhyRunes,
@@ -558,13 +560,14 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 	var in struct {
 		Question       string   `json:"question"`
 		Options        []string `json:"options"`
+		Multi          bool     `json:"multi"`
 		TimeoutSeconds int      `json:"timeout_seconds"`
 		Context        string   `json:"context"`
 		Attachments    []string `json:"attachments"`
 		AttachmentIDs  []string `json:"attachment_ids"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {question, options?, timeout_seconds?, context?, attachments?, attachment_ids?}")
+		return toolErr("arguments are {question, options?, multi?, timeout_seconds?, context?, attachments?, attachment_ids?}")
 	}
 	// Paths reaching muster itself: it cannot read the caller's files
 	// (ask_media.go, askPathsRefusal).
@@ -582,7 +585,7 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 	if c.agent != nil {
 		about = s.chiefAskSubject(ctx, *c.agent)
 	}
-	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: c.asker, Question: in.Question, Options: in.Options,
+	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: c.asker, Question: in.Question, Options: in.Options, Multi: in.Multi,
 		Timeout: time.Duration(in.TimeoutSeconds) * time.Second, SubjectKey: about,
 		Attachments: files, Why: s.askWhyFor(ctx, c, in.Context)})
 	switch {

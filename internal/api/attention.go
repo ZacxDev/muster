@@ -223,6 +223,11 @@ type attentionItem struct {
 	// questions; a reply draft's inbound message ("<sender>: <excerpt>").
 	Text    string   `json:"text"`
 	Options []string `json:"options,omitempty"`
+	// multi is the ask's own flag (attention.Ask.Multi, migration 0175): its
+	// options are checkboxes and the answer joins the picks with
+	// attention.OptionSep. Not serialised (attention_list predates it): the
+	// Ask's card reads it to draw the form.
+	multi bool
 	// Detail is the second line, "" for none: the last thing a waiting
 	// session's Claude said (mirror.Pending.Last); a draft's reply excerpt.
 	Detail string `json:"detail,omitempty"`
@@ -516,7 +521,7 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, OfficerID: officerAskID(a), target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
-		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
+		Options: a.Options, multi: a.Multi, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
 		ownerCard: a.OwnerCard, owner: a.Owner, toChief: a.ToChief, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
@@ -1100,6 +1105,11 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": url}, Update: update, TitleKeep: keep}
 	n.CodenameTitle, n.CodenameKeep = attentionCodenameTitle(it)
 	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
+		// 🔴 A MULTI-SELECT ASK PUSHES THE SAME WAY, ONE CHIP PER OPTION
+		// (it.multi is not read here): a lock-screen chip answers with ONE
+		// label (push.MaxNativeChips, capped at 3), so multi-select is offered
+		// on the ask's page alone and never drawn as checkboxes in a
+		// notification. The owner who needs to pick several opens the page.
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
 		// (device_actions.go): this item is one, so they are offered.
@@ -2452,6 +2462,44 @@ func attentionErrCode(err error) int {
 	return http.StatusInternalServerError
 }
 
+// answerFromForm is the answer an ask's form posted, and whether it was a
+// TAP (a box ticked or a single-select button pressed) rather than typed text.
+// THE one reading of the answer form's three fields, shared by the form's
+// handler so the two cannot disagree:
+//
+//   - `option` — one value for a single-select ask (the button pressed), or
+//     SEVERAL for a MULTI-SELECT ask (migration 0175, every box ticked). Each
+//     is trimmed and blanks dropped. Several are joined with
+//     attention.OptionSep ("a; b").
+//   - `answer` — the free-text box, the fallback when no option was picked.
+//   - `note` — the MULTI-SELECT ask's optional note: appended to the picked
+//     labels as " — note: …" (attention.NotePrefix); alone (no pick, no free
+//     text) it is the answer by itself.
+//
+// A lone free-text answer is unchanged from before multi-select existed.
+func answerFromForm(r *http.Request) (answer string, tapped bool) {
+	_ = r.ParseForm()
+	var picks []string
+	for _, o := range r.PostForm["option"] {
+		if o = strings.TrimSpace(o); o != "" {
+			picks = append(picks, o)
+		}
+	}
+	if len(picks) > 0 {
+		answer = strings.Join(picks, attention.OptionSep)
+	} else {
+		answer = r.PostFormValue("answer")
+	}
+	if note := strings.TrimSpace(r.PostFormValue("note")); note != "" {
+		if strings.TrimSpace(answer) == "" {
+			answer = note
+		} else {
+			answer += attention.NotePrefix + note
+		}
+	}
+	return answer, len(picks) > 0
+}
+
 func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Attention == nil {
 		http.NotFound(w, r)
@@ -2462,13 +2510,13 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		s.renderAttentionPage(w, r, http.StatusNotFound, "No such question.")
 		return
 	}
-	// An option button wins over the free text: it is what was tapped.
-	answer := r.PostFormValue("option")
-	if strings.TrimSpace(answer) == "" {
-		answer = r.PostFormValue("answer")
-	}
+	// 🔴 AN OPTION WINS OVER THE FREE TEXT: a tapped button — or, on a
+	// MULTI-SELECT ask (migration 0175), every box ticked — is what was
+	// chosen, and the free-text box is a fallback. answerFromForm is THE one
+	// reading of those fields.
+	answer, tapped := answerFromForm(r)
 	ctx := r.Context()
-	if strings.TrimSpace(r.PostFormValue("option")) != "" {
+	if tapped {
 		// A button TAPPED, not text typed (a chief proposal accepts only
 		// that: chief_proposal.go optionTapped).
 		ctx = withOptionTap(ctx)
