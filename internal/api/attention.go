@@ -304,6 +304,12 @@ type attentionItem struct {
 	// draft's own decision controls (askStepUpDraftHTML). Set by withAskBoxes
 	// and the ask page; not serialised.
 	stepUpDraft *plugins.DraftCard
+	// stepUpDraftRead: withAskBoxes read the card's draft (stepUpDraftsFor);
+	// stepUpDraftSrc is who raised it, nil when the reader cannot read it —
+	// what the filter chips name the card by (readAskSources), with no second
+	// read.
+	stepUpDraftRead bool
+	stepUpDraftSrc  *draftSource
 	// Context is what a builtin officer's ask is about (attention.Ask's,
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
@@ -1009,6 +1015,9 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 	withAskPages(ctx, items)
 	owner := requestOwner(ctx)
 	dict := s.dictatePath()
+	// The step-up cards whose draft the reader may decide here: their drafts
+	// are read together after the loop (stepUpDraftsFor, one batch, no sweep).
+	var stepUps []int
 	for i := range items {
 		if items[i].Kind == attentionKindNotice && links && owner > 0 {
 			// A notice has no answer box (so no mic): only its session.
@@ -1035,7 +1044,7 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		} else {
 			items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
 			if items[i].stepUp != nil && items[i].owner == owner {
-				items[i].stepUpDraft = s.stepUpDraftFor(ctx, items[i].stepUp)
+				stepUps = append(stepUps, i)
 			}
 		}
 		if items[i].ownerCard && owner > 0 {
@@ -1054,6 +1063,22 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		}
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
+		}
+	}
+	if len(stepUps) > 0 {
+		ids := make([]int64, len(stepUps))
+		for k, i := range stepUps {
+			ids[k] = items[i].stepUp.DraftID
+		}
+		decide, read := s.stepUpDraftsFor(ctx, ids)
+		for _, i := range stepUps {
+			id := items[i].stepUp.DraftID
+			items[i].stepUpDraft = decide[id]
+			items[i].stepUpDraftRead = true
+			if d, ok := read[id]; ok {
+				src := draftCardSource(d)
+				items[i].stepUpDraftSrc = &src
+			}
 		}
 	}
 }

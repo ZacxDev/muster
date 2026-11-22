@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -458,12 +459,12 @@ func (c *countingDrafts) DraftCards(ctx context.Context, limit int) ([]plugins.D
 	return c.Store.DraftCards(ctx, limit)
 }
 
-func (c *countingDrafts) DraftSources(ctx context.Context, ids []int64) ([]plugins.DraftSource, error) {
-	c.note("DraftSources")
+func (c *countingDrafts) DraftCardsByID(ctx context.Context, ids []int64) ([]plugins.DraftCard, error) {
+	c.note("DraftCardsByID")
 	c.mu.Lock()
 	c.ids = append(c.ids, append([]int64(nil), ids...))
 	c.mu.Unlock()
-	return c.Store.DraftSources(ctx, ids)
+	return c.Store.DraftCardsByID(ctx, ids)
 }
 
 // stepUpFor files, as owner, a step-up card bound to draft id.
@@ -481,12 +482,15 @@ func (f *filtFix) stepUpFor(t *testing.T, owner, draft int64, why string) int64 
 	return a.ID
 }
 
-// TestARenderReadsTheCardsDraftsOnceAndSweepsNothing (round 1, Y2): the step-up
-// cards whose drafts are not among the Drafts tab's are named by ONE
-// reader-scoped DraftSources read per render — never a DraftCard per draft,
-// which sweeps (a write transaction). Measured on an unfiltered GET /attention
-// with two such cards: at 39928e4c4 it was 2 DraftCard calls (2 sweeps) per
-// render; here 0 DraftCard and 1 DraftSources naming both drafts.
+// TestARenderReadsTheCardsDraftsOnceAndSweepsNothing (round 1, Y2; and the
+// merge with #969): the drafts the Open feed's step-up cards are about —
+// read for their decision controls (stepUpDraftsFor) and for their filter
+// chips (readAskSources) — come from ONE batch read that does not sweep
+// (plugins.DraftCardsByID), never a DraftCard per card, which sweeps (a
+// write transaction). Measured on an unfiltered GET /attention with two such
+// cards: at 39928e4c4, 2 DraftCard per render (the chips' hop); merged with
+// #969, 3 (its controls added one per card); here 0 DraftCard and 1
+// DraftCardsByID naming both drafts.
 func TestARenderReadsTheCardsDraftsOnceAndSweepsNothing(t *testing.T) {
 	c := &countingDrafts{}
 	f := newFiltFix(t, func(ext *Extensions, _ *pgxpool.Pool) { c.Store = ext.Plugins; ext.Plugins = c })
@@ -500,12 +504,13 @@ func TestARenderReadsTheCardsDraftsOnceAndSweepsNothing(t *testing.T) {
 	c.reset()
 	f.page(t, "/attention")
 	n := c.counts()
-	t.Logf("draft reads per GET /attention: %v, DraftSources ids %v", n, c.ids)
+	t.Logf("draft reads per GET /attention: %v, DraftCardsByID ids %v", n, c.ids)
 	if n["DraftCard"] != 0 {
 		t.Errorf("the render read %d drafts one by one (DraftCard sweeps: a write each)", n["DraftCard"])
 	}
-	if n["DraftSources"] != 1 || len(c.ids) != 1 || len(c.ids[0]) != 2 {
-		t.Errorf("the render's DraftSources reads: %d %v, want one naming both cards' drafts", n["DraftSources"], c.ids)
+	in := func(id int64) bool { return len(c.ids) == 1 && slices.Contains(c.ids[0], id) }
+	if n["DraftCardsByID"] != 1 || !in(f.memberDraft) || !in(gone) || !in(f.mktDraft) {
+		t.Errorf("the render's batch draft reads: %d %v, want one naming every step-up card's draft", n["DraftCardsByID"], c.ids)
 	}
 	if n["DraftCards"] != base["DraftCards"] {
 		t.Errorf("the page's own draft list reads went %d → %d with the cards", base["DraftCards"], n["DraftCards"])

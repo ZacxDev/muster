@@ -373,16 +373,25 @@ func (s *Server) parseAsksFilter(ctx context.Context, q url.Values, hosts func()
 	return f
 }
 
-// readAskSources is the render's askSources: the drafts given, and — in ONE
-// reader-scoped read that does not sweep (round 1, Y2: a DraftCard per draft
-// was a sweep, a write transaction, per draft per render) — the sources of
-// the drafts the items name that are not among them (a step-up card's, a
-// draft item's). Row-level security: another person's draft is absent, and
-// its card is then named by its own head.
+// readAskSources is the render's askSources: the drafts given, the drafts the
+// items' step-up cards already carry (withAskBoxes read them for their
+// decision controls: stepUpDraftsFor), and — in ONE batch read that does not
+// sweep (plugins.DraftCardsByID; round 1, Y2: a DraftCard per draft was a
+// sweep, a write transaction, per draft per render) — the rest the items name
+// (a step-up card's draft the reader may not decide, a draft item's).
+// Row-level security: another person's draft is absent, and its card is then
+// named by its own head.
 func (s *Server) readAskSources(ctx context.Context, drafts []plugins.DraftCard, items ...[]attentionItem) askSources {
 	x := askSources{drafts: map[int64]draftSource{}, officerName: s.officerDisplayName}
 	for _, c := range drafts {
 		x.drafts[c.Draft.ID] = draftCardSource(c)
+	}
+	for _, list := range items {
+		for _, it := range list {
+			if it.stepUpDraftSrc != nil && it.stepUp != nil {
+				x.drafts[it.stepUp.DraftID] = *it.stepUpDraftSrc
+			}
+		}
 	}
 	if s.ext.Plugins == nil {
 		return x
@@ -394,6 +403,10 @@ func (s *Server) readAskSources(ctx context.Context, drafts []plugins.DraftCard,
 			id := draftItemID(it)
 			if it.stepUp != nil && it.stepUp.DraftID > 0 {
 				id = it.stepUp.DraftID
+				if it.stepUpDraftRead {
+					// Read already (withAskBoxes); absent = not the reader's.
+					continue
+				}
 			}
 			if _, ok := x.drafts[id]; id > 0 && !ok && !seen[id] && len(missing) < asksFilterDraftReads {
 				seen[id] = true
@@ -404,12 +417,12 @@ func (s *Server) readAskSources(ctx context.Context, drafts []plugins.DraftCard,
 	if len(missing) == 0 {
 		return x
 	}
-	got, err := s.ext.Plugins.DraftSources(ctx, missing)
+	got, err := s.ext.Plugins.DraftCardsByID(ctx, missing)
 	if err != nil {
 		s.logger.Printf("asks: the filter's drafts: %v", err)
 	}
-	for _, d := range got {
-		x.drafts[d.ID] = draftSource{owner: d.OwnerID, officer: d.Officer, agentID: d.AgentID, agent: d.AgentName}
+	for _, c := range got {
+		x.drafts[c.Draft.ID] = draftCardSource(c)
 	}
 	return x
 }

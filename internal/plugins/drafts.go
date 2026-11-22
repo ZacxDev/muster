@@ -898,39 +898,34 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
-// DraftSource is who raised a draft, as the Asks page's filter chips name
-// it: its owner, its officer ("" for none), its drafting agent and the agent
-// name it stored.
-type DraftSource struct {
-	ID, OwnerID int64
-	Officer     string
-	AgentID     int64
-	AgentName   string
-}
-
-// DraftSources reads the sources of the drafts ids names, as ctx's principal
-// (row-level security: another owner's draft is simply absent), in ONE
-// SELECT. 🔴 IT DOES NOT SWEEP: the Asks page calls it on every render, and a
-// sweep is a write transaction.
-func (s *PGStore) DraftSources(ctx context.Context, ids []int64) ([]DraftSource, error) {
+// DraftCardsByID is the drafts ids names that ctx's principal can read
+// (row-level security: another owner's is simply absent), as cards — exactly
+// what DraftCard reads for one — in two fixed reads (the reply drafts' shape
+// and the outbound drafts'), however many ids. 🔴 IT DOES NOT SWEEP: the Asks
+// page calls it on every render (its step-up cards' drafts: their decision
+// controls and their filter chips), and a sweep is a write transaction. A
+// draft whose time has decided it but that no sweep has yet settled reads as
+// its stored status; the caller tells (DraftTimeDecided).
+func (s *PGStore) DraftCardsByID(ctx context.Context, ids []int64) ([]DraftCard, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, owner_id, coalesce(officer, ''), coalesce(agent_id, 0), agent_name
-		  FROM plugin_reply_drafts WHERE id = ANY($1)`, ids)
+	out, err := s.replyDraftCards(ctx, `WHERE d.id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []DraftSource
-	for rows.Next() {
-		var d DraftSource
-		if err := rows.Scan(&d.ID, &d.OwnerID, &d.Officer, &d.AgentID, &d.AgentName); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
+	outbound, err := s.outboundDraftCards(ctx, `WHERE d.id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return append(out, outbound...), nil
+}
+
+// DraftTimeDecided reports whether d is one the next sweep settles by time
+// alone (sweepDrafts' first step: pending or approved, unclaimed, past its
+// expiry) — what a read that does not sweep must not offer a decision on.
+func DraftTimeDecided(d Draft, now time.Time) bool {
+	return (d.Status == DraftPending || d.Status == DraftApproved) && d.ClaimedAt == nil && !d.ExpiresAt.After(now)
 }
 
 // SearchDraftCards is the Asks page's search box over drafts: the draft with
