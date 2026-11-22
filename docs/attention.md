@@ -1473,13 +1473,19 @@ wakes none. On a machine the [step-up gate](mirroring.md) covers, the enqueue is
 itself a card on your phone (it makes an owner item), run once as the session
 that asked when you confirm it.
 
-🔴 **A rejection of a draft for such an item is that session's alone.** The
-rejection and your reason are pasted into the session, which is told the
-officer will not redraft; the officer gets no `draft.refused` item and no
-escalation, and the item is finished `no_action`
-([plugins.md](plugins.md#outbound-drafts-officer_post_draft)). When no wake
-could reach the session (its host no longer mirrors here) the rejection goes
-back to the officer as for any other item.
+🔴 **A rejection of a draft for such an item is that session's alone — once
+its line is actually on its way.** The rejection's wake is filed first; only
+when a new one was filed are the rejection and your reason the session's: it
+is told the officer will not redraft, the officer gets no `draft.refused` item
+and no escalation, and the item is finished `no_action`
+([plugins.md](plugins.md#outbound-drafts-officer_post_draft)). When no wake was
+filed (its host no longer mirrors here, the store or host list failed) the
+rejection goes back to the officer as for any other item, and so it does when
+the filed line later settles **Not delivered** (no window showed the session
+within a day, or its queue row was cancelled): then the officer gets the
+`draft.refused` item it would have had, your reason in it. A rejection after
+an approval (you withdraw an approval its plugin has not claimed yet) is a line
+of its own, after the approval's — for a reply draft a session wrote, too.
 
 🔴 **Only muster's words and yours.** One function builds every one of these
 messages, and it reads only ids, a decision word, a count, a page component's

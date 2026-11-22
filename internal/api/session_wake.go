@@ -364,8 +364,9 @@ func renderWake(w sessionwake.Wake) string {
 			return "muster: " + who + " Its plugin sends it next; muster tells this session how that went."
 		}
 		// 🔴 A REJECTION OF WORK THIS SESSION ASKED FOR IS ITS ALONE: the
-		// officer files no redraft for it (officerRejectionToRequester), so the
-		// line says so and names the item as closed.
+		// officer files no redraft for it (wakeOfficerDraftDecided: this wake
+		// was filed, so the item was closed as the session's), so the line
+		// says so and names the item as closed.
 		pre := who + " It will not be sent, and the officer will not redraft it: officer item #" +
 			strconv.FormatInt(w.OfficerItemID, 10) + " is closed, and what happens next is this session's call."
 		if strings.TrimSpace(w.OperatorText) == "" {
@@ -482,11 +483,14 @@ func fenced(preface, marker, head, text, readWhole string) string {
 // Filing.
 // ---------------------------------------------------------------------------
 
-// fileWake records wake n for owner and starts its delivery. A team owner, a
-// server without wakes, or a store error files nothing (logged).
-func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
+// fileWake records wake n for owner and starts its delivery, reporting
+// whether it FILED A NEW ONE: false for a team owner, a server without wakes, a
+// host that does not mirror here, a store error (logged), or a decision whose
+// wake already exists (Create's one-per-decision rule) — in each of which the
+// session is told nothing by this call.
+func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) bool {
 	if !s.wakeReaches(ctx, owner, n.Host) {
-		return
+		return false
 	}
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), owner)
 	// The sign-in that decided it (its freshness is judged when the line is
@@ -495,18 +499,18 @@ func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
 	w, fresh, err := s.ext.SessionWakes.Create(octx, n)
 	if err != nil {
 		s.logger.Printf("session wake: %s for owner %d: %v", n.Kind, owner, err)
-		return
+		return false
 	}
 	if fresh {
 		s.wakeChanged(w)
 		s.startWakeDelivery(owner, w.ID)
 	}
+	return fresh
 }
 
 // wakeReaches reports whether a wake for owner's session on host would be
-// filed at all (fileWake's one rule, which the rejection of a session's
-// officer item reads too, officerRejectionToRequester): this server delivers
-// wakes, owner is a user (not a team), and host mirrors here.
+// filed at all (fileWake's first rule): this server delivers wakes, owner is a
+// user (not a team), and host mirrors here.
 func (s *Server) wakeReaches(ctx context.Context, owner int64, host string) bool {
 	if !s.wakesOn() || owner <= 0 {
 		return false
@@ -579,10 +583,13 @@ func (s *Server) draftRoute(ctx context.Context, d plugins.Draft) (plugins.Route
 }
 
 // wakeDraftDecided files the wake the owner's decision on draft d owes
-// (decideDraftAs).
-func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) {
+// (decideDraftAs). toRequester: d is an officer's draft whose REJECTION was
+// just filed, fresh, as a wake for the session that enqueued its item
+// (wakeOfficerDraftDecided) — the one case in which the officer is not asked
+// to redraft it (outboundSettledTo).
+func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) (toRequester bool) {
 	if !s.wakesOn() {
-		return
+		return false
 	}
 	// The step-up cards about d that this decision settled, and an officer's
 	// draft for an item a session enqueued (session_wake_requests.go).
@@ -590,8 +597,7 @@ func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plug
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), d.OwnerID)
 	r, ok := s.draftRoute(octx, d)
 	if !ok {
-		s.wakeOfficerDraftDecided(ctx, d, via)
-		return
+		return s.wakeOfficerDraftDecided(ctx, d, via) && d.Status == plugins.DraftRejected
 	}
 	if n, ok := wakeForDraftDecision(d, r); ok {
 		if via.Via == plugins.DraftViaMCP {
@@ -601,6 +607,7 @@ func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plug
 		}
 		s.fileWake(ctx, d.OwnerID, n)
 	}
+	return false
 }
 
 // wakeDraftOutcome files the wake approved draft d's outcome owes, once — only
@@ -781,8 +788,9 @@ func (s *Server) handWake(ctx context.Context, w sessionwake.Wake) string {
 			}
 		}
 		if ok, err := st.GiveUp(ctx, w.ID, why); err == nil && ok {
-			w.State = sessionwake.Unconfirmed
+			w.State, w.Detail = sessionwake.Unconfirmed, why
 			s.wakeChanged(w)
+			s.wakeNotDelivered(ctx, w)
 		}
 		return wakeGaveUp
 	}
@@ -861,7 +869,7 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 		return wakeNothing
 	}
 	st := s.ext.SessionWakes
-	moved := false
+	moved, undelivered := false, false
 	switch it.State {
 	case sendqueue.Sent:
 		moved, _ = st.Finish(ctx, w.ID, it.ID, true, "")
@@ -873,6 +881,7 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 		}
 	case sendqueue.Cancelled:
 		moved, _ = st.Finish(ctx, w.ID, it.ID, false, "Not delivered: it was cancelled in the session's queue")
+		undelivered = true
 	case sendqueue.Queued:
 		if s.sendQueueNow().Sub(w.QueuedAt) < wakeGiveUp {
 			return wakeNothing
@@ -881,11 +890,17 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 			return wakeNothing // being sent this instant: the paste settles it
 		}
 		moved, _ = st.Finish(ctx, w.ID, it.ID, false, "Not delivered: the session was not idle within a day")
+		undelivered = true
 	default:
 		return wakeNothing
 	}
 	if moved {
 		s.wakeChanged(w)
+		if undelivered {
+			// Provably never pasted (a row that may have landed is "May have
+			// been sent", never this).
+			s.wakeNotDelivered(ctx, w)
+		}
 		return wakeSettled
 	}
 	return wakeNothing

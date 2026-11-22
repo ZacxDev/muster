@@ -1364,14 +1364,18 @@ After the result, for an outbound draft filed with an `item_id`:
 - **Your rejection of a draft for an item a mirrored session enqueued**
   ([`officer_item_enqueue`](attention.md#officer-items-a-session-enqueues),
   or `muster officer item enqueue` run inside such a session) is that
-  session's alone: the rejection and your reason are pasted into it, and the
-  officer gets **no** `draft.refused` item and no escalation. The item is
-  finished `no_action` (*"… The owner's decision went to the session that
-  enqueued this item, which decides what happens next: there is nothing to
-  redraft."*), and your reason is in no officer item. When no wake could reach
-  that session (its host no longer mirrors here), the rejection goes back to
-  the officer as above — it is never dropped. A plugin's refusal or a failed
-  send of such a draft still goes back to the officer.
+  session's alone once its line is filed (muster files it first): the
+  rejection and your reason are pasted into it, and the officer gets **no**
+  `draft.refused` item and no escalation. The item is finished `no_action`
+  (*"… The owner's decision was sent to the session that enqueued this item,
+  which decides what happens next: there is nothing to redraft. Should muster
+  be unable to deliver it, it comes back to this officer as a draft.refused
+  item."*), and your reason is in no officer item. When no line was filed for
+  that session (its host no longer mirrors here, or the wake could not be
+  written), the rejection goes back to the officer as above; when the filed
+  line settles *Not delivered*, the officer gets that `draft.refused` item then
+  — it is never dropped. A plugin's refusal or a failed send of such a draft
+  still goes back to the officer.
 - `ok: false` with `nothing_sent: true` and `transient: true`, while the
   draft has time left: **none of that yet** — the draft is
   [retried on its own](#retries-approve-once), and the item keeps waiting

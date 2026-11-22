@@ -47,6 +47,17 @@
 --     WHERE state = 'queued' AND session_wake_id IN (SELECT id FROM public.session_wakes
 --       WHERE kind IN ('officer_draft_decided', 'officer_draft_outcome', 'stepup_decided'));
 --   DELETE FROM public.session_wakes WHERE kind IN ('officer_draft_decided', 'officer_draft_outcome', 'stepup_decided');
+-- and keep ONE decision wake per reply draft (0177's index allows no more):
+-- the later, which is the draft's real state (a withdrawn approval's
+-- rejection), the earlier one's queued row cancelled first:
+--   UPDATE public.send_queue SET state = 'cancelled', finished_at = now(),
+--       detail = 'cancelled: session wakes rolled back', held_until = NULL, hold_token = NULL
+--     WHERE state = 'queued' AND session_wake_id IN (SELECT o.id FROM public.session_wakes o JOIN public.session_wakes n
+--       ON n.kind = 'draft_decided' AND n.draft_id = o.draft_id AND n.id > o.id WHERE o.kind = 'draft_decided');
+--   DELETE FROM public.session_wakes o USING public.session_wakes n
+--     WHERE o.kind = 'draft_decided' AND n.kind = 'draft_decided' AND n.draft_id = o.draft_id AND n.id > o.id;
+--   DROP INDEX IF EXISTS public.session_wakes_one_per_draft;
+--   CREATE UNIQUE INDEX session_wakes_one_per_draft ON public.session_wakes (draft_id, kind) WHERE draft_id IS NOT NULL;
 -- Then (an older image reads none of the rest):
 --   ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_subject;
 --   ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_subject CHECK (<0177's>);
@@ -102,3 +113,20 @@ ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_subject CHECK (
     OR (kind = 'stepup_decided' AND ask_id IS NOT NULL AND draft_id IS NULL AND page_id IS NULL AND response_id IS NULL
         AND officer_item_id IS NULL AND decision IN ('confirmed', 'confirmed_failed', 'refused', 'dismissed', 'settled_approved', 'settled_rejected')
         AND component <> '' AND route_id = '' AND operator_text = ''));
+
+-- 🔴 A DRAFT'S DECISION WAKE IS ONE PER DECISION, NOT ONE PER DRAFT. The owner
+-- can withdraw an approval its plugin has not claimed yet by rejecting the
+-- draft (plugins.PGStore.DecideDraftFrom): that rejection is a second decision,
+-- and 0177's (draft_id, kind) made its wake a duplicate of the approval's, so
+-- the session was never told. A decided kind is now keyed on its decision too
+-- (a draft is approved at most once and rejected at most once, so at most two);
+-- an outcome kind stays one per draft, as before.
+-- 🔴 SAME NAME, REDEFINED IN PLACE: --rls-on re-applies 0177's body, whose
+-- CREATE UNIQUE INDEX IF NOT EXISTS session_wakes_one_per_draft then finds this
+-- one and leaves it alone. Under a new name it would rebuild 0177's narrower
+-- index beside this one, and fail on the first draft with two decisions.
+-- (internal/sessionwake Create's conflict read uses the same key.)
+DROP INDEX IF EXISTS public.session_wakes_one_per_draft;
+CREATE UNIQUE INDEX session_wakes_one_per_draft ON public.session_wakes
+    (draft_id, kind, (CASE WHEN kind IN ('draft_decided', 'officer_draft_decided') THEN decision ELSE '' END))
+    WHERE draft_id IS NOT NULL;

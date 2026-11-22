@@ -133,8 +133,7 @@ func TestARejectionOfAnItemASessionEnqueuedGoesOnlyToThatSession(t *testing.T) {
 		t.Fatalf("the officer got draft.refused item %d for a rejection its requesting session was told", f)
 	}
 	it := w.itemFull(item)
-	want := "draft " + itoa(id) + " was rejected by the owner, not posted. The owner's decision went to the session that enqueued this item, " +
-		"which decides what happens next: there is nothing to redraft."
+	want := requesterSummary(id)
 	if it.status != "done" || it.outcome != "no_action" || it.summary != want {
 		t.Fatalf("the item is %s/%s %q; want done/no_action %q", it.status, it.outcome, it.summary, want)
 	}

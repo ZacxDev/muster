@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -60,24 +61,6 @@ func (s *Server) wakeOfficerItemRequester(ctx context.Context, d plugins.Draft) 
 	return host, sess, *d.OfficerItemID, ok
 }
 
-// officerRejectionToRequester reports whether the owner's rejection of
-// officer draft d goes ONLY to the session that enqueued its item (operator
-// decision): a session is recorded on the item and a wake to it would be filed
-// (wakeReaches, fileWake's own rule). Then the officer files no draft.refused
-// follow-up and no escalation for it — the item is finished quietly
-// (outboundSettled) — and the session's line says the officer will not
-// redraft (renderWake). false — no session recorded, or none a wake can reach
-// — and the rejection goes back to the officer, as it always has: a rejection
-// is never dropped on the floor.
-func (s *Server) officerRejectionToRequester(ctx context.Context, d plugins.Draft) bool {
-	if d.Status != plugins.DraftRejected {
-		return false
-	}
-	octx := s.queuedPrincipal(context.WithoutCancel(ctx), d.OwnerID)
-	host, _, _, ok := s.wakeOfficerItemRequester(octx, d)
-	return ok && s.wakeReaches(ctx, d.OwnerID, host)
-}
-
 // wakeForOfficerDraftDecision is the wake the owner's decision on officer
 // draft d owes the session that enqueued its item (host, sess): approved or
 // rejected, and — with a rejection — the reason the OWNER gave (0123), fenced.
@@ -99,21 +82,67 @@ func wakeForOfficerDraftDecision(d plugins.Draft, item int64, host, sess string)
 
 // wakeOfficerDraftDecided files the wake the owner's decision on officer draft
 // d owes the session that enqueued its item (decideDraftAs, through
-// wakeDraftDecided: every door).
-func (s *Server) wakeOfficerDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) {
+// wakeDraftDecided: every door), reporting whether it filed a NEW one.
+//
+// 🔴 THAT REPORT, NOT A PREDICTION, IS WHAT DECIDES WHERE A REJECTION GOES
+// (operator decision: a rejection of work a session asked for is that
+// session's). decideDraftAs files this wake FIRST, and only a rejection whose
+// wake was actually created here is kept from the officer (outboundSettledTo,
+// endForRequester): no session recorded, a host that does not mirror here, a
+// store or host-list error, or a decision that already had its wake — and the
+// rejection goes back to the officer as it always has. A rejection is never
+// dropped on the floor; one the session then never receives is handed back too
+// (wakeNotDelivered).
+func (s *Server) wakeOfficerDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) bool {
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), d.OwnerID)
 	host, sess, item, ok := s.wakeOfficerItemRequester(octx, d)
 	if !ok {
-		return
+		return false
 	}
 	n, ok := wakeForOfficerDraftDecision(d, item, host, sess)
 	if !ok {
-		return
+		return false
 	}
 	if via.Via == plugins.DraftViaMCP {
 		n.ViaHost, n.ViaSession = via.Host, via.Session
 	}
-	s.fileWake(ctx, d.OwnerID, n)
+	return s.fileWake(ctx, d.OwnerID, n)
+}
+
+// wakeNotDelivered is what follows wake w settling "Not delivered" (handWake's
+// give-up, settleWakeRow's cancelled or day-old row): for the REJECTION of an
+// officer's draft that was kept from the officer because this wake would tell
+// the session (endForRequester), the rejection goes back to the officer after
+// all — the draft.refused follow-up its item would have had, the owner's
+// reason, body and plan in it as in any owner rejection (draftEndFor). Its
+// item was finished already, so only the follow-up is filed, bounded and held
+// like any other, and once: a draft's follow-up that exists in any state is
+// the answer. Every other wake: nothing (its Retry delivery is the owner's).
+func (s *Server) wakeNotDelivered(ctx context.Context, w sessionwake.Wake) {
+	if w.Kind != sessionwake.KindOfficerDraftDecided || w.Decision != sessionwake.DecisionRejected || s.officerStore == nil ||
+		s.ext.Plugins == nil || w.Owner <= 0 {
+		return
+	}
+	octx := s.queuedPrincipal(context.WithoutCancel(ctx), w.Owner)
+	d, err := s.ext.Plugins.Draft(octx, w.DraftID)
+	if err != nil || d.Officer == nil || !d.IsOutbound() || d.Status != plugins.DraftRejected {
+		return
+	}
+	e := draftEndFor(d, *d.Officer, "", settledByOwner, ownerRejectionDetail(d), nil)
+	if e.FollowUp == nil {
+		return
+	}
+	if had, err := s.officerStore.SubjectItems(octx, w.Owner, e.FollowUp.Kind, e.FollowUp.SubjectKey); err != nil || len(had) > 0 {
+		return
+	}
+	res, err := s.officerStore.DraftEnded(octx, w.Owner, e, time.Now())
+	if err != nil {
+		s.logger.Printf("session wake %d: draft %d's rejection was not delivered to its session, and could not go back to %s: %v",
+			w.ID, d.ID, *d.Officer, err)
+		return
+	}
+	s.logger.Printf("session wake %d: draft %d's rejection was not delivered to its session; it went back to %s as %s item %d (held: %v)",
+		w.ID, d.ID, *d.Officer, draftRefusedKind, res.FollowUp, res.Held)
 }
 
 // officerOutcomeDecision is the outcome word of an attempt that ENDED its

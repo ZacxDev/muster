@@ -329,8 +329,9 @@ func nullID(id int64) any {
 
 // Create records wake n for the caller's principal (its owner), queued. The
 // bool is false — and the existing row is returned — when the same decision
-// already has its wake (0177's one-per-decision indexes): a second answer path
-// racing the first, or a repeat, owes nothing more.
+// already has its wake (0177's one-per-decision indexes, a draft's decision
+// keyed on the decision itself since 0178): a second answer path racing the
+// first, or a repeat, owes nothing more.
 func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	if err := n.Valid(); err != nil {
 		return Wake{}, false, err
@@ -347,19 +348,26 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	if !errors.As(err, &pe) || pe.Code != "23505" {
 		return Wake{}, false, err
 	}
-	var q string
-	var arg any
+	q, args := `response_id = $1 AND kind = $2`, []any{n.ResponseID, string(n.Kind)}
 	switch {
 	case n.AskID > 0:
-		q, arg = `ask_id = $1 AND kind = $2`, n.AskID
+		q, args[0] = `ask_id = $1 AND kind = $2`, n.AskID
+	case n.DraftID > 0 && n.Kind.decidedDraft():
+		// One per DECISION (0178's session_wakes_one_per_draft): a withdrawn
+		// approval's rejection is a wake of its own.
+		q, args = `draft_id = $1 AND kind = $2 AND decision = $3`, []any{n.DraftID, string(n.Kind), n.Decision}
 	case n.DraftID > 0:
-		q, arg = `draft_id = $1 AND kind = $2`, n.DraftID
-	default:
-		q, arg = `response_id = $1 AND kind = $2`, n.ResponseID
+		q, args[0] = `draft_id = $1 AND kind = $2`, n.DraftID
 	}
-	w, err = scan(s.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_wakes WHERE `+q, arg, string(n.Kind)))
+	w, err = scan(s.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_wakes WHERE `+q, args...))
 	return w, false, err
 }
+
+// decidedDraft reports whether k is a draft's DECISION wake, of which a draft
+// has one per decision (0178's session_wakes_one_per_draft, whose CASE lists
+// the same two kinds): an approval and, should the owner withdraw it before its
+// plugin claims it, a rejection.
+func (k Kind) decidedDraft() bool { return k == KindDraftDecided || k == KindOfficerDraftDecided }
 
 // AddPageResponses records n more of OTHER viewers' responses to page pageID
 // for the session that made it: folded into the page's one queued count line
