@@ -234,6 +234,7 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		if it.Payload, err = withPersonTx(ctx, tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
 			return nil, err
 		}
+		officerCopy(&it)
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -283,6 +284,7 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 		if it.Payload, err = withPersonTx(b.scope(ctx), tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
 			return nil, err
 		}
+		officerCopy(&it)
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -460,6 +462,9 @@ func (b *Backend) Items(ctx context.Context, q officers.ItemsQuery) (officers.It
 	if list == nil {
 		list = []itemRow{}
 	}
+	for i := range list {
+		officerCopy(&list[i])
+	}
 	raw, err := answer(map[string]any{"items": list, "next": next})
 	if err != nil {
 		return officers.ItemsPage{}, err
@@ -543,6 +548,9 @@ func (b *Backend) brief(ctx context.Context, instance string) ([]byte, error) {
 		list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (itemRow, error) { return scanItem(r) })
 		if list == nil {
 			list = []itemRow{}
+		}
+		for i := range list {
+			officerCopy(&list[i])
 		}
 		return list, err
 	}

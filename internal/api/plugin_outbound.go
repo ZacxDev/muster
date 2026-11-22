@@ -383,7 +383,8 @@ func postDraftToolDef() agents.ToolDef {
 			"anywhere else the deployment's own names are refused, as are internal host names, IP addresses and secrets. " +
 			"Give item_id when the draft is for an item you hold: the item then WAITS ON THE DRAFT and leaves your hands (no holder), so do not complete or release it. " +
 			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft, your owner rejects it, or it expires, muster closes it and " +
-			"queues a draft.refused item saying why (your owner's reason, the plugin's, or muster's), which is where you redraft. " +
+			"queues a draft.refused item saying why (your owner's reason, the plugin's, or muster's), which is where you redraft: " +
+			"its refused_draft quotes the exact body you filed and the payload of the item it was for, so redraft from it with officer_post_draft and that item's id. " +
 			"If the plugin took it and never reported a result, it may have been posted: muster escalates the item to your owner and you must not redraft it. " +
 			"OUTREACH (dm, follow, like, and a reply to a person's recorded engagement) reaches a PERSON and is refused unless: they are not on the do-not-contact list " +
 			"and not marked a bot or hostile; a dm, follow or like cites because_ref — the ref of a recorded engagement OF THAT PERSON that motivates it (never a like; " +
@@ -591,6 +592,19 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	}
 	fields := map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
 		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail}
+	if d.Body != "" {
+		// 🔴 WHAT IT WROTE, so it can redraft without asking its owner for its
+		// own text (an item with no body sent the officer back to its owner to
+		// ask what it had written). Stored as filed, and bounded as filing bounds it; the
+		// officer's copy of the item carries it FENCED, never raw
+		// (builtin.RefusedDraftCopy). The item the draft was for is added by
+		// the store, in the transaction that ends the draft (builtin.DraftEndedTx).
+		body := d.Body
+		if len(body) > plugins.MaxDraftBytes {
+			body = strings.ToValidUTF8(body[:plugins.MaxDraftBytes], "")
+		}
+		fields["body"], fields["body_sha256"] = body, plugins.DraftBodySHA256(d.Body)
+	}
 	if retryAt != nil {
 		fields["retry_at"] = retryAt.UTC().Format(time.RFC3339)
 	}

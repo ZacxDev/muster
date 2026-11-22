@@ -192,7 +192,17 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 			if err != nil {
 				return out, err
 			}
-			if out.FollowUp, err = s.EnqueueTx(ctx, tx, owner, *n, now); errors.Is(err, ErrNotFound) {
+			follow := *n
+			if follow.Kind == DraftRefusedKind && e.Item > 0 {
+				// The plan the draft was written for travels with it
+				// (refused_draft.go): the officer redrafts from this item alone.
+				plan, err := planOfTx(ctx, tx, owner, e.Officer, e.Item)
+				if err != nil {
+					return out, err
+				}
+				follow.Payload = withPlan(follow.Payload, plan)
+			}
+			if out.FollowUp, err = s.EnqueueTx(ctx, tx, owner, follow, now); errors.Is(err, ErrNotFound) {
 				// The officer is gone: there is no one to redraft, and no item.
 				return DraftSettled{}, nil
 			} else if err != nil {
