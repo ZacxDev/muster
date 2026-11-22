@@ -164,15 +164,20 @@ for (const vp of [
       const options = page.locator('#ask-answer [data-attention-option]');
       await expect(options).toHaveCount(2);
       const vw = page.viewportSize()!;
-      // The page is the feed's card, expanded (asks_feed.go): an option spans
-      // the card's content box (the card's own 16px padding either side).
+      // The page is the feed's card, expanded (asks_feed.go), with the card's
+      // answer form: its options laid out as the card lays them out (two
+      // short ones share a row, askOptionsShort), inside the card's content
+      // box, each a 44px target.
       const cardBox = (await page.locator('[data-asks-page-card]').boundingBox())!;
       expect(cardBox.width, 'the card spans the column').toBeGreaterThan(vw.width - 48);
-      for (const o of await options.all()) {
-        const b = (await o.boundingBox())!;
+      const ob = await Promise.all((await options.all()).map(async (o) => (await o.boundingBox())!));
+      for (const b of ob) {
         expect(b.height, 'an option is at least a 44px target').toBeGreaterThanOrEqual(44);
-        expect(b.width, 'an option spans the card').toBeGreaterThan(cardBox.width - 40);
+        expect(b.x, 'an option is inside the card').toBeGreaterThanOrEqual(cardBox.x);
+        expect(b.x + b.width, 'an option is inside the card').toBeLessThanOrEqual(cardBox.x + cardBox.width);
       }
+      expect(ob[0].y, 'two short options share a row, as on the card').toBeCloseTo(ob[1].y, 0);
+      expect(ob[0].width + ob[1].width, 'the pair spans the card').toBeGreaterThan(cardBox.width - 48);
 
       // The chips: already there, or — the model held — arriving LIVE.
       const chips = page.locator('#ask-live [data-asks-suggestion]');
