@@ -117,7 +117,7 @@ for (const [name, viewport] of [
         // The sidebar's Search button (`h-11 w-11 rounded-lg text-muted`). On a
         // phone the sidebar is off screen, not removed: the button is laid out
         // and its computed style is still muster's.
-        icon: page.locator('nav button[aria-label="Search sessions"]').first(),
+        icon: page.locator('nav button[aria-label="Search"]').first(),
       };
       for (const [k, el] of Object.entries(own)) {
         await expect(el, `muster's own ${k}`).toHaveCount(1);

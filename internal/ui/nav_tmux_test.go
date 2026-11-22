@@ -134,9 +134,9 @@ func TestThePaletteDrawsThePlaceFromTheEntry(t *testing.T) {
 	if !strings.Contains(js[i:j], "tmux: a.getAttribute('data-switcher-tmux') || ''") {
 		t.Error("musterPaletteEntry does not read data-switcher-tmux as the entry's tmux")
 	}
-	i, j = strings.Index(js, "function render(keep)"), strings.Index(js, "function go(i)")
+	i, j = strings.Index(js, "function row(it, i)"), strings.Index(js, "function render(keep)")
 	if i < 0 || j < i {
-		t.Fatal("the palette's render is not found")
+		t.Fatal("the palette's row is not found")
 	}
 	row := js[i:j]
 	for _, want := range []string{
@@ -147,7 +147,7 @@ func TestThePaletteDrawsThePlaceFromTheEntry(t *testing.T) {
 		"li.appendChild(tl);",
 	} {
 		if !strings.Contains(row, want) {
-			t.Errorf("the palette's render lacks %q", want)
+			t.Errorf("the palette's row lacks %q", want)
 		}
 	}
 	if strings.Index(row, "var sub =") > strings.Index(row, "if (e.tmux) {") {

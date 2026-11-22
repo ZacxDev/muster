@@ -64,9 +64,11 @@ func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 	}
 	// The old two-radio switch, the button toggle and its <noscript>
 	// duplicate are gone; the mode is never a form field; one selector path.
+	// (The command palette's type pills are a radio group of their own.)
+	own := withoutPalette(t, page)
 	for _, gone := range []string{`role="radiogroup"`, `id="mv-to-agent"`, `id="mv-to-row"`, `name="to"`, `<noscript><style>#mv-to`,
 		`mv-to-ns`, `aria-pressed`, `data-to="chief"`, `<button id="mv-to"`, `data-label-agent`} {
-		if strings.Contains(page, gone) {
+		if strings.Contains(own, gone) {
 			t.Errorf("the chief mode still draws %s", gone)
 		}
 	}

@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 )
 
 // Store is the pages tables (migration 0116).
@@ -44,6 +46,9 @@ type Store interface {
 	Page(ctx context.Context, id int64) (Page, error)
 	// Pages is the caller's pages, newest activity first.
 	Pages(ctx context.Context) ([]Summary, error)
+	// TitleSearch is the caller's pages (those Pages lists) whose title holds
+	// text, newest activity first, at most limit.
+	TitleSearch(ctx context.Context, text string, limit int) ([]Page, error)
 	// SessionPages is the caller's pages that session s CREATED, newest
 	// first (by when each was made). Nothing, and no query, for an s that
 	// names no session (SessionRef.Valid).
@@ -452,6 +457,39 @@ func (s *PGStore) PagesFor(ctx context.Context, c Creator) ([]Summary, error) {
 
 // Pages lists the caller's pages.
 func (s *PGStore) Pages(ctx context.Context) ([]Summary, error) { return s.summaries(ctx, "") }
+
+// MaxTitleSearchRunes bounds a title search's text (TitleSearch).
+const MaxTitleSearchRunes = 200
+
+// TitleSearch is the caller's pages whose title holds text — case-folded, a
+// plain substring (% _ and \ are themselves: db.LikeEscape) — newest activity
+// first, at most limit (1..500). The same pages Pages lists (row-level
+// security: the caller's own and their teams'), no other: a blank text, or one
+// longer than MaxTitleSearchRunes, finds nothing without a query.
+func (s *PGStore) TitleSearch(ctx context.Context, text string, limit int) ([]Page, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || utf8.RuneCountInString(text) > MaxTitleSearchRunes {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+pageCols+` FROM pages p WHERE p.title ILIKE $1 ESCAPE '\'
+		ORDER BY p.updated_at DESC, p.id DESC LIMIT $2`, "%"+db.LikeEscape(text)+"%", limit)
+	if err != nil {
+		return nil, wrap("title search", err)
+	}
+	defer rows.Close()
+	var out []Page
+	for rows.Next() {
+		p, err := scanPage(rows)
+		if err != nil {
+			return nil, wrap("title search", err)
+		}
+		out = append(out, p)
+	}
+	return out, wrap("title search", rows.Err())
+}
 
 // SessionPages lists the pages session x made, newest made first. Row-level
 // security scopes it to what the caller may read, whatever x names.

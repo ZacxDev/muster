@@ -88,29 +88,8 @@ func PageCardPath(id int64) string { return pageBase(id) + "/card" }
 // PagesPath is the owner's Pages screen.
 const PagesPath = "/pages"
 
-// pagesLink is the sidebar's Pages entry, drawn only when pages are served: a
-// full navigation (a standalone document, as attentionLink's).
-func pagesLink(feat Features, active, current bool) g.Node {
-	if !feat.Pages {
-		return nil
-	}
-	return A(ID("sidebar-pages"), Href(PagesPath), hx("hx-boost", "false"), g.If(current, g.Attr("aria-current", "page")),
-		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(active)),
-		Span(Class("text-base"), g.Text("📄")), Span(g.Text("Pages")))
-}
-
 // OfficersPath is the Officers page (internal/api officers_pages.go).
 const OfficersPath = "/officers"
-
-// officersLink is the sidebar's Officers entry: a standalone page, like Pages.
-func officersLink(feat Features, active, current bool) g.Node {
-	if !feat.Officers {
-		return nil
-	}
-	return A(ID("sidebar-officers"), Href(OfficersPath), hx("hx-boost", "false"), g.If(current, g.Attr("aria-current", "page")),
-		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(active)),
-		Span(Class("text-base"), g.Text("🎖️")), Span(g.Text("Officers")))
-}
 
 // PageCardView is one page card.
 type PageCardView struct {

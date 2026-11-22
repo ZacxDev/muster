@@ -321,7 +321,12 @@ var isolationClasses = map[string]routeClass{
 	// object — its live set is the caller's own entries; owner isolation is
 	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's
 	// TestSearchTitlesIsPerOwner.
-	"GET /ui/palette/history":      classList,
+	"GET /ui/palette/history": classList,
+	// The palette's asks and pages search (palette_find.go): an id in ?q=
+	// is looked up only among the caller's own asks (attention.Search names
+	// the owner; askHasPage) and the pages their Pages screen lists (row-level
+	// security); pinned by TestThePaletteFindsOnlyTheCallersAsksAndPages.
+	"GET /ui/palette/find":         classList,
 	"GET /ui/agents/repos":         classList,
 	"GET /ui/chief/panel":          classList,
 	"GET /ui/chief/threads/search": classList,

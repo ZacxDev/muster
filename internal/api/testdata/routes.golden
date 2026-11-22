@@ -230,6 +230,7 @@ GET /ui/mirror/session-pages
 GET /ui/nav/agents
 GET /ui/nav/waiting
 GET /ui/notifications
+GET /ui/palette/find
 GET /ui/palette/history
 GET /ui/tags
 GET /ui/tasks

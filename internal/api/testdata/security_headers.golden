@@ -188,6 +188,7 @@ GET /ui/mirror/session-pages	csp1	pp2
 GET /ui/nav/agents	csp1	pp2
 GET /ui/nav/waiting	csp1	pp2
 GET /ui/notifications	csp1	pp2
+GET /ui/palette/find	csp1	pp2
 GET /ui/palette/history	csp1	pp2
 GET /ui/tags	csp1	pp2
 GET /ui/tasks	csp1	pp2
