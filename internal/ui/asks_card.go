@@ -515,8 +515,8 @@ var asksFeedJS = `(function () {
   // as long as the page is: the server no longer lists a closed ask, so every
   // live refresh would drop it. Both by id.
   var leaving = {}, kept = {};
-  // 🔴 A DECIDED CARD STAYS ON SCREEN (the operator: "the card totally
-  // disappeared after … I just have no way to see it"). leave marks it busy
+  // 🔴 A DECIDED CARD STAYS ON SCREEN (operator report: a decided card
+  // vanished at once, leaving no way back to it). leave marks it busy
   // while its post is in flight — never a collapse — and settle swaps in the
   // settled card the server answered with, in the same place.
   //

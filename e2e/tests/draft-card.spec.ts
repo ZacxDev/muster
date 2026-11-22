@@ -322,9 +322,9 @@ for (const vp of [
   });
 }
 
-// THE OPERATOR'S PATH (the operator: "I just rejected an ask with a reason
-// and the card totally disappeared after. It should stay there so that I can
-// still click on view in session"): a "Reject this draft?" step-up card on
+// THE OPERATOR'S PATH (operator report: a card rejected with a reason
+// vanished, so its "View in session" could no longer be reached): a "Reject
+// this draft?" step-up card on
 // the Open tab, rejected with a reason typed and dictated into its reason box.
 //
 //   - the reason box is a textarea that grows with its text and stops at its

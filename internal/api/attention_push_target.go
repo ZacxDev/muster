@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -143,6 +144,26 @@ func (s *Server) pushTargetFor(ctx context.Context, owner int64, it attentionIte
 // attentionSessionPath is the page of the session it is about, "" when it has
 // none muster can name now.
 func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it attentionItem) string {
+	return s.attentionSessionPathIn(ctx, owner, it, s.liveHosts(ctx))
+}
+
+// liveHosts is ctx's principal's windows, read from the hub when first asked
+// for and then kept: one snapshot for every card a render names (nil with no
+// mirror).
+func (s *Server) liveHosts(ctx context.Context) func() []mirror.HostView {
+	var hs []mirror.HostView
+	read := false
+	return func() []mirror.HostView {
+		if !read && s.ext.Mirror != nil {
+			hs, read = s.ext.Mirror.Hosts(ctx), true
+		}
+		return hs
+	}
+}
+
+// attentionSessionPathIn is attentionSessionPath over hosts, the render's one
+// snapshot of the owner's windows (read only when an item needs them).
+func (s *Server) attentionSessionPathIn(ctx context.Context, owner int64, it attentionItem, hosts func() []mirror.HostView) string {
 	c := it.card
 	switch it.Kind {
 	case attentionKindSession, attentionKindQuestion:
@@ -152,7 +173,7 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 		return c.ref.ViewPath()
 	case attentionKindNotice:
 		if it.AskID > 0 {
-			return s.nudgeSessionPath(ctx, owner, it.AskID)
+			return s.nudgeSessionPathIn(ctx, owner, it.AskID, hosts)
 		}
 	case attentionKindAsk:
 		switch {
@@ -162,13 +183,13 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 			if s.ext.Mirror == nil {
 				return ""
 			}
-			ref, ok := claudeSessionWindow(s.ext.Mirror.Hosts(ctx), c.ref.Host, c.claudeSession)
+			ref, ok := claudeSessionWindow(hosts(), c.ref.Host, c.claudeSession)
 			if !ok {
 				return ""
 			}
 			return ref.ViewPath()
 		case it.systemAsk && it.AskID > 0:
-			return s.nudgeSessionPath(ctx, owner, it.AskID)
+			return s.nudgeSessionPathIn(ctx, owner, it.AskID, hosts)
 		}
 	}
 	return ""
@@ -193,6 +214,11 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 // security, and the explicit check holds with it rolled back — another
 // owner's decision that names this ask id never becomes a link.
 func (s *Server) nudgeSessionPath(ctx context.Context, owner, askID int64) string {
+	return s.nudgeSessionPathIn(ctx, owner, askID, s.liveHosts(ctx))
+}
+
+// nudgeSessionPathIn is nudgeSessionPath over hosts (attentionSessionPathIn).
+func (s *Server) nudgeSessionPathIn(ctx context.Context, owner, askID int64, hosts func() []mirror.HostView) string {
 	if s.ext.ChiefNudges == nil {
 		return ""
 	}
@@ -218,7 +244,7 @@ func (s *Server) nudgeSessionPath(ctx context.Context, owner, askID int64) strin
 			return ""
 		}
 		// By session key: a Claude session, or an opencode one ("opencode:<id>").
-		if e, ok := sessionKeyEntry(s.ext.Mirror.Hosts(ctx), d.Host, d.Key); ok {
+		if e, ok := sessionKeyEntry(hosts(), d.Host, d.Key); ok {
 			return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()
 		}
 	}

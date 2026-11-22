@@ -116,8 +116,6 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	if a.Status == attention.Open && a.StepUp != nil {
 		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
-		// The draft's reason box carries the microphone (draftReasonFieldHTML).
-		it.dictate, it.dictateOff = s.dictatePath(), s.dictateOff()
 	}
 	// The options the answer form offers: a proposal's less its accept buttons,
 	// as the feed's card offers them (withAskBoxes).

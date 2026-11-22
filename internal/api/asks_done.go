@@ -11,15 +11,16 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// NOTHING THE OWNER DECIDED IS EVER LOST (the operator: "I just rejected an
-// ask with a reason and the card totally disappeared after … when it
-// disappears, I just have no way to see it").
+// NOTHING THE OWNER DECIDED IS EVER LOST (operator report: a card rejected
+// with a reason vanished from the feed at once, leaving no way back to it or
+// to its session).
 //
 // 🔴 A DECIDED CARD STAYS WHERE IT WAS, SETTLED. An answer, a dismissal, a
 // step-up card's draft rejected or approved on the Open feed: the card does
@@ -43,10 +44,20 @@ import (
 // ONE CARD, BOTH PLACES: the settled card on the Open feed and a card on the
 // Done tab are closedCardHTML's, so they say the same thing.
 //
+// 🔴 THE SETTLED LANDING DRAWS WHAT THE READER CAN ALREADY READ: their own
+// ask, or a team's they are a member of (a team card a member confirmed with
+// a fresh sign-in lands here too: teamCardStepUpWhy) — row-level security,
+// and readerMayRead's explicit check again with it rolled back. Any other id
+// — another owner's, a missing one, an open one — draws nothing, exactly
+// alike: the address is no probe.
+//
 // THE DONE TAB (it was "Answered": the answers of the last day, at most 20)
 // lists EVERY closed ask and notice the owner owns — answered, answered in
 // the session, dismissed, expired — newest first, with no age window, paged
-// by key (attention.Closed: "Show older" is the next page's link). The
+// by key (attention.Closed: "Show older" is the next page's link) — with an
+// answer whose DELIVERY FAILED pinned above its first page however old
+// (attention.Unconfirmed: it waits on the owner's Retry, which the Answered
+// list it replaced always offered), and not repeated in the order below. The
 // filter's chips (asks_filter.go) narrow it; a filtered page reads on through
 // the store until it holds a page of cards or asksDoneScanPages store pages
 // were read. ?tab=answered, the old name, opens it (asksTab), so a link that
@@ -135,11 +146,14 @@ type closedCard struct {
 // closedItems is asks as attention items — a notice as a notice — named as an
 // Open card is (withNames), each with its own page where the reader may open
 // it (withAskPages).
-func (s *Server) closedItems(ctx context.Context, asks []attention.Ask) []attentionItem {
+//
+// hosts is the render's one snapshot of the owner's windows (liveHosts),
+// read only when an ask needs them.
+func (s *Server) closedItems(ctx context.Context, asks []attention.Ask, hostsOf func() []mirror.HostView) []attentionItem {
 	notice := func(a attention.Ask) bool { return a.Kind == attention.KindNotice }
 	var hosts []mirror.HostView
-	if s.ext.Mirror != nil && (slices.ContainsFunc(asks, askNeedsHosts) || slices.ContainsFunc(asks, notice)) {
-		hosts = s.ext.Mirror.Hosts(ctx)
+	if slices.ContainsFunc(asks, askNeedsHosts) || slices.ContainsFunc(asks, notice) {
+		hosts = hostsOf()
 	}
 	var ds map[int64]chiefnudge.Decision
 	if slices.ContainsFunc(asks, notice) {
@@ -166,8 +180,8 @@ func (s *Server) closedItems(ctx context.Context, asks []attention.Ask) []attent
 // step-up card's draft (one batch read, row-level security: another person's
 // draft is absent) and its "View in session" (attentionSessionPath, the ask
 // page's own rule; for a step-up card about a draft, the draft's session:
-// draftSessionPath).
-func (s *Server) closedCards(ctx context.Context, asks []attention.Ask, items []attentionItem) []closedCard {
+// draftSessionPath), over hosts, the render's one snapshot of the windows.
+func (s *Server) closedCards(ctx context.Context, asks []attention.Ask, items []attentionItem, hosts func() []mirror.HostView) []closedCard {
 	out := make([]closedCard, len(asks))
 	ws := s.wakesForAsks(ctx, asks)
 	var ids []int64
@@ -194,7 +208,7 @@ func (s *Server) closedCards(ctx context.Context, asks []attention.Ask, items []
 		c := closedCard{a: a, it: items[i], proposal: s.isProposalCard(ctx, a)}
 		if id := c.it.card.agentID; owner > 0 && c.it.Kind == attentionKindAsk && id > 0 {
 			if _, ok := agentHref[id]; !ok {
-				agentHref[id] = s.attentionSessionPath(ctx, owner, c.it)
+				agentHref[id] = s.attentionSessionPathIn(ctx, owner, c.it, hosts)
 			}
 			c.it.sessionLink = agentHref[id]
 		}
@@ -208,24 +222,13 @@ func (s *Server) closedCards(ctx context.Context, asks []attention.Ask, items []
 		}
 		if owner > 0 {
 			if _, read := agentHref[c.it.card.agentID]; !read || c.it.Kind != attentionKindAsk {
-				c.it.sessionLink = s.attentionSessionPath(ctx, owner, c.it)
+				c.it.sessionLink = s.attentionSessionPathIn(ctx, owner, c.it, hosts)
 			}
 			if c.it.sessionLink == "" && c.draft != nil {
 				c.it.sessionLink = s.draftSessionPath(ctx, owner, *c.draft)
 			}
 		}
 		out[i] = c
-	}
-	return out
-}
-
-// closedCardsOf is asks as cards with nothing read: items[i] is asks[i] as an
-// item, proposals the proposal cards. What a render with its items already
-// made (a test's fixture) draws.
-func closedCardsOf(asks []attention.Ask, items []attentionItem, proposals map[int64]bool) []closedCard {
-	out := make([]closedCard, len(asks))
-	for i, a := range asks {
-		out[i] = closedCard{a: a, it: items[i], proposal: proposals[a.ID]}
 	}
 	return out
 }
@@ -251,11 +254,37 @@ type donePage struct {
 }
 
 // readDone is the Done tab's page before cursor before, filter f applied (see
-// the file's header), as ctx's principal.
-func (s *Server) readDone(ctx context.Context, before doneCursor, f asksFilter) donePage {
+// the file's header), as ctx's principal, over hosts (the render's one
+// snapshot of the owner's windows: liveHosts).
+//
+// 🔴 A FAILED DELIVERY IS NEVER PAGED AWAY: the owner's unconfirmed answers
+// (attention.Unconfirmed, however old) head the FIRST page, the filter
+// applied, and are skipped wherever the closed-time order would draw them
+// again — on every page, so none is drawn twice.
+func (s *Server) readDone(ctx context.Context, before doneCursor, f asksFilter, hosts func() []mirror.HostView) donePage {
 	var p donePage
 	if s.ext.Attention == nil {
 		return p
+	}
+	pinned, err := s.ext.Attention.Unconfirmed(ctx)
+	if err != nil {
+		s.logger.Printf("asks: the Done tab's unconfirmed answers: %v", err)
+	}
+	pin := map[int64]bool{}
+	for _, a := range pinned {
+		pin[a.ID] = true
+	}
+	var pinAsks []attention.Ask
+	var pinItems []attentionItem
+	if before.zero() && len(pinned) > 0 {
+		items := s.closedItems(ctx, pinned, hosts)
+		x := s.readAskSources(ctx, nil, items)
+		for i, a := range pinned {
+			p.read = append(p.read, items[i])
+			if f.keepItem(x, items[i]) {
+				pinAsks, pinItems = append(pinAsks, a), append(pinItems, items[i])
+			}
+		}
 	}
 	cur := before
 	var keptAsks []attention.Ask
@@ -270,9 +299,14 @@ func (s *Server) readDone(ctx context.Context, before doneCursor, f asksFilter) 
 			p.failed = true
 			break
 		}
-		items := s.closedItems(ctx, asks)
+		items := s.closedItems(ctx, asks, hosts)
 		x := s.readAskSources(ctx, nil, items)
 		for i, a := range asks {
+			if pin[a.ID] {
+				// Pinned above the first page: never drawn twice.
+				cur = doneCursorOf(a)
+				continue
+			}
 			if len(keptAsks) == asksDoneShown {
 				// A page is full and another closed ask is older: the next
 				// page starts after the last card drawn.
@@ -296,24 +330,8 @@ func (s *Server) readDone(ctx context.Context, before doneCursor, f asksFilter) 
 		// the last ask read.
 		p.older = cur
 	}
-	p.cards = s.closedCards(ctx, keptAsks, keptItems)
+	p.cards = s.closedCards(ctx, append(pinAsks, keptAsks...), append(pinItems, keptItems...), hosts)
 	return p
-}
-
-// doneAsks is the Done tab's first page's asks, unfiltered.
-func (s *Server) doneAsks(ctx context.Context) []attention.Ask {
-	p := s.readDone(ctx, doneCursor{}, asksFilter{})
-	out := make([]attention.Ask, len(p.cards))
-	for i, c := range p.cards {
-		out[i] = c.a
-	}
-	return out
-}
-
-// doneFeedNow is the Done tab's first page's feed, unfiltered.
-func (s *Server) doneFeedNow(ctx context.Context, now time.Time) string {
-	p := s.readDone(ctx, doneCursor{}, asksFilter{})
-	return doneFeedHTML(p, asksFilter{}, url.Values{}, now)
 }
 
 // doneFeedHTML is the Done tab's feed's <li>s for page p: a card per closed
@@ -545,8 +563,8 @@ func closedOutcomeHTML(c closedCard) string {
 // settledCardHTML is closed ask a drawn settled in its place on the Open feed
 // (closedCardHTML keyed ask-<id>, as its open card was), as ctx's principal.
 func (s *Server) settledCardHTML(ctx context.Context, a attention.Ask) string {
-	asks := []attention.Ask{a}
-	cards := s.closedCards(ctx, asks, s.closedItems(ctx, asks))
+	asks, hosts := []attention.Ask{a}, s.liveHosts(ctx)
+	cards := s.closedCards(ctx, asks, s.closedItems(ctx, asks, hosts), hosts)
 	return closedCardHTML(cards[0], attentionAskKey(a.ID), closedSettled, s.now())
 }
 
@@ -560,25 +578,46 @@ func (s *Server) writeSettledCard(w http.ResponseWriter, ctx context.Context, a 
 }
 
 // settledFeedItem is the ask r names in ?settled= as an Open feed item drawn
-// settled (settledHTML), ok false for none: no such ask among the reader's
-// own (row-level security, and askHasPage's owner check again), or one that
-// is still open (its open card is on the feed).
-func (s *Server) settledFeedItem(r *http.Request) (attentionItem, bool) {
+// settled (settledHTML), over hosts (the render's snapshot), ok false for
+// none: an ask the reader cannot read (row-level security, and readerMayRead
+// again with it rolled back) or that is not there, a question to the chief
+// (no page draws it open), or one still open (its open card is on the feed)
+// — every one of them alike.
+func (s *Server) settledFeedItem(r *http.Request, hosts func() []mirror.HostView) (attentionItem, bool) {
 	id, err := strconv.ParseInt(r.URL.Query().Get(asksSettledParam), 10, 64)
 	if err != nil || id <= 0 || s.ext.Attention == nil {
 		return attentionItem{}, false
 	}
 	ctx := r.Context()
 	a, err := s.ext.Attention.Get(ctx, id)
-	if err != nil || !askHasPage(a, requestOwner(ctx)) || a.Status == attention.Open {
+	if err != nil || a.ToChief || a.Status == attention.Open || !readerMayRead(ctx, a.Owner) {
 		return attentionItem{}, false
 	}
 	asks := []attention.Ask{a}
-	items := s.closedItems(ctx, asks)
-	c := s.closedCards(ctx, asks, items)[0]
+	items := s.closedItems(ctx, asks, hosts)
+	c := s.closedCards(ctx, asks, items, hosts)[0]
 	it := c.it
 	it.settledHTML = closedCardHTML(c, attentionAskKey(a.ID), closedLanding, s.now())
 	return it, true
+}
+
+// readerMayRead reports whether ctx's person may read an ask owner owns:
+// their own, or a team's they are a member of (any role: row-level security's
+// rule for attention_asks, 0127). The explicit check behind RLS.
+func readerMayRead(ctx context.Context, owner int64) bool {
+	viewer := requestOwner(ctx)
+	if owner <= 0 || viewer <= 0 {
+		return false
+	}
+	if owner == viewer {
+		return true
+	}
+	p, ok := authz.From(ctx)
+	if !ok {
+		return false
+	}
+	_, in := p.TeamScope().RoleIn(owner)
+	return in
 }
 
 // withoutSettled is items less a settled card (withSettled): what is still

@@ -232,8 +232,8 @@ for (const vp of [
       await expect.poll(async () => (await q.boundingBox())!.height, { message: 'the cut line is shown' }).toBeGreaterThan(clamped + 8);
     });
 
-    // 🔴 A DECIDED CARD STAYS PUT (the operator: "the card totally
-    // disappeared after … I just have no way to see it"). CHANGED: this
+    // 🔴 A DECIDED CARD STAYS PUT (operator report: a decided card vanished
+    // at once, leaving no way back to it). CHANGED: this
     // test pinned "the card leaves"; the card now settles in place.
     // RED at the branch base: the card was removed.
     test('tapping an option answers it: the card settles in place and the next card takes focus', async ({ page }) => {

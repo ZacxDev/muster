@@ -52,6 +52,22 @@ func (a Ask) ClosedAt() time.Time {
 // closedAtSQL is ClosedAt in SQL, THE one key the order and the cursor share.
 const closedAtSQL = `coalesce(resolved_at, expires_at)`
 
+// MaxUnconfirmed bounds Unconfirmed: answers whose delivery failed wait on
+// the owner's Retry, so a handful at most is the normal case.
+const MaxUnconfirmed = 50
+
+// Unconfirmed is the caller's OWN answers whose delivery failed
+// (DeliveryUnconfirmed), however old, newest first, at most MaxUnconfirmed:
+// they wait on the owner's Retry, so the Done tab pins them above its first
+// page (internal/api asks_done.go) — as the Answered list it replaced always
+// listed one. Owner-named in the query, as Closed is.
+func (s *PGStore) Unconfirmed(ctx context.Context) ([]Ask, error) {
+	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
+		WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		  AND status = 'answered' AND delivery = 'unconfirmed'
+		ORDER BY resolved_at DESC, id DESC LIMIT $1`, MaxUnconfirmed))
+}
+
 // Closed is the caller's own closed asks, one page (see the file's header).
 func (s *PGStore) Closed(ctx context.Context, q ClosedPage) ([]Ask, error) {
 	limit := q.Limit

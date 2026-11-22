@@ -42,7 +42,9 @@ to the Drafts tab — never All clear.
 **everything closed** — answered, answered in the session, dismissed, expired,
 and a step-up card whose draft you rejected or approved — newest closed first,
 with no age limit, 25 to a page (**Show older** / **Newest** at its end; the
-page is `?before=` in the address). Each card is titled by its session's name
+page is `?before=` in the address). An answer whose **delivery failed** heads
+the first page however old, with its **Retry delivery**, and is not drawn
+again further down. Each card is titled by its session's name
 (the rule below) and shows the question, its outcome (*Answered*,
 *Dismissed*, *Expired*, *Rejected in the web UI* …), your answer, the reason
 you gave with a draft's rejection, and — for an answer — where it went as a
@@ -1464,8 +1466,8 @@ queued a day after it was given or retried (its agent stopped, never started,
 or stayed busy), saying why; unconfirmed answers stay listed until retried. A turn the runtime provably
 did not take (busy, not ready) stays queued.
 
-**Where it went.** Below the open items, `/attention` lists the last day's
-answers and where each went: *Queued for …* (with why, while it waits),
+**Where it went.** The **Done** tab lists every answer and where each went
+(an answer whose delivery failed at the top of its first page, however old): *Queued for …* (with why, while it waits),
 *Delivering…*, *Delivered to …*, *… read it while waiting for it*, *Waiting for …
 to read it* (a team's or an opencode session, which muster does not type into),
 a mirrored session's own lines ([below](#waking-a-mirrored-session)), or

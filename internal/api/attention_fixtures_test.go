@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -43,9 +42,6 @@ func attentionServer(t *testing.T, m Mirror) (*Server, *httptest.Server) {
 type emptyAttention struct{ attention.Store }
 
 func (emptyAttention) Open(context.Context) ([]attention.Ask, error) { return nil, nil }
-func (emptyAttention) Answered(context.Context, time.Time, int) ([]attention.Ask, error) {
-	return nil, nil
-}
 func (emptyAttention) SessionAsks(context.Context, attention.SessionAsksQuery) ([]attention.Ask, error) {
 	return nil, nil
 }
@@ -55,3 +51,4 @@ func (emptyAttention) SessionAskCounts(context.Context, attention.SessionAsksQue
 func (emptyAttention) Closed(context.Context, attention.ClosedPage) ([]attention.Ask, error) {
 	return nil, nil
 }
+func (emptyAttention) Unconfirmed(context.Context) ([]attention.Ask, error) { return nil, nil }

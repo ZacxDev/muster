@@ -111,35 +111,102 @@ func TestRejectingAStepUpCardsDraftLeavesItSettledInPlace(t *testing.T) {
 	}
 }
 
-// TestASettledLinkDrawsOnlyTheReadersOwnClosedAsk: ?settled= names an ask;
-// the page draws it settled only when it is the reader's own and closed — an
-// open ask's id draws its open card once, another owner's draws nothing.
-func TestASettledLinkDrawsOnlyTheReadersOwnClosedAsk(t *testing.T) {
-	f := newAttnFixture(t)
-	open := f.ask(t, f.opTok, "Still open, settled link?")
-	theirs, err := f.attn.Create(asUser(f.member), attention.New{Asker: attention.Asker{AgentID: f.worker.ID, Label: f.worker.Name}, Question: "Another owner's, settled link?"})
-	if err != nil {
-		t.Fatal(err)
+// settledGet is path's Asks page as uid's browser draws it, in team world td.
+func settledGet(t *testing.T, td *teamDispatchWorld, uid, id int64) string {
+	t.Helper()
+	rec := td.w.do(td.w.h, http.MethodGet, "/attention?settled="+strconv.FormatInt(id, 10), "", cred{sessionUser: uid})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET ?settled=%d as %d: %d", id, uid, rec.Code)
 	}
-	if _, err := f.attn.Cancel(asUser(f.member), theirs.ID); err != nil {
-		t.Fatal(err)
+	return rec.Body.String()
+}
+
+// TestASettledLandingDrawsWhatTheReaderCanRead: ?settled= names an ask; the
+// page draws it settled only when the reader can already read it and it is
+// closed — their own, or a team's they are a member of. Another owner's that
+// they can NOT read (a teammate's personal ask; the team's, for someone in no
+// team) draws nothing, exactly as a missing id does: the address is no probe.
+//
+// RED with the landing kept to the reader's OWN asks (a.Owner == viewer): the
+// team's closed card is not drawn for its member (mutation-checked).
+func TestASettledLandingDrawsWhatTheReaderCanRead(t *testing.T) {
+	td := newTeamDispatchWorld(t)
+	st := attention.NewPG(td.w.pool)
+	mk := func(ctx context.Context, q string) int64 {
+		t.Helper()
+		a, err := st.Create(ctx, attention.New{Asker: attention.Asker{MirrorHost: "team-host", MirrorSession: "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b", Label: "work"}, Question: q})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Cancel(ctx, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
 	}
-	for _, id := range []int64{open, theirs.ID} {
-		page := f.page(t, "/attention?settled="+strconv.FormatInt(id, 10))
-		if c := feedCard(page, id); strings.Contains(c, " data-asks-settled") || (id == theirs.ID && c != "") {
-			t.Errorf("?settled=%d draws a settled card: %s", id, c)
+	teams := mk(td.teamCtx, "The team's, closed?")
+	personal := mk(asUser(td.w.a.uid), "A's own, closed?")
+	t.Cleanup(func() {
+		_, _ = td.w.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE id = $1`, personal)
+	})
+	missing := personal + 100000
+	settled := func(page string, id int64) bool {
+		return strings.Contains(feedCard(page, id), " data-asks-settled")
+	}
+	for _, c := range []struct {
+		who  string
+		uid  int64
+		id   int64
+		want bool
+	}{
+		{"B, an operator of the team, on the team's closed card", td.w.b.uid, teams, true},
+		{"V, a viewer of the team, on the team's closed card", td.v.uid, teams, true},
+		{"A, on A's own closed ask (CONTROL)", td.w.a.uid, personal, true},
+		{"B, on A's PERSONAL closed ask (a teammate's, not readable)", td.w.b.uid, personal, false},
+		{"N, in no team, on the team's closed card", td.n.uid, teams, false},
+		{"B, on a missing id", td.w.b.uid, missing, false},
+	} {
+		page := settledGet(t, td, c.uid, c.id)
+		if got := settled(page, c.id); got != c.want {
+			t.Errorf("%s: drawn settled %v, want %v", c.who, got, c.want)
+		}
+		if !c.want && feedCard(page, c.id) != "" {
+			t.Errorf("%s: a card is drawn for it at all", c.who)
 		}
 	}
-	// Control: the reader's own closed ask IS drawn settled.
-	mine := f.ask(t, f.opTok, "Mine, closed, settled link?")
-	if _, err := f.attn.Cancel(asUser(1), mine); err != nil {
-		t.Fatal(err)
+	// The unreadable and the missing id draw the same Open feed: no probe.
+	feed := func(page string) string { return pageBetween(page, "attention-items", "attention-answered") }
+	if a, b := feed(settledGet(t, td, td.w.b.uid, personal)), feed(settledGet(t, td, td.w.b.uid, missing)); a != b {
+		t.Errorf("an unreadable id and a missing one draw different feeds")
 	}
-	if c := feedCard(f.page(t, "/attention?settled="+strconv.FormatInt(mine, 10)), mine); !strings.Contains(c, " data-asks-settled") {
-		t.Errorf("control: the reader's own closed ask is not drawn settled: %s", c)
+}
+
+// TestATeamCardConfirmedByAMemberLandsSettled: a team's approval card,
+// answered by an operator of the team in a browser with a fresh sign-in (the
+// confirm dialog's plain POST: teamCardStepUpWhy), lands on the Asks page with
+// the card drawn settled in its place — not gone.
+//
+// RED with the landing kept to the reader's own asks: the card is the team's,
+// so it vanished, the reported bug again.
+func TestATeamCardConfirmedByAMemberLandsSettled(t *testing.T) {
+	td := newTeamDispatchWorld(t)
+	td.typed(t, td.w.b.uid, false, "start a Claude agent on the team task")
+	in := td.onTask("k-settled", true)
+	in.Prompt = "Do the team's work, as B asked."
+	ask := heldCard(td.dispatch(in))
+	if ask <= 0 {
+		t.Fatal("fixture: no approval card")
 	}
-	if n := strings.Count(f.page(t, "/attention?settled="+strconv.FormatInt(open, 10)), `<li id="ask-`+strconv.FormatInt(open, 10)+`"`); n != 1 {
-		t.Errorf("the open ask is drawn %d times", n)
+	id := strconv.FormatInt(ask, 10)
+	rec := td.w.do(td.w.h, http.MethodPost, "/attention/asks/"+id+"/answer", "option="+url.QueryEscape(approveLabel), cred{sessionUser: td.w.b.uid})
+	if want := "/attention?settled=" + id + "#ask-" + id; rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
+		t.Fatalf("B's confirm: %d to %q, want 303 to %q (%.300s)", rec.Code, rec.Header().Get("Location"), want, rec.Body.String())
+	}
+	if a, err := td.w.srv.ext.Attention.Get(td.teamCtx, ask); err != nil || a.Status != attention.Answered {
+		t.Fatalf("the card after B's confirm: %+v %v", a, err)
+	}
+	card := feedCard(settledGet(t, td, td.w.b.uid, ask), ask)
+	if !strings.Contains(card, " data-asks-settled") || !strings.Contains(card, `data-asks-outcome-state>Answered</p>`) {
+		t.Fatalf("B's landing does not draw the team card settled:\n%s", card)
 	}
 }
 
@@ -345,5 +412,74 @@ func TestTheOfficerPagesRejectReasonTakesDictation(t *testing.T) {
 	}
 	if !strings.Contains(page, "window.__musterDictate") {
 		t.Error("the officer's page has no dictation script")
+	}
+}
+
+// TestAnUnconfirmedAnswerHeadsDonesFirstPage: an answer whose delivery failed
+// a month ago, older than 26 newer closed asks, is still on the Done tab's
+// FIRST page — at its top, with its Retry — and is not drawn again on the
+// page its closed time falls on. Another owner's failed one is on neither.
+//
+// RED with Done ordered purely by closed time: the failed answer sank to
+// page 2, where its Retry could not be seen.
+func TestAnUnconfirmedAnswerHeadsDonesFirstPage(t *testing.T) {
+	f := newAttnFixture(t)
+	sys := authz.System(context.Background())
+	if _, err := f.pool.Exec(sys, `DELETE FROM attention_asks WHERE owner_id = 1 AND (status <> 'open' OR expires_at <= now())`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	mk := func(owner, agent int64, q string) int64 {
+		t.Helper()
+		a, err := f.attn.Create(asUser(owner), attention.New{Asker: attention.Asker{AgentID: agent, Label: "worker"}, Question: q})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
+	}
+	failed := mk(1, f.op.ID, "Which branch, failed delivery?")
+	theirs := mk(f.member, f.worker.ID, "Which branch, failed delivery?")
+	for _, id := range []int64{failed, theirs} {
+		if _, err := f.pool.Exec(sys, `UPDATE attention_asks SET status = 'answered', answer = 'main', answered_by = 'operator', delivery = 'unconfirmed',
+			delivery_detail = 'the paste was not seen', resolved_at = $2 WHERE id = $1`, id, now.Add(-30*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var newer []int64
+	for i := 0; i < 26; i++ {
+		id := mk(1, f.op.ID, "newer "+strconv.Itoa(i))
+		if _, err := f.pool.Exec(sys, `UPDATE attention_asks SET status = 'cancelled', resolved_at = $2 WHERE id = $1`, id, now.Add(-time.Duration(i+1)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		newer = append(newer, id)
+	}
+	t.Cleanup(func() {
+		for _, id := range append(newer, failed, theirs) {
+			_, _ = f.pool.Exec(sys, `DELETE FROM attention_asks WHERE id = $1`, id)
+		}
+	})
+	first := doneSection(f.page(t, "/attention?tab=done"))
+	got := orderedIDs(first, "answered-")
+	if len(got) == 0 || got[0] != failed {
+		t.Fatalf("Done page 1 starts %v, want the failed answer %d first", got, failed)
+	}
+	if !slices.Equal(got[1:], newer[:25]) {
+		t.Fatalf("Done page 1 after the pinned answer: %v, want the 25 newest %v", got[1:], newer[:25])
+	}
+	if card := itemLi(t, first, "answered-"+strconv.FormatInt(failed, 10)); !strings.Contains(card, "data-attention-redeliver>Retry delivery</button>") {
+		t.Errorf("the pinned answer has no Retry:\n%s", card)
+	}
+	older := regexp.MustCompile(`<a href="([^"]+)" class="[^"]*" data-asks-done-older>Show older</a>`).FindStringSubmatch(first)
+	if older == nil {
+		t.Fatal("Done page 1 has no Show older")
+	}
+	second := orderedIDs(doneSection(f.page(t, html.UnescapeString(older[1]))), "answered-")
+	if !slices.Equal(second, newer[25:]) {
+		t.Errorf("Done page 2: %v, want %v (the failed answer not drawn again)", second, newer[25:])
+	}
+	for _, p := range [][]int64{got, second} {
+		if slices.Contains(p, theirs) {
+			t.Errorf("another owner's failed answer %d is on the Done tab", theirs)
+		}
 	}
 }

@@ -27,14 +27,13 @@ type whereAnswered struct {
 	answered []attention.Ask
 }
 
-func (w whereAnswered) Answered(context.Context, time.Time, int) ([]attention.Ask, error) {
-	return w.answered, nil
-}
-
 // Closed is the Done tab's read: the same answers, one page.
 func (w whereAnswered) Closed(context.Context, attention.ClosedPage) ([]attention.Ask, error) {
 	return w.answered, nil
 }
+
+// Unconfirmed is none: the fixture's unconfirmed answer is listed in order.
+func (w whereAnswered) Unconfirmed(context.Context) ([]attention.Ask, error) { return nil, nil }
 
 func whereAnsweredAsks() []attention.Ask {
 	at := time.Now().Add(-time.Minute)

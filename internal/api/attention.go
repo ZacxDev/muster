@@ -1840,7 +1840,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	// THE DONE TAB's page (asks_done.go): ?before= names it, the filter
 	// narrows it.
-	done := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt)
+	done := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt, func() []mirror.HostView { return rd.hosts })
 	var searchItems []attentionItem
 	for _, a := range found.asks {
 		searchItems = append(searchItems, searchItem(a))
@@ -1855,7 +1855,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	page, rows, rowsN := s.asksPage(r.Context(), items, rd, now)
 	// A card a decision just closed (?settled=, asks_done.go): drawn settled
 	// in its old spot, never counted, whatever the filter.
-	settled, isSettled := s.settledFeedItem(r)
+	settled, isSettled := s.settledFeedItem(r, func() []mirror.HostView { return rd.hosts })
 	if flt.on() {
 		// The count is THE ONE OPEN COUNT's rule over the filtered list
 		// (asksPendingOf: what waits on the reader — a team's ask a viewer
@@ -2030,7 +2030,7 @@ func (s *Server) handleAttentionDone(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	flt := s.requestAsksFilter(r, nil)
-	p := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt)
+	p := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt, s.liveHosts(r.Context()))
 	_, _ = w.Write([]byte(doneFeedHTML(p, flt, r.URL.Query(), s.now())))
 }
 

@@ -666,11 +666,6 @@ type Store interface {
 	// RetryDelivery moves the caller's unconfirmed delivery back to
 	// DeliveryQueued (ErrNotRetryable otherwise).
 	RetryDelivery(ctx context.Context, id int64) (Ask, error)
-	// Answered is the caller's answers resolved since since that have a
-	// delivery to show (or were a system asker's) — and every unconfirmed one,
-	// however old, since it waits on the owner's Retry — newest first, at most
-	// limit.
-	Answered(ctx context.Context, since time.Time, limit int) ([]Ask, error)
 	// DueDeliveries is every owner's queued deliveries at least grace old,
 	// least-tried first (so answers stuck on an agent that will not take them
 	// cannot starve newer ones), then oldest, at most limit (system scope).
@@ -711,6 +706,10 @@ type Store interface {
 	// ask and notice no longer open — answered, answered in session,
 	// dismissed, expired — newest closed first, keyset-paged.
 	Closed(ctx context.Context, q ClosedPage) ([]Ask, error)
+	// Unconfirmed is the caller's OWN answers whose delivery failed, however
+	// old, newest first (closed.go): the Done tab pins them above its first
+	// page, where their Retry is.
+	Unconfirmed(ctx context.Context) ([]Ask, error)
 }
 
 // PGStore is Store on Postgres.
@@ -1301,14 +1300,6 @@ func (s *PGStore) RetryDelivery(ctx context.Context, id int64) (Ask, error) {
 	return a, err
 }
 
-// Answered runs under the caller's principal.
-func (s *PGStore) Answered(ctx context.Context, since time.Time, limit int) ([]Ask, error) {
-	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE status = 'answered' AND (delivery IS NOT NULL OR system_asker)
-		  AND (resolved_at >= $1 OR delivery = 'unconfirmed')
-		ORDER BY resolved_at DESC, id DESC LIMIT $2`, since, limit))
-}
-
 func (s *PGStore) DueDeliveries(ctx context.Context, grace time.Duration, limit int) ([]Ask, error) {
 	return collect(s.pool.Query(sys(ctx), `SELECT `+cols+` FROM attention_asks
 		WHERE delivery = 'queued' AND resolved_at <= now() - make_interval(secs => $1)
@@ -1436,8 +1427,12 @@ func askerLabelOf(a Asker) string {
 	return "session " + a.MirrorSession
 }
 
+// ExpireDue closes each lapsed ask AT ITS EXPIRY (resolved_at = expires_at,
+// never later than now): an open row past its expiry already reads as
+// expired at that time (cols; attention.Closed orders it there), so the
+// sweep's write does not move it on the Done tab, whenever the sweep runs.
 func (s *PGStore) ExpireDue(ctx context.Context) ([]Ask, error) {
-	return collect(s.pool.Query(sys(ctx), `UPDATE attention_asks SET status = 'expired', resolved_at = now()
+	return collect(s.pool.Query(sys(ctx), `UPDATE attention_asks SET status = 'expired', resolved_at = least(now(), expires_at)
 		WHERE status = 'open' AND expires_at <= now() RETURNING `+cols))
 }
 

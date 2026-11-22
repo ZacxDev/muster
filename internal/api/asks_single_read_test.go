@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
@@ -75,6 +76,16 @@ func TestTheAsksListReadsTheHostsOncePerRender(t *testing.T) {
 	ext := s.ext
 	ext.Episodes = oneEpisodeStore{ep: sessionstate.Episode{ID: 7, Owner: 1, Kind: sessionstate.KindMirror, Key: key, Host: "ws",
 		TmuxSession: "main", Window: "@1", Index: 1, State: sessionstate.StateNeedsYou, OpenedAt: time.Now().Add(-5 * time.Minute)}}
+	// The Done tab's page holds a closed ask of the window's mirrored session:
+	// its card names the session and links to its window — from the render's
+	// ONE snapshot (asks_done.go readDone's hosts), never a read per card.
+	closedAt := time.Now().Add(-time.Hour)
+	ext.Attention = closedMirrorAsks{asks: []attention.Ask{
+		{ID: 9101, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: ws[0].ClaudeSession, Label: "main:1 @ ws"},
+			Question: "Ship the closed one?", Status: attention.Cancelled, CreatedAt: closedAt.Add(-time.Hour), ExpiresAt: closedAt.Add(time.Hour), ResolvedAt: closedAt},
+		{ID: 9102, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: ws[0].ClaudeSession, Label: "main:1 @ ws"},
+			Question: "And the other closed one?", Status: attention.Cancelled, CreatedAt: closedAt.Add(-2 * time.Hour), ExpiresAt: closedAt.Add(time.Hour), ResolvedAt: closedAt.Add(-time.Minute)},
+	}}
 	s.UseExtensions(ext)
 
 	for _, path := range []string{"/attention/items", attentionPath} {
@@ -91,8 +102,29 @@ func TestTheAsksListReadsTheHostsOncePerRender(t *testing.T) {
 		if !strings.Contains(row, "data-attention-episode-where>mango:1 · tmux main:1 @ ws<") || !strings.Contains(row, `data-attention-text>Waiting on you`) {
 			t.Fatalf("%s: the episode row lacks its place or its wait line:\n%s", path, row)
 		}
+		if path == attentionPath {
+			// Positive control: the Done page drew both closed mirrored asks,
+			// each with its window's View in session — what the snapshot feeds.
+			for _, id := range []string{"9101", "9102"} {
+				card := itemLi(t, body, "answered-"+id)
+				if !strings.Contains(card, "data-asks-view-session") || !strings.Contains(card, "/mirror/view") {
+					t.Fatalf("the closed mirrored ask %s has no View in session to its window:\n%s", id, card)
+				}
+			}
+		}
 		if n := m.take(); n != 1 {
 			t.Errorf("%s read the hosts %d times, want 1", path, n)
 		}
 	}
+}
+
+// closedMirrorAsks is an attention store with nothing open and a page of
+// closed asks (the Done tab's read).
+type closedMirrorAsks struct {
+	emptyAttention
+	asks []attention.Ask
+}
+
+func (c closedMirrorAsks) Closed(context.Context, attention.ClosedPage) ([]attention.Ask, error) {
+	return c.asks, nil
 }

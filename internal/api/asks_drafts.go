@@ -594,12 +594,16 @@ const asksPageScript = `<script>
   function revealMics(list) { try { list.dispatchEvent(new Event('` + ui.DictateRevealEvent + `', { bubbles: true })); } catch (e) {} }
   function apply(j, latest) {
     if (latest || j.pending_ids === (pendingList.getAttribute('data-draft-ids') || '')) {
+      // A reason being written holds the redraw; the banner stays until the
+      // list on screen IS the latest (it says the cards are as first seen).
       if (!reasonBusy(pendingList)) {
         pendingList.innerHTML = j.pending;
         pendingList.setAttribute('data-draft-ids', j.pending_ids);
         revealMics(pendingList);
+        if (changed) changed.hidden = true;
+      } else if (changed && j.pending_ids !== (pendingList.getAttribute('data-draft-ids') || '')) {
+        changed.hidden = false;
       }
-      if (changed) changed.hidden = true;
     } else if (changed) {
       changed.hidden = false;
     }
