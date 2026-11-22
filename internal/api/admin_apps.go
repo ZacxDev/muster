@@ -159,6 +159,10 @@ func (s *Server) adminAppItem(ctx context.Context, a plugins.ServerAppInfo, nonc
 	b.WriteString(`<span class="text-sm text-fg2">Installed by ` + html.EscapeString(by) + ` on ` + p.CreatedAt.UTC().Format(time.RFC3339) +
 		`; last seen ` + html.EscapeString(seen) + `.</span>`)
 	b.WriteString(`<span class="text-sm text-fg" data-live-grants="` + strconv.Itoa(a.LiveGrants) + `">` + liveGrantsLine(a.LiveGrants) + `</span>`)
+	if a.LinkedWith != nil {
+		b.WriteString(`<span class="text-sm text-fg2" data-linked-with="` + strconv.FormatInt(a.LinkedWith.ID, 10) + `">` +
+			html.EscapeString(AdminAppsLinkedLine(a.LinkedWith.Label)) + `</span>`)
+	}
 	b.WriteString(`<div class="flex flex-wrap gap-2">`)
 	b.WriteString(`<form method="POST" action="` + adminAppsPath + `/` + id + `/rotate" data-step-up-form data-step-up-why="` +
 		html.EscapeString(AdminAppsRotateWhy()) + `"><input type="hidden" name="nonce" value="` + nonce + `"><p class="text-sm text-fg2">` + AdminAppsRotateWarning + `</p><button type="submit" class="` + adminQuiet +
@@ -167,6 +171,13 @@ func (s *Server) adminAppItem(ctx context.Context, a plugins.ServerAppInfo, nonc
 		`</p><button type="submit" class="` + adminQuiet + `" data-uninstall="` + id + `">Uninstall</button></form>`)
 	b.WriteString(`</div></li>`)
 	return b.String()
+}
+
+// AdminAppsLinkedLine is a linked server app's line on /admin/apps
+// (docs/design/contacts.md, "What the admin does"): read-only, since a link is
+// made and ended with `muster-server app link|unlink` only.
+func AdminAppsLinkedLine(partner string) string {
+	return "Linked with " + partner + "."
 }
 
 // liveGrantsLine says how many people the app may act for now.

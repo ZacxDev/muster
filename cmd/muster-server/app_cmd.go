@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// runAppCommand is `muster-server app install|rotate|uninstall|list`
+// runAppCommand is `muster-server app install|rotate|uninstall|list|link|unlink`
 // (docs/design/meetings.md, "Who installs, and where", fork 6): the
 // server-installed apps for deployments that install from a pipeline, in the
 // family of `muster-server user disable`. It needs DATABASE_URL and
@@ -25,6 +25,14 @@ import (
 //	muster-server app rotate <id>
 //	muster-server app uninstall <id>
 //	muster-server app list
+//	muster-server app link <source id> <adopter id>
+//	muster-server app unlink <id>
+//
+// link and unlink are the LINKED SERVER APPS (docs/design/contacts.md, "The
+// core change: linked server apps"): a linked pair knows each person by one
+// subject. They are here and nowhere else (no page form, no bearer API):
+// linking changes what two apps may join, it is done once per install, and
+// this command already needs the database access only an operator has.
 //
 // install and rotate print the token ONCE on stdout, and nothing else there.
 // Audited as the command line (users.Actor{Via: "cli"}, no user):
@@ -37,7 +45,8 @@ import (
 func runAppCommand(ctx context.Context, cfg config, args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server app install --name <slug> --label <tab label> --icon <key> --origin <pattern> --entry <url> [--tasks]\n"+
-			"       muster-server app rotate|uninstall <id>\n"+
+			"       muster-server app rotate|uninstall|unlink <id>\n"+
+			"       muster-server app link <source id> <adopter id>\n"+
 			"       muster-server app list")
 		return 2
 	}
@@ -129,11 +138,58 @@ func runAppCommand(ctx context.Context, cfg config, args []string, stdout, stder
 			if a.App.EntryURL != nil {
 				entry = *a.App.EntryURL
 			}
-			fmt.Fprintf(stdout, "%d\t%s\t%s\t%s\t%v\t%s\t%d live\n", a.App.ID, a.App.Name, label, entry, a.App.Capabilities, a.InstalledVia, a.LiveGrants)
+			fmt.Fprintf(stdout, "%d\t%s\t%s\t%s\t%v\t%s\t%d live\t%s\n", a.App.ID, a.App.Name, label, entry, a.App.Capabilities, a.InstalledVia, a.LiveGrants,
+				linkedColumn(a.LinkedWith))
 		}
+		return 0
+	case "link":
+		if len(args) != 3 {
+			return usage()
+		}
+		source, err1 := strconv.ParseInt(args[1], 10, 64)
+		adopter, err2 := strconv.ParseInt(args[2], 10, 64)
+		if err1 != nil || err2 != nil || source <= 0 || adopter <= 0 {
+			return usage()
+		}
+		pair, err := store.LinkServerApps(ctx, source, adopter, cli)
+		if err != nil {
+			fmt.Fprintf(stderr, "link %d %d: %v\n", source, adopter, appCmdErr(err))
+			return 1
+		}
+		fmt.Fprintf(stdout, "linked %s (app %d) to %s (app %d): %d people already known by %s\n",
+			pair.Adopter.Name, adopter, pair.Source.Name, source, pair.Known, pair.Source.Name)
+		fmt.Fprintf(stderr, "From now on %s and %s know each person by one subject. Nothing already stored was changed.\n",
+			pair.Source.Name, pair.Adopter.Name)
+		return 0
+	case "unlink":
+		n, ok := id()
+		if !ok {
+			return usage()
+		}
+		partner, err := store.UnlinkServerApp(ctx, n, cli)
+		if err != nil {
+			fmt.Fprintf(stderr, "unlink %d: %v\n", n, appCmdErr(err))
+			return 1
+		}
+		fmt.Fprintf(stdout, "unlinked app %d from app %d.\n", n, partner)
+		fmt.Fprintln(stderr, "People already known to both keep the same subject under both; "+
+			"a person who first opens either app from now on gets a different subject under each.")
 		return 0
 	}
 	return usage()
+}
+
+// linkedColumn is `app list`'s "linked with" column: the other app of the
+// pair and which side this one is, or "-".
+func linkedColumn(l *plugins.LinkedApp) string {
+	if l == nil {
+		return "-"
+	}
+	side := "adopter"
+	if l.Source {
+		side = "source"
+	}
+	return fmt.Sprintf("linked with %d (%s)", l.ID, side)
 }
 
 // appCmdErr says ErrNotFound as a person reads it.

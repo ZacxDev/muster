@@ -306,12 +306,17 @@ muster-server app install --name <slug> --label <tab label> --icon <key> \
 muster-server app rotate <id>
 muster-server app uninstall <id>
 muster-server app list
+muster-server app link <source id> <adopter id>
+muster-server app unlink <id>
 ```
 
 `install` and `rotate` print the token, and only the token, on stdout. It is
 audited as the command line (no user). ⚠ An uninstall from the command line
 cannot withdraw the knocks still out (which knocks are out is a running
-server's memory): uninstall from `/admin/apps` to withdraw them.
+server's memory): uninstall from `/admin/apps` to withdraw them. `list` prints
+one line per app: its id, name, label, entry URL, capabilities, how it was
+installed, how many people it may act for now, and its linked pair
+(`linked with <id> (source)`, `linked with <id> (adopter)`, or `-`).
 
 **The tab for every person.** Every signed-in person gets each live server
 app's tab, server apps first (oldest install first), then their own app
@@ -367,7 +372,9 @@ code lives 60 s and is spent once. The redeem answers:
 
 - **`subject`** is exactly **22 base64url characters** (16 random bytes, no
   padding). It is **pairwise**: one person has a different subject under each
-  server app, so two apps cannot join their records on it. It is stable for
+  server app, so two apps cannot join their records on it, unless an admin
+  linked the two apps (`muster-server app link`): a
+  [linked pair](#linked-server-apps) shares one subject per person. It is stable for
   the life of the install (a Rotate keeps it; an uninstall ends it). It is
   never derived from muster's user id. Key your data on it.
 - **`display_name`** is the account's display name, or `""` when it has
@@ -445,6 +452,54 @@ nothing. No task a server app files starts an agent.
 **Liveness.** Poll `/self` (a `401` means the app was uninstalled or
 rotated away: end every session) and `owners/check` every 60 s for the
 subjects with a live session.
+
+#### Linked server apps
+
+Two server apps that are meant to work together (a meetings app and a
+contacts app, say) can be **linked** by an admin, and a linked pair then
+knows each person by **one** subject, so the two can join their own records
+on it ([design](design/contacts.md#the-core-change-linked-server-apps); the
+schema is migration `0178`).
+
+```
+muster-server app link <source id> <adopter id>
+muster-server app unlink <id>
+```
+
+- **`link`** names a **source** (the app whose subjects are kept) and an
+  **adopter** (the app that takes them), and prints `linked <adopter> (app
+  <id>) to <source> (app <id>): <n> people already known by <source>`. From
+  then on, when either app first needs a subject for a person (the person
+  opens its tab, or hides it before ever opening it), muster gives it the
+  subject that person already has under the other app, and draws a new random
+  one only when there is none. Audited `plugin.server.linked` (the two ids,
+  as the command line).
+- 🔴 **The adopter must not know anyone yet.** `link` is refused while the
+  adopter has met anyone ("<adopter> already knows N people; uninstall and
+  reinstall it, or link it before anyone opens it"). So the order for a new
+  app is: install it, link it, then let people open its tab. No subject is
+  ever rewritten, so neither app's stored data is ever orphaned.
+- It is also refused for an app linked to itself, an unknown id, a personal
+  plugin, an uninstalled app, and an app already in a pair (an app is in at
+  most one pair).
+- **Everything else stays per app**: the grant and its 8 hours, Hide,
+  `owners/check`, `Muster-Act-For`, the knock caps and the task ledger. A
+  shared subject does not let one app's token act for a person through the
+  other app's grant: the act-for door reads the app from the token, never
+  from the subject.
+- **`unlink`** deletes the pair and nothing else. People already known to
+  both keep the same subject under both (what the two apps have learned
+  cannot be unlearned, so muster does not re-key them); a person who first
+  opens either app afterwards gets a different subject under each. Audited
+  `plugin.server.unlinked`.
+- **An uninstall of either app ends the pair**, in the uninstall's own
+  transaction. A reinstalled app is a new id with no pair; link it again,
+  with the surviving app as the source, before anyone opens it, and it adopts
+  the very subjects the old install shared.
+- There is no page form and no `/plugin/v1` route for a link: it needs the
+  server's database access. `/admin/apps` shows "Linked with <label>." on each
+  linked app, and **Account → Apps** tells each person "<app> and <app> know
+  you as the same person."
 
 ### Viewer hand-off
 

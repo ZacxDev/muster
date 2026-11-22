@@ -355,6 +355,13 @@ var (
 		"internal/plugins.(*PGStore).liveGrantCount",
 		"internal/plugins.(*PGStore).VisibleServerApps",
 		"internal/plugins.(*PGStore).AccountServerApps",
+		// LINKED SERVER APPS (migration 0178): plugin_server_pairs has no
+		// owner either (forced RLS, scope_all only). The command line's link
+		// and unlink (both plugins rows held FOR UPDATE, audited as the
+		// actor), and the pairs read the two lists above show.
+		"internal/plugins.(*PGStore).LinkServerApps",
+		"internal/plugins.(*PGStore).UnlinkServerApp",
+		"internal/plugins.(*PGStore).serverPairs",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).

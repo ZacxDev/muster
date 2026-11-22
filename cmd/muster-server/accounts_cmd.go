@@ -28,13 +28,13 @@ import (
 //	muster-server user disable <id>      disabled_at + GoTrue ban, and the
 //	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
-//	muster-server app install|rotate|uninstall|list
+//	muster-server app install|rotate|uninstall|list|link|unlink
 //	                                     server-installed apps (app_cmd.go)
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server invite --claim-admin\n"+
 			"       muster-server user disable|enable <user-id>\n"+
-			"       muster-server app install|rotate|uninstall|list …")
+			"       muster-server app install|rotate|uninstall|list|link|unlink …")
 		return 2
 	}
 	cfg, err := loadConfig(getenv)

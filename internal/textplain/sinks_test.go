@@ -204,6 +204,12 @@ var uiExempt = map[string]exemption{
 
 // apiExempt: the same, for api's hand-written HTML.
 var apiExempt = map[string]exemption{
+	// A linked server app's partner (migration 0178): its tab label, or its
+	// slug when it has none (plugins.serverAppLabel), validated at install
+	// (ValidAppLabel, ValidName), drawn through html.EscapeString as the
+	// app's own label is on the same two pages.
+	"account_apps.go Server.handleAccountApps a.LinkedWith.Label": {1, whyAppLabel},
+	"admin_apps.go Server.adminAppItem a.LinkedWith.Label":        {1, whyAppLabel},
 	// A person is named on the teams pages (personLabel: email, else display
 	// name) the same way renderAdminUsers names a user.
 	// The 4th: the activity list names the people it mentions by
