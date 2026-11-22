@@ -27,12 +27,10 @@ func newHandoffRig(t *testing.T, pkg string) *appRig {
 }
 
 // TestAppSignInPhonePageOffersTheAndroidApp: with the app configured, the page
-// the QR opens carries the hand-off to it, hidden until its script shows it
-// (on Android, outside the app), and the script builds the intent link the
-// app's side of the contract expects. The template is pinned LITERALLY: the
-// configured package, the <package>.QR_CODE string extra that carries the
-// code, and a fallback with no code in it. What the script does in a browser
-// (which User-Agents see it, the href it writes) is qr-signin.spec.ts's.
+// the QR opens carries the hand-off to it, naming the configured package and
+// hidden until its script shows it. What the script does in a browser (which
+// User-Agents see the hand-off, the intent link it writes, the fallback) is
+// qr-signin.spec.ts's, which pins the generated href literally.
 func TestAppSignInPhonePageOffersTheAndroidApp(t *testing.T) {
 	if AppSignInOpenInApp != "Open in the muster app" || AppSignInContinueHere != "Continue in this browser" {
 		t.Fatalf("the hand-off's words: %q / %q", AppSignInOpenInApp, AppSignInContinueHere)
@@ -49,25 +47,10 @@ func TestAppSignInPhonePageOffersTheAndroidApp(t *testing.T) {
 		`<div id="qr-signin-handoff" class="space-y-2" data-package="org.example.musterapp" hidden>`,
 		`<p class="text-sm text-fg2">Approve this sign-in in the muster app. Without the app, continue in this browser.</p>`,
 		`<a id="qr-signin-open-app" href="#" rel="noreferrer" class="press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Open in the muster app</a>`,
-		`pkg = box ? box.getAttribute('data-package') || '' : '';`,
-		// Only with the app configured, on Android, and not inside the app (its
-		// WebView's bridge).
-		`if (pkg && /Android/i.test(navigator.userAgent) && !window.musterApp && SHAPE.test(t.value)) {`,
-		// The contract with the Android app.
-		`open.setAttribute('href', 'intent://' + host + '/auth/qr#Intent;scheme=https;package=' + pkg + ';S.' + pkg + '.QR_CODE=' + encodeURIComponent(code) + ';S.browser_fallback_url=' + encodeURIComponent('https://' + host + '/auth/qr') + ';end');`,
-		// The in-browser approval stays, beneath it.
-		`here.textContent = "Continue in this browser";`,
-		// Back from the fallback, the carried code goes on in the browser.
-		`if (SHAPE.test(carried)) { t.value = carried; if (wrap) { wrap.style.display = 'none'; } f.submit(); }`,
-		`KEY = 'muster.signin-app.code'`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the phone page lacks %s\n%s", want, body)
 		}
-	}
-	// The bootstrap no longer posts unconditionally: the page's script decides.
-	if strings.Contains(body, `if (t.value) { f.submit(); }`) {
-		t.Fatal("the fragment form still auto-submits before the hand-off is offered")
 	}
 }
 

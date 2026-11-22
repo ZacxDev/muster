@@ -952,7 +952,9 @@ free ones when each phase lands.
 **Public routes (later, optional: Phase 7)**
 
 20. `GET /.well-known/assetlinks.json`: `delegate_permission/common.get_login_creds`
-    only (the app handles no links, so no `handle_all_urls`) for the configured
+    only (the app verifies no links, so no `handle_all_urls`; the QR sign-in's
+    hand-off is an unverified `intent:` link addressed to its package, see
+    [qr-sign-in.md](qr-sign-in.md#the-android-app)) for the configured
     package and fingerprints; HTTP 200, `application/json`, no redirect. The
     deployment's edge must serve it without a redirect too.
 

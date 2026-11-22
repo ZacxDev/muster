@@ -180,6 +180,10 @@ test('an expired code: the desktop says so and a new code works', async ({ brows
 // default device. The phone is a context of its own holding the suite's
 // signed-in session (the known device), cloned from `page`.
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+// Android's own WebView (another app's, or the muster app's before its bridge
+// is ready) marks its User-Agent with "; wv)". That is not a browser the
+// hand-off can leave, so it is treated as in-app.
+const WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.0.0 Mobile Safari/537.36';
 const DESKTOP_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const OPEN_IN_APP = 'Open in the muster app';
 const CONTINUE_HERE = 'Continue in this browser';
@@ -243,13 +247,15 @@ test.describe('the hand-off to the Android app', () => {
       await expect(open).toBeVisible();
       // The contract with the app, literally: the configured package, the code
       // as the <package>.QR_CODE extra, and a fallback that is this page with
-      // no code.
+      // no code. The fallback keeps the page's own scheme: this test server is
+      // plain http, so an https fallback would be a page that is not there.
+      // The intent's scheme=https is the app's contract and stays.
       await expect(open).toHaveAttribute('href',
         `intent://${host}/auth/qr#Intent;scheme=https;package=org.example.musterapp;S.org.example.musterapp.QR_CODE=${code};` +
-        `S.browser_fallback_url=https%3A%2F%2F${host.replace(':', '%3A')}%2Fauth%2Fqr;end`);
+        `S.browser_fallback_url=http%3A%2F%2F${host.replace(':', '%3A')}%2Fauth%2Fqr;end`);
       const href = (await open.getAttribute('href'))!;
       const fallback = decodeURIComponent(/;S\.browser_fallback_url=([^;]*);/.exec(href)![1]);
-      expect(fallback, 'the fallback is the phone page').toBe(`https://${host}/auth/qr`);
+      expect(fallback, 'the fallback is the phone page, on its own scheme').toBe(`http://${host}/auth/qr`);
       expect(fallback, 'the fallback, which a server receives, carries no code').not.toContain('mqr_');
       expect(phone.page.url(), 'the code left the address bar').not.toContain('#');
 
@@ -263,8 +269,7 @@ test.describe('the hand-off to the Android app', () => {
       await expect(desk.page.locator('#qr-signin-status')).toHaveText(WAITING);
 
       // No app installed: the browser opens the intent's fallback in this tab.
-      // (The server is plain http, so the fallback is opened on its origin.)
-      await phone.page.goto(origin + '/auth/qr');
+      await phone.page.goto(fallback);
       await expect(phone.page.getByRole('heading', { name: 'Sign in on another device?' })).toBeVisible();
       await expect(desk.page.locator('#qr-signin-status')).toHaveText(SCANNED);
       expect(posts, 'positive control: the fallback\'s post was seen').toHaveLength(1);
@@ -305,6 +310,23 @@ test.describe('the hand-off to the Android app', () => {
       await phone.page.goto(link);
       await expect(phone.page.getByRole('heading', { name: 'Sign in on another device?' })).toBeVisible();
       await expect(phone.page.getByRole('link', { name: OPEN_IN_APP })).toHaveCount(0);
+      await expect(desk.page.locator('#qr-signin-status')).toHaveText(SCANNED);
+    } finally {
+      await phone.ctx.close();
+      await desk.ctx.close();
+    }
+  });
+
+  test('an Android WebView with no muster bridge: no hand-off, the page opens the request as before', async ({ browser, page }) => {
+    await signIn(page, origin);
+    const desk = await desktop(browser);
+    const phone = await phoneAs(browser, page, WEBVIEW_UA);
+    try {
+      const link = await startCode(desk.page, origin);
+      await phone.page.goto(link);
+      await expect(phone.page.getByRole('heading', { name: 'Sign in on another device?' })).toBeVisible();
+      await expect(phone.page.getByRole('link', { name: OPEN_IN_APP })).toHaveCount(0);
+      expect(await phone.page.evaluate(() => 'musterApp' in window), 'no bridge: the UA alone decides').toBe(false);
       await expect(desk.page.locator('#qr-signin-status')).toHaveText(SCANNED);
     } finally {
       await phone.ctx.close();

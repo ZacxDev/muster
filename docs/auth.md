@@ -674,7 +674,9 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
   `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256` make muster serve
   `/.well-known/assetlinks.json` with the `get_login_creds` relation only
   ([configuration.md](configuration.md)): not `handle_all_urls`, since the app
-  handles no links. It is
+  verifies no links. The one link it takes is the QR sign-in's hand-off, an
+  `intent:` link addressed to its package, which needs no verification
+  ([design/qr-sign-in.md](design/qr-sign-in.md#the-android-app)). It is
   open, `application/json`, and your edge must serve it with no redirect.
 - The assertion's `clientDataJSON.origin` is
   `android:apk-key-hash:<the signing certificate's SHA-256, unpadded base64url>`,
@@ -777,22 +779,18 @@ model are in [design/qr-sign-in.md](design/qr-sign-in.md).
   phone camera opens the QR's link in the browser. On Android, and not
   already inside the app, the page shows **Open in the muster app** first,
   with **Continue in this browser** (the approval described above) beneath
-  it. Nothing is opened on the server until you choose. Inside the app, on
-  any other phone or browser, or with no app configured, the page opens the
-  request at once, as before.
-  - **Open in the muster app** is an Android `intent:` link to that package.
-    The code travels as the intent's string extra `<package>.QR_CODE`, since
-    the `intent:` syntax uses the URL's fragment for itself. The browser reads
-    that link and never requests it, so the code is still in no URL muster
-    receives.
-  - **Without the app installed**, the browser opens the intent's fallback,
-    `https://<host>/auth/qr` with no code in it. The page keeps the code in the
-    tab's `sessionStorage` while it offers the app, so the fallback picks it
-    up and the approval goes on in the browser.
-  - The page detects Android by its User-Agent and the app by
-    `window.musterApp`, the bridge the app's WebView adds. Neither is a
-    security check: a wrong guess changes only which button comes first.
-  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app) has the design.
+  it. Nothing is opened on the server until you choose. Inside the app or
+  another app's built-in browser, on any other phone or browser, or with no app
+  configured, the page opens the request at once, as before.
+  - **Open in the muster app** opens the app, which approves in its own
+    screen. The code is still in no URL muster receives.
+  - **Without the app installed**, the browser comes back to the page, with no
+    code in its address, and the approval goes on in the browser.
+  - Which button comes first is a guess from the browser, not a security
+    check: a wrong guess changes only the order.
+  The contract with the app (the link, its extra, the fallback, how the page
+  tells the app from a browser) is in
+  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app).
 
 | route | what it does |
 |---|---|

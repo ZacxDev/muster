@@ -259,8 +259,10 @@ and the `delegate_permission/common.handle_all_urls` relation in that host's
 `/.well-known/assetlinks.json`. Verification is per host, declared in the
 app's manifest at build time. The muster app connects to whatever server its
 person configures, so it cannot list the hosts, and a link on an unlisted host
-opens in the browser. `assetlinks.json` still carries no `handle_all_urls`
-([android.md](android.md), "the app handles no links").
+opens in the browser. So the app verifies no links, and `assetlinks.json`
+carries no `handle_all_urls` ([android.md](android.md)). The one link the app
+takes is the hand-off below: an `intent:` link addressed to its package, which
+Android delivers to that package with no verification.
 
 **Decided: the phone page hands off to the app.** The camera opens the link in
 the browser, and on Android the page offers the app (`appSignInPhoneJS` in
@@ -268,29 +270,39 @@ the browser, and on Android the page offers the app (`appSignInPhoneJS` in
 
 - **When.** The server names the app (`MUSTER_ANDROID_PACKAGE`, which also
   builds `assetlinks.json` and so comes with the certificates), the
-  User-Agent matches `/Android/i`, and `window.musterApp` is absent. The
-  app's WebView adds that object (its `WebViewCompat.addWebMessageListener`
-  bridge), so it is present only inside the app. Inside the app, on anything
-  that is not Android, or with no app configured, the page posts the code at
-  once, as it did before. The package is configuration, not a constant: muster
-  is deployed with whichever build of the app its operator ships. Neither check guards anything: a wrong
-  guess changes only which button comes first.
+  User-Agent matches `/Android/i`, and the page is not in a WebView: no
+  `window.musterApp` (the bridge the app's WebView adds with
+  `WebViewCompat.addWebMessageListener`) and no `; wv)` in the User-Agent
+  (Android's marker on every WebView, the app's included, whether or not its
+  bridge is there yet). Inside the app or any other WebView, on anything that
+  is not Android, or with no app configured, the page posts the code at once,
+  as it did before. The package is configuration, not a constant: muster is
+  deployed with whichever build of the app its operator ships. None of these
+  checks guards anything: a wrong guess changes only which button comes first.
 - **What.** **Open in the muster app** first, and **Continue in this browser**
   (the form's own button, which posts the code) beneath it. The page posts
   nothing until one is chosen, so the desktop stays at "waiting" until then.
 - **The contract with the app.** The link is built in the page's script:
 
   ```text
-  intent://<host>/auth/qr#Intent;scheme=https;package=<package>;S.<package>.QR_CODE=<code>;S.browser_fallback_url=<https://<host>/auth/qr>;end
+  intent://<host>/auth/qr#Intent;scheme=https;package=<package>;S.<package>.QR_CODE=<code>;S.browser_fallback_url=<scheme>://<host>/auth/qr;end
   ```
 
-  with the code and the fallback each `encodeURIComponent`-encoded. The code
+  with the code and the fallback each `encodeURIComponent`-encoded.
+  `<package>` is `MUSTER_ANDROID_PACKAGE` and `<scheme>` the page's own
+  (`location.protocol`); the intent's own `scheme=https` is fixed. The code
   cannot ride in the link's fragment, because the `intent:` syntax uses the
-  fragment (`#Intent;…;end`) for itself, so it is a string extra. The app
-  reads the extra and opens `/auth/qr` with the code in its own WebView.
+  fragment (`#Intent;…;end`) for itself, so it is a string extra.
+- **The extra's name is the contract.** The app reads the string extra
+  `<its own package name>.QR_CODE`, and the server writes
+  `<configured package>.QR_CODE`. The two meet only when
+  `MUSTER_ANDROID_PACKAGE` is the package of the build the operator ships,
+  which it must already be for `assetlinks.json`. Neither side spells a
+  package literal. The app then opens `/auth/qr` with the code in its own
+  WebView.
 - **🔴 The code is in no URL a server receives.** The `intent:` link is read
   by the browser and handed to Android, never requested. The fallback is
-  `https://<host>/auth/qr` with no code (`qr-signin.spec.ts` asserts it has no
+  `<scheme>://<host>/auth/qr` with no code (`qr-signin.spec.ts` asserts it has no
   `mqr_`).
 - **Without the app.** Android opens the fallback in the same tab. While it
   offers the app, the page keeps the code in that tab's `sessionStorage`

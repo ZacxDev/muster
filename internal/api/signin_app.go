@@ -539,13 +539,15 @@ func appSignInHandoffHTML(pkg string) string {
 //     carried copy is removed at once;
 //   - a code from the fragment, the app configured (the hand-off markup is
 //     there, with its data-package), on Android (the User-Agent) and NOT
-//     inside the muster app (whose WebView injects window.musterApp): the page
-//     keeps the code in sessionStorage and offers AppSignInOpenInApp, an
-//     intent: link to that package with the code as its <package>.QR_CODE
-//     string extra, and beneath it
-//     AppSignInContinueHere, the form's own button. If the app is not
+//     inside an app: neither the muster app's bridge (window.musterApp, which
+//     its WebView injects) nor Android's WebView User-Agent marker "; wv)",
+//     which any WebView carries, the bridge or not. The page keeps the code in
+//     sessionStorage and offers AppSignInOpenInApp, an intent: link to that
+//     package with the code as its <package>.QR_CODE string extra, and beneath
+//     it AppSignInContinueHere, the form's own button. If the app is not
 //     installed, the browser opens the intent's fallback, /auth/qr with NO
-//     code, which lands in the case above. With no sessionStorage there is no
+//     code and on the page's own scheme (location.protocol), which lands in
+//     the case above. With no sessionStorage there is no
 //     way back, so no hand-off is offered;
 //   - otherwise: the page posts the code at once, as it always has.
 //
@@ -566,13 +568,13 @@ func appSignInPhoneJS() string {
     return;
   }
   var code = '';
-  if (pkg && /Android/i.test(navigator.userAgent) && !window.musterApp && SHAPE.test(t.value)) {
+  if (pkg && /Android/i.test(navigator.userAgent) && !/; wv\)/.test(navigator.userAgent) && !window.musterApp && SHAPE.test(t.value)) {
     try { sessionStorage.setItem(KEY, t.value); code = sessionStorage.getItem(KEY) || ''; } catch (e) { code = ''; }
   }
   if (!code) { f.submit(); return; }
   var host = location.host;
   open.setAttribute('href', 'intent://' + host + '` + AppSignInPhonePath + `#Intent;scheme=https;package=' + pkg + ';S.' + pkg + '` + appSignInIntentCodeSuffix +
-		`=' + encodeURIComponent(code) + ';S.browser_fallback_url=' + encodeURIComponent('https://' + host + '` + AppSignInPhonePath + `') + ';end');
+		`=' + encodeURIComponent(code) + ';S.browser_fallback_url=' + encodeURIComponent(location.protocol + '//' + host + '` + AppSignInPhonePath + `') + ';end');
   var here = f.querySelector('button[type=submit]');
   here.textContent = ` + strconv.Quote(AppSignInContinueHere) + `;
   here.className = 'press min-h-[44px] rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge';
