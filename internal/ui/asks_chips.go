@@ -44,18 +44,18 @@ type AsksChipsView struct {
 // is a panel UNDER the row (AsksChipsMoreListClass: absolute, its containing
 // block the <nav> — outside the scroller, so it is not clipped by it).
 const (
-	AsksChipsClass         = "relative min-w-0 px-1 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-6 after:bg-gradient-to-l after:from-bg after:content-['']"
+	AsksChipsClass         = "relative -mt-1 min-w-0 px-1 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-6 after:bg-gradient-to-l after:from-bg after:content-['']"
 	AsksChipsRowClass      = "-mx-1 flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 py-0.5 pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-	AsksChipClass          = "press inline-flex min-h-[36px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-sm font-medium ring-1 ring-inset transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	AsksChipClass          = "press inline-flex min-h-[32px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[13px] font-medium ring-1 ring-inset transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	AsksChipIdleClass      = "bg-s1 text-fg ring-line hover:bg-s2"
 	AsksChipActiveClass    = "bg-accent text-on-accent ring-accent"
 	AsksChipCountClass     = "text-xs font-normal opacity-70"
 	AsksChipLabelClass     = "max-w-[12rem] truncate"
 	AsksChipsRuleClass     = "mx-0.5 h-5 w-px shrink-0 bg-line"
 	AsksChipsMoreClass     = "shrink-0 [&[open]_.asks-chevron]:rotate-180"
-	AsksChipsMoreSumClass  = "press inline-flex min-h-[36px] cursor-pointer list-none items-center gap-1 whitespace-nowrap rounded-full px-3 text-sm font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 [&::-webkit-details-marker]:hidden"
+	AsksChipsMoreSumClass  = "press inline-flex min-h-[32px] cursor-pointer list-none items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[13px] font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 [&::-webkit-details-marker]:hidden"
 	AsksChipsMoreListClass = "absolute inset-x-1 top-full z-20 mt-1 flex flex-wrap items-center gap-1.5 rounded-2xl bg-s1 p-2 shadow-lg ring-1 ring-inset ring-line"
-	AsksChipsClearClass    = "inline-flex min-h-[36px] shrink-0 items-center whitespace-nowrap px-2 text-sm font-medium text-accent underline-offset-2 hover:underline"
+	AsksChipsClearClass    = "inline-flex min-h-[32px] shrink-0 items-center whitespace-nowrap px-2 text-[13px] font-medium text-accent underline-offset-2 hover:underline"
 )
 
 // AsksChipsMoreLabel is the disclosure's words.
