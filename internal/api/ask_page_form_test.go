@@ -170,3 +170,35 @@ func TestTheAskPageHasBreadcrumbsBackToAsks(t *testing.T) {
 		t.Errorf("the current page is not Ask #1001")
 	}
 }
+
+// TestTheAskPagesLiveRegionIsNeverInsideAForm: the ask page's live region
+// (#ask-live) is swapped by innerHTML, and a settled ask's outcome holds a
+// form of its own (a session wake's Retry, wakeActionFormHTML). Parsed inside
+// another form, that inner <form> is DROPPED and its button submits the outer
+// form (measured in Chromium: innerHTML of a <form> inside a form leaves no
+// inner form and the button's form owner is the outer one; the same markup
+// outside a form keeps its own). So on every page the region is drawn on —
+// options, multi-select, free text, settled — no ancestor of #ask-live is a
+// form.
+func TestTheAskPagesLiveRegionIsNeverInsideAForm(t *testing.T) {
+	now := time.Now()
+	base := attention.Ask{Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Status: attention.Open, CreatedAt: now}
+	single, multi, free, settled := base, base, base, base
+	single.ID, single.Question, single.Options = 1011, "Squash or merge?", []string{"Squash", "Merge"}
+	multi.ID, multi.Question, multi.Options, multi.Multi = 1012, "Which checks?", []string{"lint", "e2e"}, true
+	free.ID, free.Question = 1013, "Which branch?"
+	settled.ID, settled.Question, settled.Status, settled.Answer = 1014, "Ship?", attention.Answered, "yes"
+	s := whereServer(t, single, multi, free, settled)
+	for _, a := range []attention.Ask{single, multi, free, settled} {
+		doc := parseHTML(t, askPageBody(t, s, a, askPagePath(a.ID)))
+		live := nodesWith(doc, "id", "ask-live")
+		if len(live) != 1 {
+			t.Fatalf("ask %d: %d live regions, want 1", a.ID, len(live))
+		}
+		for p := live[0].Parent; p != nil; p = p.Parent {
+			if p.Type == html.ElementNode && p.Data == "form" {
+				t.Errorf("ask %d: #ask-live is inside <form %v>", a.ID, p.Attr)
+			}
+		}
+	}
+}

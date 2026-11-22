@@ -477,14 +477,13 @@ func askDismissButton(form, name string) string {
 //
 // The ask PAGE (attention_ask_page.go, askPageAnswerHTML) draws this same form
 // and adds: ids (its controls' fixed ids, which its own script and the mic
-// address), live (its live region, drawn where the chips go, holding them) and
-// micOff (the muted mic, linking to how to turn dictation on, when the server
-// has none).
+// address) and micOff (the muted mic, linking to how to turn dictation on,
+// when the server has none). Its chips are its live region's, outside the
+// form (chips: false).
 type askFormPlace struct {
 	back, attrs, dismiss string
 	chips, gated         bool
 	ids                  askFormIDs
-	live                 string
 	micOff               bool
 }
 
@@ -568,12 +567,7 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		}
 		b.WriteString("</div>\n")
 	}
-	switch {
-	case p.live != "":
-		// The ask page's live region, in the chips' place: it holds them, and
-		// re-reads them when they change (askLiveHTML).
-		b.WriteString(p.live)
-	case p.chips:
+	if p.chips {
 		b.WriteString(askSuggestionChipsHTML(it.suggestions))
 	}
 	input, submit := ids.input, ids.send

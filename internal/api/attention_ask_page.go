@@ -21,24 +21,24 @@ import (
 //
 // One question, as a phone app screen (ui.NavApp): a top bar with the menu, a
 // back arrow to Asks and who is asking, and breadcrumbs (Asks › Ask #N); the
-// question, large; and THE FEED CARD'S ANSWER FORM (askAnswerFormHTML): the
+// question, large; THE FEED CARD'S ANSWER FORM (askAnswerFormHTML): the
 // asker's options (buttons that answer at once, or a multi-select ask's ticks
-// and its note), the suggested replies (attention_suggest.go) as chips that
-// FILL the answer box — nothing is sent until Answer — and the box with the
-// microphone (dictate.go) beside Answer; then a "View in session" link to the
-// asking session or agent (for a chief nudge's ask, the session the nudge is
-// about), and Dismiss.
+// and its note) and the box with the microphone (dictate.go) beside Answer;
+// under it the suggested replies (attention_suggest.go) as chips that FILL the
+// answer box — nothing is sent until Answer; then a "View in session" link to
+// the asking session or agent (for a chief nudge's ask, the session the nudge
+// is about), and Dismiss.
 //
 // 🔴 THE QUEUE'S OWN ROUTES. Its forms post to the queue's answer and dismiss
 // routes (handleAttentionAnswerForm, handleAttentionCancelForm) with `return`
 // naming this page (attentionReturnPage), so an answer given here is the same
 // answer as anywhere else — one core, answerAskFrom.
 //
-// LIVE: the chips and state (#ask-live, inside the answer form where the card
-// draws its chips) re-read ?part=live on the queue's SSE event
-// (ui.AttentionLiveScript), so suggestions that arrive after the page opened
-// appear, and an ask answered elsewhere shows as answered (and the rest of its
-// answer form goes: the page's style hides it).
+// LIVE: the chips and state (#ask-live, after the answer form, never in it)
+// re-read ?part=live on the queue's SSE event (ui.AttentionLiveScript), so
+// suggestions that arrive after the page opened appear, and an ask answered
+// elsewhere shows as answered (and its answer form goes: the page's style
+// hides it).
 // ---------------------------------------------------------------------------
 
 // askPagePrefix is the ask page's path prefix.
@@ -195,7 +195,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
-<style>body:has(#ask-live [data-ask-closed]) :is([data-ask-answer-area] > :not(form), #ask-answer > :not(#ask-live), [data-ask-dismiss-form]) { display: none; }</style>
+<style>body:has(#ask-live [data-ask-closed]) :is([data-ask-answer-area] > :not(#ask-live), [data-ask-dismiss-form]) { display: none; }</style>
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
 ` + ui.AsksHeadHTML(ui.AsksHead{Badge: ui.AsksKindBadge(kind, label), Who: askPageWhoHTML(where, `<time datetime="`+
 		a.CreatedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.CreatedAt)))+`</time>`), Chip: ui.AskIDChipHTML(a.ID)}) + `
@@ -217,8 +217,14 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// answer box, the mic and Answer are drawn by the one function, so the page
 	// cannot offer other controls than the card (it drew a composer of its
 	// own, pinned below the card, its boxes and note joined to it by form=,
-	// and a single-select ask's box folded behind "Other answer…"). The live
-	// region sits in it where the card draws its chips, and holds them.
+	// and a single-select ask's box folded behind "Other answer…").
+	//
+	// 🔴 THE LIVE REGION IS NEVER INSIDE THE FORM. It is swapped by innerHTML,
+	// and a settled ask's outcome holds a form of its own (a session wake's
+	// Retry, wakeActionFormHTML): parsed inside the answer form, that inner
+	// <form> is dropped and its button submits the ANSWER form instead. So it
+	// follows the form (its chips under the box), and a settled ask hides the
+	// rest of the answer area (the style above).
 	liveRegion := `<div id="ask-live" class="flex min-w-0 flex-col gap-4 empty:hidden" aria-live="polite">` + live + `</div>
 `
 	answerable := a.Status == attention.Open && !notice && a.StepUp == nil
@@ -412,9 +418,10 @@ var askPageFormIDs = askFormIDs{form: "ask-answer", input: "ask-input", send: "a
 
 // askPageAnswerHTML is an open ask's answer on its page: THE answer form
 // (askAnswerFormHTML, the feed card's), posted to the queue's answer route
-// back to this page, with live (the page's live region) where the card draws
-// its chips — between a notice line (?notice=, #ask-note) and the line a
-// failed post is said in (#ask-error). The mic is the real one with dictation
+// back to this page — between a notice line (?notice=, #ask-note) and the line
+// a failed post is said in (#ask-error) — followed by live (the page's live
+// region: the chips, then a settled ask's outcome), which is never inside the
+// form (renderAskPage says why). The mic is the real one with dictation
 // on (it.dictate), the muted one with it off (it.dictateOff). The mic's ✓
 // FILLS the box at the caret; its ↑ fills it and clicks Answer
 // (ui.DictateSendHTML), so only Answer sends. The dictation script is the
@@ -439,12 +446,12 @@ func askPageAnswerHTML(r *http.Request, it attentionItem, live string) string {
 		attrs:  ` hx-boost="false"`,
 		gated:  true,
 		ids:    askPageFormIDs,
-		live:   live,
 		micOff: true,
 	})
-	return `<div class="flex min-w-0 flex-col" data-ask-answer-area>
-<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
-` + form + `<p id="ask-error" role="alert" class="` + askErrorClass + `" hidden data-ask-error></p>` + ui.DictateScriptHTML(it.dictate) + `</div>
+	return `<div class="flex min-w-0 flex-col gap-2" data-ask-answer-area>
+<p id="ask-note" role="status" aria-live="polite" class="px-1 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
+` + form + `<p id="ask-error" role="alert" class="` + askErrorClass + `" hidden data-ask-error></p>
+` + live + ui.DictateScriptHTML(it.dictate) + `</div>
 `
 }
 
