@@ -648,6 +648,12 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, id)
 		return
 	}
+	if back, onAsks := asksReturn(r); onAsks {
+		// A step-up card's draft controls (stepup_draft_actions.go): back to
+		// the Asks page or the card's page, never the Drafts tab.
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
 	if onOfficer {
 		notice := "draft-approved"
 		if how == "reject" {
@@ -727,6 +733,10 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 		owner = requestOwner(ctx) // a store that does not read the column (a test fake)
 	}
 	s.draftSettled(owner, d.ID)
+	// 🔴 AND EVERY OPEN STEP-UP CARD ABOUT IT SETTLES (stepup_draft_actions.go):
+	// it leaves the Open feed saying what was decided and where, and a Confirm
+	// on the phone afterwards is refused as not open.
+	s.settleDraftStepUps(ctx, d, dec.Via.Via)
 	return d, nil
 }
 
@@ -1061,12 +1071,39 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + stepUpHiddenHTML(*d.DecisionReason) + `</span>
 `)
 	}
+	b.WriteString(draftDecisionHTML(c, now, p))
+	b.WriteString("</li>\n")
+	return b.String()
+}
+
+// draftDecisionHTML is THE DRAFT'S OWN DECISION CONTROLS at now, drawn in
+// place p: Approve and send (bound to the text and media it shows,
+// outboundApproveFields) with Reject and its reason under it for a pending
+// draft — Reject alone while its plugin has not checked it (AwaitingCheck) or
+// a medium is not uploaded (MissingMedia); Withdraw for an approval no plugin
+// has collected; Retry now for a failed draft its plugin said sent nothing.
+// "" for a draft with nothing left to decide.
+//
+// 🔴 ONE FUNCTION, EVERY FACE: the Drafts tab's card (draftCardHTMLIn) and a
+// step-up card about the draft on the Open feed and its ask page
+// (askStepUpDraftHTML) both draw these, so the two can never offer different
+// decisions, routes or bindings. p.rejectLead (a "Reject this draft?" card)
+// only reorders them: Reject is the primary action, Approve a secondary one
+// under it, offered on exactly the same guards.
+func draftDecisionHTML(c plugins.DraftCard, now time.Time, p cardPlace) string {
+	d := c.Draft
+	id := strconv.FormatInt(d.ID, 10)
+	var b strings.Builder
 	if d.Status == plugins.DraftPending && c.EarlierUnconfirmed {
 		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
 `)
 	}
+	rejectClass := ui.AsksSecondaryButtonClass
+	if p.rejectLead {
+		rejectClass = ui.AsksPrimaryButtonClass
+	}
 	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
-		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
+		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + rejectClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
@@ -1106,11 +1143,20 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 			}
 			binding = outboundApproveFields(d)
 		}
-		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + p.backField() + binding + `<button type="submit" class="` +
-			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
+		approveClass := ui.AsksPrimaryButtonClass
+		if p.rejectLead {
+			approveClass = ui.AsksSecondaryButtonClass
+		}
+		approve := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + p.backField() + binding + `<button type="submit" class="` +
+			approveClass + `" data-draft-approve>Approve and send</button></form>`
+		if p.rejectLead {
+			b.WriteString(`<div class="` + ui.AsksDecisionClass + `">` + reject + approve + `</div>
+`)
+			break
+		}
+		b.WriteString(`<div class="` + ui.AsksDecisionClass + `">` + approve + reject + `</div>
 `)
 	}
-	b.WriteString("</li>\n")
 	return b.String()
 }
 

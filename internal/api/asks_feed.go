@@ -298,7 +298,14 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		if inRow {
 			rowDismiss = dismiss
 		}
-		b.WriteString(`<div class="flex min-w-0 items-center gap-2" data-asks-stepup-row><div class="min-w-0 flex-1">` + askStepUpPhoneHTML("text-sm") + `</div>` + rowDismiss + "</div>\n")
+		// A card about a draft the reader may decide draws the DRAFT's own
+		// decision controls (askStepUpDraftHTML, the Drafts tab's), returning
+		// here; the card itself stays answerable only from the phone.
+		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, "text-sm", now)
+		if line == "" {
+			line = askStepUpPhoneHTML("text-sm")
+		}
+		b.WriteString(`<div class="flex min-w-0 items-center gap-2" data-asks-stepup-row><div class="min-w-0 flex-1">` + line + `</div>` + rowDismiss + "</div>\n")
 	case it.Kind == attentionKindAsk:
 		gate := asksCardFormAttrs(it.Key, attentionPath+`/asks/`+id+`/answer`)
 		if it.stepUpWhy != "" {
