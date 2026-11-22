@@ -664,8 +664,10 @@ their own card, the owner's invite, or the owner's hand.
   meetings' own `contacts_outbox` table, in the same transaction that spends
   the card, and the guest is answered from that. A worker delivers it with
   backoff (5 s doubling to 10 minutes), keyed by its idempotency key, so a
-  retry after a lost answer is harmless. `2xx` or `404` (not accepting:
-  hidden, revoked or collection off) deletes the row; `400`/`409` deletes it and logs the event name;
+  retry after a lost answer is harmless. `2xx` deletes the row (a card for
+  an owner who is not accepting — hidden, revoked or collection off — is
+  answered `202` exactly like an accepted one and dropped by contacts,
+  merge rule 5); `400`/`409`/`413` deletes it and logs the event name;
   `401`, `429`, `5xx` and timeouts retry. A row older than **72 hours** is
   deleted undelivered and counted
   (`meetings_contacts_outbox_dropped_total`). The outbox holds a guest's
@@ -1036,8 +1038,8 @@ customers. What would need deciding first:
 | **0 (core PR)** | [linked server apps](#the-core-change-linked-server-apps): the migration, `subjectFor`, `app install --link-to` and `app unlink`, the Account → Apps line, the plugins.md / auth.md / cli.md exception | muster | its tests and mutation rows green; released and deployed on the first deployment before contacts is installed |
 | **0 (spike)** | spike S1 | none | answered in this page |
 | **1a** | contacts plugin: store, owner app, the Contacts tab, add/edit/delete/merge/export | muster-contacts (new, from the template) | unit, contract and e2e green; mutation sweep; installed **and linked** on the first deployment |
-| **1b** | meetings: `MEETINGS_CONTACTS_URL`/`_TOKEN`, the card, the outbox, attendance at End | muster-meetings | the no-URL golden; contract tests against contacts' real server; the card e2e |
-| **1c** | receipts: the guest browser's marker and the quiet line | both | after 1b has run for a while ([open question 3](#open-questions-for-the-operator)) |
+| **1b** | meetings: `MEETINGS_CONTACTS_URL`/`_TOKEN`, the card, the outbox | muster-meetings | the no-URL golden; contract tests against contacts' real server; the card e2e |
+| **1c** | receipts minted by meetings: the guest browser's marker, the quiet line, attendance at End | both | after 1b has run for a while ([decision 9](#decisions)) |
 | **2** | scheduled meetings, invite emails with `.ics`, Reply-To confirmation, invitees as contacts, optional email verification | both | an invite received and opened in two calendar clients; the `.ics` validated by a parser in CI |
 | **3a** | handles on a contact | contacts | — |
 | **3b** | messages through the draft flow, behind adapters | contacts (+ whatever open question 5 decides) | the adapter conformance suite; one channel end to end with a real approval |
@@ -1259,7 +1261,7 @@ attendance at End. Nothing on the call path waits for contacts.
    browser only whether the owner still has its contact.
    **Recommendation: yes, as phase 1c,** after the card has run alone for a
    while; until then every non-invited guest sees the card and repeats
-   merge.
+   merge. **Answered: decision 9** — phase 1c, minted by meetings.
 4. **Verify self-submitted emails?** Without it, anyone admitted can claim
    someone else's address (marked "email not confirmed").
    **Recommendation: yes, in phase 2** once the sender exists, as an
@@ -1331,3 +1333,10 @@ Decision 7 answers this page's first open question and revises decision 2.
    offered. (Operator's answer to round 0 of the core PR's audit, which also
    dropped the pair's `source_id` and the `/admin/apps` line, and kept
    `app unlink`.)
+9. **Receipts: later, minted by meetings.** Phase 1 ships without
+   receipts or attendance: a guest is recorded only when they send the
+   card. Receipts come as phase 1c, after phase 1 has run for a while,
+   with meetings minting the receipt and storing it in the guest's
+   browser, since the guest is answered from meetings' outbox before
+   contacts replies. (Operator's answer to round 0 of the contacts PR's
+   audit; answers open question 3.)
