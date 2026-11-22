@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -306,11 +305,11 @@ func (fakeTranscriberForFeatures) Transcribe(context.Context, io.Reader, string)
 // disabled mic on every card was noise — and the real one when it is on.
 func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
-	off := askComposerHTML(r, attention.Ask{ID: 9}, "", true, false)
+	off := askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: 9, dictateOff: true}, "")
 	if !strings.Contains(off, `id="ask-dictate-off" href="/account/features#dictation-setup"`) || strings.Contains(off, `id="ask-dictate"`) {
 		t.Errorf("ask page, dictation off: %s", off)
 	}
-	on := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false, false)
+	on := askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: 9, dictate: ui.TranscribePath}, "")
 	if !strings.Contains(on, `id="ask-dictate"`) || strings.Contains(on, "ask-dictate-off") {
 		t.Errorf("ask page, dictation on: %s", on)
 	}

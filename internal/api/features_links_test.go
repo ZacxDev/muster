@@ -16,7 +16,6 @@ import (
 
 	"golang.org/x/net/html"
 
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -198,7 +197,7 @@ func TestEveryHowToTurnItOnLinkOpensAFeatureSheet(t *testing.T) {
 	sheets, _ := sheetIDs(t, featuresPageAs(t, s, authz.RoleAdmin))
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
 	surfaces := map[string]string{
-		"ask page composer": askComposerHTML(r, attention.Ask{ID: 9}, "", true, false),
+		"ask page composer": askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: 9, dictateOff: true}, ""),
 		"Account page":      sessionGet(h, s, "/account", true).Body.String(),
 		"Credentials page":  sessionGet(h, s, "/account/credentials", true).Body.String(),
 	}

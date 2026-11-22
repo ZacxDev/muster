@@ -16,10 +16,11 @@ import { turnSuggestionsOn } from '../lib/suggest';
 //   /attention/open/ask-<id>, lands on /attention/asks/<id> → the question,
 //   its options as full-width buttons, the suggested replies as chips (made
 //   by the fake model in the background, arriving LIVE on a page that was
-//   already open), the answer box pinned to the bottom — at an explicit phone
-//   viewport (360 and 412 wide) and a desktop one (1280×800) — no sideways
-//   scroll; a chip FILLS the box and sends nothing; Answer comes back to the
-//   page showing the answer, and the agent's wait returns it.
+//   already open), the answer box open beside the options — the feed card's
+//   own answer form (askAnswerFormHTML) — at an explicit phone viewport (360
+//   and 412 wide) and a desktop one (1280×800) — no sideways scroll; a chip
+//   FILLS the box and sends nothing; Answer comes back to the page showing the
+//   answer, and the agent's wait returns it.
 //
 // 🔴 RED AT origin/main: there the tap URL redirects to /agents/<name>, and
 // /attention/asks/<id> is a 404.
@@ -143,7 +144,7 @@ for (const vp of [
 ]) {
   test.describe(vp.name, () => {
     test.use(vp.use);
-    test('the tap lands on a phone-first ask page: options, live chips that fill, a pinned answer box, no sideways scroll', async ({ page }) => {
+    test('the tap lands on a phone-first ask page: options, live chips that fill, the answer box, no sideways scroll', async ({ page }) => {
       test.setTimeout(90_000);
       let release = () => {};
       hold = vp.live ? new Promise<void>((r) => (release = r)) : undefined;
@@ -160,21 +161,26 @@ for (const vp of [
       await expect(page.locator('[data-ask-question]')).toHaveText(question(vp.name));
       await expect(page.getByRole('link', { name: 'Back to Asks' })).toHaveAttribute('href', '/attention');
       await expect(page.locator('[data-ask-context]')).toHaveAttribute('href', `/agents/${agentName}`);
-      const options = page.locator('[data-ask-option]');
+      const options = page.locator('#ask-answer [data-attention-option]');
       await expect(options).toHaveCount(2);
       const vw = page.viewportSize()!;
-      // The page is the feed's card, expanded (asks_feed.go): an option spans
-      // the card's content box (the card's own 16px padding either side).
+      // The page is the feed's card, expanded (asks_feed.go), with the card's
+      // answer form: its options laid out as the card lays them out (two
+      // short ones share a row, askOptionsShort), inside the card's content
+      // box, each a 44px target.
       const cardBox = (await page.locator('[data-asks-page-card]').boundingBox())!;
       expect(cardBox.width, 'the card spans the column').toBeGreaterThan(vw.width - 48);
-      for (const o of await options.all()) {
-        const b = (await o.boundingBox())!;
+      const ob = await Promise.all((await options.all()).map(async (o) => (await o.boundingBox())!));
+      for (const b of ob) {
         expect(b.height, 'an option is at least a 44px target').toBeGreaterThanOrEqual(44);
-        expect(b.width, 'an option spans the card').toBeGreaterThan(cardBox.width - 40);
+        expect(b.x, 'an option is inside the card').toBeGreaterThanOrEqual(cardBox.x);
+        expect(b.x + b.width, 'an option is inside the card').toBeLessThanOrEqual(cardBox.x + cardBox.width);
       }
+      expect(ob[0].y, 'two short options share a row, as on the card').toBeCloseTo(ob[1].y, 0);
+      expect(ob[0].width + ob[1].width, 'the pair spans the card').toBeGreaterThan(cardBox.width - 48);
 
       // The chips: already there, or — the model held — arriving LIVE.
-      const chips = page.locator('[data-ask-suggestion]');
+      const chips = page.locator('#ask-live [data-asks-suggestion]');
       if (vp.live) {
         await expect(chips, 'no chip while the model is still working').toHaveCount(0);
         release();
@@ -185,31 +191,20 @@ for (const vp of [
       for (const c of await chips.all()) expect((await c.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       expect(calls - before, 'one model call for the ask').toBe(1);
 
-      // The answer box: pinned to the bottom of the screen, 16px text (no iOS
+      // The answer box: in the card, under the options, as on the feed's card
+      // — open, never behind an "Other answer…" toggle — 16px text (no iOS
       // zoom), and nothing scrolls sideways.
-      const compose = (await page.locator('#app-compose').boundingBox())!;
-      expect(compose.y + compose.height, 'the answer box sits at the bottom of the screen').toBeGreaterThan(vw.height - 2);
-      expect(compose.y + compose.height).toBeLessThanOrEqual(vw.height + 1);
       const box = page.locator('#ask-input');
+      await expect(box, 'beside options the box is open, as on the card').toBeVisible();
+      const bb = (await box.boundingBox())!;
+      expect(bb.x, 'the box is inside the card').toBeGreaterThanOrEqual(cardBox.x);
+      expect(bb.x + bb.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
       expect(await box.evaluate((e) => getComputedStyle(e).fontSize)).toBe('16px');
       await noSidewaysScroll(page);
-      // Scrolling the content leaves the box where it is.
-      await page.locator('#app-main').evaluate((e) => e.scrollTo(0, e.scrollHeight));
-      expect((await page.locator('#app-compose').boundingBox())!.y).toBeCloseTo(compose.y, 0);
-
-      // With options, the free-text row is collapsed behind "Other answer…";
-      // opening it puts the caret in the box.
-      const other = page.locator('[data-ask-other]');
-      await expect(box, 'beside options the box is collapsed').toBeHidden();
-      await expect(other).toHaveText('Other answer…');
-      await other.tap();
-      await expect(box).toBeVisible();
-      await expect(box).toBeFocused();
-      await expect(other).toBeHidden();
 
       // Answer is DISABLED while the box is blank (a blank answer used to
       // round-trip to a server notice); a chip's fill enables it.
-      const send = page.locator('[data-ask-send]');
+      const send = page.locator('#ask-send');
       await expect(send).toBeDisabled();
       // Pressed anyway (aria-disabled keeps it focusable): nothing is posted,
       // the box takes focus.
@@ -234,7 +229,7 @@ for (const vp of [
       await box.fill(sugB + ' — and post in the channel');
       // The page posts and comes back to ITSELF, so the URL alone cannot say
       // the answer was sent: wait for the POST's redirect.
-      await Promise.all([answered(page, id), page.locator('[data-ask-send]').tap()]);
+      await Promise.all([answered(page, id), page.locator('#ask-send').tap()]);
       await page.waitForURL(origin + `/attention/asks/${id}`);
       expect(sent).toEqual([`/attention/asks/${id}/answer`]);
       await expect(page.locator('[data-ask-closed]')).toBeVisible();
@@ -244,7 +239,7 @@ for (const vp of [
       await expect(page.locator('[data-ask-source]')).toHaveText(agentName);
       await expect(page.locator('[data-ask-source]')).toBeVisible();
       await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: ' + sugB + ' — and post in the channel');
-      await expect(page.locator('#app-compose'), 'no answer box on an answered ask').toBeHidden();
+      await expect(page.locator('#ask-answer, #ask-input'), 'no answer form on an answered ask').toHaveCount(0);
       const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string; answer: string };
       expect(waited).toMatchObject({ status: 'answered', answer: sugB + ' — and post in the channel' });
       await noSidewaysScroll(page);
@@ -252,37 +247,29 @@ for (const vp of [
   });
 }
 
-// A MULTI-SELECT ASK'S COMPOSER ANSWER COUNTS A TICKED BOX (migration 0175).
-// The checkboxes are FORM-ASSOCIATED with #ask-answer (form="ask-answer") but
-// are drawn in the live region ABOVE it, so they are never DOM descendants of
-// the form the composer's Answer belongs to. RED at origin/main: the page's
-// gate and its submit guard read the form's DESCENDANTS with querySelector,
-// found no tick, left #ask-send aria-disabled and preventDefault()ed the tap —
-// so a ticked box with an empty free-text box could not be answered from the
-// composer's Answer (the live region's separate "Send answer" still worked).
+// A MULTI-SELECT ASK'S ONE SEND COUNTS A TICKED BOX (migration 0175): a tick
+// with an empty free-text box is a complete answer. (RED once: the page's own
+// composer read its form's DESCENDANTS for a tick while the boxes sat outside
+// it; the page now draws the card's form, the boxes inside it.)
 test.describe('multi-select ask, phone 390×844', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
-  test('a ticked box with an empty free-text box answers from the composer Answer', async ({ page }) => {
+  test('a ticked box with an empty free-text box answers from Send', async ({ page }) => {
     test.setTimeout(90_000);
     hold = undefined;
     await signIn(page, origin);
     const id = await askMulti(`Which checks should the release run? (${stamp})`, ['lint', 'typecheck', 'e2e']);
     await page.goto(origin + `/attention/asks/${id}`);
     const box = page.locator('#ask-input'), send = page.locator('#ask-send');
-    // A multi ask keeps its free-text row OPEN (the optional note lives with it).
+    // A multi ask's free-text row is OPEN, its optional note under it.
     await expect(box).toBeVisible();
     await expect(box, 'the free-text box starts empty').toHaveValue('');
     // Tick ONE box and leave the free text empty: the pick alone is the answer.
-    await page.locator('[data-ask-option]').first().check();
-    await expect(page.locator('[data-ask-option]').first()).toBeChecked();
+    await page.locator('[data-attention-option]').first().check();
+    await expect(page.locator('[data-attention-option]').first()).toBeChecked();
     await expect(box).toHaveValue('');
-    // The composer's Answer must count the tick as an answer. aria-disabled
-    // keeps the button focusable, so FORCE the tap — a real tap on the
-    // (pre-fix) aria-disabled control reaches the same submit handler. RED at
-    // origin/main: the tap posts NOTHING (the gate and the submit guard both
-    // read the form's DOM descendants with querySelector, saw no tick, left
-    // Answer off and preventDefault()ed it). After the fix the tap posts the
-    // ticked label and the page comes back settled.
+    // Send must count the tick as an answer: the tap posts the ticked label
+    // and the page comes back settled (forced, so a Send wrongly drawn
+    // aria-disabled still reaches the submit guard that must let it through).
     const sent = posts(page);
     await Promise.all([
       page
@@ -290,7 +277,7 @@ test.describe('multi-select ask, phone 390×844', () => {
         .catch(() => null),
       send.click({ force: true }),
     ]);
-    expect(sent, 'the composer Answer posted the ticked box').toEqual([`/attention/asks/${id}/answer`]);
+    expect(sent, 'Send posted the ticked box').toEqual([`/attention/asks/${id}/answer`]);
     await page.waitForURL(origin + `/attention/asks/${id}`);
     await expect(page.locator('[data-ask-closed]')).toBeVisible();
     await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: lint');
@@ -298,6 +285,76 @@ test.describe('multi-select ask, phone 390×844', () => {
     expect(waited).toMatchObject({ status: 'answered', answer: 'lint' });
   });
 });
+
+// THE OPERATOR'S PATH: a multi-select ask's card offers a note box, and its
+// details page must too — the page draws the card's answer form. On the page:
+// tick a box, type a note, Send, and the stored answer is "<option> — note:
+// <text>". The top bar puts the menu LEFT of the title (a phone; on a desktop
+// the side nav shows and the menu hides), and the breadcrumbs "Asks › Ask #N"
+// take you back to the asks list. RED at the base: the page drew its own
+// composer, pinned to the bottom, with the boxes and the note outside the
+// answer form (joined by form=), no breadcrumbs, and the menu right of the
+// title.
+for (const vp of [
+  { name: 'phone 390×844', phone: true, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', phone: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the card's answer form on the page, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('tick, note, Send records "<option> — note: <text>"; the menu is left of the title; the breadcrumbs go back to Asks', async ({ page }) => {
+      test.setTimeout(90_000);
+      hold = undefined;
+      await signIn(page, origin);
+      const id = await askMulti(`Which checks before the release? (${vp.name} ${stamp})`, ['lint', 'typecheck', 'e2e']);
+
+      // The card on the Asks list offers the note; so does the page.
+      await page.goto(origin + '/attention');
+      const card = page.locator(`#ask-${id}`);
+      await expect(card.locator('textarea[name="note"]'), 'the card offers the note').toBeVisible();
+      await page.goto(origin + `/attention/asks/${id}`);
+      const form = page.locator('#ask-answer');
+      await expect(form.locator('input[type="checkbox"][name="option"]')).toHaveCount(3);
+      const note = form.getByLabel('Note (optional)');
+      await expect(note, 'the page offers the note, shown').toBeVisible();
+
+      // The top bar: the menu at the left, before the back arrow and the title.
+      const title = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
+      const back = (await page.locator('#app-back').boundingBox())!;
+      if (vp.phone) {
+        const menu = (await page.locator('#sidebar-open').boundingBox())!;
+        expect(menu.x + menu.width, 'the menu is left of the back arrow').toBeLessThanOrEqual(back.x + 1);
+        expect(back.x + back.width, 'the back arrow is left of the title').toBeLessThanOrEqual(title.x + 1);
+        expect(menu.x, 'the menu is at the left edge').toBeLessThan(vp.use.viewport.width / 4);
+      } else {
+        await expect(page.locator('#sidebar-open'), 'no hamburger on a desktop').toBeHidden();
+        await expect(page.locator('#sidebar')).toBeVisible();
+        expect(back.x + back.width).toBeLessThanOrEqual(title.x + 1);
+      }
+
+      // The breadcrumbs: Asks › Ask #N, the ask the current page.
+      const crumbs = page.getByRole('navigation', { name: 'Breadcrumb' });
+      await expect(crumbs).toHaveText(`Asks›Ask #${id}`);
+      await expect(crumbs.locator('[aria-current="page"]')).toHaveText(`Ask #${id}`);
+      await noSidewaysScroll(page);
+
+      // Tick one box, type a note, Send.
+      await form.locator('input[type="checkbox"][value="typecheck"]').check();
+      await note.fill('run it twice');
+      const sent = posts(page);
+      await Promise.all([answered(page, id), page.locator('#ask-send').click()]);
+      expect(sent).toEqual([`/attention/asks/${id}/answer`]);
+      await page.waitForURL(origin + `/attention/asks/${id}`);
+      await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: typecheck — note: run it twice');
+      const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string; answer: string };
+      expect(waited).toMatchObject({ status: 'answered', answer: 'typecheck — note: run it twice' });
+
+      // The breadcrumbs take you back to the asks list.
+      await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Asks' }).click();
+      await page.waitForURL(origin + '/attention');
+      await expect(page.locator('#attention-items')).toBeVisible();
+    });
+  });
+}
 
 // AN OVER-LONG ANSWER (a long dictation fills the box from script, past its
 // maxlength) is refused with its own notice, never "Type an answer or pick an
@@ -309,8 +366,6 @@ test.describe('over-long answer, phone 390×844', () => {
     test.setTimeout(90_000);
     hold = undefined;
     await signIn(page, origin);
-    // No options, so the answer box is open (beside options it is folded
-    // behind Other answer…).
     const id = await askFree(question('over-long'));
     await page.goto(origin + `/attention/asks/${id}`);
     await expect(page.locator('[data-ask-source]')).toHaveCount(0);
@@ -321,7 +376,7 @@ test.describe('over-long answer, phone 390×844', () => {
     });
     await Promise.all([
       page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`),
-      page.locator('[data-ask-send]').tap(),
+      page.locator('#ask-send').tap(),
     ]);
     await expect(page.getByText('Not recorded: the answer is longer than 8000 characters. Shorten it and send it again.')).toBeVisible();
     await expect(page.getByText('Type an answer or pick an option.')).toHaveCount(0);
@@ -352,7 +407,9 @@ test.describe('answered elsewhere, phone 390×844', () => {
     });
     expect(r.status(), "the other device's answer was recorded").toBe(303);
     await expect(page.locator('[data-ask-closed]')).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('#app-compose')).toBeHidden();
+    await expect(page.locator('#ask-input'), 'no answer box on a closed ask').toBeHidden();
+    await expect(page.locator('#ask-send')).toBeHidden();
+    await expect(page.locator('#ask-answer [data-attention-option]').first(), 'no option on a closed ask').toBeHidden();
     await expect(page.locator('[data-ask-dismiss]'), 'no Dismiss on a closed ask').toBeHidden();
   });
 });
@@ -373,12 +430,36 @@ test.describe('desktop 1280×800', () => {
     expect(main.x, 'the content is beside the side nav').toBeGreaterThanOrEqual(280);
     const q = (await page.locator('[data-ask-question]').boundingBox())!;
     expect(q.width, 'the question reads in a column, not the full width').toBeLessThanOrEqual(680);
-    const compose = (await page.locator('#app-compose').boundingBox())!;
-    expect(compose.y + compose.height).toBeLessThanOrEqual(800 + 1);
+    const form = (await page.locator('#ask-answer').boundingBox())!;
+    expect(form.width, 'the answer form reads in the column too').toBeLessThanOrEqual(680);
     await noSidewaysScroll(page);
-    await expect(page.locator('[data-ask-suggestion]')).toHaveCount(2, { timeout: 15_000 });
+    await expect(page.locator('#ask-live [data-asks-suggestion]')).toHaveCount(2, { timeout: 15_000 });
+    // 🔴 THE PAGE NAVIGATES ITSELF once the post lands: askPageScript's fetch
+    // follows the 303 and then loads the page again (location.assign). The
+    // live region shows the answer before that load (the queue's SSE event),
+    // so a navigation the test starts after seeing it races the page's own
+    // and is aborted (net::ERR_ABORTED, seen in CI). The two holds below pin
+    // that race open — the post's 303 reaches the page late, after the live
+    // region shows the answer, and the Asks page loads slowly — so a test
+    // that waits for the URL alone fails here every time it loses the race.
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+      const res = await r.fetch({ maxRedirects: 0 });
+      await pause(2500);
+      await r.fulfill({ response: res });
+    });
+    await page.route('**/attention', async (r) => {
+      if (r.request().isNavigationRequest()) await pause(4000);
+      await r.continue();
+    });
+    // So the test waits for the page's OWN load (the document it navigates to
+    // after the post), not for its URL, which is the same before and after.
+    const reloaded = page.waitForResponse(
+      (r) => r.request().isNavigationRequest() && r.request().method() === 'GET' && new URL(r.url()).pathname === `/attention/asks/${id}`,
+    );
     await Promise.all([answered(page, id), page.getByRole('button', { name: 'wait until Monday', exact: true }).click()]);
-    await page.waitForURL(origin + `/attention/asks/${id}`);
+    await reloaded;
+    await page.waitForLoadState('load');
     await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: wait until Monday');
     // The queue page itself is unchanged: the ask is no longer open there.
     await page.goto(origin + '/attention');
@@ -392,8 +473,8 @@ test.describe('desktop 1280×800', () => {
 // An option's failed post is said the same way. RED before: the form was a
 // plain post, so a 500 replaced the whole page with the server's error.
 //
-// "OTHER ANSWER…" (the asks audit, #14): an ask with options draws its
-// free-text row collapsed; one without options draws it open.
+// Beside options the answer box is OPEN, as on the feed's card (it was once
+// collapsed behind "Other answer…", which hid a multi-select ask's note).
 for (const vp of [
   { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
@@ -416,7 +497,6 @@ for (const vp of [
       });
       await page.goto(origin + `/attention/asks/${id}`);
       const box = page.locator('#ask-input'), send = page.locator('#ask-send'), err = page.locator('#ask-error');
-      await expect(page.locator('[data-ask-other]'), 'no options: the box is open').toHaveCount(0);
       await expect(box).toBeVisible();
       await expect(err).toBeHidden();
       await box.fill('Cut it from main');
@@ -429,7 +509,7 @@ for (const vp of [
       await expect(page.locator('[data-ask-question]'), 'the page is still the question').toHaveText(q);
       await expect(box, 'the typed text is kept').toHaveValue('Cut it from main');
       await expect(send).toBeEnabled();
-      // Under the form: below the box, inside the pinned answer area.
+      // Under the form: below the box.
       const eb = (await err.boundingBox())!, bb = (await box.boundingBox())!;
       expect(eb.y, 'the error line is under the answer form').toBeGreaterThanOrEqual(bb.y + bb.height - 1);
 
@@ -446,7 +526,7 @@ for (const vp of [
       expect(tries).toBe(3);
     });
 
-    test('an option that fails to post says so too; the options keep the box behind Other answer…', async ({ page }) => {
+    test('an option that fails to post says so too; the box beside the options answers', async ({ page }) => {
       test.setTimeout(90_000);
       hold = undefined;
       await signIn(page, origin);
@@ -454,19 +534,12 @@ for (const vp of [
       let fail = true;
       await page.route(`**/attention/asks/${id}/answer`, (r) => (fail ? r.fulfill({ status: 502, body: 'bad gateway' }) : r.continue()));
       await page.goto(origin + `/attention/asks/${id}`);
-      const other = page.locator('[data-ask-other]'), box = page.locator('#ask-input');
-      await expect(box).toBeHidden();
-      await expect(other).toBeVisible();
-      await expect(other).toHaveAttribute('aria-expanded', 'false');
-      expect((await other.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      const box = page.locator('#ask-input');
+      await expect(box, 'beside options the box is open').toBeVisible();
       await page.getByRole('button', { name: 'wait until Monday', exact: true }).click();
       await expect(page.locator('#ask-error')).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
-      await expect(page.locator('[data-ask-option]')).toHaveCount(2);
-      // Other answer… opens the box, focused; typed text answers.
-      await other.click();
-      await expect(box).toBeVisible();
-      await expect(box).toBeFocused();
-      await expect(page.locator('#ask-answer')).toBeVisible();
+      await expect(page.locator('#ask-answer [data-attention-option]')).toHaveCount(2);
+      // Typed text answers instead.
       fail = false;
       await box.fill('Monday, after the backup');
       await Promise.all([answered(page, id), page.locator('#ask-send').click()]);

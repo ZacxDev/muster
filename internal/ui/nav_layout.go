@@ -121,25 +121,24 @@ const (
 
 // NavApp is a NavDocument laid out as a PHONE APP SCREEN — the page a
 // notification opens (the ask page, internal/api attention_ask_page.go): a top
-// bar with a back arrow and the screen's name, the content scrolling between
-// it and a composer PINNED to the bottom, above the on-screen keyboard and
-// inside the safe-area insets. The column is one dynamic-viewport-high flex
-// column (h-dvh; the viewport resizes its content when the keyboard opens), so
-// the composer is its last row rather than position:fixed — nothing is laid
-// over the content, and nothing can scroll the page sideways. On a desktop the
-// side nav is beside it, as on every page.
+// bar with the menu, a back arrow and the screen's name, and the content
+// scrolling under it, inside the safe-area insets. The column is one
+// dynamic-viewport-high flex column (h-dvh), so nothing is laid over the
+// content and nothing can scroll the page sideways. On a desktop the side nav
+// is beside it, as on every page.
 type NavApp struct {
 	// Back is the back arrow's link, BackLabel its accessible name.
 	Back, BackLabel string
 	// Heading is the screen's name, in the top bar.
 	Heading string
-	// Composer is TRUSTED markup pinned at the bottom ("" for none).
-	Composer string
+	// Crumbs are the screen's breadcrumbs (Breadcrumbs), drawn at the top of
+	// its content (none for none).
+	Crumbs []Breadcrumb
 }
 
 // appViewport is an app screen's viewport: the keyboard resizes the CONTENT
-// (so the h-dvh column, and the composer at its foot, sit above it), where
-// every other page lets it overlay.
+// (so the h-dvh column, and the answer box scrolled into view in it, sit above
+// the keyboard), where every other page lets it overlay.
 const appViewport = "width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
 
 // navAppBody is NavDocument's body for an app screen (NavApp).
@@ -155,24 +154,24 @@ func navAppBody(v NavDocumentView) g.Node {
 				Class("shrink-0 border-b border-line bg-bg pt-[env(safe-area-inset-top)]"),
 				Div(
 					Class("mx-auto flex w-full max-w-2xl items-center gap-1 px-2 py-1"),
+					// 🔴 THE MENU FIRST, at the left, as every other header draws
+					// it (header(), the task and agent pages): it was after the
+					// title, at the right, on this screen alone.
+					sidebarOpenButton(),
 					A(Href(a.Back), g.Attr("aria-label", a.BackLabel), ID("app-back"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg transition hover:bg-s2"),
 						g.Raw(`<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`)),
 					H1(Class("min-w-0 flex-1 truncate text-base font-semibold text-fg"), g.Text(a.Heading)),
-					sidebarOpenButton(),
 				),
 			),
 			Main(
 				g.Attr("data-nav-document", ""),
 				ID("app-main"),
 				Class("min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain"),
-				Div(Class("mx-auto w-full max-w-2xl px-4 py-4"), g.Raw(v.Main)),
+				Div(Class("mx-auto w-full max-w-2xl px-4 pt-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"),
+					g.If(len(a.Crumbs) > 0, Div(Class("-mt-2 mb-2"), Breadcrumbs(a.Crumbs))),
+					g.Raw(v.Main)),
 			),
-			g.If(a.Composer != "", Div(
-				ID("app-compose"),
-				Class("shrink-0 border-t border-line bg-bg"),
-				Div(Class("mx-auto w-full max-w-2xl px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"), g.Raw(a.Composer)),
-			)),
 		),
 		appScript(v.Feat),
 		pwaChrome(),

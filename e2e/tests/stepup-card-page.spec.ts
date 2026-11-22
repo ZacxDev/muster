@@ -106,7 +106,7 @@ test.describe('phone 390×844', () => {
     // answered — and it is headed by its action, never "step-up is asking".
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Post to X? · Draft #41');
     await expect(page.locator('[data-ask-stepup-phone]')).toHaveText('Confirm this on your phone.');
-    await expect(page.locator('[data-ask-option]')).toHaveCount(0);
+    await expect(page.locator('[data-ask-option], [data-attention-option]')).toHaveCount(0);
     await expect(page.locator('#ask-input, #ask-send')).toHaveCount(0);
     expect(await page.locator('body').innerText(), 'the internal asker label is on screen').not.toContain('step-up');
 

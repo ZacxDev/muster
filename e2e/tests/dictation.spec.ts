@@ -708,8 +708,8 @@ test.describe('an ask’s answer boxes', () => {
         await page.goto(`${origin}/attention/asks/${id}`);
         await expect(page.locator('[data-ask-context]'), 'the ask links its asker’s session').toHaveText('View in session');
         await expect(page.locator('[data-ask-context]')).toHaveAttribute('href', `/agents/${asker}`);
-        await fill(page, { input: '#ask-input', mic: '#ask-dictate', note: '#ask-dictate-note', send: '[data-ask-send]' }, vp.use.viewport.width, posted, sent);
-        await page.locator('[data-ask-send]').click();
+        await fill(page, { input: '#ask-input', mic: '#ask-dictate', note: '#ask-dictate-note', send: '#ask-send' }, vp.use.viewport.width, posted, sent);
+        await page.locator('#ask-send').click();
         await expect(page.locator('[data-ask-answer]')).toContainText(`please ${FAKE_TEXT} now`);
         expect(sent(), 'answered once').toBe(1);
       });
@@ -865,19 +865,17 @@ test.describe('an ask’s answer boxes', () => {
     await mic.click();
     await expect(input, 'the recording landed in its box').toHaveValue(FAKE_TEXT);
   });
-  // AN ASK WITH OPTIONS (the asks audit, #14) draws its free-text row
-  // collapsed behind "Other answer…": opened, its mic records and the ↑ still
-  // answers, once, through Answer (aria-disabled while blank, never disabled).
-  test('with options, Other answer… opens the box and its ↑ answers once', async ({ page }) => {
+  // AN ASK WITH OPTIONS draws its free-text row OPEN beside them, as the
+  // feed's card does: its mic records and the ↑ still answers, once, through
+  // Answer (aria-disabled while blank, never disabled).
+  test('with options, the open box beside them: its ↑ answers once', async ({ page }) => {
     const id = Number(fix('ask', '1', asker, 'Voice beside options?', 'Yes', 'No'));
     await routeTranscribe(page);
     const sent = answers(page, id);
     await signIn(page, origin);
     await page.goto(`${origin}/attention/asks/${id}`);
     const mic = page.locator('#ask-dictate'), up = page.locator('#ask-dictate-send'), answer = page.locator('#ask-send');
-    await expect(mic, 'the collapsed row hides the mic').toBeHidden();
-    await page.locator('[data-ask-other]').click();
-    await expect(page.locator('#ask-input')).toBeFocused();
+    await expect(page.locator('#ask-input'), 'beside options the box is open').toBeVisible();
     await expect(mic).toBeVisible();
     await expect(answer).toHaveAttribute('aria-disabled', 'true');
     await mic.click();
