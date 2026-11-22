@@ -46,7 +46,7 @@ const MaxAsksPerItem = 20
 // the question breaks, 409 when the owner's open asks are at their cap);
 // anything else is an outage.
 type Asker interface {
-	Raise(ctx context.Context, o officers.Officer, about AskAbout, question string, options []string, timeout time.Duration) (askID int64, err error)
+	Raise(ctx context.Context, o officers.Officer, about AskAbout, question string, options []string, multi bool, timeout time.Duration) (askID int64, err error)
 	Withdraw(ctx context.Context, o officers.Officer, askID int64)
 }
 
@@ -138,7 +138,7 @@ func (b *Backend) CreateAsk(ctx context.Context, item officers.ItemID, instance 
 			return nil, refuse(http.StatusConflict, "too_many_asks", fmt.Sprintf("the item already carries %d asks", MaxAsksPerItem), nil)
 		}
 		text := askQuestion(b.officer.ID, it, q)
-		raised, err = b.asker.Raise(ctx, b.officer, it.about(), text, a.Options, timeout)
+		raised, err = b.asker.Raise(ctx, b.officer, it.about(), text, a.Options, a.Multi, timeout)
 		if err != nil {
 			raised = 0
 			return nil, err

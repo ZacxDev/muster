@@ -49,9 +49,13 @@ var ItemStatuses = []string{StatusOpen, StatusClaimed, StatusWaiting, StatusDone
 // Ask is POST …/items/{item}/asks's body, less the instance: the tool's
 // arguments as the instance gave them.
 type Ask struct {
-	To         string   `json:"to"`
-	Question   string   `json:"question"`
-	Options    []string `json:"options,omitempty"`
+	To       string   `json:"to"`
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	// Multi: the options are checkboxes — the person may pick more than one
+	// (internal/attention.Ask.Multi, migration 0175). Sent to HQ as the body's
+	// `multi` only when true; omitted for every ordinary ask.
+	Multi      bool     `json:"multi,omitempty"`
 	Images     []string `json:"images,omitempty"`
 	ContextURL string   `json:"context_url,omitempty"`
 	// DeadlineSeconds is passed through verbatim (absent: HQ's default).

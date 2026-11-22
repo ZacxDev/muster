@@ -66,6 +66,26 @@ const (
 	// density target). A long option keeps the column.
 	AsksOptionsPairClass = "grid grid-cols-2 gap-1.5"
 	AsksOptionClass      = "press min-h-[44px] w-full rounded-lg bg-bg px-3 py-2 text-left text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	// AsksOptionsCheckClass is THE MULTI-SELECT FORM's options (migration 0175,
+	// attention.Ask.Multi): each option is a CHECKBOX on a row; the whole row
+	// is a 44px target that toggles it. A multi ask records every box ticked,
+	// joined with "; ", plus the owner's optional note.
+	AsksOptionsCheckClass   = "flex flex-col gap-1"
+	AsksOptionCheckClass    = "flex min-h-[44px] cursor-pointer items-center gap-2 rounded-lg bg-bg px-3 py-2 text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2" + focusRing
+	AsksOptionCheckBoxClass = "h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"
+	// AsksNoteClass is a multi-select ask's optional NOTE box: a full-width box
+	// under the free-text answer (migration 0175). Its value (name="note") is
+	// appended to the recorded answer as " — note: …".
+	AsksNoteClass = "min-h-[44px] w-full resize-y rounded-lg bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
+	// AsksNoteRowClass wraps that box and its label; AsksNoteLabelClass is the
+	// label ("Note (optional)").
+	AsksNoteRowClass   = "flex flex-col gap-1 pb-2"
+	AsksNoteLabelClass = "text-xs font-medium text-fg2"
+	// AsksMultiSendClass is a multi-select ask's one Send button on the ask
+	// PAGE, where it sits at the foot of the checkbox group (a pick with no
+	// text is a complete answer, so it is the primary action and is never
+	// gated on the free-text box).
+	AsksMultiSendClass = AsksCardSendClass + " self-start"
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
 	AsksActionsClass = "flex min-w-0 items-center gap-2"

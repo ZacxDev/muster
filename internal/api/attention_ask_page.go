@@ -222,7 +222,10 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if a.Status == attention.Open && !notice && a.StepUp == nil {
 		// 🔴 NO ANSWER BOX ON A STEP-UP CARD: only the paired phone answers it
 		// (errHostDecisionNeedsPhone refuses every other door).
-		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff(), optioned)
+		// 🔴 A MULTI-SELECT ask is NEVER "quiet": its note box rides with the
+		// free-text row, so the row stays open (quiet=false) and the boxes
+		// beside it are the pick controls.
+		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff(), optioned && !a.Multi)
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
@@ -357,13 +360,31 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		return askStepUpPhoneHTML("text-base")
 	}
 	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
-		b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
+		if a.Multi {
+			// A MULTI-SELECT ask (migration 0175): a CHECKBOX per option,
+			// form-associated with the answer form (form="ask-answer") so a
+			// tap of the one Send below posts every box ticked — joined by
+			// attention.OptionSep — with the free text and note if any. The
+			// free-text row is NOT collapsed for a multi ask (askComposerHTML
+			// gets quiet=false): the note belongs to the same answer.
+			b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
 `)
-		for _, o := range opts {
-			b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionClass + ` break-words text-base" data-ask-option>` + esc(o) + `</button>
+			for _, o := range opts {
+				b.WriteString(`<label class="` + ui.AsksOptionCheckClass + `"><input type="checkbox" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionCheckBoxClass + `" data-ask-option>` + esc(o) + `</label>
 `)
+			}
+			b.WriteString(`<button type="submit" form="ask-answer" class="` + ui.AsksMultiSendClass + `" data-ask-multi-send>Send answer</button>
+</div>
+`)
+		} else {
+			b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
+`)
+			for _, o := range opts {
+				b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionClass + ` break-words text-base" data-ask-option>` + esc(o) + `</button>
+`)
+			}
+			b.WriteString("</div>\n")
 		}
-		b.WriteString("</div>\n")
 	}
 	if len(it.suggestions) > 0 {
 		b.WriteString(`<div role="group" aria-label="` + suggestLabel + `" class="flex flex-col gap-2" data-ask-suggestions>
@@ -415,8 +436,20 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 `
 		formHidden = ` hidden`
 	}
+	// A MULTI-SELECT ask (migration 0175) adds the optional NOTE: its own
+	// name="note", form-associated with the answer form so the one Send posts
+	// it with the boxes ticked. It sits above the form, beside the free-text
+	// row that stays open for a multi ask (quiet is false).
+	noteBox := ""
+	if a.Multi {
+		noteBox = `<div class="` + ui.AsksNoteRowClass + `" data-ask-note-row>
+<label for="ask-input-note" class="` + ui.AsksNoteLabelClass + `">Note (optional)</label>
+<textarea id="ask-input-note" name="note" rows="1" form="ask-answer" placeholder="Add a note…" maxlength="` + strconv.Itoa(attention.MaxNoteRunes) + `" class="` + ui.AsksNoteClass + `" data-ask-note></textarea>
+</div>
+`
+	}
 	return `<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
-` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + other + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer` + formHidden + `>
+` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + other + noteBox + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer` + formHidden + `>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
 <label for="ask-input" class="sr-only">Your answer</label>
 <textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
@@ -447,7 +480,10 @@ const askPageScript = `<script>
   // The answer box is drawn AFTER this script (it is pinned below the
   // content), so it is looked up when used, never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
-  function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
+  // gatePick: the multi-select ask's first TICKED box in form f (migration
+  // 0175), null for none and for a single-select ask (no such box).
+  function gatePick(f) { return f && f.querySelector ? f.querySelector('input[name="option"]:checked') : null; }
+  function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
   // OTHER ANSWER…: an ask with options draws its free-text row collapsed
   // (askComposerHTML); opening it shows the row and puts the caret in the box.
   function openOther(focus) {
@@ -477,8 +513,10 @@ const askPageScript = `<script>
     var f = e.target, b = document.getElementById('ask-input');
     if (!b || !f || f.id !== 'ask-answer') return;
     // A blank answer is not posted (Answer is aria-disabled, not disabled:
-    // ui.AsksSendDisabledClass says why): the box is focused instead.
-    if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim()) { e.preventDefault(); b.focus(); return; }
+    // ui.AsksSendDisabledClass says why): the box is focused instead. A
+    // MULTI-SELECT ask's composer Answer counts a ticked box as an answer
+    // too (migration 0175), so only "no text AND no pick" is blank.
+    if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim() && !gatePick(f)) { e.preventDefault(); b.focus(); return; }
     if (!window.fetch || !window.URLSearchParams || !window.FormData) return;
     e.preventDefault();
     if (posting) return;
@@ -507,6 +545,14 @@ const askPageScript = `<script>
     });
   });
   document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') { grow(e.target); gate(e.target); } });
+  // A multi-select box ticked or unticked re-decides whether the composer's
+  // Answer is on (a pick alone is a complete answer, migration 0175).
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || t.type !== 'checkbox' || t.name !== 'option') return;
+    var b = document.getElementById('ask-input');
+    if (b) gate(b);
+  });
   // A box the browser restored (back, a reload) holds text: Answer follows
   // it, and a collapsed row holding text is shown. A page restored from the
   // back-forward cache mid-post (it navigated away on success) is no longer

@@ -250,7 +250,7 @@ func TestATeamOfficersRuntimeAndAskAreTheTeams(t *testing.T) {
 	}
 
 	o := officers.Officer{ID: "marketing:team", Owner: team}
-	id, err := officerAsker{w.srv}.Raise(context.Background(), o, builtin.AskAbout{}, "Which launch date?", []string{"Monday", "Friday"}, time.Hour)
+	id, err := officerAsker{w.srv}.Raise(context.Background(), o, builtin.AskAbout{}, "Which launch date?", []string{"Monday", "Friday"}, false, time.Hour)
 	if err != nil {
 		t.Fatalf("the team officer's ask: %v", err)
 	}
@@ -364,7 +364,9 @@ func TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage(t *testing.T) {
 	if err := w.pool.QueryRow(w.sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "lone"+w.suffix).Scan(&lone); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM users WHERE id = $1`, lone) })
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM users WHERE id = $1`, lone)
+	})
 	w.setRole(t, viewed.ID, w.a.uid, authz.TeamViewer)
 	w.setRole(t, operated.ID, w.a.uid, authz.TeamOperator)
 	w.setRole(t, team, w.b.uid, authz.TeamViewer)

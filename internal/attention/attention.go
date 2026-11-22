@@ -250,11 +250,17 @@ func (a Asker) Same(b Asker) bool {
 type Ask struct {
 	ID int64 `json:"id"`
 	// Kind is KindAsk or KindNotice (migration 0071).
-	Kind       Kind      `json:"kind,omitempty"`
-	Owner      int64     `json:"-"`
-	Asker      Asker     `json:"-"`
-	Question   string    `json:"question"`
-	Options    []string  `json:"options"`
+	Kind     Kind     `json:"kind,omitempty"`
+	Owner    int64    `json:"-"`
+	Asker    Asker    `json:"-"`
+	Question string   `json:"question"`
+	Options  []string `json:"options"`
+	// Multi: the asker's options are CHECKBOXES — the owner may pick any
+	// number — and a picked answer is the labels joined by OptionSep
+	// (migration 0175). false (every row before 0175, and every ordinary ask)
+	// is one option, one button. It is PAGE-ONLY: the phone's notification
+	// answers with one chip (internal/push), whatever this says.
+	Multi      bool      `json:"multi,omitempty"`
 	Status     Status    `json:"status"`
 	Answer     string    `json:"answer,omitempty"`
 	AnsweredBy string    `json:"answered_by,omitempty"`
@@ -350,6 +356,10 @@ type New struct {
 	Asker    Asker
 	Question string
 	Options  []string
+	// Multi: the asker's options are checkboxes, so the owner may pick any
+	// number and the answer is the labels joined by OptionSep (migration
+	// 0175). false is the single-select default, unchanged.
+	Multi bool
 	// TaskID links the ask to one of the caller's tasks (0: none). Set ONLY by
 	// muster's task path (internal/api askOwnerAboutTask), never from an
 	// agent's arguments: agent_dispatch trusts it as the provenance of the
@@ -528,6 +538,26 @@ func CleanSuggestions(in, options []string) []string {
 	return out
 }
 
+// OptionSep joins the option labels a MULTI-select ask's answer picked into
+// the one answer string stored (attention_asks.multi, migration 0175): the
+// owner ticks "a" and "b" and the answer recorded is "a; b". A single-select
+// answer is one label and never holds it. It is the same separator a
+// multi-select owner card joins its picks with (ui.OwnerAskMultiSep): both
+// answers read the same way to whoever reads them back.
+const OptionSep = "; "
+
+// NotePrefix introduces the owner's optional note on a multi-select answer:
+// "a; b — note: use the staging key". Appended to the joined labels by the
+// answer form's handler; a single-select answer never carries one.
+const NotePrefix = " — note: "
+
+// MaxNoteRunes bounds an owner's note on a multi-select answer, as the form's
+// box does (maxlength). The WHOLE answer — every picked label, the separator
+// and the note — is what MaxAnswerRunes then bounds (CleanAnswer): a note that
+// pushes it past is refused, and the owner shortens it, exactly as an
+// over-long free-text answer is.
+const MaxNoteRunes = 1000
+
 // CleanAnswer validates an answer's text.
 func CleanAnswer(s string) (string, error) {
 	s = strings.TrimSpace(s)
@@ -682,7 +712,7 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why, step_up`
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why, step_up, multi`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -693,7 +723,7 @@ func scan(row pgx.Row) (Ask, error) {
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why, &stepUp); err != nil {
+		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why, &stepUp, &a.Multi); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -849,10 +879,10 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		stepUp = raw
 	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why, step_up)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why, step_up, multi)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why, stepUp))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why, stepUp, n.Multi))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -1046,6 +1076,10 @@ func ownerDoorRefused(a Ask, err error) (Ask, error) {
 // to the option tapped by the row muster stored, never by text the asker wrote
 // afterwards. Whether the door was the owner's is a separate question
 // (AnsweredVia.OwnerDoor).
+//
+// A MULTI-select answer that picked several options joins them with OptionSep
+// ("a; b") and so matches none of them here: ok is false. A multi answer that
+// picked exactly one label still reads as that option.
 func (a Ask) ChosenOption() (int, bool) {
 	if a.Kind == KindNotice || (a.Status != Answered && a.Status != AnsweredInSession) {
 		return 0, false

@@ -50,6 +50,8 @@ func builtinToolDef(o officers.Officer, d agents.ToolDef) agents.ToolDef {
 			"question": strProp("The question. Say what you need decided and why."),
 			"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 				"description": "Optional answers to pick from: short, unique labels."},
+			"multi": map[string]any{"type": "boolean",
+				"description": "true with options: let your owner pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended."},
 			"context_url":      strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
 			"deadline_seconds": map[string]any{"type": "integer", "description": "Optional: how long they have to answer, in seconds (muster's default is a day)."},
 		}, "item_id", "question")

@@ -490,7 +490,19 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	action := attentionPath + `/asks/` + id + `/answer`
 	b.WriteString(`<form method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + p.attrs + `>
 ` + p.back)
-	if len(it.Options) > 0 {
+	if len(it.Options) > 0 && it.multi {
+		// A MULTI-SELECT ask (migration 0175): each option a CHECKBOX row, and
+		// ONE Send — never one submit per option. The free-text answer row and
+		// the note below carry the same Send, so a tap of any box sends every
+		// box ticked (joined by attention.OptionSep) and, with a note, that
+		// too. The send is not GATED on the box: a pick with no text is a
+		// complete answer.
+		b.WriteString(`<div class="` + ui.AsksOptionsCheckClass + `" role="group" aria-label="The asker's options">`)
+		for _, o := range it.Options {
+			b.WriteString(`<label class="` + ui.AsksOptionCheckClass + `"><input type="checkbox" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionCheckBoxClass + `" data-attention-option>` + esc(o) + `</label>`)
+		}
+		b.WriteString("</div>\n")
+	} else if len(it.Options) > 0 {
 		cls := ui.AsksOptionsClass
 		if askOptionsShort(it.Options) {
 			cls = ui.AsksOptionsPairClass
@@ -511,8 +523,17 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	input := "answer-" + id
 	submit := input + "-submit"
 	send := ui.AsksCardSendClass
-	if len(it.Options) > 0 {
+	sendLabel := "Answer"
+	if len(it.Options) > 0 && !it.multi {
 		send = ui.AsksCardSendQuietClass
+	}
+	if it.multi {
+		// One Send for the whole multi-select form: the boxes, the free text
+		// and the note go together, so it is the primary action and it is
+		// never gated on the box (a pick with no text is complete). The feed's
+		// script still refuses a post with neither a pick nor text
+		// (ui/asks_card.go, htmx:beforeRequest).
+		sendLabel = "Send answer"
 	}
 	// GATED (the Asks feed, whose script runs here): Answer starts OFF
 	// (aria-disabled: ui.AsksSendDisabledClass says why not disabled) — the box
@@ -520,7 +541,7 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	// (ui/asks_card.go). Elsewhere (a morning report, an officer's page:
 	// no feed script) it is drawn enabled, as before.
 	sendAttrs := ""
-	if p.gated {
+	if p.gated && !it.multi {
 		send += " " + ui.AsksSendDisabledClass
 		sendAttrs = ` aria-disabled="true" data-asks-send`
 	}
@@ -533,8 +554,18 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>Answer</button>` + p.dismiss + `</div>
+		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>` + sendLabel + `</button>` + p.dismiss + `</div>
 ` + note)
+	if it.multi {
+		// THE OPTIONAL NOTE (migration 0175): one line under the answer, its
+		// own name="note", appended to the recorded answer as " — note: …".
+		noteID := "note-" + id
+		b.WriteString(`<div class="` + ui.AsksNoteRowClass + `" data-asks-note-row>
+<label for="` + noteID + `" class="` + ui.AsksNoteLabelClass + `">Note (optional)</label>
+<textarea id="` + noteID + `" name="note" rows="1" placeholder="Add a note…" maxlength="` + strconv.Itoa(attention.MaxNoteRunes) + `" class="` + ui.AsksNoteClass + `" data-asks-note></textarea>
+</div>
+`)
+	}
 	b.WriteString("</form>\n")
 	return b.String()
 }
