@@ -120,6 +120,20 @@ func describeAnswer(blocks []Block, component string, data []byte) Answer {
 			lines = append(lines, AnswerLine{Label: "Comment", Value: c})
 		}
 		return Answer{Heading: orHeading(heading, "An approval"), Lines: lines}
+	case BlockGallery:
+		var in struct {
+			Picks []GalleryPicked `json:"picks"`
+		}
+		_ = json.Unmarshal(data, &in)
+		names := make([]string, 0, len(in.Picks))
+		for _, p := range in.Picks {
+			names = append(names, galleryItemName(p.Caption, p.Index))
+		}
+		v := strings.Join(names, ", ")
+		if v == "" {
+			v = "Nothing picked"
+		}
+		return Answer{Heading: orHeading(heading, "A gallery"), Lines: []AnswerLine{{Label: "Picked", Value: v}}}
 	}
 	var v any
 	_ = json.Unmarshal(data, &v)
@@ -363,4 +377,13 @@ func orHeading(label, kind string) string {
 		return label
 	}
 	return kind
+}
+
+// galleryItemName is a gallery item as words: its caption, else "image N"
+// (N from 1), the name the gallery's buttons use too (render.go).
+func galleryItemName(caption string, index int) string {
+	if caption != "" {
+		return caption
+	}
+	return "image " + strconv.Itoa(index+1)
 }

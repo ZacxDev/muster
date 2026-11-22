@@ -246,14 +246,22 @@ func insertVersion(ctx context.Context, tx pgx.Tx, page int64, v int, title stri
 // that is not there — another page's, another owner's (row-level security:
 // unseen), deleted, never attached — refuses the version with a sentence
 // naming it. 0164's foreign key holds the same if this check ever went.
+//
+// A gallery's item must be an IMAGE (the gallery draws it as an <img>): a
+// video named there refuses the version too.
 func insertVersionAssets(ctx context.Context, tx pgx.Tx, page int64, v int, blocks []Block) error {
+	gallery := GalleryAssets(blocks)
 	for _, ref := range AssetRefs(blocks) {
-		var ok bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM page_assets WHERE page_id = $1 AND public_id = $2)`, page, ref).Scan(&ok); err != nil {
+		var ct string
+		err := tx.QueryRow(ctx, `SELECT content_type FROM page_assets WHERE page_id = $1 AND public_id = $2`, page, ref).Scan(&ct)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: %s%s is not an asset of this page: attach the file to this page with page_asset_upload first, and use the ref it returns", ErrInvalid, AssetScheme, ref)
+		}
+		if err != nil {
 			return err
 		}
-		if !ok {
-			return fmt.Errorf("%w: %s%s is not an asset of this page: attach the file to this page with page_asset_upload first, and use the ref it returns", ErrInvalid, AssetScheme, ref)
+		if gallery[ref] && IsVideo(ct) {
+			return fmt.Errorf("%w: %s%s is a video; a gallery shows images (put a video in a markdown or html block)", ErrInvalid, AssetScheme, ref)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO page_version_assets (page_id, version, asset_id) VALUES ($1, $2, $3)`, page, v, ref); err != nil {
 			return err

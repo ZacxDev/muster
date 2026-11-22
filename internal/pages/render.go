@@ -169,7 +169,11 @@ func Content(v Version, o RenderOptions) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + contentThemeClass + "\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS + "</style>\n<script>")
+		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS)
+	if HasGallery(v.Blocks) {
+		b.WriteString("\n" + galleryCSS)
+	}
+	b.WriteString("</style>\n<script>")
 	var blocks strings.Builder
 	for _, blk := range v.Blocks {
 		blocks.WriteString(renderBlock(blk, o))
@@ -260,8 +264,87 @@ func renderBlock(b Block, o RenderOptions) string {
 		return open + `<form data-muster-form><p class="mp-label">` + esc(b.Label) + `</p>` + comment +
 			`<div class="mp-buttons"><button type="submit" name="decision" value="approve">Approve</button>` +
 			`<button type="submit" name="decision" value="decline" class="mp-secondary">Decline</button></div>` + status + `</form></section>`
+	case BlockGallery:
+		return renderGallery(b)
 	}
 	return ""
+}
+
+// renderGallery is a gallery's markup: its label, a thumbnail per item (a
+// real button that opens the item full size, named for it), a group heading
+// wherever an item's group differs from the one before, and — with Pick — a
+// Pick toggle under each item and the bar that saves the picks. Everything
+// the viewer does (the full-size dialog, the picks) is the SDK's
+// (galleryJS, gallery.go); nothing here runs.
+//
+// Every author string is escaped; the item's asset id is written without its
+// "asset:" (data-muster-asset-id) so the SDK's swap of each reference for its
+// placeholder touches only the thumbnail's src.
+func renderGallery(b Block) string {
+	esc := html.EscapeString
+	id := esc(b.ID)
+	layout := b.Layout
+	if layout == "" {
+		layout = GalleryGrid
+	}
+	attrs := ` data-muster-layout="` + layout + `" data-muster-items="` + strconv.Itoa(len(b.Items)) + `"`
+	if b.Pick != nil {
+		mode := "one"
+		if b.Pick.PicksSeveral() {
+			mode = "several"
+		}
+		attrs += ` data-muster-pick="` + mode + `"`
+		if b.Pick.Required {
+			attrs += ` data-muster-required`
+		}
+	}
+	var out strings.Builder
+	out.WriteString(`<section class="mp-block mp-gallery" data-muster-component="` + id + `" data-muster-kind="gallery"` + attrs)
+	if b.Label != "" {
+		out.WriteString(` aria-labelledby="` + id + `-l"><p class="mp-label" id="` + id + `-l">` + esc(b.Label) + `</p>`)
+	} else {
+		out.WriteString(` aria-label="Gallery">`)
+	}
+	group, open := "", false
+	for i, it := range b.Items {
+		if !open || it.Group != group {
+			if open {
+				out.WriteString(`</ul>`)
+			}
+			if it.Group != "" {
+				out.WriteString(`<h3 class="mp-gallery-group">` + esc(it.Group) + `</h3>`)
+			}
+			out.WriteString(`<ul class="mp-gallery-grid" role="list">`)
+			group, open = it.Group, true
+		}
+		name := esc(galleryItemName(it.Caption, i))
+		alt := esc(it.Caption)
+		if it.Caption == "" {
+			alt = "Image " + strconv.Itoa(i+1) + " of " + strconv.Itoa(len(b.Items))
+		}
+		ref := strings.TrimPrefix(it.Asset, AssetScheme)
+		out.WriteString(`<li class="mp-gallery-item" data-muster-item="` + strconv.Itoa(i) + `" data-muster-asset-id="` + esc(ref) +
+			`" data-muster-caption="` + esc(it.Caption) + `" data-muster-name="` + name + `">` +
+			`<button type="button" class="mp-gallery-open" aria-label="Open ` + name + ` full size"><img src="` + AssetScheme + esc(ref) + `" alt="` + alt + `">` +
+			`<span class="mp-gallery-badge" aria-hidden="true">✓</span></button>`)
+		if it.Caption != "" {
+			out.WriteString(`<p class="mp-gallery-cap">` + esc(it.Caption) + `</p>`)
+		}
+		if b.Pick != nil {
+			out.WriteString(`<button type="button" class="mp-gallery-pick mp-secondary" aria-pressed="false" aria-label="Pick ` + name + `">Pick</button>`)
+		}
+		out.WriteString(`</li>`)
+	}
+	if open {
+		out.WriteString(`</ul>`)
+	}
+	if b.Pick != nil {
+		out.WriteString(`<div class="mp-gallery-bar"><span data-muster-picked>0 picked</span><span aria-hidden="true">·</span>` +
+			`<button type="button" data-muster-save>` + esc(submitLabel(Block{SubmitLabel: b.Pick.SubmitLabel}, "Save")) + `</button>` +
+			`<p class="mp-status" role="status" data-muster-status></p></div>`)
+	}
+	out.WriteString(`</section>`)
+	return out.String()
 }
 
 func req(r bool) string {
@@ -513,6 +596,9 @@ var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p
  gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
  BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,PH=` + jsString(assetPlaceholder) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+// onBack is what the shell's "back" closes (a gallery's open viewer), null
+// when nothing is open: the shell pops the history entry viewer(true) pushed.
+var onBack=null;
 function later(){R(ST,W,[show,0]);}
 // RENDER FIRST, FILL IN (asset.go). The page goes in at once, each asset:<id>
 // in its markup a placeholder (PH+id: a 1x1 transparent image, drawn as a
@@ -546,12 +632,15 @@ function show(){
  ASSETS.forEach(function(a){BLOCKS=BLOCKS.split("asset:"+a).join(ph(a));});
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
  ASSETS.forEach(function(a){if(urls[a])fill(a);else mark(a,"loading");});
+ gal();
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
 function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}]);}
 function answer(ev){
- var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string")return;
+ var d=R(gData,ev,[]);if(!d||d.muster!==1)return;
+ if(d.op==="back"&&d.id===undefined){var b=onBack;onBack=null;if(b)b();return;}
+ if(typeof d.id!=="string")return;
  var cb=waiting[d.id];if(!cb)return;delete waiting[d.id];
  if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"Not sent.");
 }
@@ -574,9 +663,13 @@ if(PARENT===W)show();else hello();
 function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
- R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
+ R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:
+  op==="keep"?{muster:1,id:id,op:"keep",key:component,value:value}:op==="recall"?{muster:1,id:id,op:"recall",key:component}:{muster:1,id:id,op:"submit",component:component,data:value}]);
  R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"No answer came back. Try again.");}},` + sdkWaitMs + `]);
 }
+// viewer tells the shell a full-size viewer opened (it pushes a history
+// entry, so Back closes it: the shell answers "back") or closed (it pops it).
+function viewer(open){if(port)R(PM,port,[{muster:1,op:"viewer",open:open===true}]);}
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
 W.muster=Object.freeze({
@@ -619,6 +712,7 @@ R(AEL,D,["submit",function(ev){
   btns.forEach(function(b){b.disabled=false;});
  });
 }]);
+` + galleryJS(v) + `
 })();`
 }
 
@@ -711,6 +805,9 @@ const (
 	// confirmMaxChars bounds the confirm's summary: a send whose summary is
 	// longer is refused, never shown in part.
 	confirmMaxChars = "65536"
+	// maxKeeps bounds the galleries' kept picks under one page path (the
+	// shell's relay): keys, each at most 16 KiB of JSON.
+	maxKeeps = "16"
 )
 
 // ShellView is what the shell draws.
@@ -745,6 +842,9 @@ type ShellView struct {
 	// (Page details, Made by) open in a new tab (the panel's frame grants no
 	// top navigation, ui.SessionPageSandbox).
 	Embed bool
+	// Keeps are the only keys the shell keeps a gallery's unsaved picks under
+	// for the frame (KeepKeys of the version it shows); none keeps nothing.
+	Keeps []string
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the
@@ -947,7 +1047,7 @@ func Shell(v ShellView) string {
 	b.WriteString(`</header>
 <iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
 `)
-	script := ShellScript(v.Base, o != nil)
+	script := ShellScript(v.Base, o != nil, v.Keeps...)
 	if o != nil {
 		b.WriteString(`<div class="scrim" data-versions-scrim hidden></div>
 <div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>
@@ -1060,13 +1160,20 @@ func Shell(v ShellView) string {
 // the port: a page's script posting one to the shell is ignored, as is one
 // from any other window, and a y that is not such a number.
 // TestTheShellHidesItsHeaderOnlyByTheRules and e2e pages.spec.ts.
-func ShellScript(base string, owner bool) string {
+//
+// keeps are the gallery keys the relay keeps picks under (KeepKeys of the
+// shown version): a keep or recall of any other key is refused.
+func ShellScript(base string, owner bool, keeps ...string) string {
 	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
 	if owner {
 		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
 	}
+	if keeps == nil {
+		keeps = []string{}
+	}
+	keepJSON, _ := json.Marshal(keeps)
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null,KEEPS=` + string(keepJSON) + `;
 var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,floorY=0,quiet=0,cap=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
 function hidden(){return !!hdr&&hdr.hasAttribute("data-hidden");}
 function setHidden(h){
@@ -1147,9 +1254,67 @@ if(box){
  box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
 }
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
+// THE VIEWER'S HISTORY ENTRY (gallery.go): a gallery's full-size viewer is
+// in the frame, Back is this window's. When the frame says it opened, the
+// shell pushes ONE entry, its state marked musterViewer and carrying a token
+// of this load's (vTok); a Back that leaves it tells the frame ("back") and
+// the viewer closes; a close in the frame (×, Esc, a tap outside) pops it
+// here.
+// 🔴 EVERY DECISION IS BY history.state, NEVER BY A TIMER. A back() is
+// queued, and its traversal's target is counted when it RUNS: a push made
+// before a slow pop lands is popped instead, and the late popstate then reads
+// as a Back that closes the reopened viewer, leaving the closed viewer's
+// entry current (two Backs to leave). So an open while a pop is on its way
+// waits for that pop's popstate, and a popstate closes the viewer only when
+// the current entry is no longer the one this load pushed.
+// A marked entry that is current while nothing is open — left by a reload
+// while open, or reached by Forward — is taken over by the next open
+// (replaceState, not a push), so it never costs an extra Back once used.
+var vOpen=false,vClosing=false,vWant=false,vId=String(Math.random()).slice(2),vN=0,vTok="";
+function vState(){try{return history.state;}catch(e){return null;}}
+function vMarked(){var s=vState();return !!s&&s.musterViewer===1;}
+function vMine(){var s=vState();return !!s&&s.musterViewer===1&&s.t===vTok&&vTok!=="";}
+function viewer(open){
+ if(open){
+  if(vOpen)return;if(vClosing){vWant=true;return;}
+  vTok=vId+":"+(++vN);var st={musterViewer:1,t:vTok};
+  try{if(vMarked())history.replaceState(st,"");else history.pushState(st,"");vOpen=true;}catch(e){vTok="";}
+  return;
+ }
+ vWant=false;if(!vOpen)return;vOpen=false;
+ if(!vMine()){vTok="";return;}
+ vClosing=true;history.back();
+}
+window.addEventListener("popstate",function(){
+ if(vClosing){vClosing=false;vTok="";if(vWant){vWant=false;viewer(true);}return;}
+ if(vOpen&&!vMine()){vOpen=false;vTok="";if(port)port.postMessage({muster:1,op:"back"});}
+});
 function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
+ // A gallery's unsaved picks (gallery.go), kept in THIS window's
+ // sessionStorage (the frame has none): under this page's own path and the
+ // version and gallery the key names, at most 16 KiB of JSON. Nothing is sent.
+ // 🔴 ONLY A KEY THE SERVER NAMED (KEEPS: the shown version's pick
+ // galleries), so a page's script forging gallery sections cannot fill this
+ // origin's sessionStorage; and a NEW key first drops this path's keys of
+ // other versions, then is refused past ` + maxKeeps + ` under the path.
+ if(d.op==="keep"||d.op==="recall"){
+  if(!only(d,d.op==="keep"?["muster","id","op","key","value"]:["muster","id","op","key"])||typeof d.key!=="string"||KEEPS.indexOf(d.key)<0)
+   return reply(false,"muster does not take that");
+  var pre="muster-picks:"+location.pathname+"|",sk=pre+d.key;
+  try{
+   if(d.op==="recall"){var kept=sessionStorage.getItem(sk);return reply(true,kept?JSON.parse(kept):null);}
+   var kv=JSON.stringify(d.value===undefined?null:d.value);
+   if(kv.length>16384)return reply(false,"too much to keep");
+   if(sessionStorage.getItem(sk)===null){
+    var held=0;
+    for(var ki=sessionStorage.length-1;ki>=0;ki--){var kk=sessionStorage.key(ki);if(kk&&kk.indexOf(pre)===0){if(KEEPS.indexOf(kk.slice(pre.length))<0)sessionStorage.removeItem(kk);else held++;}}
+    if(held>=` + maxKeeps + `)return reply(false,"too much to keep");
+   }
+   sessionStorage.setItem(sk,kv);return reply(true,null);
+  }catch(e){return reply(false,"it could not be kept");}
+ }
  if(!base)return reply(false,"nothing can be sent from here");
  // An asset the version refers to (asset.go): a READ, fetched here — the
  // frame has no network — by the route under base (the link's token, or the
@@ -1203,7 +1368,7 @@ window.addEventListener("message",function(ev){
  if(!f||port||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;
  var ch=new MessageChannel();port=ch.port1;
- port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};
+ port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else if(m.op==="viewer")viewer(m.open===true);else relay(m);};
  f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
 });
 })();`

@@ -622,7 +622,8 @@ func (s *PGStore) ClearKickoffDelivery(ctx context.Context, id int64) error {
 // conditional UPDATE: it wins iff the
 // claim is unheld (NULL) or already expired, and holds NO connection afterwards
 // — which is the whole reason this is a row and not pg_try_advisory_lock (a
-// session lock would pin one of MaxConns=8 for up to KickoffWorkTimeout).
+// session lock would pin one of the pool's connections — db.DefaultMaxConns,
+// 8, unless DATABASE_URL sets pool_max_conns — for up to KickoffWorkTimeout).
 //
 // `now()` is Postgres's clock on BOTH sides of the comparison, so two pods with
 // skewed system clocks still agree about whether a claim has expired.
