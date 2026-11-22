@@ -39,6 +39,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -422,6 +423,12 @@ type Extensions struct {
 	// FleetActions is the fleet's action log (internal/fleet, migration
 	// 0158). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
+	// SessionWakes is the lines owed to mirrored sessions for their owner's
+	// decisions (internal/sessionwake, migration 0177; session_wake.go). nil
+	// (no database): a mirrored session's answers stay pull-only, as before,
+	// and drafts and pages notify nothing back. Wakes also need SendQueue
+	// and Mirror.
+	SessionWakes sessionwake.Store
 	// FleetChecks is the GitHub App's CI read of one commit (fleet_answers.go
 	// fleetCIRead: ci_result), read only for an
 	// owner the App admits (githubAppForOwner), behind a two-minute cache.

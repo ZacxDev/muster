@@ -235,6 +235,9 @@ var apiExempt = map[string]exemption{
 	"pages.go Server.renderPageDetail p.Title":          {2, "passed RAW to ui.PageShareQuietButton and ui.PageLinkMenu, which plain it once (pageCardTitle)"},
 	"pages.go pageResponseHTML l.Label":                 {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label": {1, whyStatic},
+	// A wake's retry button: one of wakeDeliveryText's two literals ("Retry
+	// delivery", "Send to the session"); the draft card carries the same value.
+	"session_wake.go wakeActionFormHTML a.Label": {2, whyStatic},
 	// Account → Theme's preset <select> (theme.go): a preset's label is
 	// muster's own compiled-in words (internal/theme Presets), escaped.
 	"theme.go Server.accountThemeSection p.Label":              {1, whyStatic},

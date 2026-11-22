@@ -23,8 +23,8 @@ import { coarse, pickView } from '../lib/switcher';
 //      operator first, then the rest most recently active first — mirrored
 //      windows and dispatched agents interleaved by activity, each with its
 //      host's icon.
-//   2. A RECENCY DOT on the operator's tmux idle-fade scale, one colour per
-//      bucket (bright green, aqua, orange, grey), on each row.
+//   2. A RECENCY DOT on each row, on the tmux idle-fade buckets, one neutral
+//      grey per bucket fading from bright to muted (never red).
 //   3. A LONG TITLE keeps its row one line, whole in its tooltip.
 //   4. WAITING ON YOU: an agent's attention_ask, a Claude window stopped at a
 //      prompt, a held AskUserQuestion registered by the real `muster-mirror
@@ -281,15 +281,18 @@ for (const vp of [
       await expect(row(page, freshAgent).locator('[data-host-icon]').first()).toBeVisible();
     });
 
-    test('each row draws a recency dot in its tmux idle-fade colour', async ({ page }) => {
+    test('each row draws a recency dot in its neutral grey for how long it has been idle', async ({ page }) => {
       await openList(page);
+      // The DARK theme's --mu-idle-<i> (the app always forces .dark, see
+      // internal/ui/theme.go themeHeadScript), pinned as literals: a grey that
+      // fades with age, never a red.
       const want: Record<string, [string, string]> = {
-        luxnow: ['0', 'rgb(184, 187, 38)'],
-        [freshAgent]: ['0', 'rgb(184, 187, 38)'],
-        luxq: ['2', 'rgb(104, 157, 106)'],
-        luxorange: ['4', 'rgb(214, 93, 14)'],
-        luxancient: ['7', 'rgb(102, 92, 84)'],
-        [oldAgent]: ['7', 'rgb(102, 92, 84)'],
+        luxnow: ['0', 'rgb(236, 234, 242)'],
+        [freshAgent]: ['0', 'rgb(236, 234, 242)'],
+        luxq: ['2', 'rgb(203, 200, 213)'],
+        luxorange: ['4', 'rgb(170, 167, 184)'],
+        luxancient: ['7', 'rgb(121, 116, 141)'],
+        [oldAgent]: ['7', 'rgb(121, 116, 141)'],
       };
       for (const [k, [bucket, colour]] of Object.entries(want)) {
         const dot = dotOf(row(page, k));

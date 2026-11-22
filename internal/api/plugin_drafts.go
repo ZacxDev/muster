@@ -737,6 +737,9 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	// it leaves the Open feed saying what was decided and where, and a Confirm
 	// on the phone afterwards is refused as not open.
 	s.settleDraftStepUps(ctx, d, dec.Via.Via)
+	// A draft a mirrored session wrote (a route's answer): the session is
+	// told what the owner decided (session_wake.go).
+	s.wakeDraftDecided(ctx, d, dec.Via)
 	return d, nil
 }
 
@@ -1070,6 +1073,17 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		// The owner's own words with a rejection (0123), on the card's history.
 		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + stepUpHiddenHTML(*d.DecisionReason) + `</span>
 `)
+	}
+	if c.WakeLine != "" {
+		// Where the owner's decision — or its send outcome — went to the
+		// mirrored session that wrote it (session_wake.go).
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-wake>` + esc(c.WakeLine) + `</span>
+`)
+		if c.WakeRetryID > 0 {
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `">` + wakeActionFormHTML(c.WakeRetryID, wakeAction{Label: c.WakeRetryLabel, StepUp: c.WakeStepUp},
+				ui.AsksSecondaryButtonClass, ` data-draft-wake-retry`) + `</div>
+`)
+		}
 	}
 	b.WriteString(draftDecisionHTML(c, now, p))
 	b.WriteString("</li>\n")

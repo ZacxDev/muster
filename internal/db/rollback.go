@@ -396,6 +396,13 @@ const officerCapRaisesMigrationVersion = 157
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const fleetActionsMigrationVersion = 158
 
+// sessionWakesMigrationVersion is 0177: session_wakes (the lines owed to a
+// mirrored session for its owner's decisions, internal/sessionwake), owned and
+// under the same row-level security, personal; same treatment again. Its body
+// is idempotent (the send queue's one-origin rule is re-created, widened).
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const sessionWakesMigrationVersion = 177
+
 // officerChatCardsMigrationVersion is 0160: officer_chat_cards (the confirm
 // cards an officer asks for in a person's chat with it, internal/officers/
 // builtin chat_cards.go), owned and under the same row-level security,
@@ -465,7 +472,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts, hasOfficerPublicBranches, hasPluginChiefInstructions, hasChiefSessionLLMUsage, hasFleetOwnerMarks, hasOfficerConnectorBlocks, hasOfficerSeen, hasOfficerCapRaises, hasFleetActions, hasOfficerChatCards, hasMorningReports, hasPageAssets, hasTeamPages, hasHostJobs, hasOfficerPRQueue, hasOfficerAutoRestarts, hasPluginServerUsers bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts, hasOfficerPublicBranches, hasPluginChiefInstructions, hasChiefSessionLLMUsage, hasFleetOwnerMarks, hasOfficerConnectorBlocks, hasOfficerSeen, hasOfficerCapRaises, hasFleetActions, hasOfficerChatCards, hasMorningReports, hasPageAssets, hasTeamPages, hasHostJobs, hasOfficerPRQueue, hasOfficerAutoRestarts, hasPluginServerUsers, hasSessionWakes bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -536,8 +543,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.host_jobs') IS NOT NULL,
 		to_regclass('public.officer_pr_queue') IS NOT NULL,
 		to_regclass('public.officer_auto_restarts') IS NOT NULL,
-		to_regclass('public.plugin_server_users') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks, &hasOfficerSeen, &hasOfficerCapRaises, &hasFleetActions, &hasOfficerChatCards, &hasMorningReports, &hasPageAssets, &hasTeamPages, &hasHostJobs, &hasOfficerPRQueue, &hasOfficerAutoRestarts, &hasPluginServerUsers); err != nil {
+		to_regclass('public.plugin_server_users') IS NOT NULL,
+		to_regclass('public.session_wakes') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks, &hasOfficerSeen, &hasOfficerCapRaises, &hasFleetActions, &hasOfficerChatCards, &hasMorningReports, &hasPageAssets, &hasTeamPages, &hasHostJobs, &hasOfficerPRQueue, &hasOfficerAutoRestarts, &hasPluginServerUsers, &hasSessionWakes); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -609,7 +617,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == hostJobsMigrationVersion && hasHostJobs) &&
 			!(m.version == officerPRQueueMigrationVersion && hasOfficerPRQueue) &&
 			!(m.version == officerAutoRestartsMigrationVersion && hasOfficerAutoRestarts) &&
-			!(m.version == pluginServerScopeMigrationVersion && hasPluginServerUsers) {
+			!(m.version == pluginServerScopeMigrationVersion && hasPluginServerUsers) &&
+			!(m.version == sessionWakesMigrationVersion && hasSessionWakes) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

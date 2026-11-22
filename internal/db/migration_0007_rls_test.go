@@ -132,6 +132,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO host_jobs (host, name, cron, command, timeout_s, reported_at) VALUES ('host-a', 'smoke-' || lower($1), '0 6 * * *', '{/bin/true}', 60, now()) RETURNING id`, func() []any { return []any{tag} }, &hostJob},
 		{`INSERT INTO host_job_runs (job_id, host, job, trigger, status, timeout_s, fired_at) VALUES ($1, 'host-a', 'smoke', 'cron', 'ok', 60, now())`, func() []any { return []any{hostJob} }, nil},
 		{`INSERT INTO officer_auto_restarts (officer, day, instance, restarts) VALUES ('draft:example-' || lower($1), current_date, 'officer-example-1', 1)`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO session_wakes (kind, page_id, response_count, mirror_host, mirror_session) VALUES ('page_responses', abs(hashtext($1))::bigint + 1, 1, 'host-a', 'sess-' || lower($1))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},

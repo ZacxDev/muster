@@ -1053,7 +1053,14 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 // gates, then mirrorPaste into the window's Claude Code pane with opts. The
 // dispatcher's send passes the turn it decided on (mirror.ExpectTurn); a
 // person's Send now passes none, so it is pasted like a Send — busy or not.
-func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) sendqueue.Outcome {
+func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) (out sendqueue.Outcome) {
+	if it.SessionWakeID != 0 {
+		// A session wake's row: its outcome is the wake's (session_wake.go),
+		// recorded on EVERY return — the gate's refusal, the host's, the
+		// paste's — conditional on the wake still being this row's.
+		wctx := ctx
+		defer func() { s.wakeOutcome(wctx, it, out) }()
+	}
 	ctx = stepup.WithAuthTime(ctx, it.StepUpAt)
 	if s.ext.Mirror == nil {
 		return sendqueue.Outcome{Detail: "Not sent: mirrored sessions are off on this server."}
@@ -1062,6 +1069,18 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		return sendqueue.Outcome{Detail: why}
 	}
 	switch {
+	case it.SessionWakeID != 0:
+		// muster's line telling a mirrored session what its owner decided:
+		// its wake gates it (session_wake.go), not a sign-in — the wake still
+		// delivering on THIS row, and the session not having read it itself.
+		switch why := s.sendQueueWakeGate(ctx, it); why {
+		case "":
+		case SendQueueNudgeWait:
+			return sendqueue.Outcome{Superseded: true, Detail: why}
+		default:
+			return sendqueue.Outcome{Detail: why}
+		}
+		ctx = s.wakeStepUpNow(ctx)
 	case it.FleetActionID != 0:
 		// A fleet action's card the owner approved: its action gates it
 		// (fleet_actions.go), not a sign-in — fleet proposals still on, the

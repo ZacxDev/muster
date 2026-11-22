@@ -45,6 +45,7 @@ var stepUpChannels = map[string]stepUpChannel{
 	"team_dispatch.go:teamCardRefusal":                    {how: "form", proof: "TestATeamsCardsConfirmInPlaceForAnOperator"},
 	"outreach_batch.go:handleOutreachBatchDecide":         {how: "form", proof: "TestATeamsCardsConfirmInPlaceForAnOperator"}, // the Asks page's dialog, drawn with plugins off too
 	"plugin_drafts.go:decideDraft":                        {how: "form", proof: "e2e/tests/plugins.spec.ts"},
+	"session_wake.go:wakeRetryStale":                      {how: "form", proof: "TestAWakeCarryingTheOwnersWordsNeedsAFreshSignIn"},
 	"officer_operator_chat.go:handleOfficerChatCard":      {how: "form", proof: "TestAConfirmCardApprovalNeedsARecentSignIn"}, // the officer page draws draftStepUpHTML with an open card
 	"signin_app.go:handleAppSignInDecide":                 {how: "form", proof: "TestAppSignInApprovalNeedsAFreshSignIn"},
 	"plugin_pairing.go:decidePairForm":                    {how: "form", proof: "TestThePluginsPagePairingApproveConfirmsInPlace"},

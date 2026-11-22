@@ -689,6 +689,11 @@ func (s *Server) waitResult(ctx context.Context, a attention.Ask) string {
 			s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 		}
 	}
+	if a.Status == attention.Answered || a.Status == attention.Cancelled {
+		// 🔴 READ HERE, SO NEVER ALSO PASTED: a mirrored session's wake for
+		// this answer or dismissal is closed (session_wake.go).
+		s.wakeRead(ctx, a)
+	}
 	return toolJSON(askView(a))
 }
 

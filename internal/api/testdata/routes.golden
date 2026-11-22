@@ -330,6 +330,7 @@ POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
 POST /attention/opencode/answer
+POST /attention/wakes/{id}/retry
 POST /auth/claim
 POST /auth/clear-caches
 POST /auth/confirm

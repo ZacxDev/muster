@@ -172,10 +172,10 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   (a status write, a rename). The host is not a section: it is the icon on each
   entry. A window whose host did not report activity comes last. Ties keep a
   stable order: agents first, then windows by host, session and index.
-- **How recent, at a glance.** Each sidebar row draws a small dot tinted on the
-  same 8-step Gruvbox scale as tmux's idle-fade window colours: bright green
-  under 10 minutes, green to 30, aqua to an hour, yellow to 2 hours, orange to
-  4, red to 8, purple to a day, grey past it.
+- **How recent, at a glance.** Each sidebar row draws a small grey dot that
+  fades in 8 steps, on tmux's idle-fade buckets: brightest under 10 minutes,
+  then to 30, to an hour, to 2 hours, to 4, to 8, to a day, and most muted past
+  it. The dot is never red: being idle is not an error.
 - **Idle.** An entry with no activity for longer than `MUSTER_AGENTS_IDLE_AFTER`
   (14 days by default; [configuration](configuration.md)) is drawn last in the
   sidebar, under a collapsed **Idle (N)** group — never one waiting on you, the
@@ -627,6 +627,14 @@ read-only viewer can see. It does not limit an attached interactive client.
 
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
+
+muster itself also types into an interactive host's Claude Code window, through
+the window's send queue only, for a few things you decided that a session is
+waiting on: your answer to its ask, your Dismiss, your decision on a reply
+draft it wrote and that draft's send outcome, and responses on a page it made
+([attention.md](attention.md#waking-a-mirrored-session)). Each is muster's
+line plus your own words, never anyone else's, pasted once the window is idle
+and only into the Claude Code session it is for.
 
 On a touch screen the **Rendered view's** box starts collapsed, to give the
 conversation the room: its row is **Type a message** (a keyboard) beside the

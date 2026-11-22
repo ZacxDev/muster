@@ -31,6 +31,7 @@ var ownedAfter0127 = []string{
 	"officer_pr_queue",                           // 0169
 	"officer_auto_restarts",                      // 0170
 	"plugin_server_users", "plugin_server_tasks", // 0172
+	"session_wakes", // 0177
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

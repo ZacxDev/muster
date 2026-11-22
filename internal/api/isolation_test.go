@@ -795,6 +795,9 @@ var isolationClasses = map[string]routeClass{
 	// An unconfirmed answer delivery's Retry (migration 0031): one of the
 	// caller's asks by id, under row-level security.
 	"POST /attention/asks/{id}/redeliver": classParam,
+	// A session wake's Retry delivery (migration 0177): one of the caller's
+	// wakes by id, under row-level security.
+	"POST /attention/wakes/{id}/retry": classParam,
 	// Dictation (transcribe.go) names no object: it turns the caller's recording
 	// into text for the caller and reads or writes no row.
 	"POST /transcribe": classList,
@@ -2269,6 +2272,11 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A session wake's Retry delivery (session_wake.go): the walk's server
+	// wires no session-wakes store, so every id answers 404 for A and the
+	// ghost alike. That another owner's Retry of A's wake reads nothing and
+	// queues nothing is TestAnotherOwnerNeitherSeesNorRetriesAWake.
+	"POST /attention/wakes/{id}/retry": "the walk's server has no session wakes: controlled in TestAnotherOwnerNeitherSeesNorRetriesAWake",
 	// The knock's withdrawal (plugin_notify.go): {ref} names no stored row. The
 	// tag it withdraws, and the record of which knocks are out, are the
 	// PRESENTING token's own plugin's, and the resolved goes to that token's
