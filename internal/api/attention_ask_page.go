@@ -263,10 +263,6 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// document, so a form the live region draws later is covered).
 	if strings.Contains(b.String(), "data-step-up-form") || a.Status == attention.Open && a.Asker.MirrorSession != "" {
 		b.WriteString(s.draftStepUpHTML(r))
-		// The reason box's mic (draftReasonFieldHTML): a step-up card's page
-		// has no composer, whose script it would otherwise share. Its live
-		// region's refresh shows the mics it redraws (DictateRevealEvent).
-		b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	}
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
@@ -418,7 +414,12 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		}
 		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now(),
 			cardPlace{card: a.ID, dictate: it.dictate, dictateOff: it.dictateOff}); d != "" {
-			return d
+			// The reason box's mic (draftReasonFieldHTML) needs the dictation
+			// script, after it: a step-up card's page has no composer, whose
+			// script it would otherwise share. On the page's load it runs; in
+			// a live refresh's fragment (innerHTML) it is inert, and the
+			// refresh's DictateRevealEvent shows the mics it redrew.
+			return d + ui.DictateScriptHTML(it.dictate)
 		}
 		return askStepUpPhoneHTML("text-base")
 	}
