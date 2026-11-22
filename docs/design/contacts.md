@@ -38,8 +38,9 @@ subject ([the core change](#the-core-change-linked-server-apps)).
 - 🔴 **Today the two plugins cannot share a person id, by design.** muster
   gives each person a different random subject under each server app
   (`internal/plugins/server.go:76-87`, [plugins.md](../plugins.md#server-apps)).
-  The one core change (decision 7) lets an **admin** link two server apps,
-  after which both receive the **same** subject for each person. The app
+  The one core change (decision 7) lets an **admin** install a server app
+  linked to one already installed (decision 8), after which both receive the
+  **same** subject for each person. The app
   already in use keeps its subjects, so meetings' existing owners and
   meetings are untouched. Owners do nothing: every owner works the moment
   both apps are installed and linked. Every unlinked app keeps pairwise
@@ -114,7 +115,7 @@ Meetings would know the owner by one subject and Contacts by another, and
 nothing either is told relates the two.
 
 The operator chose the fix (decision 7): **a small core change**. An admin
-marks the two installed apps a linked pair, and muster then gives both apps
+installs Contacts linked to Meetings (decision 8), and muster then gives both apps
 the same subject for each person
 ([the core change](#the-core-change-linked-server-apps)). Two other ways
 were weighed and dropped: a connect step each owner does once through both
@@ -203,52 +204,45 @@ told one).
 ## The core change: linked server apps
 
 One small muster change, its own PR before any plugin work
-([phase 0](#phased-plan)): an admin can **link** two server apps, and a
-linked pair knows each person by **one** subject. Everything else about
-server apps stays as it is.
+([phase 0](#phased-plan)): an admin can install a server app **linked** to
+one already installed, and a linked pair knows each person by **one**
+subject. Everything else about server apps stays as it is.
 
 ### What the admin does
 
 The smallest surface is the command line muster already has for server
-apps (`cmd/muster-server/app_cmd.go`), plus a read-only line on the pages
-that already list them:
+apps (`cmd/muster-server/app_cmd.go`), plus a read-only line on Account →
+Apps (decision 8):
 
 ```
-muster-server app link <source id> <adopter id>
+muster-server app install … --link-to <id>   # the new app is linked to app <id>
 muster-server app unlink <id>
-muster-server app list            # gains a "linked with" column
+muster-server app list                        # gains a "linked with <id>" column
 ```
 
-- `link` names a **source** (the app whose subjects are kept: meetings) and
-  an **adopter** (the app that takes them: contacts). It prints
-  `linked <adopter> (app <id>) to <source> (app <id>): <n> people already
-  known by <source>` (as built: the ids were added, so the line can be
-  checked against `app list`).
-- **No page form and no bearer API** in this PR: linking changes what two
-  apps may join, it is done once per install, and the CLI already needs the
-  shell and database access only an operator has. `/admin/apps` shows
-  "Linked with *Meetings*" on each card; **Account → Apps** adds one line to
-  each linked app's description: "*Meetings* and *Contacts* know you as the
-  same person." A page button can follow if it is ever wanted.
-- Audited `plugin.server.linked` and `plugin.server.unlinked` (the two ids,
-  `via: cli`).
+- `--link-to` names the app whose subjects are kept (meetings); the new app
+  (contacts) takes them. The new app and its pair are made in **one
+  transaction**, so the new app knows nobody when it is linked and nobody
+  can open it unlinked. Linking two apps that are both already installed is
+  not offered.
+- **No page form and no bearer API**: linking changes what two apps may
+  join, and the CLI already needs the shell and database access only an
+  operator has. **Account → Apps** adds one line to each linked app's
+  description: "*Meetings* and *Contacts* know you as the same person." The
+  operator reads the pair in `app list`.
+- The install's audit row `plugin.server.installed` records `linked_to`;
+  `plugin.server.unlinked` records the partner (both `via: cli`).
 
 ### The rules
 
-- **Server apps only, live ones only, two at a time.** Both must be
-  `scope = 'server'` and not revoked; an app is in at most one pair; an app
-  is never linked to itself. Personal plugins are never linked.
-- 🔴 **The adopter must not know anyone yet.** `link` is refused while the
-  adopter has any `plugin_server_users` row ("*contacts* already knows N
-  people; uninstall and reinstall it, or link it before anyone opens it").
-  This is what makes the migration path safe: no subject is ever rewritten,
-  so neither plugin's stored data is ever orphaned. For contacts the order is
-  therefore: install, link, then let people open the tab
-  ([rollout](#rollout)).
-- **The source keeps every subject it has.** Linking writes no
-  `plugin_server_users` row. Meetings' owners, sessions and meetings, keyed
-  on its current subjects (`internal/store/store.go:99-125` in
-  muster-meetings), are untouched.
+- **Server apps only, live ones only, two at a time.** `--link-to` must
+  name a `scope = 'server'` app that is not revoked and is in no pair. An
+  app is in at most one pair. Personal plugins are never linked. A refused
+  link installs nothing.
+- **The source keeps every subject it has.** The link writes no
+  `plugin_server_users` row and changes none. Meetings' owners, sessions and
+  meetings, keyed on its current subjects (`internal/store/store.go:99-125`
+  in muster-meetings), are untouched.
 - **A new grant takes the partner's subject.** When either app of a pair
   needs a subject for a person (the redeem, or Hide), muster uses the
   subject that person already has under the partner, and only when there is
@@ -261,87 +255,79 @@ muster-server app list            # gains a "linked with" column
   lets the two apps join their **own** records; it does not let one app's
   token act for a person through the other app's grant (the act-for door
   reads `plugin_id` from the token, never from the subject).
-- **Unlink** deletes the pair row and nothing else. People already known
-  to both keep the same subject under both (what the two apps have learned
+- **Unlink** deletes the pair and nothing else. People already known to
+  both keep the same subject under both (what the two apps have learned
   cannot be unlearned, so muster does not pretend to: re-keying would only
   orphan their data). People who first open either app after the unlink get
   independent subjects again. The command says so when it runs.
 - **Uninstall of either app ends the pair** in the uninstall's own
-  transaction (beside the grant and ledger deletes it already does). A
-  reinstalled app is a new id with no pair until an admin links it again.
+  transaction. A reinstalled app is a new id, linked only if installed
+  `--link-to` again.
 
-### Schema: the next free migration (`0178`, as built)
+### Schema: migration `0178`
+
+One row per app, two per pair, so "each app in at most one pair" is
+constraints alone (round 0's simplification; it replaced a `low_id`/`high_id`
+row with two unique indexes and a trigger):
 
 ```sql
--- A LINKED PAIR of server apps: both know each person by one subject.
--- low_id < high_id so a pair has one spelling; each id is in at most one pair.
 CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
-    low_id     BIGINT      NOT NULL REFERENCES public.plugins (id) ON DELETE CASCADE,
-    high_id    BIGINT      NOT NULL REFERENCES public.plugins (id) ON DELETE CASCADE,
-    source_id  BIGINT      NOT NULL,   -- the app whose subjects were kept (bookkeeping, shown by list)
-    linked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (low_id, high_id),
-    CONSTRAINT plugin_server_pairs_order  CHECK (low_id < high_id),
-    CONSTRAINT plugin_server_pairs_source CHECK (source_id IN (low_id, high_id))
+    plugin_id   BIGINT      NOT NULL PRIMARY KEY REFERENCES public.plugins (id) ON DELETE CASCADE,
+    partner_id  BIGINT      NOT NULL REFERENCES public.plugins (id) ON DELETE CASCADE,
+    linked_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT plugin_server_pairs_not_self CHECK (plugin_id <> partner_id),
+    CONSTRAINT plugin_server_pairs_both UNIQUE (plugin_id, partner_id),
+    -- every row's mirror exists; deleting either deletes the other
+    CONSTRAINT plugin_server_pairs_mutual FOREIGN KEY (partner_id, plugin_id)
+        REFERENCES public.plugin_server_pairs (plugin_id, partner_id) ON DELETE CASCADE
 );
-CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_low  ON public.plugin_server_pairs (low_id);
-CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_server_pairs (high_id);
--- plus a trigger, plugin_server_pairs_one_pair (as built), refusing an id
--- that already appears in the OTHER column of another row; links are
--- serialised by the server-app advisory lock, so its read cannot race.
 ```
 
-- **No owner column, so no row-level security arm admits it:** like a
-  server `plugins` row (0172's header), every read and write is an explicit
-  `authz.System` call in the System ledger (`internal/authz` ledger test).
-  `GRANT SELECT, INSERT, DELETE … TO muster_app`. Rollback: `DROP TABLE`,
-  which leaves every subject as it is (they were never rewritten).
+- The primary key gives an app at most one row; the mutual key makes a
+  second partner for B (C → B) need B → C, a second row for B, which the key
+  refuses. Both rows are written by one `INSERT`.
+- **No owner column**: forced row-level security with a `scope_all` policy
+  only, like `signin_requests`; every statement is an explicit
+  `authz.System` one. `GRANT SELECT, INSERT, DELETE … TO muster_app`.
+  Rollback: `DROP TABLE`, which leaves every subject as it is.
 - `plugin_server_users` is **not changed**. Its `UNIQUE (plugin_id, subject)`
   (`0172_plugin_server_scope.sql:152`) still holds: a shared subject appears
   once under each of the two apps.
 
 ### The code seams
 
-- 🔴 **One function chooses a subject.** Today two writers call
-  `newSubject()` (`internal/plugins/server.go:76-87`): the redeem
-  (`server.go:336-346`, the grant upsert) and Hide (`server.go:571-580`,
-  which makes a row for a person who hides an app they never opened). Both
-  become calls of one `subjectFor(tx, appID, ownerID)`: the partner's
-  subject for that owner if the app is paired and the partner has a row,
-  else `newSubject()`. A Go-AST ledger test pins `newSubject` to exactly one
-  caller, `subjectFor`, so a third writer cannot skip the pair.
+- 🔴 **One function chooses a subject.** The two writers that called
+  `newSubject()` (`internal/plugins/server.go`), the redeem (the grant
+  upsert) and Hide (a row for a person who hides an app they never opened),
+  both call `subjectFor(tx, appID, ownerID)`: the partner's subject for that
+  owner if the app is paired and the partner has a row, else `newSubject()`.
+  A Go-AST ledger test pins `newSubject` to exactly one caller, `subjectFor`,
+  so a third writer cannot skip the pair.
 - **The race.** Two first redeems for one person, one per app of a pair, at
   the same moment, would each find no partner row and draw two subjects.
-  `subjectFor` takes `pg_advisory_xact_lock` before it reads, so the second
-  waits and finds the first's row. **As built, the lock is keyed on the
-  person alone and taken on every draw, linked or not**, rather than on
-  (pair, owner): keying it on the pair would need a read of the pair before
-  the lock and a separate path for an unlinked app, while this way "is the
-  app paired, and does the partner know the person" is one statement made
-  under the lock. Its only cost is that one person's concurrent first opens
-  of two apps wait for each other for a few milliseconds. **Hide also holds
-  the app row `FOR SHARE`** now, as the redeem already did, so a link racing
-  a Hide waits for it (or wins, and the Hide's `subjectFor` sees the pair).
-- **Link and unlink** in `internal/plugins/server.go` beside
-  `InstallServerApp`/`UninstallServerApp` (`server.go:395`, `:513`):
-  `LinkServerApps(ctx, source, adopter, by)` and `UnlinkServerApp(ctx, id,
-  by)`, each one transaction holding both `plugins` rows `FOR UPDATE`, so an
-  uninstall or a redeem racing the link waits for it. `UninstallServerApp`
-  gains `DELETE FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`.
-- **Display:** `ServerApps` and `AccountServerApps` (`server.go:700`,
-  `:788`) read the partner's label.
-- **Docs:** [plugins.md](../plugins.md#server-apps)'s "It is **pairwise**:
-  one person has a different subject under each server app, so two apps
-  cannot join their records on it" gains the exception: "…unless an admin
-  linked the two apps (`muster-server app link`): a linked pair shares one
-  subject per person". [auth.md](../auth.md#server-apps-and-the-people-they-act-for)
+  `subjectFor` takes `pg_advisory_xact_lock` keyed on the **person**, on
+  every draw, before it reads, so the second waits and finds the first's
+  row. (Keyed on the person rather than the pair, so "is the app paired, and
+  does the partner know them" is one statement under the lock, with no
+  separate path for an unlinked app; one person's simultaneous first opens
+  of two apps wait a few milliseconds for each other.) No other race needs a
+  lock: the new app is invisible to every other transaction until its
+  install commits, by which time its pair exists.
+- **Link at install**: `InstallServerApp` with `LinkTo` runs `linkAtInstall`
+  in its own transaction, holding the source row `FOR SHARE` (an uninstall
+  racing it waits). **Unlink**: `UnlinkServerApp(ctx, id, by)`, one
+  `DELETE` (the mutual key removes the mirror). `UninstallServerApp` gains
+  `DELETE FROM plugin_server_pairs WHERE plugin_id = $1`.
+- **Display:** `ServerApps` (for `app list`) and `AccountServerApps` read the
+  partner's label.
+- **Docs:** [plugins.md](../plugins.md#server-apps)'s "It is **pairwise**"
+  gains the exception for a linked pair; [auth.md](../auth.md#server-apps-and-the-people-they-act-for)
   and [cli.md](../cli.md) gain the command and the Account → Apps line.
 
 ### The security argument
 
 - **Pairwise subjects protect people from apps colluding without the
-  admin.** Two apps a server offers could otherwise compare notes on a
-  person. A link is that comparison, made **explicit, by an admin**, for
+  admin.** A link is that comparison, made **explicit, by an admin**, for
   two apps the same admin installed, whose origins and tokens that admin
   already controls, and is shown to every person it affects (Account →
   Apps).
@@ -349,40 +335,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_serv
   server token, personal token or person can make or undo one; the CLI
   needs the server's database credentials.
 - **It widens nothing a token can do.** Acting, notifying, filing tasks and
-  `owners/check` stay keyed on the token's own app. A leaked contacts token
-  learns nothing it could not before but that one subject string equals
-  meetings' for the same person, which is the point of the link.
+  `owners/check` stay keyed on the token's own app.
 - **It never rewrites a subject,** so a link cannot move one person's data
-  under another person's id: the adopter-has-no-grants rule and the
-  absence of any `UPDATE … SET subject` are both tested.
+  under another person's id: the new app knows nobody when it is linked,
+  and the absence of any `UPDATE … SET subject` is tested.
 
 ### Tests (in muster)
 
-- **Invariant: unlinked stays pairwise.** Two unlinked apps, one person:
-  different subjects (an invariant guard: it pins today's behaviour; it is
-  not regression coverage).
-- **Linked: one subject, either order.** Source first then adopter; adopter
-  first then source (the subject the adopter drew is what the source gets);
-  three people with pairwise-distinct ids, each with their own subject.
-- **The source's subjects are kept.** A person known to meetings before the
-  link: after `link` and a contacts redeem, contacts answers meetings'
-  existing subject, and every `plugin_server_users` row of the source is
-  byte-for-byte what it was before the link (rows compared, not counted).
-- **Refusals:** the adopter already knows someone; either app revoked;
-  personal plugin; self-link; either app already paired; an unknown id.
-  Each with its own error text, asserted.
+- **Invariant: unlinked stays pairwise.** Two unlinked apps, three people:
+  different subjects (an invariant guard).
+- **Linked: one subject, either order**; three people with pairwise-distinct
+  subjects.
+- **The source's subjects are kept.** People known to meetings before
+  contacts is installed `--link-to` it: the new app has no rows right after
+  the install, answers meetings' existing subject, and every row of the
+  source is byte-for-byte what it was.
+- **Refusals, each installing nothing:** an unknown id; a personal plugin;
+  an uninstalled app; an app already paired (either side of a pair). Each
+  with its own error text, and no app row left by the refused install's
+  name (**install `--link-to` is atomic**).
 - **Hide on an adopter before first open** makes a row with the partner's
-  subject (the second `newSubject` writer).
+  subject.
 - **The race:** two concurrent first redeems on the pair for one person end
-  with one subject (run 50 times).
-- **Cross-app acting is still refused:** contacts' token with
-  `Muster-Act-For: <shared subject>` on the knock route answers `404` while
-  meetings' grant is live and contacts has none; and the reverse.
-- **Unlink:** existing people keep one subject; a new person gets two.
-- **Uninstall** of either deletes the pair row in the same transaction.
-- **The ledger:** `newSubject` has one caller; the pairs table is only read
-  under `authz.System`.
-- **CLI:** `link`, `unlink`, `list` output and exit codes; audit rows.
+  with one subject (50 runs, a row-lock barrier).
+- **Cross-app acting is still refused,** both directions.
+- **Unlink:** both rows go; existing people keep one subject; a new person
+  gets two.
+- **Uninstall** of either deletes the pair.
+- **The ledgers:** `newSubject` has one caller; `linkAtInstall` one caller
+  (the install); the pairs table is spelled only in System functions; no
+  SQL sets `plugin_server_users.subject`.
+- **CLI:** `install --link-to`, `unlink`, `list` output and exit codes;
+  audit rows. The migration's constraints, each by name.
 
 ### Mutation rows (core)
 
@@ -391,13 +375,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_serv
 | pair lookup | `subjectFor` always calls `newSubject` | "linked: one subject" |
 | pair scoping | look up a partner row without the pair (any app's row for the owner) | "invariant: unlinked stays pairwise" |
 | one writer | Hide calls `newSubject` directly | "hide on an adopter" and the `newSubject` ledger |
-| adopter empty | drop the adopter-has-no-grants check | "refusals: adopter already knows someone" |
-| no rewrite | on link, copy the source's subjects onto the adopter's rows | "the source's subjects are kept" (and the no-`UPDATE` ledger) |
-| server only | allow a personal plugin in a pair | "refusals: personal plugin" |
-| one pair | drop the unique index on `low_id` | "refusals: already paired" |
+| no rewrite | at install, copy the source's subjects onto the new app, or re-key the source | "the source's subjects are kept" (and the no-`UPDATE` ledger) |
+| server only | allow a personal plugin as `--link-to` | "refusals: personal plugin" |
+| one pair | drop the primary key on `plugin_id`; drop the mutual key | "refusals: already paired"; "unlink: both rows go" and the migration test |
 | race lock | drop the advisory lock | "the race" |
 | act-for per app | resolve the act-for grant by subject alone | "cross-app acting is still refused" |
-| uninstall | leave the pair row on uninstall | "uninstall deletes the pair" |
+| uninstall | leave the pair on uninstall | "uninstall deletes the pair" |
+| atomic install | a refused link does not fail the install | "refusals: install `--link-to` is atomic" |
 
 ## Data model (the plugin's SQLite)
 
@@ -1026,7 +1010,7 @@ customers. What would need deciding first:
 | The API token is wrong on one side | Every call `401`; meetings logs `contacts: unauthorised` once per minute, offers no card after its cache runs out, and drops nothing from the outbox |
 | The owner turns **Add people from Meetings** off, or hides Contacts | `404 not accepting` on the next call: the outbox rows for that owner are dropped, no card from then on |
 | The owner is revoked in muster | Contacts refuses writes (`404`); meetings has already ended their meetings |
-| A reinstall of either app | The pair ends with the uninstall. Install the app again and link it with the **surviving** app as the source: the new install knows nobody, so it may adopt, and it adopts the very subjects the old install shared, so its old database lines up again |
+| A reinstall of either app | The pair ends with the uninstall. Install the app again `--link-to` the **surviving** app: the new install takes the very subjects the old install shared, so its old database lines up again |
 | The SMTP relay refuses (P2) | The invitee row says "not delivered"; the meeting is scheduled all the same |
 | An adapter's service is down (P3) | `nothing_sent` with `transient`, so muster retries; inbound pauses at its cursor |
 
@@ -1034,7 +1018,7 @@ customers. What would need deciding first:
 
 | phase | delivers | repositories | gate to the next |
 |---|---|---|---|
-| **0 (core PR)** | [linked server apps](#the-core-change-linked-server-apps): the migration, `subjectFor`, `LinkServerApps`/`UnlinkServerApp`, `muster-server app link\|unlink`, the `/admin/apps` and Account → Apps lines, the plugins.md / auth.md / cli.md exception | muster | its tests and mutation rows green; released and deployed on the first deployment before contacts is installed |
+| **0 (core PR)** | [linked server apps](#the-core-change-linked-server-apps): the migration, `subjectFor`, `app install --link-to` and `app unlink`, the Account → Apps line, the plugins.md / auth.md / cli.md exception | muster | its tests and mutation rows green; released and deployed on the first deployment before contacts is installed |
 | **0 (spike)** | spike S1 | none | answered in this page |
 | **1a** | contacts plugin: store, owner app, the Contacts tab, add/edit/delete/merge/export | muster-contacts (new, from the template) | unit, contract and e2e green; mutation sweep; installed **and linked** on the first deployment |
 | **1b** | meetings: `MEETINGS_CONTACTS_URL`/`_TOKEN`, the card, the outbox, attendance at End | muster-meetings | the no-URL golden; contract tests against contacts' real server; the card e2e |
@@ -1200,14 +1184,12 @@ in each batch as the positive control. A row names the test that must fail
 1. **Contacts next.** Deploy the contacts plugin in the muster tenant
    beside meetings, on its own one-label subdomain of muster's host
    (`contacts-<x>.<domain>`), added to `MUSTER_PLUGIN_ORIGINS`. Install it on
-   `/admin/apps` (label **Contacts**, icon `book`, no **Files tasks**);
-   check there is room (at most 5 server apps).
-2. 🔴 **Link before anyone opens it:** `muster-server app link <meetings id>
-   <contacts id>` (meetings is the source; it keeps its subjects). Opening
-   the Contacts tab first would give contacts a person of its own, and the
-   link would then be refused. If that happens: uninstall contacts,
-   reinstall, link, then open. Only then open the tab; add, edit and delete
-   a contact by hand.
+   the command line, **linked to meetings**: `muster-server app install
+   --name contacts --label Contacts --icon book --origin … --entry …
+   --link-to <meetings id>` (no `--tasks`); check there is room (at most 5
+   server apps). The pair exists the moment contacts does, so nobody can
+   open contacts unlinked; meetings keeps its subjects.
+2. Open the tab; add, edit and delete a contact by hand.
 3. **Meetings next.** Set `MEETINGS_CONTACTS_URL` (the internal listener)
    and `MEETINGS_CONTACTS_TOKEN`; redeploy meetings. Nobody connects
    anything.
@@ -1320,10 +1302,17 @@ Decision 7 answers this page's first open question and revises decision 2.
 6. **Start: design doc, then build.** This page first, for the operator to
    read; then a new public repository, `ZacxDev/muster-contacts`, from
    muster-plugin-template, and the build with its tests.
-7. **Linked server apps: a small muster core change.** An admin marks two
-   installed apps a linked pair, and muster then gives both the same
+7. **Linked server apps: a small muster core change.** An admin links two
+   server apps (made at install, decision 8), and muster then gives both the same
    per-person subject. One small server change and migration, with tests,
    designed [here](#the-core-change-linked-server-apps). No connect step for
    owners, nothing to mis-wire, and every owner works the moment both apps
    are installed. Every unlinked app keeps pairwise subjects, and the app
    already in use keeps its subjects.
+8. **Link at install.** `muster-server app install … --link-to <id>`: the
+   new app is linked the moment it exists, so no one can open it first.
+   This removes the adopter-knows-nobody refusal, the reinstall recovery and
+   a locking change. Linking two apps that are already in use is not
+   offered. (Operator's answer to round 0 of the core PR's audit, which also
+   dropped the pair's `source_id` and the `/admin/apps` line, and kept
+   `app unlink`.)
