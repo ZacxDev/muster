@@ -382,6 +382,12 @@ BEGIN
         ALTER TABLE public.officer_connector_blocks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0177 (session_wakes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_wakes') IS NOT NULL THEN
+        ALTER TABLE public.session_wakes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_wakes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_wakes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0158 (fleet_actions), when this schema has it; same reason as 0011.
     IF to_regclass('public.fleet_actions') IS NOT NULL THEN
         ALTER TABLE public.fleet_actions NO FORCE ROW LEVEL SECURITY;

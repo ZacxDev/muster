@@ -629,6 +629,10 @@ func askLogProvenanceOf(reply string, sent []sendqueue.SentBody) string {
 			// relayed on the owner's tap — a route in 0089's words, never the
 			// person's own send.
 			return asklog.ProvRoute
+		case b.SessionWakeID > 0:
+			// muster's own line relaying the owner's decision (session_wake.go):
+			// a relayed answer in 0089's words, never the person's own send.
+			return asklog.ProvNudge
 		default:
 			return asklog.ProvMusterSend
 		}

@@ -41,6 +41,7 @@ import (
 	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -161,6 +162,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		FleetDigest:   true,
 		FleetPropose:  true,
 		FleetActions:  struct{ fleet.Actions }{},
+		SessionWakes:  struct{ sessionwake.Store }{},
 		FleetChecks:   struct{ CIReader }{},
 		MorningReport: &MorningReport{Store: struct{ morning.Store }{}},
 		ChiefUsage:    struct{ chiefusage.Store }{},

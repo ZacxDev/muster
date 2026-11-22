@@ -637,6 +637,18 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// words, never a tmux target); the exact target — where a queued or
 	// waiting delivery sends the owner — is the card's ⓘ, beside the line.
 	text, retry := answerDeliveryText(a, who, proposal)
+	pill := answerDeliveryPill(a, proposal)
+	delivery := firstNonBlank(string(a.Delivery), "none")
+	wakeForm := ""
+	if it.wake != nil {
+		// A mirrored session's answer: where its session wake went
+		// (session_wake.go), with the wake's own action in place of Retry.
+		var act wakeAction
+		text, act = wakeDeliveryText(*it.wake, who)
+		retry = false
+		pill, delivery = wakeDeliveryPill(*it.wake), "wake-"+string(it.wake.State)
+		wakeForm = wakeActionFormHTML(it.wake.ID, act, ui.AsksSecondaryButtonClass, ` data-attention-redeliver`)
+	}
 	var sub []string
 	if !a.ResolvedAt.IsZero() {
 		sub = append(sub, `<time datetime="`+a.ResolvedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.ResolvedAt)))+`</time>`)
@@ -660,11 +672,12 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	// it in full is the expanded card's.
 	// THE OPEN CARD'S HEAD AND BODY (ui.AsksHeadHTML, askCardQuestionHTML):
 	// a step-up card answered is still drawn as its post's preview.
-	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
+	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(delivery) + `">
 ` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID), Href: it.page}) + `
 ` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<div class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
-` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `
+` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(pill)+`</span></div>`) + `
 `)
+	b.WriteString(wakeForm)
 	if retry {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
 `)
@@ -726,6 +739,13 @@ func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts 
 	}
 	s.withNames(ctx, items)
 	withAskPages(ctx, items)
+	if ws := s.wakesForAsks(ctx, asks); len(ws) > 0 {
+		for i, a := range asks {
+			if w, ok := ws[a.ID]; ok {
+				items[i].wake = &w
+			}
+		}
+	}
 	return items
 }
 

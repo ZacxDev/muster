@@ -115,6 +115,11 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if a.Status == attention.Open && a.StepUp != nil {
 		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
 	}
+	if ws := s.wakesForAsks(r.Context(), []attention.Ask{a}); len(ws) > 0 {
+		if w, ok := ws[a.ID]; ok {
+			it.wake = &w
+		}
+	}
 	now := time.Now()
 	live := askLiveHTML(a, it)
 	if r.URL.Query().Get("part") == "live" {
@@ -349,7 +354,15 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 			b.WriteString(`<div class="whitespace-pre-wrap break-words text-base text-fg" data-ask-answer>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 `)
 		}
-		if a.Status == attention.Answered {
+		if it.wake != nil {
+			// A mirrored session's answer or dismissal: where its session wake
+			// went (session_wake.go), with its Retry delivery.
+			who, _, _ := attentionTitle(it)
+			text, act := wakeDeliveryText(*it.wake, who)
+			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery data-wake-state="` + esc(string(it.wake.State)) + `">` + esc(text) + `</p>
+`)
+			b.WriteString(wakeActionFormHTML(it.wake.ID, act, ui.AsksSecondaryButtonClass, ` data-attention-redeliver`))
+		} else if a.Status == attention.Answered {
 			// The session in words (attentionTitle), as the card's head names
 			// it; its exact target is the card's ⓘ.
 			who, _, _ := attentionTitle(it)

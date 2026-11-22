@@ -102,6 +102,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 	"github.com/ZacxDev/muster/internal/signinreq"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -658,6 +659,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// fleet's action log. Off by default; it needs the digest (config).
 		ext.FleetPropose = cfg.FleetPropose
 		ext.FleetActions = fleet.NewPG(a.pool)
+		// A decision wakes the mirrored session it is for (migration 0177,
+		// internal/api session_wake.go): through the send queue, when
+		// mirroring and the queue are on.
+		ext.SessionWakes = sessionwake.NewPG(a.pool)
 		// The morning report (MUSTER_MORNING_REPORT=1, migration 0161): one
 		// report per owner per day and its push. Off by default; it needs a
 		// database.

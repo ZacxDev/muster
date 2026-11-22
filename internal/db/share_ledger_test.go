@@ -162,6 +162,9 @@ var personalOwned = []string{
 	"host_jobs", "host_job_runs",
 	// 0170: an officer's auto-restart record; only its owner's loop writes it.
 	"officer_auto_restarts",
+	// 0177: the lines owed to a mirrored session for its owner's decisions;
+	// a team's sessions get none in this phase.
+	"session_wakes",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
