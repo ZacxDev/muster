@@ -480,9 +480,25 @@ const askPageScript = `<script>
   // The answer box is drawn AFTER this script (it is pinned below the
   // content), so it is looked up when used, never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
-  // gatePick: the multi-select ask's first TICKED box in form f (migration
+  // gatePick: the multi-select ask's first TICKED box of form f (migration
   // 0175), null for none and for a single-select ask (no such box).
-  function gatePick(f) { return f && f.querySelector ? f.querySelector('input[name="option"]:checked') : null; }
+  //
+  // 🔴 f.elements, NOT f.querySelector: a multi ask's checkboxes are
+  // FORM-ASSOCIATED with f (form="ask-answer") but are drawn in the live region
+  // ABOVE it, so they are never DOM DESCENDANTS of the form — a querySelector
+  // subtree walk cannot see them and returned null however many were ticked,
+  // leaving the composer's Answer off and its tap preventDefault()ed.
+  // f.elements is every control the form owns, wherever it sits in the
+  // document.
+  function gatePick(f) {
+    if (!f || !f.elements) return null;
+    var els = f.elements;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.name === 'option' && el.type === 'checkbox' && el.checked) return el;
+    }
+    return null;
+  }
   function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
   // OTHER ANSWER…: an ask with options draws its free-text row collapsed
   // (askComposerHTML); opening it shows the row and puts the caret in the box.

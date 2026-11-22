@@ -110,6 +110,13 @@ async function askFree(question: string): Promise<number> {
   return (JSON.parse(text) as { id: number }).id;
 }
 
+// askMulti is a MULTI-select ask (migration 0175): its options are CHECKBOXES.
+// Seeded through the real /mcp door, as a multi-select asker files it.
+async function askMulti(question: string, options: string[]): Promise<number> {
+  const text = await mcpCall('attention_ask', { question, options, multi: true });
+  return (JSON.parse(text) as { id: number }).id;
+}
+
 // posts records every POST the page makes.
 function posts(page: Page): string[] {
   const seen: string[] = [];
@@ -244,6 +251,53 @@ for (const vp of [
     });
   });
 }
+
+// A MULTI-SELECT ASK'S COMPOSER ANSWER COUNTS A TICKED BOX (migration 0175).
+// The checkboxes are FORM-ASSOCIATED with #ask-answer (form="ask-answer") but
+// are drawn in the live region ABOVE it, so they are never DOM descendants of
+// the form the composer's Answer belongs to. RED at origin/main: the page's
+// gate and its submit guard read the form's DESCENDANTS with querySelector,
+// found no tick, left #ask-send aria-disabled and preventDefault()ed the tap —
+// so a ticked box with an empty free-text box could not be answered from the
+// composer's Answer (the live region's separate "Send answer" still worked).
+test.describe('multi-select ask, phone 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('a ticked box with an empty free-text box answers from the composer Answer', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page, origin);
+    const id = await askMulti(`Which checks should the release run? (${stamp})`, ['lint', 'typecheck', 'e2e']);
+    await page.goto(origin + `/attention/asks/${id}`);
+    const box = page.locator('#ask-input'), send = page.locator('#ask-send');
+    // A multi ask keeps its free-text row OPEN (the optional note lives with it).
+    await expect(box).toBeVisible();
+    await expect(box, 'the free-text box starts empty').toHaveValue('');
+    // Tick ONE box and leave the free text empty: the pick alone is the answer.
+    await page.locator('[data-ask-option]').first().check();
+    await expect(page.locator('[data-ask-option]').first()).toBeChecked();
+    await expect(box).toHaveValue('');
+    // The composer's Answer must count the tick as an answer. aria-disabled
+    // keeps the button focusable, so FORCE the tap — a real tap on the
+    // (pre-fix) aria-disabled control reaches the same submit handler. RED at
+    // origin/main: the tap posts NOTHING (the gate and the submit guard both
+    // read the form's DOM descendants with querySelector, saw no tick, left
+    // Answer off and preventDefault()ed it). After the fix the tap posts the
+    // ticked label and the page comes back settled.
+    const sent = posts(page);
+    await Promise.all([
+      page
+        .waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`, { timeout: 5_000 })
+        .catch(() => null),
+      send.click({ force: true }),
+    ]);
+    expect(sent, 'the composer Answer posted the ticked box').toEqual([`/attention/asks/${id}/answer`]);
+    await page.waitForURL(origin + `/attention/asks/${id}`);
+    await expect(page.locator('[data-ask-closed]')).toBeVisible();
+    await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: lint');
+    const waited = JSON.parse(await mcpCall('attention_wait', { id, wait_seconds: 0 })) as { status: string; answer: string };
+    expect(waited).toMatchObject({ status: 'answered', answer: 'lint' });
+  });
+});
 
 // AN OVER-LONG ANSWER (a long dictation fills the box from script, past its
 // maxlength) is refused with its own notice, never "Type an answer or pick an
