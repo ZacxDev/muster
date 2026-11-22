@@ -132,15 +132,20 @@ type StepUpCard struct {
 }
 
 // StepUpContext is what a reply draft's card says it answers: who wrote it,
-// its text (cut to MaxStepUpContextRunes), when (RFC 3339) and where (an
+// its text (cut to MaxStepUpContextRunes), when it was written or else
+// received (RFC 3339), and where (an
 // absolute http(s) URL) — or Missing: its officer did not provide it, and
 // the card says so (muster never fetches it).
 type StepUpContext struct {
 	Author    string `json:"author,omitempty"`
 	Text      string `json:"text,omitempty"`
 	WrittenAt string `json:"written_at,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Missing   bool   `json:"missing,omitempty"`
+	// ReceivedAt (RFC 3339), on a context with no WrittenAt, is when muster
+	// received the message the text came from — not when it was written, and
+	// the card says "received".
+	ReceivedAt string `json:"received_at,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Missing    bool   `json:"missing,omitempty"`
 	// Cut: Text is only the start of the text (set by the card's Clean).
 	Cut bool `json:"cut,omitempty"`
 }
@@ -277,7 +282,8 @@ func stepUpBlock(field, s string, max int) (string, error) {
 // cleanStepUpContext is c as a card stores it: every field sanitised and
 // cut (the file header: a long part is cut, never refused), the text a block
 // of at most MaxStepUpContextRunes, the URL kept only when it is an absolute
-// http(s) one (fence.WebURL), the time only when it is RFC 3339.
+// http(s) one (fence.WebURL), a time only when it is RFC 3339 (the written
+// one, else the received one).
 func cleanStepUpContext(c StepUpContext) *StepUpContext {
 	if c.Missing {
 		return &StepUpContext{Missing: true}
@@ -285,6 +291,8 @@ func cleanStepUpContext(c StepUpContext) *StepUpContext {
 	out := StepUpContext{Author: stepUpLine(c.Author, MaxStepUpAskerRunes), URL: fence.WebURL(strings.TrimSpace(c.URL))}
 	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.WrittenAt)); err == nil {
 		out.WrittenAt = t.UTC().Format(time.RFC3339)
+	} else if t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.ReceivedAt)); err == nil {
+		out.ReceivedAt = t.UTC().Format(time.RFC3339)
 	}
 	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(c.Text, "\r\n", "\n"), "\r", "\n"), "\n")
 	for i, l := range lines {

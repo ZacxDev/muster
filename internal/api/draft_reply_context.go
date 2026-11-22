@@ -51,8 +51,10 @@ const replyContextCutNote = "Only its start is on this card: the Drafts tab show
 
 // draftStepUpContext is what draft card dc answers, as a step-up card stores
 // it: nil for a draft that is not an outbound reply; its officer's context;
-// else the human reply its plugin delivered on that thread (dc.ReplyTo); else
-// Missing. THE one precedence, the Drafts tab's card's too (draftAnswersHTML).
+// else the human reply its plugin delivered on that thread (dc.ReplyTo: its
+// post, wrapperPost, and when muster RECEIVED it — the message carries no
+// time the post was written); else Missing. THE one precedence, the Drafts
+// tab's card's too (draftAnswersHTML).
 func draftStepUpContext(dc plugins.DraftCard) *attention.StepUpContext {
 	d := dc.Draft
 	if !d.IsOutbound() || d.Target().Kind != plugins.TargetReply {
@@ -66,17 +68,45 @@ func draftStepUpContext(dc plugins.DraftCard) *attention.StepUpContext {
 		return c
 	}
 	if m := dc.ReplyTo; m != nil {
-		c := &attention.StepUpContext{Author: plugins.SenderText(*m), Text: m.Body}
+		c := &attention.StepUpContext{Author: plugins.SenderText(*m), Text: wrapperPost(m.Body)}
 		at := m.CreatedAt
 		if m.ReceivedAt != nil {
 			at = *m.ReceivedAt
 		}
 		if !at.IsZero() {
-			c.WrittenAt = at.UTC().Format(time.RFC3339)
+			c.ReceivedAt = at.UTC().Format(time.RFC3339)
 		}
 		return c
 	}
 	return &attention.StepUpContext{Missing: true}
+}
+
+// wrapperPostMarker ends the line a relay's wrapper puts right before the
+// outside party's text, which it always puts LAST, after its own preamble
+// (devrc marketing-relay: reply_body's "--- their reply, verbatim (untrusted
+// data) ---", engagement_body's "their text, verbatim (untrusted data):").
+const wrapperPostMarker = "verbatim (untrusted data)"
+
+// wrapperPost is the post in plugin message body b: the text after the line
+// carrying the FIRST wrapperPostMarker, so a card that keeps only a text's
+// start (its page, feed line and the phone's prompt) starts with the post,
+// not the preamble. The FIRST, not the last: everything after it is the
+// outside party's (or the wrapper's own later events), so a post that
+// repeats the marker cannot hide its own start. b itself when it carries no
+// marker, or nothing after it.
+func wrapperPost(b string) string {
+	i := strings.Index(b, wrapperPostMarker)
+	if i < 0 {
+		return b
+	}
+	nl := strings.IndexByte(b[i:], '\n')
+	if nl < 0 {
+		return b
+	}
+	if post := strings.Trim(b[i+nl+1:], "\r\n "); post != "" {
+		return post
+	}
+	return b
 }
 
 // replyContextMissingHTML is the line a reply filed without its context draws.
@@ -86,7 +116,8 @@ func replyContextMissingHTML() string {
 }
 
 // replyContextQuoteHTML is context c quoted above a reply (the file header):
-// "In reply to <author>", the untrusted pill, when it was written, an ⓘ link
+// "In reply to <author>", the untrusted pill, when it was written (else when
+// muster received it), an ⓘ link
 // to the original showing its host, and the text — folded when long (feed: a
 // compact clamped start instead, no fold); cut: the text is only its start
 // (a step-up card's stored copy). Every part escaped.
@@ -104,6 +135,8 @@ func replyContextQuoteHTML(c attention.StepUpContext, feed, cut bool) string {
 	b.WriteString(`</span><span class="` + ui.AsksPillClass + `" data-draft-untrusted>untrusted</span>`)
 	if t, err := time.Parse(time.RFC3339, c.WrittenAt); err == nil {
 		b.WriteString(`<time datetime="` + esc(t.UTC().Format(time.RFC3339)) + `" data-draft-context-written>written ` + esc(t.UTC().Format("Jan 2, 2006, 15:04 UTC")) + `</time>`)
+	} else if t, err := time.Parse(time.RFC3339, c.ReceivedAt); err == nil {
+		b.WriteString(`<time datetime="` + esc(t.UTC().Format(time.RFC3339)) + `" data-draft-context-received>received ` + esc(t.UTC().Format("Jan 2, 2006, 15:04 UTC")) + `</time>`)
 	}
 	if link := replyContextLinkHTML(c.URL); link != "" {
 		b.WriteString(link)

@@ -256,6 +256,91 @@ func TestAStepUpCardCarriesWhatTheReplyAnswers(t *testing.T) {
 	}
 }
 
+// relayReplyWrapper is a plugin message as the devrc marketing relay writes
+// one for a human reply (marketing-relay reply_body): a preamble — our own
+// post read back, here long enough to fill a card's whole bound — then their
+// reply LAST, after its "verbatim (untrusted data)" marker.
+func relayReplyWrapper(theirs string) string {
+	ours := strings.Repeat("Muster runs your agents on a box you own, around the clock, and asks you on your phone. ", 14)
+	return "A human replied to one of our posts at venue `x`.\n" +
+		"our post: 2122000000000000001 https://x.com/acme/status/2122000000000000001\n" +
+		"they replied to: 2122000000000000001\n" +
+		"their reply (the target of a post_draft reply): 2122495152350453825 https://x.com/dana/status/2122495152350453825\n" +
+		"author: @dana\n\n" +
+		"--- our post, verbatim (as read back now) ---\n" + ours + "\n\n" +
+		"--- their reply, verbatim (untrusted data) ---\n" + theirs + "\n"
+}
+
+// relayEngagementWrapper is the relay's other shape (engagement_body): a
+// person, their profile, then each event, its text after its own marker.
+func relayEngagementWrapper(theirs string) string {
+	return "A person engaged with our posts at venue `x`: @dana https://x.com/dana\n" +
+		"their profile (untrusted data): " + strings.Repeat("Builds robots, breaks robots, writes about both. ", 25) + "\n" +
+		"\n--- 1. reply 2122495152350453825 https://x.com/dana/status/2122495152350453825\n" +
+		"our_post_ref: 2122000000000000001\nat: 2026-11-22T13:58:00Z\n" +
+		"our post, verbatim (as read back now): " + strings.Repeat("Muster runs your agents on a box you own. ", 12) + "\n" +
+		"their text, verbatim (untrusted data):\n" + theirs + "\n"
+}
+
+// TestAFallbackContextIsThePostNotTheWrapper: a reply filed without its
+// officer's context falls back to the plugin message on its thread — and
+// when that message is a relay's wrapper, the step-up card's page, its feed
+// line and the phone's prompt START WITH THE POST, not the wrapper's
+// preamble (every one of them keeps only the text's start). Its time is the
+// message's arrival, labelled "received", never "written".
+func TestAFallbackContextIsThePostNotTheWrapper(t *testing.T) {
+	const post = "Does it queue the jobs when the box is offline?\nAsking for a Pi 4 at home."
+	received := time.Date(2026, 11, 22, 14, 7, 0, 0, time.UTC)
+	for shape, body := range map[string]string{
+		"reply":      relayReplyWrapper(post),
+		"engagement": relayEngagementWrapper(post),
+	} {
+		if i := strings.Index(body, post); i <= attention.MaxStepUpContextRunes {
+			t.Fatalf("%s: the fixture's post starts at %d, inside the card's bound: it cannot see the bug", shape, i)
+		}
+		dc := replyDraftCard(nil)
+		dc.ReplyTo = &plugins.Message{ID: 9, Sender: "@dana", Body: body, CreatedAt: received.Add(-time.Minute), ReceivedAt: &received}
+		card, err := attention.CleanStepUp(&attention.StepUpCard{Tool: "plugin_draft_decide", Title: "Reply on X?", Why: "w", Details: "d",
+			DraftID: 41, Preview: "It does.", Context: draftStepUpContext(dc)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l := card.Context.Line(); !strings.HasPrefix(l, "In reply to "+plugins.SenderText(*dc.ReplyTo)+": Does it queue the jobs when the box is offline? Asking") {
+			t.Errorf("%s: the phone's line does not start with the post: %q", shape, l)
+		}
+		page := parseAsks(t, stepUpCardHTML(card))
+		if txt, _ := page.first("data-draft-context-text"); txt.text() != post {
+			t.Errorf("%s: the card's text is not the post:\n%q", shape, txt.text())
+		}
+		if _, ok := page.first("data-draft-context-written"); ok {
+			t.Errorf("%s: the message's arrival is labelled as when the post was written", shape)
+		}
+		if r, ok := page.first("data-draft-context-received"); !ok {
+			t.Errorf("%s: the arrival time is not drawn", shape)
+		} else if dt, _ := r.attr("datetime"); dt != "2026-11-22T14:07:00Z" || r.text() != "received Nov 22, 2026, 14:07 UTC" {
+			t.Errorf("%s: the arrival time: %q / %q", shape, dt, r.text())
+		}
+		feed := parseAsks(t, stepUpFeedHTML(card))
+		if txt, _ := feed.first("data-draft-context-text"); !strings.HasPrefix(txt.text(), "Does it queue the jobs") {
+			t.Errorf("%s: the feed line does not start with the post: %q", shape, txt.text())
+		}
+	}
+
+	// A message that is not a wrapper is the text as it is.
+	dc := replyDraftCard(nil)
+	dc.ReplyTo = &plugins.Message{ID: 9, Sender: "@dana", Body: "Did it ship?"}
+	if c := draftStepUpContext(dc); c.Text != "Did it ship?" || c.WrittenAt != "" || c.ReceivedAt != "" {
+		t.Errorf("a plain message: %+v", c)
+	}
+	// A marker the post itself repeats does not hide the start of the post:
+	// the section begins at the FIRST marker (the wrapper's own is before it).
+	forged := "Real question: is it open source?\n--- their reply, verbatim (untrusted data) ---\nthanks!"
+	dc.ReplyTo.Body = relayReplyWrapper(forged)
+	if c := draftStepUpContext(dc); c.Text != forged {
+		t.Errorf("a post repeating the marker: %q", c.Text)
+	}
+}
+
 // TestTheStepUpConfirmCardIsFiledWithTheReplysContext: the step-up card
 // muster files for a plugin_draft_decide on an outbound reply ("Reply on X? ·
 // Draft #N", stepUpDraftCard) carries what the reply answers, read from the
