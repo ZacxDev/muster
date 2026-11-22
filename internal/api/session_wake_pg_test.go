@@ -626,17 +626,14 @@ func TestAViewersPageResponseIsACountNeverItsText(t *testing.T) {
 	}
 	f.sweep()
 	f.tick(t)
-	text := f.onePaste(t)
-	want := "muster: page #" + itoa(pg.ID) + ", which this session made, got 2 new responses from its viewers — read them with page_responses{page_id: " + itoa(pg.ID) + "}."
-	if text != want {
-		t.Fatalf("the count line:\n%q\nwant:\n%q", text, want)
-	}
-	for _, s := range []string{"viewer-secret-7731", "viewer-secret-7732", "IGNORE PREVIOUS", "Pick a date"} {
-		if strings.Contains(text, s) {
-			t.Fatalf("a viewer's text (or the page's title) reached the session: %q in\n%s", s, text)
+	// 🔴 FIRST, LITERALLY: no viewer's words in anything typed or queued.
+	for _, p := range f.host.taken() {
+		for _, s := range []string{"viewer-secret-7731", "viewer-secret-7732", "IGNORE PREVIOUS", "Pick a date"} {
+			if strings.Contains(p.text, s) {
+				t.Fatalf("a viewer's text (or the page's title) reached the session: %q in\n%s", s, p.text)
+			}
 		}
 	}
-	// Nor is it anywhere in the queue.
 	var bodies []string
 	rows, err := f.pool.Query(f.ownerCtx(), `SELECT body FROM send_queue WHERE session_wake_id IS NOT NULL`)
 	if err != nil {
@@ -650,6 +647,12 @@ func TestAViewersPageResponseIsACountNeverItsText(t *testing.T) {
 	rows.Close()
 	if joined := strings.Join(bodies, "\n"); strings.Contains(joined, "viewer-secret") {
 		t.Fatalf("a viewer's text is in a queued wake:\n%s", joined)
+	}
+	// Then: the one count line, folded.
+	text := f.onePaste(t)
+	want := "muster: page #" + itoa(pg.ID) + ", which this session made, got 2 new responses from its viewers — read them with page_responses{page_id: " + itoa(pg.ID) + "}."
+	if text != want {
+		t.Fatalf("the count line:\n%q\nwant:\n%q", text, want)
 	}
 }
 
