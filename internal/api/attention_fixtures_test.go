@@ -46,3 +46,9 @@ func (emptyAttention) Open(context.Context) ([]attention.Ask, error) { return ni
 func (emptyAttention) Answered(context.Context, time.Time, int) ([]attention.Ask, error) {
 	return nil, nil
 }
+func (emptyAttention) SessionAsks(context.Context, attention.SessionAsksQuery) ([]attention.Ask, error) {
+	return nil, nil
+}
+func (emptyAttention) SessionAskCounts(context.Context, attention.SessionAsksQuery) (int, int, error) {
+	return 0, 0, nil
+}
