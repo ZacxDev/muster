@@ -1686,7 +1686,7 @@ on a machine can set it, a spawned agent included. So muster does not take
 the owner-authority tools (`attention_answer`, `connector_request_decide`,
 `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`,
 `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
-`agent_destroy`) from such a machine as your decision. On a
+`agent_destroy`, `officer_item_enqueue`) from such a machine as your decision. On a
 machine that **starts agents for the chief**, each of them is a **confirmation
 card on your paired phone**, whichever of your sessions the call names, and
 nothing runs until you answer Confirm there (a signed action; a browser answer

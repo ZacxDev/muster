@@ -41,6 +41,10 @@ import (
 //     target_key;
 //   - a page it made, responded to (recordPageResponse) → the page's
 //     mirror_host / mirror_session.
+//   - work it ASKED for (migration 0178, session_wake_requests.go): an
+//     officer's draft for an item it enqueued, decided and later sent or not
+//     → the item's requested_host / requested_session; a step-up card its
+//     call raised, settled → the card's RaisedByHost / RaisedBySession.
 //
 // 🔴 THE LINE IS MUSTER'S OWN WORDS AND THE OWNER'S OWN WORDS, NEVER A THIRD
 // PARTY'S — by construction, not by care. renderWake is the ONE function that
@@ -343,6 +347,72 @@ func renderWake(w sessionwake.Wake) string {
 			n = strconv.Itoa(w.Count) + " new responses"
 		}
 		return "muster: " + page + ", which this session made, got " + n + " from its viewers — read them with " + readPage + "."
+	case sessionwake.KindOfficerDraftDecided:
+		// An officer's draft for an item this session enqueued
+		// (session_wake_requests.go): the draft and the item by id, never
+		// the draft's body or the officer's words.
+		ref := officerDraftRef(w)
+		verb := "approved"
+		if w.Decision != sessionwake.DecisionApproved {
+			verb = "rejected"
+		}
+		who, whose := "you "+verb+" "+ref+".", "you gave"
+		if via != "" {
+			who, whose = ref+", was "+verb+" — via plugin_draft_decide from "+via+", not by you on the Asks page.", "given"
+		}
+		if w.Decision == sessionwake.DecisionApproved {
+			return "muster: " + who + " Its plugin sends it next; muster tells this session how that went."
+		}
+		// 🔴 A REJECTION OF WORK THIS SESSION ASKED FOR IS ITS ALONE: the
+		// officer files no redraft for it (wakeOfficerDraftDecided: this wake
+		// was filed, so the item was closed as the session's), so the line
+		// says so and names the item as closed.
+		pre := who + " It will not be sent, and the officer will not redraft it: officer item #" +
+			strconv.FormatInt(w.OfficerItemID, 10) + " is closed, and what happens next is this session's call."
+		if strings.TrimSpace(w.OperatorText) == "" {
+			return "muster: " + pre
+		}
+		return fenced(pre+" The block below is the reason "+whose+", relayed by muster.", wakeReasonMarker, "reason:", w.OperatorText, "")
+	case sessionwake.KindOfficerDraftOutcome:
+		who := officerDraftRef(w)
+		if via != "" {
+			who += ", approved via plugin_draft_decide from " + via
+		}
+		switch w.Decision {
+		case sessionwake.DecisionSent:
+			return "muster: " + who + " — it was sent."
+		case sessionwake.DecisionFailed:
+			if w.Count > 1 {
+				return "muster: " + who + " — it could not be sent after " + strconv.Itoa(w.Count) +
+					" attempts (its plugin reported a failure), and muster stopped retrying it. Nothing more is sent on its own."
+			}
+			return "muster: " + who + " — it could not be sent (its plugin reported a failure). Nothing more is sent on its own."
+		default:
+			return "muster: " + who + " — it may or may not have been sent (its plugin did not confirm it). Nothing more is sent on its own."
+		}
+	case sessionwake.KindStepUpDecided:
+		// A step-up card this session's call raised (session_wake_requests.go):
+		// the card by id and the tool by its ledger name, never its arguments
+		// or its output.
+		card := stepUpCardRef(w)
+		switch w.Decision {
+		case sessionwake.DecisionConfirmed:
+			return "muster: you confirmed " + card + ", on your phone: muster ran that call once, exactly as asked. " +
+				"Do not call it again; read what it did with the list tools."
+		case sessionwake.DecisionConfirmedFailed:
+			return "muster: you confirmed " + card + ", on your phone: muster ran that call once, and the tool refused it. " +
+				"Read why with the list tools before you ask again."
+		case sessionwake.DecisionRefused:
+			return "muster: you refused " + card + ", on your phone: the call did not run, and nothing was done."
+		case sessionwake.DecisionDismissed:
+			return "muster: you dismissed " + card + ", without confirming it: the call did not run, and nothing was done."
+		case sessionwake.DecisionSettledApproved:
+			return "muster: " + card + ", was settled when you approved the draft it is about on another door; " +
+				"the call itself was not run. Read the draft with the list tools."
+		case sessionwake.DecisionSettledRejected:
+			return "muster: " + card + ", was settled when you rejected the draft it is about on another door; " +
+				"the call itself was not run. Read the draft with the list tools."
+		}
 	}
 	return ""
 }
@@ -413,31 +483,43 @@ func fenced(preface, marker, head, text, readWhole string) string {
 // Filing.
 // ---------------------------------------------------------------------------
 
-// fileWake records wake n for owner and starts its delivery. A team owner, a
-// server without wakes, or a store error files nothing (logged).
-func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
-	if !s.wakesOn() || owner <= 0 {
-		return
+// fileWake records wake n for owner and starts its delivery, reporting
+// whether it FILED A NEW ONE: false for a team owner, a server without wakes, a
+// host that does not mirror here, a store error (logged), or a decision whose
+// wake already exists (Create's one-per-decision rule) — in each of which the
+// session is told nothing by this call.
+func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) bool {
+	if !s.wakeReaches(ctx, owner, n.Host) {
+		return false
 	}
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), owner)
-	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
-		return
-	}
-	if !s.wakeHostHere(octx, n.Host) {
-		return
-	}
 	// The sign-in that decided it (its freshness is judged when the line is
 	// queued: wakeNeedsSignIn, the one rule).
 	n.StepUpAt = wakeDecisionSignIn(ctx)
 	w, fresh, err := s.ext.SessionWakes.Create(octx, n)
 	if err != nil {
 		s.logger.Printf("session wake: %s for owner %d: %v", n.Kind, owner, err)
-		return
+		return false
 	}
 	if fresh {
 		s.wakeChanged(w)
 		s.startWakeDelivery(owner, w.ID)
 	}
+	return fresh
+}
+
+// wakeReaches reports whether a wake for owner's session on host would be
+// filed at all (fileWake's first rule): this server delivers wakes, owner is a
+// user (not a team), and host mirrors here.
+func (s *Server) wakeReaches(ctx context.Context, owner int64, host string) bool {
+	if !s.wakesOn() || owner <= 0 {
+		return false
+	}
+	octx := s.queuedPrincipal(context.WithoutCancel(ctx), owner)
+	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
+		return false
+	}
+	return s.wakeHostHere(octx, host)
 }
 
 // wakeHostHere reports whether host mirrors its sessions to THIS muster: it
@@ -482,6 +564,10 @@ func (s *Server) wakeDismissed(ctx context.Context, a attention.Ask) {
 	if n, ok := wakeForDismiss(a); ok {
 		s.fileWake(ctx, a.Owner, n)
 	}
+	if a.Status == attention.Cancelled {
+		// A step-up card a session's call raised (session_wake_requests.go).
+		s.wakeStepUpDecided(ctx, a, sessionwake.DecisionDismissed)
+	}
 }
 
 // draftRoute is draft d's route, ok false for a draft no route made.
@@ -497,15 +583,21 @@ func (s *Server) draftRoute(ctx context.Context, d plugins.Draft) (plugins.Route
 }
 
 // wakeDraftDecided files the wake the owner's decision on draft d owes
-// (decideDraftAs).
-func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) {
+// (decideDraftAs). toRequester: d is an officer's draft whose REJECTION was
+// just filed, fresh, as a wake for the session that enqueued its item
+// (wakeOfficerDraftDecided) — the one case in which the officer is not asked
+// to redraft it (outboundSettledTo).
+func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) (toRequester bool) {
 	if !s.wakesOn() {
-		return
+		return false
 	}
+	// The step-up cards about d that this decision settled, and an officer's
+	// draft for an item a session enqueued (session_wake_requests.go).
+	s.wakeStepUpsSettledBy(ctx, d, via.Via)
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), d.OwnerID)
 	r, ok := s.draftRoute(octx, d)
 	if !ok {
-		return
+		return s.wakeOfficerDraftDecided(ctx, d, via) && d.Status == plugins.DraftRejected
 	}
 	if n, ok := wakeForDraftDecision(d, r); ok {
 		if via.Via == plugins.DraftViaMCP {
@@ -515,6 +607,7 @@ func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plug
 		}
 		s.fileWake(ctx, d.OwnerID, n)
 	}
+	return false
 }
 
 // wakeDraftOutcome files the wake approved draft d's outcome owes, once — only
@@ -695,8 +788,9 @@ func (s *Server) handWake(ctx context.Context, w sessionwake.Wake) string {
 			}
 		}
 		if ok, err := st.GiveUp(ctx, w.ID, why); err == nil && ok {
-			w.State = sessionwake.Unconfirmed
+			w.State, w.Detail = sessionwake.Unconfirmed, why
 			s.wakeChanged(w)
+			s.wakeNotDelivered(ctx, w)
 		}
 		return wakeGaveUp
 	}
@@ -775,7 +869,7 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 		return wakeNothing
 	}
 	st := s.ext.SessionWakes
-	moved := false
+	moved, undelivered := false, false
 	switch it.State {
 	case sendqueue.Sent:
 		moved, _ = st.Finish(ctx, w.ID, it.ID, true, "")
@@ -787,6 +881,7 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 		}
 	case sendqueue.Cancelled:
 		moved, _ = st.Finish(ctx, w.ID, it.ID, false, "Not delivered: it was cancelled in the session's queue")
+		undelivered = true
 	case sendqueue.Queued:
 		if s.sendQueueNow().Sub(w.QueuedAt) < wakeGiveUp {
 			return wakeNothing
@@ -795,11 +890,17 @@ func (s *Server) settleWakeRow(ctx context.Context, w sessionwake.Wake) string {
 			return wakeNothing // being sent this instant: the paste settles it
 		}
 		moved, _ = st.Finish(ctx, w.ID, it.ID, false, "Not delivered: the session was not idle within a day")
+		undelivered = true
 	default:
 		return wakeNothing
 	}
 	if moved {
 		s.wakeChanged(w)
+		if undelivered {
+			// Provably never pasted (a row that may have landed is "May have
+			// been sent", never this).
+			s.wakeNotDelivered(ctx, w)
+		}
 		return wakeSettled
 	}
 	return wakeNothing
@@ -833,6 +934,9 @@ func (s *Server) wakeDraftOutcomesDue(ctx context.Context) {
 	if !s.wakesOn() || s.ext.Plugins == nil {
 		return
 	}
+	// And an officer's drafts for items a session enqueued
+	// (session_wake_requests.go).
+	s.wakeOfficerOutcomesDue(ctx)
 	owed, err := s.ext.SessionWakes.DraftOutcomesOwed(ctx, wakeBatch)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -1021,6 +1125,9 @@ func wakeDeliveryText(w sessionwake.Wake, who string) (string, wakeAction) {
 		if !strings.HasPrefix(d, "Not delivered") && !strings.HasPrefix(d, "May have been sent") {
 			d = "Not confirmed: " + d
 		}
+		if wakeWentToOfficer(w) {
+			return d + ". The rejection went back to the officer instead.", wakeAction{}
+		}
 		return d + ".", wakeAction{Label: "Retry delivery", StepUp: wakeCarriesOwnerText(w)}
 	}
 	return "", wakeAction{}
@@ -1156,6 +1263,9 @@ func (s *Server) wakeRetryStale(w http.ResponseWriter, r *http.Request, cur sess
 // the owner's words (the caller checked it is fresh: wakeRetryStale), and
 // starts its delivery.
 func (s *Server) retryWake(ctx context.Context, cur sessionwake.Wake) (sessionwake.Wake, error) {
+	if wakeWentToOfficer(cur) {
+		return cur, sessionwake.ErrNotRetryable
+	}
 	var at time.Time
 	if wakeCarriesOwnerText(cur) {
 		at, _ = stepup.AuthTime(ctx)

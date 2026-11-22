@@ -285,7 +285,13 @@ func newOfficerItemCmd(a *app) *cobra.Command {
 	enq := &cobra.Command{
 		Use:   "enqueue <officer>",
 		Short: "POST " + officerItemsRoute + " — queue an item (a live item of the same kind and subject is returned instead)",
-		Args:  cobra.ExactArgs(1),
+		Long: "Queue an item for one of your officers (a live item of the same kind and subject is returned instead).\n\n" +
+			"Inside a mirrored Claude Code session the item is queued through that session's own muster-mirror MCP door, " +
+			"so the session is recorded as the item's requester and is told how its drafts are decided; elsewhere, or when " +
+			"the session cannot be resolved (stderr says why), through the admin API with no session recorded.\n\n" +
+			"Exit 13: on a machine the step-up gate covers, the enqueue became a confirmation card on your owner's phone " +
+			"(stdout carries it) and NOTHING IS QUEUED until it is confirmed.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if kind == "" || subject == "" {
 				return failf(exitUsage, "--kind and --subject are required")
@@ -303,6 +309,12 @@ func newOfficerItemCmd(a *app) *cobra.Command {
 					return failf(exitUsage, "--not-before %q is not RFC 3339", notBefore)
 				}
 				body["not_before"] = t
+			}
+			// Inside a mirrored Claude Code session: through that session's own
+			// MCP door, so the session is recorded as the item's requester
+			// (officer_enqueue_session.go). Else, as always, the admin API.
+			if done, err := a.enqueueAsSession(cmd.Context(), args[0], body); done || err != nil {
+				return err
 			}
 			return a.officerCall(cmd, http.MethodPost, officerItemsRoute, map[string]string{"officer": args[0]}, nil, body)
 		},

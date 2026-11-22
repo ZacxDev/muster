@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // ---------------------------------------------------------------------------
@@ -109,6 +110,15 @@ type StepUpCard struct {
 	// call and its arguments in words (never JSON, never a hash), and why the
 	// phone is needed.
 	Details string `json:"details"`
+	// RaisedByHost / RaisedBySession are the mirrored Claude Code session
+	// whose MCP call raised the card (migration 0178's session wakes): the
+	// host of the mirror token the call came in on and the session that host
+	// listed running in the calling window — muster's binding of the caller,
+	// never the call's arguments. Both "" for a caller that is not one (a
+	// remote caller, an opencode session). The owner's settling of the card
+	// is pasted into that session (internal/api session_wake_requests.go).
+	RaisedByHost    string `json:"raised_by_host,omitempty"`
+	RaisedBySession string `json:"raised_by_session,omitempty"`
 }
 
 // StepUpMedium is one medium of a draft a card shows: its index among the
@@ -253,6 +263,13 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 		return nil, fmt.Errorf("%w: a step-up card's draft id is not an id", ErrInvalid)
 	}
 	out.DraftID, out.Changed = c.DraftID, c.Changed
+	// The raising session: both or neither, each in the mirror wire's shape.
+	if c.RaisedByHost != "" || c.RaisedBySession != "" {
+		if mirror.ValidHost(c.RaisedByHost) != nil || !mirror.ValidClaudeSession(c.RaisedBySession) {
+			return nil, fmt.Errorf("%w: a step-up card's raising session is not a mirrored Claude Code session", ErrInvalid)
+		}
+		out.RaisedByHost, out.RaisedBySession = c.RaisedByHost, c.RaisedBySession
+	}
 	if len(c.Media) > MaxStepUpMedia {
 		return nil, fmt.Errorf("%w: a step-up card shows at most %d media", ErrInvalid, MaxStepUpMedia)
 	}

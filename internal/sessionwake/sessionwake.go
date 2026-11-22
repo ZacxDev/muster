@@ -2,7 +2,9 @@
 // Code session because its owner decided something the session was waiting on
 // (migration 0177, session_wakes; docs/attention.md "Delivery"): an ask it
 // raised was answered or dismissed, a reply draft it wrote was decided and
-// later sent or not, or a page it made got a response.
+// later sent or not, or a page it made got a response — and (migration 0178)
+// work it ASKED for: an officer's draft for an item it enqueued was decided and
+// later sent or not, or a step-up card its call raised was settled.
 //
 // The delivery itself — resolving the session's window, queueing the line in
 // the window's send queue, the paste's gate and outcome — lives in
@@ -65,6 +67,19 @@ const (
 	// KindPageResponses: OTHER viewers responded on it — a count, never
 	// their words.
 	KindPageResponses Kind = "page_responses"
+	// KindOfficerDraftDecided: the owner approved or rejected an outbound
+	// draft an officer filed for an officer item the session ENQUEUED
+	// (migration 0178, officer_items.requested_session).
+	KindOfficerDraftDecided Kind = "officer_draft_decided"
+	// KindOfficerDraftOutcome: that approved draft — or the retry successor
+	// its chain ended on — was sent, failed, or may have been sent. Count is
+	// the attempt it ended on.
+	KindOfficerDraftOutcome Kind = "officer_draft_outcome"
+	// KindStepUpDecided: the owner settled a step-up card the session's MCP
+	// call raised (confirmed or refused on their phone, decided its draft on
+	// another door, or dismissed it). Component is the tool's name, AskID the
+	// card.
+	KindStepUpDecided Kind = "stepup_decided"
 )
 
 // State is where a wake is (0177's header).
@@ -85,6 +100,16 @@ const (
 	DecisionSent        = "sent"
 	DecisionFailed      = "failed"
 	DecisionUnconfirmed = "unconfirmed"
+	// A step-up card's (KindStepUpDecided): confirmed and its call ran;
+	// confirmed and its call ran but the tool refused it; refused on the
+	// phone; dismissed; settled by the owner approving or rejecting the
+	// card's draft on another door (the web UI, another session's request).
+	DecisionConfirmed       = "confirmed"
+	DecisionConfirmedFailed = "confirmed_failed"
+	DecisionRefused         = "refused"
+	DecisionDismissed       = "dismissed"
+	DecisionSettledApproved = "settled_approved"
+	DecisionSettledRejected = "settled_rejected"
 )
 
 // MaxOperatorTextBytes bounds Wake.OperatorText (0177's CHECK).
@@ -105,14 +130,17 @@ type Wake struct {
 	ResponseID int64
 	// RouteID is a draft wake's route (muster's own id, rt_…), "" otherwise.
 	RouteID string
+	// OfficerItemID is an officer wake's item: the one the session enqueued.
+	OfficerItemID int64
 	// Decision is a draft wake's: approved or rejected (KindDraftDecided),
 	// sent, failed or unconfirmed (KindDraftOutcome).
 	Decision string
 	// Count is how many other viewers' responses a KindPageResponses wake
-	// stands for.
+	// stands for, and the attempt a KindOfficerDraftOutcome wake's chain
+	// ended on.
 	Count int
-	// Component is a KindPageOwn wake's page component (its own CHECKed
-	// shape).
+	// Component is a KindPageOwn wake's page component, and a
+	// KindStepUpDecided wake's tool name (its own CHECKed shape).
 	Component string
 	// OperatorText is the OWNER'S OWN WORDS the line carries, fenced: an
 	// ask's answer, the reason given with a rejection, a response sent from
@@ -141,20 +169,22 @@ type Wake struct {
 
 // New is a wake to create (Create): every Wake field but the delivery's.
 type New struct {
-	Kind         Kind
-	AskID        int64
-	DraftID      int64
-	PageID       int64
-	ResponseID   int64
-	RouteID      string
-	Decision     string
-	Component    string
-	OperatorText string
-	Host         string
-	Session      string
-	ViaHost      string
-	ViaSession   string
-	StepUpAt     time.Time
+	Kind          Kind
+	AskID         int64
+	DraftID       int64
+	PageID        int64
+	ResponseID    int64
+	RouteID       string
+	OfficerItemID int64
+	Decision      string
+	Count         int
+	Component     string
+	OperatorText  string
+	Host          string
+	Session       string
+	ViaHost       string
+	ViaSession    string
+	StepUpAt      time.Time
 }
 
 var (
@@ -183,6 +213,7 @@ type Store interface {
 	MarkRead(ctx context.Context, n New) ([]Wake, error)
 	Retry(ctx context.Context, id int64, stepUpAt time.Time) (Wake, error)
 	DraftOutcomesOwed(ctx context.Context, limit int) ([]OutcomeOwed, error)
+	OfficerOutcomesOwed(ctx context.Context, limit int) ([]OfficerOutcomeOwed, error)
 }
 
 // PGStore is the store on Postgres.
@@ -194,14 +225,14 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 const cols = `id, owner_id, created_at, kind, coalesce(ask_id, 0), coalesce(draft_id, 0), coalesce(page_id, 0),
 	coalesce(response_id, 0), route_id, decision, response_count, component, operator_text, mirror_host, mirror_session,
 	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz),
-	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz)`
+	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz), coalesce(officer_item_id, 0)`
 
 func scan(row pgx.Row) (Wake, error) {
 	var w Wake
 	var kind, state string
 	err := row.Scan(&w.ID, &w.Owner, &w.CreatedAt, &kind, &w.AskID, &w.DraftID, &w.PageID, &w.ResponseID, &w.RouteID,
 		&w.Decision, &w.Count, &w.Component, &w.OperatorText, &w.Host, &w.Session, &state, &w.Detail, &w.Attempts,
-		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt)
+		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID)
 	w.Kind, w.State = Kind(kind), State(state)
 	if w.DeliveredAt.Unix() == 0 {
 		w.DeliveredAt = time.Time{}
@@ -257,6 +288,24 @@ func (n New) Valid() error {
 		if n.PageID <= 0 || n.ResponseID <= 0 {
 			return fmt.Errorf("%w: an owner's response names its page and response", ErrInvalid)
 		}
+	case KindOfficerDraftDecided:
+		if n.DraftID <= 0 || n.OfficerItemID <= 0 || (n.Decision != DecisionApproved && n.Decision != DecisionRejected) {
+			return fmt.Errorf("%w: an officer draft's decision names its draft, its item and approved or rejected", ErrInvalid)
+		}
+	case KindOfficerDraftOutcome:
+		if n.DraftID <= 0 || n.OfficerItemID <= 0 || n.Count < 1 || n.OperatorText != "" ||
+			(n.Decision != DecisionSent && n.Decision != DecisionFailed && n.Decision != DecisionUnconfirmed) {
+			return fmt.Errorf("%w: an officer draft's outcome names its draft, its item, its attempt and sent, failed or unconfirmed", ErrInvalid)
+		}
+	case KindStepUpDecided:
+		switch n.Decision {
+		case DecisionConfirmed, DecisionConfirmedFailed, DecisionRefused, DecisionDismissed, DecisionSettledApproved, DecisionSettledRejected:
+		default:
+			return fmt.Errorf("%w: a step-up card's wake says how it was settled", ErrInvalid)
+		}
+		if n.AskID <= 0 || n.Component == "" || n.OperatorText != "" {
+			return fmt.Errorf("%w: a step-up card's wake names its card and tool, and carries no text", ErrInvalid)
+		}
 	default:
 		// KindPageResponses is AddPageResponses' alone: its count folds.
 		return fmt.Errorf("%w: kind %q", ErrInvalid, n.Kind)
@@ -280,17 +329,18 @@ func nullID(id int64) any {
 
 // Create records wake n for the caller's principal (its owner), queued. The
 // bool is false — and the existing row is returned — when the same decision
-// already has its wake (0177's one-per-decision indexes): a second answer path
-// racing the first, or a repeat, owes nothing more.
+// already has its wake (0177's one-per-decision indexes, a draft's decision
+// keyed on the decision itself since 0178): a second answer path racing the
+// first, or a repeat, owes nothing more.
 func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	if err := n.Valid(); err != nil {
 		return Wake{}, false, err
 	}
 	w, err := scan(s.pool.QueryRow(ctx, `INSERT INTO session_wakes (kind, ask_id, draft_id, page_id, response_id, route_id,
-			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+cols,
+			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at, officer_item_id, response_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING `+cols,
 		string(n.Kind), nullID(n.AskID), nullID(n.DraftID), nullID(n.PageID), nullID(n.ResponseID), n.RouteID, n.Decision,
-		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt)))
+		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt), nullID(n.OfficerItemID), n.Count))
 	if err == nil {
 		return w, true, nil
 	}
@@ -298,19 +348,26 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	if !errors.As(err, &pe) || pe.Code != "23505" {
 		return Wake{}, false, err
 	}
-	var q string
-	var arg any
+	q, args := `response_id = $1 AND kind = $2`, []any{n.ResponseID, string(n.Kind)}
 	switch {
 	case n.AskID > 0:
-		q, arg = `ask_id = $1 AND kind = $2`, n.AskID
+		q, args[0] = `ask_id = $1 AND kind = $2`, n.AskID
+	case n.DraftID > 0 && n.Kind.decidedDraft():
+		// One per DECISION (0178's session_wakes_one_per_draft): a withdrawn
+		// approval's rejection is a wake of its own.
+		q, args = `draft_id = $1 AND kind = $2 AND decision = $3`, []any{n.DraftID, string(n.Kind), n.Decision}
 	case n.DraftID > 0:
-		q, arg = `draft_id = $1 AND kind = $2`, n.DraftID
-	default:
-		q, arg = `response_id = $1 AND kind = $2`, n.ResponseID
+		q, args[0] = `draft_id = $1 AND kind = $2`, n.DraftID
 	}
-	w, err = scan(s.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_wakes WHERE `+q, arg, string(n.Kind)))
+	w, err = scan(s.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_wakes WHERE `+q, args...))
 	return w, false, err
 }
+
+// decidedDraft reports whether k is a draft's DECISION wake, of which a draft
+// has one per decision (0178's session_wakes_one_per_draft, whose CASE lists
+// the same two kinds): an approval and, should the owner withdraw it before its
+// plugin claims it, a rejection.
+func (k Kind) decidedDraft() bool { return k == KindDraftDecided || k == KindOfficerDraftDecided }
 
 // AddPageResponses records n more of OTHER viewers' responses to page pageID
 // for the session that made it: folded into the page's one queued count line
@@ -529,6 +586,51 @@ func (s *PGStore) DraftOutcomesOwed(ctx context.Context, limit int) ([]OutcomeOw
 	for rows.Next() {
 		var o OutcomeOwed
 		if err := rows.Scan(&o.Owner, &o.DraftID); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// OfficerOutcomeOwed is one settled attempt of an officer's approved draft
+// whose session has not been told how it ended (OfficerOutcomesOwed): the
+// draft that settled (the approved draft itself, or the retry successor its
+// chain ended on) and the decision wake it follows.
+type OfficerOutcomeOwed struct {
+	Owner    int64
+	DraftID  int64
+	Attempt  int
+	Status   string
+	Decision int64
+}
+
+// OfficerOutcomesOwed is every owner's officer drafts whose approval the owner
+// decided (an officer_draft_decided wake, approved) and whose RETRY CHAIN
+// (0175: the approved draft and every successor naming it in retry_of) has
+// since ENDED on one of its attempts — sent, unconfirmed, or failed with no
+// later attempt in the chain — with no outcome wake for that attempt yet, at
+// most limit, over the last 8 days (system scope: the sweep files each as its
+// owner). A failed attempt that has a successor is not an end: the chain is
+// still trying, and nothing is owed until it stops. An owner's manual retry
+// after the end files a new attempt, whose own end is owed again.
+func (s *PGStore) OfficerOutcomesOwed(ctx context.Context, limit int) ([]OfficerOutcomeOwed, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT w.owner_id, d.id, d.attempt, d.status, w.id FROM session_wakes w
+		JOIN plugin_reply_drafts d ON d.owner_id = w.owner_id AND (d.id = w.draft_id OR d.retry_of = w.draft_id)
+		WHERE w.kind = 'officer_draft_decided' AND w.decision = 'approved' AND w.created_at > now() - interval '8 days'
+		  AND (d.status IN ('sent', 'unconfirmed')
+		    OR (d.status = 'failed' AND NOT EXISTS (SELECT 1 FROM plugin_reply_drafts n
+		      WHERE n.owner_id = d.owner_id AND n.retry_of = w.draft_id AND n.attempt > d.attempt)))
+		  AND NOT EXISTS (SELECT 1 FROM session_wakes o WHERE o.draft_id = d.id AND o.kind = 'officer_draft_outcome')
+		ORDER BY w.id, d.attempt LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OfficerOutcomeOwed
+	for rows.Next() {
+		var o OfficerOutcomeOwed
+		if err := rows.Scan(&o.Owner, &o.DraftID, &o.Attempt, &o.Status, &o.Decision); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

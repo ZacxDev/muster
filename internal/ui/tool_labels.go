@@ -133,6 +133,7 @@ var musterToolLabels = map[string]string{
 	"officer_contact_get":             "Looked up a person",
 	"officer_contact_note":            "Made a note about a person",
 	"officer_post_draft":              "Asked to post something",
+	"officer_item_enqueue":            "Queued work for an officer",
 	"officer_my_state":                "Looked at its own work",
 	"officer_confirm_card":            "Asked you to approve something",
 	"officer_refusal_refile":          "Filed a refused post again",

@@ -262,6 +262,11 @@ var (
 		// under THAT owner's principal (internal/api session_wake.go).
 		"internal/sessionwake.(*PGStore).Due",
 		"internal/sessionwake.(*PGStore).DraftOutcomesOwed",
+		// …and (migration 0178) every owner's approved OFFICER drafts whose
+		// retry chain ended without its outcome line (OfficerOutcomesOwed; ids,
+		// owners, attempt and status only), each filed under THAT owner's
+		// principal (internal/api session_wake_requests.go).
+		"internal/sessionwake.(*PGStore).OfficerOutcomesOwed",
 		// …and its draft half: every owner's PENDING reply drafts (ids, owners,
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.

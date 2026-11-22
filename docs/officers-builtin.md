@@ -1013,6 +1013,19 @@ muster officer item ls marketing:example --status open
 muster officer item resolve marketing:example 42 --outcome no_action --summary "superseded"
 ```
 
+From a **mirrored Claude Code session**, `officer_item_enqueue` (its MCP door)
+makes the same owner item and records that session as the item's requester,
+so the owner's approval or rejection of a draft the officer files for it — and
+that draft's send outcome — is pasted into the session
+([attention.md](attention.md#officer-items-a-session-enqueues)); the owner's
+rejection of such a draft then goes to that session only, and the officer does
+not redraft it (unless the session's line is never delivered: then it comes
+back to the officer as a `draft.refused` item). `muster officer item enqueue` run inside a mirrored Claude Code
+session records that session the same way, by calling `officer_item_enqueue`
+through the machine's muster-mirror MCP endpoint; anywhere else (or when the
+session cannot be resolved, which it says on stderr) it names no session and
+the item wakes none.
+
 What it costs, per UTC day (an estimate at list price for a Claude Code
 instance — [officers.md](officers.md#a-builtin-officers-usage-officer_llm_usage)):
 

@@ -707,21 +707,6 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
 	}
-	if !dec.Approve {
-		// 🔴 AN OWNER'S REJECTION OF AN OFFICER'S OUTBOUND DRAFT GOES BACK TO
-		// THE OFFICER, with the owner's reason (a draft.refused item, bounded
-		// like a plugin's refusal: past the bound it is HELD and delivered
-		// later, never dropped), and closes the item it was filed for. A
-		// reply draft's rejection goes nowhere, as before: its chief or
-		// session is not told (outboundSettled decides which, in one place).
-		if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Status == plugins.DraftRejected {
-			// A follow or a like rejected on its own: as an unticked batch
-			// entry, its item is finished quietly — nothing to redraft.
-			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
-		} else {
-			s.outboundSettled(ctx, d.OwnerID, d, settledByOwner, nil)
-		}
-	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
 	// 🔴 THE DRAFT'S OWNER, NOT THE DECIDER: a team's draft was pushed to
@@ -737,9 +722,28 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	// it leaves the Open feed saying what was decided and where, and a Confirm
 	// on the phone afterwards is refused as not open.
 	s.settleDraftStepUps(ctx, d, dec.Via.Via)
-	// A draft a mirrored session wrote (a route's answer): the session is
-	// told what the owner decided (session_wake.go).
-	s.wakeDraftDecided(ctx, d, dec.Via)
+	// A draft a mirrored session wrote (a route's answer), or an officer's
+	// for an item a session enqueued: the session is told what the owner
+	// decided (session_wake.go, session_wake_requests.go).
+	toRequester := s.wakeDraftDecided(ctx, d, dec.Via)
+	if !dec.Approve {
+		// 🔴 AN OWNER'S REJECTION OF AN OFFICER'S OUTBOUND DRAFT GOES BACK TO
+		// THE OFFICER, with the owner's reason (a draft.refused item, bounded
+		// like a plugin's refusal: past the bound it is HELD and delivered
+		// later, never dropped), and closes the item it was filed for. A
+		// reply draft's rejection goes nowhere, as before: its chief or
+		// session is not told (outboundSettled decides which, in one place).
+		// 🔴 AFTER THE WAKE, NEVER BEFORE IT: the one exception — a rejection of
+		// work a session asked for is that session's — holds only when its
+		// wake was just FILED (toRequester), not when one would be.
+		if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Status == plugins.DraftRejected {
+			// A follow or a like rejected on its own: as an unticked batch
+			// entry, its item is finished quietly — nothing to redraft.
+			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
+		} else {
+			s.outboundSettledTo(ctx, d.OwnerID, d, settledByOwner, nil, toRequester)
+		}
+	}
 	return d, nil
 }
 

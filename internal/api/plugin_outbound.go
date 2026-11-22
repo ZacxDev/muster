@@ -622,6 +622,28 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	return e
 }
 
+// endForRequester is draftEndFor's end e of an owner's rejection whose wake
+// was just filed for the mirrored session that enqueued its item
+// (wakeOfficerDraftDecided's report): no follow-up and no escalation — the
+// item is finished no_action saying the decision was sent to that session, and
+// that it comes back here should it not be delivered (wakeNotDelivered) — and
+// none of the owner's reason in it: that is the session's alone.
+func endForRequester(e builtin.DraftEnd) builtin.DraftEnd {
+	e.FollowUp, e.Quiet = nil, true
+	e.Ended += " The owner's decision was sent to the session that enqueued this item, which decides what happens next: there is nothing to redraft." +
+		" Should muster be unable to deliver it, it comes back to this officer as a " + draftRefusedKind + " item."
+	return e
+}
+
+// ownerRejectionDetail is the detail of the draft.refused item an owner's
+// rejection of d gives its officer: the owner's reason, or that they gave none.
+func ownerRejectionDetail(d plugins.Draft) string {
+	if d.DecisionReason != nil && strings.TrimSpace(*d.DecisionReason) != "" {
+		return *d.DecisionReason
+	}
+	return OwnerRejectedNoReason
+}
+
 // outboundSettled is what follows a fresh result, refusal or rejection of
 // OUTBOUND draft d, for its officer: a send reported ok completes the item it
 // was filed for (done, with the post's reference — the item waits on the
@@ -632,9 +654,18 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 // for, naming that follow-up (draftEndFor, builtin.DraftEnded). held: the
 // officer already had maxOpenRefusedItems claimable draft.refused items, so
 // the follow-up is HELD until one of them is finished (the officer sweep
-// delivers it, promoteHeldRefusals) — the caller's push says so. Best
-// effort: the draft's own state is already recorded.
+// delivers it, promoteHeldRefusals) — the caller's push says so. Best effort:
+// the draft's own state is already recorded.
 func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string, retryAt *time.Time) (held bool) {
+	return s.outboundSettledTo(ctx, owner, d, by, retryAt, false)
+}
+
+// outboundSettledTo is outboundSettled, with its one exception: toRequester —
+// the owner's rejection of d was just filed, fresh, as a wake for the mirrored
+// session that enqueued its item (decideDraftAs, from wakeDraftDecided's
+// report, never a prediction of it) — and the rejection is that session's
+// alone (endForRequester): no follow-up, the item finished quietly.
+func (s *Server) outboundSettledTo(ctx context.Context, owner int64, d plugins.Draft, by string, retryAt *time.Time, toRequester bool) (held bool) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
 		return false
 	}
@@ -664,10 +695,7 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 		if d.Status != plugins.DraftRejected {
 			return false
 		}
-		detail = OwnerRejectedNoReason
-		if d.DecisionReason != nil && strings.TrimSpace(*d.DecisionReason) != "" {
-			detail = *d.DecisionReason
-		}
+		detail = ownerRejectionDetail(d)
 	case settledByPlugin:
 		if d.Status != plugins.DraftFailed && !d.RefusedByCheck() {
 			return false
@@ -684,7 +712,16 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	// follow-up is STILL filed, HELD (not claimable) until one of them is
 	// finished — never dropped (operator decision) — and the item the draft
 	// was for is finished naming it.
-	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail, retryAt), now)
+	e := draftEndFor(d, officer, "", by, detail, retryAt)
+	if by == settledByOwner && toRequester {
+		// 🔴 THE OWNER'S REJECTION OF WORK A SESSION ASKED FOR IS THAT
+		// SESSION'S (operator decision): its wake — already filed — carries the
+		// decision and the reason (session_wake_requests.go); the officer is
+		// not asked to redraft, and the item is closed. Not delivered, it comes
+		// back to the officer (wakeNotDelivered).
+		e = endForRequester(e)
+	}
+	res, err := s.officerStore.DraftEnded(ctx, owner, e, now)
 	if err != nil {
 		s.logger.Printf("plugins: draft %d ended unsent (by %s); %s and its item left as they are: %v", d.ID, by, officer, err)
 		return false

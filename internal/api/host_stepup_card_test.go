@@ -191,6 +191,8 @@ func TestEveryOtherGatedToolGetsAHumanSummary(t *testing.T) {
 		{pluginOutboundBatchDecideTool, `{"batch_id":"b-18","batch_sha256":"s","approve_ids":[4,4]}`, "Approve part of an outreach batch?",
 			"Send 1 of the batch's follows and likes; reject the rest.", "Outreach batch b-18: 1 entry to send"},
 		{dispatchApproveTool, `{"hold_id":"held:1"}`, "Start this agent?", "The held start: Start a new agent on pod/gateway", ""},
+		{officerItemEnqueueTool, `{"officer":"marketing:a","kind":"owner.plan","subject_key":"plan-7","payload":{"x":1}}`, "Queue work for an officer?",
+			"Queue an item of kind owner.plan, subject plan-7, as your own (a spent daily budget does not hold it back).", "For officer marketing:a"},
 	}
 	for _, c := range cases {
 		r := ""
