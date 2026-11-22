@@ -290,8 +290,7 @@ func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 func sampleAppScreen() NavDocumentView {
 	return NavDocumentView{Title: "Question", Entry: NavAttention, Feat: featuresAllOn,
 		Main: `<section data-testid="ask-page"><p>Deploy the importer?</p><button type="submit" form="f">deploy</button></section>`,
-		App: &NavApp{Back: "/attention", BackLabel: "Back to Asks", Heading: "worker-7 is asking",
-			Composer: `<form id="f" method="post" action="/attention/asks/1/answer"><label for="a">Your answer</label><textarea id="a" name="answer"></textarea><button type="submit">Answer</button></form>`}}
+		App: &NavApp{Back: "/attention", BackLabel: "Back to Asks", Heading: "worker-7 is asking"}}
 }
 
 // featuresAllOn is the widest shell: every optional subsystem wired.

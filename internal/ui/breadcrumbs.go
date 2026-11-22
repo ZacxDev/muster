@@ -6,7 +6,8 @@ import (
 )
 
 // Breadcrumb is one step of a page's breadcrumbs (Breadcrumbs): its words, and
-// where a tap goes ("" for none: the current page, which is the last step).
+// where a tap goes — every step but the last links back, so each needs an
+// Href; the last is the current page, and its Href is not drawn.
 type Breadcrumb struct {
 	Label string
 	Href  string
@@ -41,10 +42,8 @@ func Breadcrumbs(steps []Breadcrumb) g.Node {
 		var step g.Node
 		if i == len(steps)-1 {
 			step = Span(g.Attr("aria-current", "page"), Class(BreadcrumbCurrentClass), g.Text(s.Label))
-		} else if s.Href != "" {
-			step = A(Href(s.Href), Class(BreadcrumbLinkClass), g.Attr("data-breadcrumb", ""), g.Text(s.Label))
 		} else {
-			step = Span(Class("px-1"), g.Text(s.Label))
+			step = A(Href(s.Href), Class(BreadcrumbLinkClass), g.Attr("data-breadcrumb", ""), g.Text(s.Label))
 		}
 		items = append(items, Li(Class("flex min-w-0 items-center gap-1"), sep, step))
 	}

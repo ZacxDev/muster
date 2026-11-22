@@ -250,9 +250,16 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
-	if it.stepUpDraft != nil {
-		// The draft's Approve asks "Confirm it's you" on a stale sign-in, as
-		// on the Asks page (draftStepUpHTML); the server checks it either way.
+	// 🔴 THE CONFIRM DIALOG WHEREVER A FORM NEEDS IT. A form drawn with
+	// data-step-up-form (a step-up card's draft Approve; a settled ask's
+	// session-wake Retry, wakeActionFormHTML) asks "Confirm it's you" on a
+	// stale sign-in through this script, as on the Asks page
+	// (draftStepUpHTML); without it the post goes straight to the server and
+	// comes back a refusal page. An OPEN ask from a mirrored session writes it
+	// too: only such an ask has a session wake (wakesForAsks), and it can
+	// settle live into a Retry that needs it (the script listens on the
+	// document, so a form the live region draws later is covered).
+	if strings.Contains(b.String(), "data-step-up-form") || a.Status == attention.Open && a.Asker.MirrorSession != "" {
 		b.WriteString(s.draftStepUpHTML(r))
 	}
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
@@ -358,8 +365,9 @@ func (s *Server) askContextLinkList(ctx context.Context, a attention.Ask, it att
 	return links
 }
 
-// askLiveHTML is the ask page's live region: an open ask's options and
-// suggested replies, or a settled ask's outcome.
+// askLiveHTML is the ask page's live region: an open ask's suggested replies
+// (its options are the answer form's, drawn with the page), a step-up card's
+// phone line or draft decision, or a settled ask's outcome.
 func askLiveHTML(a attention.Ask, it attentionItem) string {
 	esc := html.EscapeString
 	var b strings.Builder

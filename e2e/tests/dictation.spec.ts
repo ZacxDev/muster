@@ -876,7 +876,6 @@ test.describe('an ask’s answer boxes', () => {
     await page.goto(`${origin}/attention/asks/${id}`);
     const mic = page.locator('#ask-dictate'), up = page.locator('#ask-dictate-send'), answer = page.locator('#ask-send');
     await expect(page.locator('#ask-input'), 'beside options the box is open').toBeVisible();
-    await expect(page.locator('[data-ask-other]')).toHaveCount(0);
     await expect(mic).toBeVisible();
     await expect(answer).toHaveAttribute('aria-disabled', 'true');
     await mic.click();

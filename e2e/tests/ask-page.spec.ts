@@ -196,7 +196,6 @@ for (const vp of [
       // zoom), and nothing scrolls sideways.
       const box = page.locator('#ask-input');
       await expect(box, 'beside options the box is open, as on the card').toBeVisible();
-      await expect(page.locator('[data-ask-other]')).toHaveCount(0);
       const bb = (await box.boundingBox())!;
       expect(bb.x, 'the box is inside the card').toBeGreaterThanOrEqual(cardBox.x);
       expect(bb.x + bb.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
@@ -317,7 +316,6 @@ for (const vp of [
       await expect(form.locator('input[type="checkbox"][name="option"]')).toHaveCount(3);
       const note = form.getByLabel('Note (optional)');
       await expect(note, 'the page offers the note, shown').toBeVisible();
-      await expect(page.locator('[data-ask-other]')).toHaveCount(0);
 
       // The top bar: the menu at the left, before the back arrow and the title.
       const title = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
@@ -475,7 +473,6 @@ for (const vp of [
       });
       await page.goto(origin + `/attention/asks/${id}`);
       const box = page.locator('#ask-input'), send = page.locator('#ask-send'), err = page.locator('#ask-error');
-      await expect(page.locator('[data-ask-other]'), 'no options: the box is open').toHaveCount(0);
       await expect(box).toBeVisible();
       await expect(err).toBeHidden();
       await box.fill('Cut it from main');
@@ -515,7 +512,6 @@ for (const vp of [
       await page.goto(origin + `/attention/asks/${id}`);
       const box = page.locator('#ask-input');
       await expect(box, 'beside options the box is open').toBeVisible();
-      await expect(page.locator('[data-ask-other]')).toHaveCount(0);
       await page.getByRole('button', { name: 'wait until Monday', exact: true }).click();
       await expect(page.locator('#ask-error')).toHaveText("Your answer wasn't sent: muster couldn't record it. Try again.");
       await expect(page.locator('#ask-answer [data-attention-option]')).toHaveCount(2);

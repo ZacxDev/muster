@@ -81,11 +81,6 @@ const (
 	// label ("Note (optional)").
 	AsksNoteRowClass   = "flex flex-col gap-1 pb-2"
 	AsksNoteLabelClass = "text-xs font-medium text-fg2"
-	// AsksMultiSendClass is a multi-select ask's one Send button on the ask
-	// PAGE, where it sits at the foot of the checkbox group (a pick with no
-	// text is a complete answer, so it is the primary action and is never
-	// gated on the free-text box).
-	AsksMultiSendClass = AsksCardSendClass + " self-start"
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
 	AsksActionsClass = "flex min-w-0 items-center gap-2"

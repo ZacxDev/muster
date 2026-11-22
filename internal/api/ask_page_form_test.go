@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -171,7 +173,65 @@ func TestTheAskPageHasBreadcrumbsBackToAsks(t *testing.T) {
 	}
 }
 
-// TestTheAskPagesLiveRegionIsNeverInsideAForm: the ask page's live region
+// wakesFor is a session-wake store holding one wake per ask (ForAsks only).
+type wakesFor struct {
+	sessionwake.Store
+	ws map[int64]sessionwake.Wake
+}
+
+func (f wakesFor) ForAsks(_ context.Context, ids []int64) (map[int64]sessionwake.Wake, error) {
+	out := map[int64]sessionwake.Wake{}
+	for _, id := range ids {
+		if w, ok := f.ws[id]; ok {
+			out[id] = w
+		}
+	}
+	return out, nil
+}
+
+// TestASettledAsksStepUpRetryHasItsConfirmDialog: a settled ask whose session
+// wake was not confirmed offers Retry delivery; when the wake carries the
+// owner's words that Retry is a step-up form (data-step-up-form), and the page
+// must carry the confirm dialog's script, or the post goes straight to the
+// server and comes back a refusal page. The control: a Retry that needs no
+// step-up draws no step-up form, and a settled page with none carries no
+// dialog. RED before: the page wrote the dialog only for a step-up card's
+// draft.
+func TestASettledAsksStepUpRetryHasItsConfirmDialog(t *testing.T) {
+	now := time.Now()
+	base := attention.Ask{Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: "s-1", Label: "build"}, Question: "Ship?",
+		Status: attention.Answered, Answer: "yes", CreatedAt: now}
+	words, bare := base, base
+	words.ID, bare.ID = 1021, 1022
+	s := whereServer(t, words, bare)
+	s.ext.SessionWakes = wakesFor{ws: map[int64]sessionwake.Wake{
+		1021: {ID: 31, AskID: 1021, State: sessionwake.Unconfirmed, OperatorText: "yes"},
+		1022: {ID: 32, AskID: 1022, State: sessionwake.Unconfirmed},
+	}}
+	page := askPageBody(t, s, words, askPagePath(words.ID))
+	if !strings.Contains(page, `data-step-up-form data-asks-controls><button type="submit"`) || !strings.Contains(page, ">Retry delivery</button>") {
+		t.Fatalf("CONTROL: the settled ask draws no step-up Retry:\n%s", page)
+	}
+	if !strings.Contains(page, ui.StepUpFormScript) {
+		t.Errorf("the page draws a step-up Retry but not the confirm dialog's script")
+	}
+	page = askPageBody(t, s, bare, askPagePath(bare.ID))
+	if !strings.Contains(page, ">Retry delivery</button>") || strings.Contains(page, "data-step-up-form") {
+		t.Fatalf("CONTROL: the plain Retry is missing, or is a step-up form:\n%s", page)
+	}
+	if strings.Contains(page, ui.StepUpFormScript) {
+		t.Errorf("a settled page with no step-up form carries the confirm dialog")
+	}
+	// An OPEN ask from a mirrored session can settle live into a step-up
+	// Retry (drawn later by the live region), so its page carries the dialog.
+	open := base
+	open.ID, open.Status, open.Answer = 1023, attention.Open, ""
+	if page := askPageBody(t, whereServer(t, open), open, askPagePath(open.ID)); !strings.Contains(page, ui.StepUpFormScript) {
+		t.Errorf("an open mirrored session's ask page lacks the confirm dialog its live Retry would need")
+	}
+}
+
+// TestTheAskPagesLiveRegionIsNeverInsideAForm:the ask page's live region
 // (#ask-live) is swapped by innerHTML, and a settled ask's outcome holds a
 // form of its own (a session wake's Retry, wakeActionFormHTML). Parsed inside
 // another form, that inner <form> is DROPPED and its button submits the outer
