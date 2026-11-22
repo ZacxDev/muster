@@ -355,7 +355,7 @@ var (
 		"internal/plugins.(*PGStore).liveGrantCount",
 		"internal/plugins.(*PGStore).VisibleServerApps",
 		"internal/plugins.(*PGStore).AccountServerApps",
-		// LINKED SERVER APPS (migration 0178): plugin_server_pairs has no
+		// LINKED SERVER APPS (migration 0179): plugin_server_pairs has no
 		// owner either (forced RLS, scope_all only). The command line's
 		// unlink (audited as the actor; the link itself is made inside
 		// InstallServerApp), and the pairs read the two lists above show.

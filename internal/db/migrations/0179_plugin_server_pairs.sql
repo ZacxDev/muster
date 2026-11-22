@@ -1,4 +1,4 @@
--- muster 0178 — LINKED SERVER APPS (docs/design/contacts.md, "The core change:
+-- muster 0179 — LINKED SERVER APPS (docs/design/contacts.md, "The core change:
 -- linked server apps"; docs/plugins.md#linked-server-apps).
 --
 --   plugin_server_pairs   a LINKED PAIR of server apps, as TWO rows, one per
@@ -36,7 +36,7 @@
 -- which nothing does: an uninstall is an UPDATE (revoked_at), so
 -- UninstallServerApp deletes the pair itself, in its own transaction.
 --
--- Must apply after its predecessor, 0177_session_wakes (the contiguity test
+-- Must apply after its predecessor, 0178_session_wakes_officer_stepup (the contiguity test
 -- refuses a gap). 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it). It
@@ -48,7 +48,7 @@
 -- once the newer image is back. Clear it with `muster-server app unlink
 -- <the survivor's id>`.
 --   DROP TABLE IF EXISTS public.plugin_server_pairs;
---   DELETE FROM schema_migrations WHERE version = 178;
+--   DELETE FROM schema_migrations WHERE version = 179;
 
 SET LOCAL lock_timeout = '3s';
 

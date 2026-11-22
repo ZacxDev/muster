@@ -18,7 +18,7 @@ the set grows **or** shrinks.
 | mirroring | `mirror_tokens`, `ask_attempts` (the [answer-attempt log](mirroring.md#answer-attempts): shapes and reason codes, never question or answer text) |
 | browser flows | `flow_jobs`, `flow_runner_tokens`, `flow_requests` |
 | push | `push_subscriptions`, `push_preferences` |
-| plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts`, `plugin_threads`; `plugin_chief_instructions`: each plugin's one [instruction section for its owner's chief](plugins.md#chief-instructions) and the sha its owner approved (0141); `plugin_server_pairs`: the [linked pairs of server apps](plugins.md#linked-server-apps), not owned by a user (0178) |
+| plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts`, `plugin_threads`; `plugin_chief_instructions`: each plugin's one [instruction section for its owner's chief](plugins.md#chief-instructions) and the sha its owner approved (0141); `plugin_server_pairs`: the [linked pairs of server apps](plugins.md#linked-server-apps), not owned by a user (0179) |
 | session switcher | `pins`: the entries each user pinned (the bottom bar's **Pins** view); `recents`: the entries each user recently opened (its **Recent** view, and where home opens without a chief); `session_tags`: the [tags](mirroring.md#session-tags) each user put on a session |
 | send queue | `send_queue`: messages each user queued for a mirrored Claude Code window, sent one at a time when it is idle |
 | session focus | `agent_focus`: what each of a user's sessions is working on ([focus.md](focus.md)); `agent_focus_history`: every focus each session has had |

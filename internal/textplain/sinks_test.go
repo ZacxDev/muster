@@ -204,7 +204,7 @@ var uiExempt = map[string]exemption{
 
 // apiExempt: the same, for api's hand-written HTML.
 var apiExempt = map[string]exemption{
-	// A linked server app's partner on Account → Apps (migration 0178): its
+	// A linked server app's partner on Account → Apps (migration 0179): its
 	// tab label, or its slug when it has none (plugins.serverAppLabel),
 	// validated at install (ValidAppLabel, ValidName), drawn through
 	// html.EscapeString as the app's own label is on the same page.

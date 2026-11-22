@@ -14,7 +14,7 @@ import (
 )
 
 // LINKED SERVER APPS (docs/design/contacts.md, "The core change: linked server
-// apps"; migration 0178; docs/plugins.md#linked-server-apps).
+// apps"; migration 0179; docs/plugins.md#linked-server-apps).
 //
 // An admin may install a server app LINKED to one already installed
 // (`muster-server app install … --link-to <id>`), and the pair then knows

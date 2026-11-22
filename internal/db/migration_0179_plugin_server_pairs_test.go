@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestMigration0178PluginServerPairs: a database at 0177 has no
-// plugin_server_pairs (the control); at 0178 it does, empty, under forced
+// TestMigration0179PluginServerPairs: a database at 0178 has no
+// plugin_server_pairs (the control); at 0179 it does, empty, under forced
 // row-level security whose only policy is scope_all. 🔴 ONE PAIR PER APP BY
 // CONSTRAINTS ALONE, each refusal by its own name: a row with no mirror
 // (plugin_server_pairs_mutual), a second partner for an app already paired
@@ -15,15 +15,15 @@ import (
 // foreign key). Deleting either row of a pair deletes its mirror. Then the
 // header's ROLLBACK block runs as written and leaves no table, and the file
 // applies again after it.
-func TestMigration0178PluginServerPairs(t *testing.T) {
+func TestMigration0179PluginServerPairs(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0178_pairs", 177)
+	pool := freshAt(ctx, t, "ms_0179_pairs", 178)
 	if _, err := pool.Exec(ctx, `SELECT 1 FROM plugin_server_pairs`); err == nil || !strings.Contains(err.Error(), "plugin_server_pairs") {
-		t.Fatalf("control: before 0178 plugin_server_pairs exists: %v", err)
+		t.Fatalf("control: before 0179 plugin_server_pairs exists: %v", err)
 	}
-	applyThroughFrom(ctx, t, pool, 178)
+	applyThroughFrom(ctx, t, pool, 179)
 	if n := countRows(ctx, t, pool, "plugin_server_pairs"); n != 0 {
-		t.Fatalf("0178 wrote %d row(s); want none", n)
+		t.Fatalf("0179 wrote %d row(s); want none", n)
 	}
 
 	var rls, forced bool
@@ -107,7 +107,7 @@ func TestMigration0178PluginServerPairs(t *testing.T) {
 		t.Fatalf("after deleting app d: %d pair rows; want none", n)
 	}
 
-	for _, q := range asksRollbackSQL(t, "0178_plugin_server_pairs.sql") {
+	for _, q := range asksRollbackSQL(t, "0179_plugin_server_pairs.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}
@@ -115,7 +115,7 @@ func TestMigration0178PluginServerPairs(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT 1 FROM plugin_server_pairs`); err == nil {
 		t.Error("after the rollback plugin_server_pairs still exists")
 	}
-	applyThroughFrom(ctx, t, pool, 178)
+	applyThroughFrom(ctx, t, pool, 179)
 	if n := countRows(ctx, t, pool, "plugin_server_pairs"); n != 0 {
 		t.Errorf("re-applied after the rollback: %d row(s)", n)
 	}

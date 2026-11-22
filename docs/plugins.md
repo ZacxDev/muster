@@ -458,7 +458,7 @@ subjects with a live session.
 Two server apps that are meant to work together (a meetings app and a
 contacts app, say) can be **linked**, and a linked pair then knows each
 person by **one** subject, so the two can join their own records on it. The
-schema is migration `0178`.
+schema is migration `0179`.
 
 ```
 muster-server app install … --link-to <id>
