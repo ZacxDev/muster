@@ -62,7 +62,7 @@ func TestAStepUpCardsPageOffersNoBrowserAnswer(t *testing.T) {
 			t.Errorf("the step-up page lacks %s:\n%s", want, body)
 		}
 	}
-	for _, never := range []string{`data-ask-option`, `id="ask-answer"`, `id="ask-input"`, `id="ask-send"`, `ask-dictate`, `<button type="button" data-ask-suggestion`,
+	for _, never := range []string{`data-ask-option`, `data-attention-option`, `id="ask-answer"`, `id="ask-input"`, `id="ask-send"`, `ask-dictate`, `data-asks-suggestion data-text`,
 		"step-up is asking", "step-up asks", `data-ask-source`, ">Confirm</button>", ">Refuse</button>"} {
 		if strings.Contains(body, never) {
 			t.Errorf("the step-up page still draws %q", never)
@@ -127,10 +127,10 @@ func TestAStepUpCardIsMustersOwnOnTheFeed(t *testing.T) {
 // TestTheAskPageAnswerIsDisabledWhileBlank: Answer is drawn aria-disabled (the
 // box starts empty; not the disabled attribute, which disabled the mic's ↑ —
 // ui.AsksSendDisabledClass), the page's script turns it on while the box holds
-// text — or, on a MULTI-SELECT ask, while a box is TICKED (migration 0175) —
-// and a blank answer is not posted;
-// beside options it is quiet and Dismiss is a text link, without them the
-// filled primary and the full-width quiet Dismiss. The badge row no longer
+// text, and a blank answer — no text and, on a MULTI-SELECT ask, no box ticked
+// (migration 0175) — is not posted; beside options it is quiet and Dismiss is
+// a text link, without them the filled primary (the feed card's Answer) and
+// the full-width quiet Dismiss. The badge row no longer
 // repeats who asks (the heading says it). RED before the asks audit: Answer
 // was never disabled, and a blank answer round-tripped to the server.
 func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
@@ -142,9 +142,9 @@ func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
 	s := whereServer(t, opts, free)
 	body := askPageBody(t, s, opts, askPagePath(opts.ID))
 	for _, want := range []string{
-		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
+		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-asks-send>Answer</button>`,
 		`<button type="submit" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" data-ask-dismiss>Dismiss without answering</button>`,
-		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
+		`function gate(b) { var s = document.getElementById('ask-send'); if (!s || !s.hasAttribute('data-asks-send')) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
 		`if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim() && !gatePick(f)) { e.preventDefault(); b.focus(); return; }`,
 	} {
 		if !strings.Contains(body, want) {
@@ -176,7 +176,7 @@ func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
 	}
 	body = askPageBody(t, s, free, askPagePath(free.ID))
 	for _, want := range []string{
-		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
+		`<button type="submit" id="ask-send" class="press min-h-[44px] rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 shrink-0 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-asks-send>Answer</button>`,
 		`<button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>Dismiss without answering</button>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -381,28 +381,27 @@ func TestAStepUpCardOnTheFeedOffersNoAnswer(t *testing.T) {
 	}
 }
 
-// TestAnAskWithOptionsCollapsesItsFreeTextRow: on the ask page, an ask with
-// options draws its free-text row hidden behind a quiet "Other answer…"
-// control (the options are the answer; the form stays in the document, since
-// they submit it); an ask without options draws the row open and no such
-// control. RED before: the row was always open.
-func TestAnAskWithOptionsCollapsesItsFreeTextRow(t *testing.T) {
-	now := time.Now()
+// TestAnAskWithOptionsKeepsItsAnswerBoxOpen: on the ask page, as on the feed's
+// card, an ask with options draws its option buttons INSIDE the answer form
+// and its answer box open beside them — no "Other answer…" toggle hides the
+// box (the operator: the page must offer what the card offers). RED at the
+// base: the page collapsed the box behind "Other answer…".
+func TestAnAskWithOptionsKeepsItsAnswerBoxOpen(t *testing.T) {
 	opts := attention.Ask{ID: 41, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Squash or merge?",
-		Options: []string{"Squash", "Merge"}, Status: attention.Open, CreatedAt: now}
-	free := opts
-	free.ID, free.Options = 42, nil
-	s := whereServer(t, opts, free)
-	other := `<button type="button" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" aria-controls="ask-answer" aria-expanded="false" data-ask-other>Other answer…</button>`
-	body := askPageBody(t, s, opts, askPagePath(opts.ID))
-	for _, want := range []string{other, `class="flex items-end gap-2" data-attention-answer hidden>`, `form="ask-answer" name="option" value="Squash"`} {
+		Options: []string{"Squash", "Merge"}, Status: attention.Open, CreatedAt: time.Now()}
+	body := askPageBody(t, whereServer(t, opts), opts, askPagePath(opts.ID))
+	for _, want := range []string{
+		`<button type="submit" name="option" value="Squash" class="` + ui.AsksOptionClass + `" data-attention-option>Squash</button>`,
+		`<div class="flex items-end gap-2" data-asks-answer-row><textarea id="ask-input" name="answer"`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the options page lacks %s:\n%s", want, body)
 		}
 	}
-	body = askPageBody(t, s, free, askPagePath(free.ID))
-	if strings.Contains(body, "data-ask-other>") || !strings.Contains(body, `class="flex items-end gap-2" data-attention-answer>`) {
-		t.Errorf("the free-text page collapsed its only way to answer:\n%s", body)
+	for _, never := range []string{"data-ask-other", "Other answer…", `data-attention-answer hidden`, `form="ask-answer"`} {
+		if strings.Contains(body, never) {
+			t.Errorf("the options page still draws %q:\n%s", never, body)
+		}
 	}
 }
 

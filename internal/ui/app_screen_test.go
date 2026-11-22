@@ -52,3 +52,24 @@ func TestAnAppScreenIsAPhoneScreen(t *testing.T) {
 		t.Error("CONTROL: the column layout carries the app screen's markup")
 	}
 }
+
+// TestTheAppScreensMenuIsLeftOfItsTitle: an app screen's top bar (the ask
+// page) draws the menu button FIRST, then the back arrow, then the title — as
+// every other header puts the hamburger at the left. RED at the base: the
+// menu came after the title, at the right.
+func TestTheAppScreensMenuIsLeftOfItsTitle(t *testing.T) {
+	var b bytes.Buffer
+	if err := RenderNavDocument(&b, sampleAppScreen()); err != nil {
+		t.Fatal(err)
+	}
+	page := b.String()
+	screen := page[strings.Index(page, `data-app-screen`):]
+	head := screen[:strings.Index(screen, `</header>`)]
+	menu, back, title := strings.Index(head, `id="sidebar-open"`), strings.Index(head, `id="app-back"`), strings.Index(head, `<h1 `)
+	if menu < 0 || back < 0 || title < 0 || !(menu < back && back < title) {
+		t.Errorf("the top bar's order is menu %d, back %d, title %d; want menu < back < title:\n%s", menu, back, title, head)
+	}
+	if strings.Count(page, `id="sidebar-open"`) != 1 {
+		t.Error("the app screen does not carry exactly one hamburger")
+	}
+}

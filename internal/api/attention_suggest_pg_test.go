@@ -159,7 +159,7 @@ func TestAnAskIsPushedAtOnceThenAgainWithItsSuggestions(t *testing.T) {
 	}
 	page := sf.page(t, askPagePath(id))
 	for _, want := range []string{`data-text="` + sugA + `"`, `data-text="` + sugB + `"`, `name="option" value="ship it"`,
-		`form="ask-answer"`, `aria-label="AI-suggested replies"`} {
+		`id="ask-answer"`, `aria-label="AI-suggested replies"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the ask page lacks %q", want)
 		}
@@ -241,7 +241,7 @@ func TestNoSuggestionsWhenTheyAreOff(t *testing.T) {
 			if n := len(sentTo[push.PayloadV2](t, sf.raw, sf.native)); n != 1 {
 				t.Fatalf("the phone got %d pushes, want 1", n)
 			}
-			if page := sf.page(t, askPagePath(id)); strings.Contains(page, "data-ask-suggestion data-text") {
+			if page := sf.page(t, askPagePath(id)); strings.Contains(page, "data-asks-suggestion data-text") {
 				t.Fatal("the ask page draws chips")
 			}
 		})
@@ -285,7 +285,7 @@ func TestSetSuggestionsMovesOnlyAnOpenAskOnce(t *testing.T) {
 }
 
 // TestTheAskPageIsTheAsksOwn: the page an ask's tap lands on — the question,
-// its options as buttons of the pinned answer form, its context link, the
+// its options as buttons of the answer form, its context link, the
 // form returning to the page; an answer given there comes back to it showing
 // the answer; another owner's ask and a missing one are the queue's 404.
 func TestTheAskPageIsTheAsksOwn(t *testing.T) {
@@ -295,7 +295,7 @@ func TestTheAskPageIsTheAsksOwn(t *testing.T) {
 	page := f.page(t, askPagePath(id))
 	for _, want := range []string{`data-ask-question>Deploy &lt;the&gt; importer?</div>`, `name="option" value="deploy now"`,
 		`<form id="ask-answer" method="POST" action="/attention/asks/` + sid + `/answer"`,
-		`name="return" value="/attention/asks/` + sid + `"`, `href="/agents/` + f.op.Name + `"`, `id="app-compose"`,
+		`name="return" value="/attention/asks/` + sid + `"`, `href="/agents/` + f.op.Name + `"`,
 		`interactive-widget=resizes-content`, `aria-label="Back to Asks"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the ask page lacks %q:\n%s", want, page)

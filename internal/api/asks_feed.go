@@ -474,9 +474,49 @@ func askDismissButton(form, name string) string {
 // only where the Asks feed's script fills the box from them) and gated
 // (Answer drawn aria-disabled while its box is blank: only where the Asks feed's
 // script enables it as the box fills).
+//
+// The ask PAGE (attention_ask_page.go, askPageAnswerHTML) draws this same form
+// and adds: ids (its controls' fixed ids, which its own script and the mic
+// address), live (its live region, drawn where the chips go, holding them) and
+// micOff (the muted mic, linking to how to turn dictation on, when the server
+// has none).
 type askFormPlace struct {
 	back, attrs, dismiss string
 	chips, gated         bool
+	ids                  askFormIDs
+	live                 string
+	micOff               bool
+}
+
+// askFormIDs are an answer form's ids: the form's own ("" for none), the
+// answer box's, Answer's, the mic's (its note is the mic's id + "-note") and
+// the optional note box's. The zero value is a card's: every id the ask's own
+// (askCardFormIDs), since a page of cards draws one form per ask.
+type askFormIDs struct {
+	form, input, send, mic, note string
+}
+
+// askCardFormIDs is ask id's form's ids on a card: answer-<id>,
+// answer-<id>-submit, answer-<id>-dictate and note-<id>.
+func askCardFormIDs(id string) askFormIDs {
+	input := "answer-" + id
+	return askFormIDs{input: input, send: input + "-submit", mic: input + "-dictate", note: "note-" + id}
+}
+
+// askSuggestionChipsHTML is an ask's suggested replies as chips (a tap FILLS
+// the answer box, never sends), "" for none: the card's and the ask page's.
+func askSuggestionChipsHTML(suggestions []string) string {
+	if len(suggestions) == 0 {
+		return ""
+	}
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<div class="` + ui.AsksCardChipsClass + `" role="group" aria-label="` + suggestLabel + `" data-asks-suggestions>` + ui.AsksAIPillHTML)
+	for _, t := range suggestions {
+		b.WriteString(`<button type="button" class="` + ui.AsksCardChipClass + `" data-asks-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) + `">` + esc(t) + `</button>`)
+	}
+	b.WriteString("</div>\n")
+	return b.String()
 }
 
 // askAnswerFormHTML is THE answer form, on the Asks page's card and on a
@@ -495,7 +535,15 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	action := attentionPath + `/asks/` + id + `/answer`
-	b.WriteString(`<form method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + p.attrs + `>
+	ids := p.ids
+	if ids == (askFormIDs{}) {
+		ids = askCardFormIDs(id)
+	}
+	formID := ""
+	if ids.form != "" {
+		formID = ` id="` + ids.form + `"`
+	}
+	b.WriteString(`<form` + formID + ` method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + p.attrs + `>
 ` + p.back)
 	if len(it.Options) > 0 && it.multi {
 		// A MULTI-SELECT ask (migration 0175): each option a CHECKBOX row, and
@@ -520,15 +568,15 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		}
 		b.WriteString("</div>\n")
 	}
-	if p.chips && len(it.suggestions) > 0 {
-		b.WriteString(`<div class="` + ui.AsksCardChipsClass + `" role="group" aria-label="` + suggestLabel + `" data-asks-suggestions>` + ui.AsksAIPillHTML)
-		for _, t := range it.suggestions {
-			b.WriteString(`<button type="button" class="` + ui.AsksCardChipClass + `" data-asks-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) + `">` + esc(t) + `</button>`)
-		}
-		b.WriteString("</div>\n")
+	switch {
+	case p.live != "":
+		// The ask page's live region, in the chips' place: it holds them, and
+		// re-reads them when they change (askLiveHTML).
+		b.WriteString(p.live)
+	case p.chips:
+		b.WriteString(askSuggestionChipsHTML(it.suggestions))
 	}
-	input := "answer-" + id
-	submit := input + "-submit"
+	input, submit := ids.input, ids.send
 	send := ui.AsksCardSendClass
 	sendLabel := "Answer"
 	if len(it.Options) > 0 && !it.multi {
@@ -553,11 +601,13 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		sendAttrs = ` aria-disabled="true" data-asks-send`
 	}
 	mic, note := "", ""
-	if it.dictate != "" {
-		mic = ui.DictateWaveHTML(it.dictate, input+"-dictate") +
-			ui.DictateControlHTML(it.dictate, input, input+"-dictate-note", input+"-dictate") +
-			ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendPill)
-		note = ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
+	if it.dictate != "" || p.micOff && it.dictateOff {
+		// answerMic: the real mic, or — the ask page only (micOff), with no
+		// dictation on the server — the muted one linking to how to turn it on.
+		mic = ui.DictateWaveHTML(it.dictate, ids.mic) +
+			answerMic(it.dictate, p.micOff && it.dictateOff, input, ids.mic+"-note", ids.mic) +
+			ui.DictateSendHTML(it.dictate, ids.mic, submit, ui.DictateSendPill)
+		note = ui.DictateNoteHTML(it.dictate, ids.mic+"-note", "")
 	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
@@ -566,7 +616,7 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	if it.multi {
 		// THE OPTIONAL NOTE (migration 0175): one line under the answer, its
 		// own name="note", appended to the recorded answer as " — note: …".
-		noteID := "note-" + id
+		noteID := ids.note
 		b.WriteString(`<div class="` + ui.AsksNoteRowClass + `" data-asks-note-row>
 <label for="` + noteID + `" class="` + ui.AsksNoteLabelClass + `">Note (optional)</label>
 <textarea id="` + noteID + `" name="note" rows="1" placeholder="Add a note…" maxlength="` + strconv.Itoa(attention.MaxNoteRunes) + `" class="` + ui.AsksNoteClass + `" data-asks-note></textarea>

@@ -133,6 +133,9 @@ type NavApp struct {
 	Back, BackLabel string
 	// Heading is the screen's name, in the top bar.
 	Heading string
+	// Crumbs are the screen's breadcrumbs (Breadcrumbs), drawn at the top of
+	// its content (none for none).
+	Crumbs []Breadcrumb
 	// Composer is TRUSTED markup pinned at the bottom ("" for none).
 	Composer string
 }
@@ -155,18 +158,23 @@ func navAppBody(v NavDocumentView) g.Node {
 				Class("shrink-0 border-b border-line bg-bg pt-[env(safe-area-inset-top)]"),
 				Div(
 					Class("mx-auto flex w-full max-w-2xl items-center gap-1 px-2 py-1"),
+					// 🔴 THE MENU FIRST, at the left, as every other header draws
+					// it (header(), the task and agent pages): it was after the
+					// title, at the right, on this screen alone.
+					sidebarOpenButton(),
 					A(Href(a.Back), g.Attr("aria-label", a.BackLabel), ID("app-back"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg transition hover:bg-s2"),
 						g.Raw(`<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`)),
 					H1(Class("min-w-0 flex-1 truncate text-base font-semibold text-fg"), g.Text(a.Heading)),
-					sidebarOpenButton(),
 				),
 			),
 			Main(
 				g.Attr("data-nav-document", ""),
 				ID("app-main"),
 				Class("min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain"),
-				Div(Class("mx-auto w-full max-w-2xl px-4 py-4"), g.Raw(v.Main)),
+				Div(Class("mx-auto w-full max-w-2xl px-4 py-4"),
+					g.If(len(a.Crumbs) > 0, Div(Class("-mt-2 mb-2"), Breadcrumbs(a.Crumbs))),
+					g.Raw(v.Main)),
 			),
 			g.If(a.Composer != "", Div(
 				ID("app-compose"),

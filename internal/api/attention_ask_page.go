@@ -19,24 +19,26 @@ import (
 // optimized and doesn't feel native"; decision: a phone-width MOBILE WEB page,
 // inside the Android app's WebView as in a browser).
 //
-// One question, as a phone app screen (ui.NavApp): a top bar with a back arrow
-// to Asks and who is asking; the question, large; the asker's options as
-// full-width buttons that answer at once; the suggested replies
-// (attention_suggest.go) as chips that FILL the answer box — as the rendered
-// view's chips do, nothing is sent until Answer; a "View in session" link to
-// the asking session or agent (for a chief nudge's ask, the session the nudge
-// is about); and the answer box pinned to the bottom, above the keyboard and
-// inside the safe-area insets, with the microphone (dictate.go) beside Answer.
+// One question, as a phone app screen (ui.NavApp): a top bar with the menu, a
+// back arrow to Asks and who is asking, and breadcrumbs (Asks › Ask #N); the
+// question, large; and THE FEED CARD'S ANSWER FORM (askAnswerFormHTML): the
+// asker's options (buttons that answer at once, or a multi-select ask's ticks
+// and its note), the suggested replies (attention_suggest.go) as chips that
+// FILL the answer box — nothing is sent until Answer — and the box with the
+// microphone (dictate.go) beside Answer; then a "View in session" link to the
+// asking session or agent (for a chief nudge's ask, the session the nudge is
+// about), and Dismiss.
 //
 // 🔴 THE QUEUE'S OWN ROUTES. Its forms post to the queue's answer and dismiss
 // routes (handleAttentionAnswerForm, handleAttentionCancelForm) with `return`
 // naming this page (attentionReturnPage), so an answer given here is the same
 // answer as anywhere else — one core, answerAskFrom.
 //
-// LIVE: the options, chips and state (#ask-live) re-read ?part=live on the
-// queue's SSE event (ui.AttentionLiveScript), so suggestions that arrive after
-// the page opened appear, and an ask answered elsewhere shows as answered (and
-// its answer box goes).
+// LIVE: the chips and state (#ask-live, inside the answer form where the card
+// draws its chips) re-read ?part=live on the queue's SSE event
+// (ui.AttentionLiveScript), so suggestions that arrive after the page opened
+// appear, and an ask answered elsewhere shows as answered (and the rest of its
+// answer form goes: the page's style hides it).
 // ---------------------------------------------------------------------------
 
 // askPagePrefix is the ask page's path prefix.
@@ -115,6 +117,10 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if a.Status == attention.Open && a.StepUp != nil {
 		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
 	}
+	// The options the answer form offers: a proposal's less its accept buttons,
+	// as the feed's card offers them (withAskBoxes).
+	it.Options = withoutProposalStarts(it.proposal, it.Options)
+	it.dictate, it.dictateOff = s.dictatePath(), s.dictateOff()
 	now := time.Now()
 	live := askLiveHTML(a, it)
 	if r.URL.Query().Get("part") == "live" {
@@ -168,7 +174,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	// With options to tap, they are the primary action: Answer is quiet and
 	// Dismiss is a text link (a step-up card draws neither options nor box).
-	optioned := a.StepUp == nil && !notice && len(withoutProposalStarts(it.proposal, a.Options)) > 0
+	optioned := a.StepUp == nil && !notice && len(it.Options) > 0
 	dismissClass := flowsQuietButton + ` w-full`
 	if optioned {
 		dismissClass = askDismissLinkClass
@@ -184,7 +190,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
-<style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
+<style>body:has(#ask-live [data-ask-closed]) :is([data-ask-answer-area] > :not(form), #ask-answer > :not(#ask-live), [data-ask-dismiss-form]) { display: none; }</style>
 <article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
 ` + ui.AsksHeadHTML(ui.AsksHead{Badge: ui.AsksKindBadge(kind, label), Who: askPageWhoHTML(where, `<time datetime="`+
 		a.CreatedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.CreatedAt)))+`</time>`), Chip: ui.AskIDChipHTML(a.ID)}) + `
@@ -201,8 +207,23 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		b.WriteString(`<p role="status" class="rounded-2xl bg-s1 px-4 py-3 text-sm text-fg ring-1 ring-line" data-ask-notice>` + esc(note) + `</p>
 `)
 	}
-	b.WriteString(`<div id="ask-live" class="flex min-w-0 flex-col gap-4" aria-live="polite">` + live + `</div>
-`)
+	// 🔴 THE FEED CARD'S ANSWER FORM (askAnswerFormHTML), not a form of the
+	// page's own: the options, a multi-select ask's ticks and its note, the
+	// answer box, the mic and Answer are drawn by the one function, so the page
+	// cannot offer other controls than the card (it drew a composer of its
+	// own, pinned below the card, its boxes and note joined to it by form=,
+	// and a single-select ask's box folded behind "Other answer…"). The live
+	// region sits in it where the card draws its chips, and holds them.
+	liveRegion := `<div id="ask-live" class="flex min-w-0 flex-col gap-4 empty:hidden" aria-live="polite">` + live + `</div>
+`
+	answerable := a.Status == attention.Open && !notice && a.StepUp == nil
+	if answerable {
+		// 🔴 NO ANSWER FORM ON A STEP-UP CARD: only the paired phone answers it
+		// (errHostDecisionNeedsPhone refuses every other door).
+		b.WriteString(askPageAnswerHTML(r, it, liveRegion))
+	} else {
+		b.WriteString(liveRegion)
+	}
 	// The footer: the way to the session and the task, then Dismiss.
 	if len(links) > 0 {
 		b.WriteString(`<div class="` + ui.AsksCardFooterClass + ` gap-x-4 border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n")
@@ -226,16 +247,15 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
 
-	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading}
-	if a.Status == attention.Open && !notice && a.StepUp == nil {
-		// 🔴 NO ANSWER BOX ON A STEP-UP CARD: only the paired phone answers it
-		// (errHostDecisionNeedsPhone refuses every other door).
-		// 🔴 A MULTI-SELECT ask is NEVER "quiet": its note box rides with the
-		// free-text row, so the row stays open (quiet=false) and the boxes
-		// beside it are the pick controls.
-		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff(), optioned && !a.Multi)
-	}
+	// The way back to the list, as breadcrumbs: Asks › Ask #N.
+	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading, Crumbs: askPageCrumbs(a.ID)}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
+}
+
+// askPageCrumbs is the ask page's breadcrumbs (ui.Breadcrumbs): Asks, the
+// list it came from, then this ask — the current page.
+func askPageCrumbs(id int64) []ui.Breadcrumb {
+	return []ui.Breadcrumb{{Label: "Asks", Href: attentionPath}, {Label: "Ask #" + strconv.FormatInt(id, 10)}}
 }
 
 // askPageWhoHTML is the ask page card's head lines, as the Open card's are
@@ -266,17 +286,9 @@ const (
 	// askStepUpPhoneLine replaces a step-up card's options and answer box:
 	// the browser can never answer one (errHostDecisionNeedsPhone).
 	askStepUpPhoneLine = "Confirm this on your phone."
-	// askOtherAnswerLabel opens the free-text answer row an ask with options
-	// draws collapsed (askComposerHTML).
-	askOtherAnswerLabel = "Other answer…"
-	// askOtherAnswerClass is that control: quiet, a text link's weight —
-	// the options above it are the page's primary action.
-	askOtherAnswerClass = "inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	// askErrorClass is the inline line under the answer form when an answer
 	// could not be posted (askPageScript).
 	askErrorClass = "px-1 pt-2 text-sm text-st-error-fg"
-	// askSendClass is Answer when it is the page's primary action (no options).
-	askSendClass = "press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90 " + ui.AsksSendDisabledClass
 	// askDismissLinkClass is Dismiss drawn as a text link, beside options
 	// that are the primary action.
 	askDismissLinkClass = "inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
@@ -376,63 +388,31 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		}
 		return askStepUpPhoneHTML("text-base")
 	}
-	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
-		if a.Multi {
-			// A MULTI-SELECT ask (migration 0175): a CHECKBOX per option,
-			// form-associated with the answer form (form="ask-answer") so a
-			// tap of the one Send below posts every box ticked — joined by
-			// attention.OptionSep — with the free text and note if any. The
-			// free-text row is NOT collapsed for a multi ask (askComposerHTML
-			// gets quiet=false): the note belongs to the same answer.
-			b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
-`)
-			for _, o := range opts {
-				b.WriteString(`<label class="` + ui.AsksOptionCheckClass + `"><input type="checkbox" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionCheckBoxClass + `" data-ask-option>` + esc(o) + `</label>
-`)
-			}
-			b.WriteString(`<button type="submit" form="ask-answer" class="` + ui.AsksMultiSendClass + `" data-ask-multi-send>Send answer</button>
-</div>
-`)
-		} else {
-			b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
-`)
-			for _, o := range opts {
-				b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionClass + ` break-words text-base" data-ask-option>` + esc(o) + `</button>
-`)
-			}
-			b.WriteString("</div>\n")
-		}
-	}
-	if len(it.suggestions) > 0 {
-		b.WriteString(`<div role="group" aria-label="` + suggestLabel + `" class="flex flex-col gap-2" data-ask-suggestions>
-<p class="text-xs text-fg2">` + ui.AsksAIPillHTML + ` suggestions — tap to edit</p>
-<div class="flex flex-wrap gap-2">
-`)
-		for _, t := range it.suggestions {
-			b.WriteString(`<button type="button" data-ask-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) +
-				`" class="` + ui.AsksCardChipClass + `">` + esc(t) + `</button>
-`)
-		}
-		b.WriteString("</div></div>\n")
-	}
-	return b.String()
+	// An open ask's suggested replies, the card's chips (askSuggestionChipsHTML):
+	// its options are the answer form's, never live (they do not change).
+	return askSuggestionChipsHTML(it.suggestions)
 }
 
-// askComposerHTML is an open ask's answer box, pinned to the bottom of its
-// page: free text, posted to the queue's answer route, back to this page —
-// with the microphone (ui.DictateControlHTML) beside Answer when dictate is
-// not "". The mic's ✓ FILLS the box at the caret; its ↑ fills it and clicks Answer
-// (ui.DictateSendHTML), so only Answer sends. Its script is
-// the composer's LAST child: the composer is drawn after the page's content,
-// and the script's first run reveals only the mics already parsed.
+// askPageFormIDs are the ask page's answer form's ids (askFormIDs): fixed, as
+// the page draws one form — askPageScript and the e2e specs address them.
+var askPageFormIDs = askFormIDs{form: "ask-answer", input: "ask-input", send: "ask-send", mic: "ask-dictate", note: "ask-input-note"}
+
+// askPageAnswerHTML is an open ask's answer on its page: THE answer form
+// (askAnswerFormHTML, the feed card's), posted to the queue's answer route
+// back to this page, with live (the page's live region) where the card draws
+// its chips — between a notice line (?notice=, #ask-note) and the line a
+// failed post is said in (#ask-error). The mic is the real one with dictation
+// on (it.dictate), the muted one with it off (it.dictateOff). The mic's ✓
+// FILLS the box at the caret; its ↑ fills it and clicks Answer
+// (ui.DictateSendHTML), so only Answer sends. The dictation script is the
+// LAST child: its first run reveals only the mics already parsed.
 //
-// quiet: the ask has options to tap, which are its primary action, so Answer
-// is drawn quiet (ui.AsksCardSendQuietClass). Answer starts OFF (aria-disabled:
-// ui.AsksSendDisabledClass says why not disabled) — the box is empty — and
-// askPageScript turns it on while the box holds text.
-func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOff, quiet bool) string {
+// Answer is gated as on the card: with options it is quiet, and on a
+// single-select or free-text ask it starts OFF (aria-disabled, data-asks-send:
+// the box is empty) until askPageScript sees text; a multi-select ask's one
+// Send is never gated (a tick alone is an answer).
+func askPageAnswerHTML(r *http.Request, it attentionItem, live string) string {
 	esc := html.EscapeString
-	id := strconv.FormatInt(a.ID, 10)
 	note, ok := composerNotice(r)
 	noteAttrs := ` hidden`
 	if note != "" {
@@ -441,41 +421,18 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 			noteAttrs = ` data-ok`
 		}
 	}
-	send := askSendClass
-	// QUIET: the options are the answer, so the free-text row is drawn
-	// collapsed behind "Other answer…" (askPageScript opens it and moves focus
-	// into the box). The form stays in the document, hidden: the option
-	// buttons submit it (form="ask-answer").
-	other, formHidden := "", ""
-	if quiet {
-		send = ui.AsksCardSendQuietClass + " " + ui.AsksSendDisabledClass
-		other = `<button type="button" class="` + askOtherAnswerClass + `" aria-controls="ask-answer" aria-expanded="false" data-ask-other>` + askOtherAnswerLabel + `</button>
+	form := askAnswerFormHTML(it, strconv.FormatInt(it.AskID, 10), askFormPlace{
+		back:   `<input type="hidden" name="return" value="` + esc(askPagePath(it.AskID)) + `">` + "\n",
+		attrs:  ` hx-boost="false"`,
+		gated:  true,
+		ids:    askPageFormIDs,
+		live:   live,
+		micOff: true,
+	})
+	return `<div class="flex min-w-0 flex-col" data-ask-answer-area>
+<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
+` + form + `<p id="ask-error" role="alert" class="` + askErrorClass + `" hidden data-ask-error></p>` + ui.DictateScriptHTML(it.dictate) + `</div>
 `
-		formHidden = ` hidden`
-	}
-	// A MULTI-SELECT ask (migration 0175) adds the optional NOTE: its own
-	// name="note", form-associated with the answer form so the one Send posts
-	// it with the boxes ticked. It sits above the form, beside the free-text
-	// row that stays open for a multi ask (quiet is false).
-	noteBox := ""
-	if a.Multi {
-		noteBox = `<div class="` + ui.AsksNoteRowClass + `" data-ask-note-row>
-<label for="ask-input-note" class="` + ui.AsksNoteLabelClass + `">Note (optional)</label>
-<textarea id="ask-input-note" name="note" rows="1" form="ask-answer" placeholder="Add a note…" maxlength="` + strconv.Itoa(attention.MaxNoteRunes) + `" class="` + ui.AsksNoteClass + `" data-ask-note></textarea>
-</div>
-`
-	}
-	return `<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
-` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + other + noteBox + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer` + formHidden + `>
-<input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
-<label for="ask-input" class="sr-only">Your answer</label>
-<textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
-		"Your answer…" + `" class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl bg-s1 px-4 py-2.5 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-fg2 focus:outline-none focus:ring-2 focus:ring-focus"></textarea>
-` + ui.DictateWaveHTML(dictate, "ask-dictate") + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") +
-		ui.DictateSendHTML(dictate, "ask-dictate", "ask-send", ui.DictateSendPill) +
-		`<button type="submit" id="ask-send" class="` + send + `" aria-disabled="true" data-ask-send>Answer</button>
-</form>
-<p id="ask-error" role="alert" class="` + askErrorClass + `" hidden data-ask-error></p>` + ui.DictateScriptHTML(dictate)
 }
 
 // What the ask page says under its answer form when an answer could not be
@@ -486,27 +443,23 @@ const (
 )
 
 // askPageScript: a suggestion chip fills the answer box (and grows it to its
-// text); the box grows as it is typed in; Answer is enabled only while the box
-// holds text (it is drawn aria-disabled: the box starts empty), and a blank
-// answer is not posted. A chip never sends; the answer form's own submit (an
-// option, Answer, the mic's ↑ clicking Answer) is posted in place, so a post
-// that fails is said inline (#ask-error) with the typed text kept. "Other
-// answer…" opens the collapsed free-text row of an ask with options.
+// text); the box grows as it is typed in; a GATED Answer (data-asks-send:
+// single-select and free text, askPageAnswerHTML) is enabled only while the
+// box holds text, and a blank answer — no text and, on a multi-select ask, no
+// box ticked — is not posted. A chip never sends; the answer form's own submit
+// (an option, Answer, the mic's ↑ clicking Answer) is posted in place, so a
+// post that fails is said inline (#ask-error) with the typed text kept.
 const askPageScript = `<script>
 (function () {
-  // The answer box is drawn AFTER this script (it is pinned below the
-  // content), so it is looked up when used, never at load.
+  // The answer form is drawn AFTER this script, so it is looked up when used,
+  // never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
   // gatePick: the multi-select ask's first TICKED box of form f (migration
   // 0175), null for none and for a single-select ask (no such box).
   //
-  // 🔴 f.elements, NOT f.querySelector: a multi ask's checkboxes are
-  // FORM-ASSOCIATED with f (form="ask-answer") but are drawn in the live region
-  // ABOVE it, so they are never DOM DESCENDANTS of the form — a querySelector
-  // subtree walk cannot see them and returned null however many were ticked,
-  // leaving the composer's Answer off and its tap preventDefault()ed.
-  // f.elements is every control the form owns, wherever it sits in the
-  // document.
+  // 🔴 f.elements, NOT f.querySelector: it is every control the form owns,
+  // wherever it sits in the document (a form-associated box drawn outside
+  // the form included), where a subtree walk sees only its descendants.
   function gatePick(f) {
     if (!f || !f.elements) return null;
     var els = f.elements;
@@ -516,17 +469,9 @@ const askPageScript = `<script>
     }
     return null;
   }
-  function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
-  // OTHER ANSWER…: an ask with options draws its free-text row collapsed
-  // (askComposerHTML); opening it shows the row and puts the caret in the box.
-  function openOther(focus) {
-    var f = document.getElementById('ask-answer'), o = document.querySelector('[data-ask-other]');
-    if (!f || !f.hidden) return;
-    f.hidden = false;
-    if (o) { o.setAttribute('aria-expanded', 'true'); o.hidden = true; }
-    var b = document.getElementById('ask-input');
-    if (b && focus) b.focus();
-  }
+  // gate: a GATED Answer (data-asks-send) follows the box. A multi-select
+  // ask's Send is not gated (a tick alone answers), as on the feed's card.
+  function gate(b) { var s = document.getElementById('ask-send'); if (!s || !s.hasAttribute('data-asks-send')) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
   function errorLine(text) {
     var el = document.getElementById('ask-error');
     if (!el) return;
@@ -547,8 +492,8 @@ const askPageScript = `<script>
     if (!b || !f || f.id !== 'ask-answer') return;
     // A blank answer is not posted (Answer is aria-disabled, not disabled:
     // ui.AsksSendDisabledClass says why): the box is focused instead. A
-    // MULTI-SELECT ask's composer Answer counts a ticked box as an answer
-    // too (migration 0175), so only "no text AND no pick" is blank.
+    // ticked box counts as an answer (migration 0175), so only "no text AND
+    // no pick" is blank.
     if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim() && !gatePick(f)) { e.preventDefault(); b.focus(); return; }
     if (!window.fetch || !window.URLSearchParams || !window.FormData) return;
     e.preventDefault();
@@ -578,34 +523,22 @@ const askPageScript = `<script>
     });
   });
   document.addEventListener('input', function (e) { if (e.target && e.target.id === 'ask-input') { grow(e.target); gate(e.target); } });
-  // A multi-select box ticked or unticked re-decides whether the composer's
-  // Answer is on (a pick alone is a complete answer, migration 0175).
-  document.addEventListener('change', function (e) {
-    var t = e.target;
-    if (!t || t.type !== 'checkbox' || t.name !== 'option') return;
-    var b = document.getElementById('ask-input');
-    if (b) gate(b);
-  });
   // A box the browser restored (back, a reload) holds text: Answer follows
-  // it, and a collapsed row holding text is shown. A page restored from the
-  // back-forward cache mid-post (it navigated away on success) is no longer
-  // posting: its form is usable again.
+  // it. A page restored from the back-forward cache mid-post (it navigated
+  // away on success) is no longer posting: its form is usable again.
   window.addEventListener('pageshow', function () {
     posting = false;
     var f = document.getElementById('ask-answer');
     if (f) f.removeAttribute('aria-busy');
     var b = document.getElementById('ask-input');
-    if (!b) return;
-    if (b.value.trim()) openOther(false);
-    gate(b);
+    if (b) gate(b);
   });
+  // A suggestion chip (the card's, askSuggestionChipsHTML) FILLS the box.
   document.addEventListener('click', function (e) {
-    if (e.target.closest && e.target.closest('[data-ask-other]')) { e.preventDefault(); openOther(true); return; }
-    var chip = e.target.closest && e.target.closest('[data-ask-suggestion]');
+    var chip = e.target.closest && e.target.closest('[data-asks-suggestion]');
     var b = document.getElementById('ask-input');
     if (!chip || !b) return;
     e.preventDefault();
-    openOther(false);
     var t = chip.getAttribute('data-text') || '';
     b.value = b.value.trim() ? b.value.replace(/\s+$/, '') + '\n' + t : t;
     grow(b);

@@ -249,7 +249,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 	for name, page := range map[string]string{
 		"the list":     attentionItemsHTML(items, time.Now()),
 		"a return":     attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
-		"the composer": askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false, false),
+		"the composer": askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: 9, dictate: ui.TranscribePath}, ""),
 	} {
 		tags := dictateTag.FindAllStringSubmatch(page, -1)
 		if len(tags) == 0 {
@@ -312,7 +312,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 	for name, html := range map[string]string{
 		"the list":      attentionItemsHTML(items, time.Now()),
 		"a return":      attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
-		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath(), false, false),
+		"the composer":  askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: boxNudgeMirror, dictate: s.dictatePath()}, ""),
 		"the page's js": ui.DictateScriptHTML(s.dictatePath()),
 	} {
 		if strings.Contains(html, "data-dictate") || strings.Contains(html, "__musterDictate") || strings.Contains(html, "-dictate-note") {
@@ -330,12 +330,12 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 // mics already parsed). RED at origin/main: no mic.
 func TestTheAskComposerCarriesTheMicBesideAnswer(t *testing.T) {
 	r := httptest.NewRequest("GET", askPagePath(9), nil)
-	html := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false, false)
+	html := askPageAnswerHTML(r, attentionItem{Kind: attentionKindAsk, AskID: 9, dictate: ui.TranscribePath}, "")
 	m := dictateTag.FindStringSubmatch(html)
 	if m == nil || m[1] != "ask-dictate" || m[2] != "ask-input" || m[3] != "ask-dictate-note" {
 		t.Fatalf("the composer's mic: %v\n%s", m, html)
 	}
-	box, mic, send := strings.Index(html, `<textarea id="ask-input"`), strings.Index(html, `id="ask-dictate"`), strings.Index(html, `data-ask-send`)
+	box, mic, send := strings.Index(html, `<textarea id="ask-input"`), strings.Index(html, `id="ask-dictate"`), strings.Index(html, `id="ask-send"`)
 	note, script := strings.Index(html, `id="ask-dictate-note"`), strings.Index(html, "window.__musterDictate")
 	if box < 0 || !(box < mic && mic < send) {
 		t.Errorf("the mic is not between the box and Answer (box %d, mic %d, Answer %d)", box, mic, send)

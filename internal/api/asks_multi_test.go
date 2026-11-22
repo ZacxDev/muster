@@ -67,21 +67,20 @@ func TestAMultiSelectAskDrawsCheckboxesAndOneSend(t *testing.T) {
 	}
 }
 
-// TestTheAskPageOffersAMultiSelectCheckboxesAndNote: on the ask PAGE the
-// options are checkboxes form-associated with the answer form (form="ask-answer"),
-// one Send submits them, and the optional note is form-associated too — while
-// the free-text row stays OPEN (a multi ask is never "quiet": the note belongs
-// with it).
+// TestTheAskPageOffersAMultiSelectCheckboxesAndNote: on the ask PAGE — the
+// feed card's answer form (askAnswerFormHTML), with the page's ids — the
+// options are checkboxes inside the answer form, its one Send submits them,
+// and the optional note is in the form too, never collapsed behind a toggle.
 func TestTheAskPageOffersAMultiSelectCheckboxesAndNote(t *testing.T) {
 	a := attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "Which ones?",
 		Options: []string{"alpha", "beta"}, Multi: true, Status: attention.Open, CreatedAt: time.Now()}
 	s := whereServer(t, a)
 	body := askPageBody(t, s, a, askPagePath(a.ID))
 	for _, want := range []string{
-		`<input type="checkbox" form="ask-answer" name="option" value="alpha" class="` + ui.AsksOptionCheckBoxClass + `" data-ask-option>`,
-		`<button type="submit" form="ask-answer" class="` + ui.AsksMultiSendClass + `" data-ask-multi-send>Send answer</button>`,
-		`<textarea id="ask-input-note" name="note" rows="1" form="ask-answer"`,
-		`class="flex items-end gap-2" data-attention-answer>`,
+		`<input type="checkbox" name="option" value="alpha" class="` + ui.AsksOptionCheckBoxClass + `" data-attention-option>`,
+		`<button type="submit" id="ask-send" class="` + ui.AsksCardSendClass + `">Send answer</button>`,
+		`<textarea id="ask-input-note" name="note" rows="1" placeholder="Add a note…"`,
+		`<form id="ask-answer" method="POST" action="/attention/asks/61/answer" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls hx-boost="false">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the multi-select ask page lacks %q:\n%s", want, body)
