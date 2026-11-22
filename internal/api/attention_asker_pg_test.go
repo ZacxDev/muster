@@ -229,12 +229,22 @@ func TestTheAsksPageFilterListsOnlyTheNamedSessionsAsks(t *testing.T) {
 				}
 			}
 		}
-		line := regexp.MustCompile(`(?s)<p [^>]*data-testid="asks-filter">.*?</p>`).FindString(page)
-		if !strings.Contains(line, "Showing asks from <strong") || !strings.Contains(line, `href="/attention" data-asks-filter-all>Show all</a>`) {
-			t.Errorf("%s: the filter line: %q", c.key, line)
-		}
-		if c.label != "" && !strings.Contains(line, ">"+c.label+"</strong>") {
-			t.Errorf("%s: the filter line does not name %q: %q", c.key, c.label, line)
+		// WHOSE ASKS THESE ARE (asks_filter.go): an agent is a source chip,
+		// drawn active, named, with Clear; a window — which no chip names —
+		// keeps the line saying so, with Show all.
+		if strings.HasPrefix(c.key, askerKeyAgent) {
+			chip := activeSourceChip(page)
+			if !strings.Contains(chip, `data-asks-chip-key="`+c.key+`"`) || !strings.Contains(chip, ">"+c.label+"</span>") || !strings.Contains(page, `href="/attention" class="`+ui.AsksChipsClearClass+`" data-asks-chips-clear>Clear</a>`) {
+				t.Errorf("%s: the active source chip: %q", c.key, chip)
+			}
+		} else {
+			line := regexp.MustCompile(`(?s)<p [^>]*data-testid="asks-filter">.*?</p>`).FindString(page)
+			if !strings.Contains(line, "Showing asks from <strong") || !strings.Contains(line, `href="/attention" data-asks-filter-all>Show all</a>`) {
+				t.Errorf("%s: the filter line: %q", c.key, line)
+			}
+			if c.label != "" && !strings.Contains(line, ">"+c.label+"</strong>") {
+				t.Errorf("%s: the filter line does not name %q: %q", c.key, c.label, line)
+			}
 		}
 		// The page's live list re-reads the filtered list.
 		if !strings.Contains(page, strconv.Quote("/attention/items"+q)) {
@@ -283,9 +293,15 @@ func TestTheAsksFilterIgnoresASessionTheViewerDoesNotOwn(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/attention?"+q.Encode(), nil).WithContext(asUser(f.member))
 	w := httptest.NewRecorder()
 	f.srv.handleAttentionPage(w, r)
-	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, `data-testid="asks-filter"`) || !asksListed(body)[theirs] {
-		t.Errorf("control: the member's filtered page: %d, filter line %v, lists %v", w.Code, strings.Contains(body, `data-testid="asks-filter"`), asksListed(body))
+	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(activeSourceChip(body), f.worker.Name) || !asksListed(body)[theirs] {
+		t.Errorf("control: the member's filtered page: %d, active chip %q, lists %v", w.Code, activeSourceChip(body), asksListed(body))
 	}
+}
+
+// activeSourceChip is the page's active source chip (asks_filter.go), "" for
+// none.
+func activeSourceChip(page string) string {
+	return regexp.MustCompile(`<a [^>]*aria-current="true" data-asks-chip="from"[^>]*>.*?</a>`).FindString(page)
 }
 
 // TestAnAnswerFromTheFilteredAsksPageIsRecorded: the filtered page's card

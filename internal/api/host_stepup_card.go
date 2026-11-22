@@ -801,7 +801,7 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 		if len(c.Media) > 0 {
 			b.WriteString(`<div class="` + ui.StepUpFeedMediaClass + `" data-stepup-media>`)
 			for _, m := range c.Media {
-				b.WriteString(stepUpMediumHTML(c.DraftID, m, ui.StepUpFeedThumbClass))
+				b.WriteString(stepUpMediumHTML(c.DraftID, m, stepUpMediumThumb))
 			}
 			b.WriteString("</div>\n")
 		}
@@ -843,10 +843,10 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 `)
 		}
 		if ms := on[i]; len(ms) > 0 {
-			grid, img := ui.StepUpMediaClass, ui.StepUpMediumOneClass
+			grid, img := ui.StepUpMediaClass, stepUpMediumOne
 			if len(ms) > 1 {
 				grid += " " + ui.StepUpMediaTwoUpClass
-				img = ui.StepUpMediumTileClass
+				img = stepUpMediumTile
 			}
 			b.WriteString(`<div class="` + grid + `" data-stepup-media>`)
 			for _, m := range ms {
@@ -861,14 +861,55 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 	return b.String()
 }
 
+// stepUpMediumSize is how large a medium is drawn: alone in a post, one
+// tile of several, or a thumbnail on the Asks feed's compact preview.
+type stepUpMediumSize int
+
+const (
+	stepUpMediumOne stepUpMediumSize = iota
+	stepUpMediumTile
+	stepUpMediumThumb
+)
+
+// stepUpVideoStart is the media fragment a video's src carries: the player
+// draws the frame at that time before it is played (iOS draws nothing for
+// preload="metadata" without one). The server never sees a fragment.
+const stepUpVideoStart = "#t=0.001"
+
 // stepUpMediumHTML is one medium of draft id, served from the draft's media
-// route, drawn with class cls: a video with its controls, else an image.
-func stepUpMediumHTML(id int64, m attention.StepUpMedium, cls string) string {
+// route, drawn at size: an image, or a video.
+//
+// 🔴 A VIDEO IS A PLAYER ONLY WHERE IT HAS A PLAYER'S ROOM. The feed's
+// compact preview drew <video controls> in its 80px-high thumbnail box —
+// 46px wide for a phone-shaped film — and the browser's control bar (its
+// scrubber, its ⋮ menu) could not fit: the card showed a broken-looking
+// player. A thumbnail is now the video's first frame, muted and without
+// controls, under a play mark; a tap on it is a tap on the card (its page,
+// where it plays full size). A full-size video keeps its controls and is
+// drawn WHOLE (object-contain): object-cover cropped a portrait film to a
+// strip of its middle. playsinline keeps a phone from opening it full screen
+// on its own.
+func stepUpMediumHTML(id int64, m attention.StepUpMedium, size stepUpMediumSize) string {
 	src := html.EscapeString(draftMediaLink(id, m.N))
+	n := strconv.Itoa(m.N + 1)
 	if m.Video() {
-		return `<video controls preload="metadata" class="` + cls + `" src="` + src + `" data-stepup-medium data-stepup-video></video>`
+		switch size {
+		case stepUpMediumThumb:
+			return `<span class="` + ui.StepUpFeedVideoThumbClass + `" data-stepup-medium data-stepup-video-thumb><video muted playsinline preload="metadata" tabindex="-1" aria-hidden="true" class="` + ui.StepUpFeedVideoClass + `" src="` + src + stepUpVideoStart + `" data-stepup-video></video>` +
+				`<span class="` + ui.StepUpPlayMarkClass + `" aria-hidden="true">` + ui.StepUpPlayGlyph + `</span><span class="sr-only">Attached video ` + n + `</span></span>`
+		case stepUpMediumTile:
+			return `<video controls playsinline preload="metadata" aria-label="Attached video ` + n + `" class="` + ui.StepUpVideoTileClass + `" src="` + src + stepUpVideoStart + `" data-stepup-medium data-stepup-video></video>`
+		}
+		return `<video controls playsinline preload="metadata" aria-label="Attached video ` + n + `" class="` + ui.StepUpVideoOneClass + `" src="` + src + stepUpVideoStart + `" data-stepup-medium data-stepup-video></video>`
 	}
-	return `<img alt="Attached image ` + strconv.Itoa(m.N+1) + `" loading="lazy" class="` + cls + `" src="` + src + `" data-stepup-medium data-stepup-image>`
+	cls := ui.StepUpMediumOneClass
+	switch size {
+	case stepUpMediumThumb:
+		cls = ui.StepUpFeedThumbClass
+	case stepUpMediumTile:
+		cls = ui.StepUpMediumTileClass
+	}
+	return `<img alt="Attached image ` + n + `" loading="lazy" class="` + cls + `" src="` + src + `" data-stepup-medium data-stepup-image>`
 }
 
 // stepUpFeedHTML is step-up card c on the Asks feed: its title (the draft id
