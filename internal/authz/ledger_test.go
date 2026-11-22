@@ -255,6 +255,13 @@ var (
 		// owed/lapsed deliveries (DueDeliveries, RecoverDeliveries), each row
 		// handed back with its owner and delivered under THAT owner's principal.
 		"internal/attention.sys",
+		// Session wakes (migration 0177): the attention sweep's reads of every
+		// owner's owed and in-flight wakes (Due) and of every owner's approved
+		// drafts that settled without their outcome line (DraftOutcomesOwed;
+		// ids and owners only), each handed back with its owner and delivered
+		// under THAT owner's principal (internal/api session_wake.go).
+		"internal/sessionwake.(*PGStore).Due",
+		"internal/sessionwake.(*PGStore).DraftOutcomesOwed",
 		// …and its draft half: every owner's PENDING reply drafts (ids, owners,
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.
