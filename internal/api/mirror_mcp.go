@@ -369,6 +369,12 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.ext.Agents != nil {
 		out = append(out, agentsListToolDef())
 	}
+	// officer_item_enqueue — the owner queueing work for one of their officers
+	// through their own session, recorded as asked for by it
+	// (officer_item_enqueue_tool.go) — with the built-in officer store.
+	if s.officerItemEnqueueOn() && !s.featureOff(features.Officers) {
+		out = append(out, officerItemEnqueueToolDef())
+	}
 	// chief_restart — the operator restarting their own chief through their own
 	// session (chief_restart_tool.go) — with the agent store and a provisioner.
 	if s.chiefRestartOn() && !s.featureOff(features.Dispatch) {
@@ -630,6 +636,10 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// So is agents_list (listed only with the agent store).
 			if name == agentsListTool {
 				return s.toolAgentsList(ctx, c, args)
+			}
+			// So is officer_item_enqueue (listed only with the officer store).
+			if name == officerItemEnqueueTool {
+				return s.toolOfficerItemEnqueue(ctx, c, args)
 			}
 			// route_reply is this door's alone: it is not in dispatchCallerTool,
 			// which a gateway agent reaches naming any tool.

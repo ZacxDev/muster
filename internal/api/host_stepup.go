@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 )
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,7 @@ var hostStepUpTools = map[string]string{
 	pluginMessageRouteTool:        "route a plugin message as you",
 	pluginRequestDecideTool:       "decide a plugin's pairing request (which mints it a token) as you",
 	pluginOutboundBatchDecideTool: "approve the ticked follows and likes of an outreach batch, and reject the rest, as you",
+	officerItemEnqueueTool:        "queue an item for one of your officers as you (an owner item, which a spent daily budget does not hold back)",
 }
 
 // hostStepUpExempt is every other mirror door tool, with why it is not an
@@ -391,6 +393,16 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	// phone's prompt read.
 	details := stepUpDetails(host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, args, why)
 	card := s.stepUpCardFor(ctx, host, c, name, args, what, held, details)
+	// The session the call came from, as muster bound it (never the call's
+	// arguments): it is told how the owner settles the card
+	// (session_wake_requests.go).
+	// A bound Claude Code session only: not a dispatched agent, not muster
+	// itself, not a remote caller, not an opencode session (whose key is not a
+	// Claude session id, so wakeClaudeTarget refuses it).
+	if host, sess, ok := wakeClaudeTarget(c.asker.MirrorHost, c.asker.MirrorSession); ok && card != nil && c.agent == nil &&
+		c.asker.AgentID == 0 && !c.asker.System && !c.remote {
+		card.RaisedByHost, card.RaisedBySession = host, sess
+	}
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, p.UserID), attention.New{
 		Asker:   attention.Asker{System: true, Label: hostDecisionLabel},
 		StepUp:  card,
@@ -510,13 +522,17 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 	}
 	if answer == hostDecisionRefuse {
 		s.logger.Printf("step-up: card %d refused: %s from %s/%s not run", id, d.tool, d.host, d.caller.asker.MirrorSession)
+		s.wakeStepUpDecided(ctx, rec, sessionwake.DecisionRefused)
 		return true, rec, nil
 	}
 	out := s.runStepUpTool(s.stepUpPrincipal(ctx, d.owner), d.host, d.caller, d.tool, d.args)
-	outcome := "ran"
+	outcome, woke := "ran", sessionwake.DecisionConfirmed
 	if isToolErr(out) {
-		outcome = "ran and was refused: " + mirror.OneLine(out, 200)
+		outcome, woke = "ran and was refused: "+mirror.OneLine(out, 200), sessionwake.DecisionConfirmedFailed
 	}
+	// The session whose call raised the card is told it ran (or was refused
+	// by the tool) — the word only, never the tool's output.
+	s.wakeStepUpDecided(ctx, rec, woke)
 	s.logger.Printf("step-up: card %d confirmed on the owner's phone: %s from %s/%s %s", id, d.tool, d.host, d.caller.asker.MirrorSession, outcome)
 	return true, rec, nil
 }
@@ -550,6 +566,9 @@ const stepUpTeamRefusal = "step-up: a team has no phone, and a team host files n
 func (s *Server) runStepUpTool(ctx context.Context, host string, c toolCaller, name, args string) string {
 	if name == routeReplyToolName {
 		return s.toolRouteReply(ctx, c, args)
+	}
+	if name == officerItemEnqueueTool {
+		return s.toolOfficerItemEnqueue(ctx, c, args)
 	}
 	if text, ok := s.dispatchPluginMessageRouteTool(ctx, c, name, args); ok {
 		return text

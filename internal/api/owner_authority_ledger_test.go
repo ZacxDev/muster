@@ -22,6 +22,7 @@ var ownerAuthorityCallers = map[string][]string{
 	// files no card. It serves no tool of its own.
 	"host_stepup.go:hostStepUpGate":                        nil,
 	"dispatch_hold_tools.go:dispatchHoldCaller":            {dispatchRequestTool, dispatchApproveTool},
+	"officer_item_enqueue_tool.go:toolOfficerItemEnqueue":  {officerItemEnqueueTool},
 	"outreach_batch.go:toolOutboundBatchDecide":            {pluginOutboundBatchDecideTool},
 	"outreach_batch.go:toolOutboundBatchGet":               {pluginOutboundBatchGetTool},
 	"plugin_draft_tools.go:toolPluginDraftDecide":          {pluginDraftDecideTool},
@@ -85,7 +86,7 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	refusedWant := []string{agentDestroyTool, agentsListTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool,
 		connectorRequestsListTool, dispatchApproveTool, dispatchRequestTool, pluginDraftDecideTool, pluginDraftRetryTool, pluginDraftsListTool,
 		pluginMessageRouteTool, pluginMessagesListTool, pluginOutboundBatchDecideTool, pluginOutboundBatchGetTool,
-		pluginRequestDecideTool, pluginRequestsListTool, routeReplyToolName}
+		pluginRequestDecideTool, pluginRequestsListTool, routeReplyToolName, officerItemEnqueueTool}
 	slices.Sort(refusedWant)
 	if !slices.Equal(refused, refusedWant) {
 		t.Errorf("the refused-to-spawned set = %v\nwant %v", refused, refusedWant)
@@ -112,7 +113,8 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 		}
 	}
 	gatedWant := []string{agentDestroyTool, attentionAnswerTool, connectorRequestDecideTool, dispatchApproveTool,
-		pluginDraftDecideTool, pluginMessageRouteTool, pluginOutboundBatchDecideTool, pluginRequestDecideTool, routeReplyToolName}
+		pluginDraftDecideTool, pluginMessageRouteTool, pluginOutboundBatchDecideTool, pluginRequestDecideTool, routeReplyToolName,
+		officerItemEnqueueTool}
 	slices.Sort(gatedWant)
 	if g := hostStepUpToolNames(); !slices.Equal(g, gatedWant) {
 		t.Errorf("the gated set = %v, want %v", g, gatedWant)

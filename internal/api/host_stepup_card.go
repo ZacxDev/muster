@@ -313,6 +313,9 @@ func stepUpToolSummary(name, args, what, held, route string) (title, preview, wh
 		Code         string      `json:"code"`
 		BatchID      string      `json:"batch_id"`
 		ApproveIDs   []int64     `json:"approve_ids"`
+		Officer      string      `json:"officer"`
+		Kind         string      `json:"kind"`
+		SubjectKey   string      `json:"subject_key"`
 	}
 	_ = json.Unmarshal([]byte(orEmptyJSON(args)), &in)
 	approve := in.Decision == "approve"
@@ -360,6 +363,10 @@ func stepUpToolSummary(name, args, what, held, route string) (title, preview, wh
 			return "Approve a plugin's pairing?", "Approve pairing request #" + in.ID.String() + " (it mints the plugin a token).", code
 		}
 		return "Refuse a plugin's pairing?", "Refuse pairing request #" + in.ID.String() + ".", code
+	case officerItemEnqueueTool:
+		return "Queue work for an officer?", "Queue an item of kind " + fence.Cut(strings.TrimSpace(in.Kind), 64) + ", subject " +
+				fence.Cut(strings.TrimSpace(in.SubjectKey), 128) + ", as your own (a spent daily budget does not hold it back).",
+			"For officer " + fence.Cut(strings.TrimSpace(in.Officer), 64)
 	case pluginOutboundBatchDecideTool:
 		n := distinctIDs(in.ApproveIDs)
 		entries := "entries"

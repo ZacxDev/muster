@@ -90,6 +90,7 @@ var teamHostTools = map[string]teamHostRule{
 	pluginMessageRouteTool:        teamRefused(whyOwnerAuthority),
 	pluginRequestDecideTool:       teamRefused(whyOwnerAuthority),
 	pluginOutboundBatchDecideTool: teamRefused(whyOwnerAuthority),
+	officerItemEnqueueTool:        teamRefused(whyOwnerAuthority),
 	// Every read of the owner's whole estate.
 	agentsListTool:             teamRefused(whyEstateRead),
 	connectorRequestsListTool:  teamRefused(whyEstateRead),

@@ -45,6 +45,7 @@ var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
 	"agentDestroyToolDef":        func() []agents.ToolDef { return []agents.ToolDef{agentDestroyToolDef()} },
 	"chiefAskToolDef":            func() []agents.ToolDef { return []agents.ToolDef{chiefAskToolDef()} },
 	"agentsListToolDef":          func() []agents.ToolDef { return []agents.ToolDef{agentsListToolDef()} },
+	"officerItemEnqueueToolDef":  func() []agents.ToolDef { return []agents.ToolDef{officerItemEnqueueToolDef()} },
 	"trackTaskToolDef":           func() []agents.ToolDef { return []agents.ToolDef{trackTaskToolDef()} },
 	"chiefRestartToolDef":        func() []agents.ToolDef { return []agents.ToolDef{chiefRestartToolDef()} },
 	"connectorDecideToolDefs":    connectorDecideToolDefs,
@@ -118,7 +119,8 @@ func TestEveryMirrorToolIsClassifiedForTheStepUp(t *testing.T) {
 	// The gated set, pinned exactly: a change is a decision. chief_restart
 	// left it (operator decision "fully ungated").
 	want := []string{agentDestroyTool, attentionAnswerTool, connectorRequestDecideTool, dispatchApproveTool,
-		pluginDraftDecideTool, pluginMessageRouteTool, routeReplyToolName, pluginRequestDecideTool, pluginOutboundBatchDecideTool}
+		pluginDraftDecideTool, pluginMessageRouteTool, routeReplyToolName, pluginRequestDecideTool, pluginOutboundBatchDecideTool,
+		officerItemEnqueueTool}
 	slices.Sort(want)
 	if got := hostStepUpToolNames(); !slices.Equal(got, want) {
 		t.Errorf("the gated set = %v, want %v", got, want)
