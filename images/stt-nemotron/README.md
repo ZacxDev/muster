@@ -59,7 +59,7 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
 
 ```json
 {"type": "partial", "text": "so the next thing", "start_ms": 1120, "end_ms": 3360}
-{"type": "final",   "text": "so the next thing is the budget.", "start_ms": 1120, "end_ms": 4900}
+{"type": "final",   "text": "Alice will send the budget by Friday", "lead": "?", "start_ms": 1120, "end_ms": 4900}
 {"type": "error",   "code": "bad_frame", "message": "..."}
 ```
 
@@ -87,24 +87,31 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
   words in that tail land in the **next** segment. The plugin flushes about
   700 ms into silence, so that tail is silence. `end` pads and decodes the
   tail, so the `end` final carries the last words.
-- **A `flush`'s final lags it by up to one model step.** The model emits a
-  sentence's closing mark one step after its last word, so at a sentence-final
-  `flush` the `.`/`?` is decoded in the step AFTER it. The server therefore
-  holds a flush's final until that stream's next model step (a client streaming
-  continuously supplies the next 560 ms chunk within 560 ms) and moves the
-  marks that step opens the next segment with (`. , ; : ! ? …`) onto the held
-  final: `"Can Carol book the room?"`, not `"Can Carol book the room"` plus a
-  next segment `"? Thanks"`. The hold is released by that step, the next
-  `flush`, `end`, a failed step, or after `STT_FINAL_HOLD_SECONDS` (default
-  1.0) of wall time with no step, whichever comes first; finals stay one per
-  `flush`, in order. A mark is never appended to an empty final.
+- **A `flush`'s final is sent as soon as the audio before it is decoded**; it
+  never waits for later audio.
+- **Late closing marks arrive in the next final's `lead`.** The model emits a
+  sentence's closing mark only once it hears what follows, which after a pause
+  is the NEXT sentence's first words. Since `flush` comes about 700 ms into
+  silence, the `.`/`?` is decoded into the next segment, whose raw text then
+  opens with it (`"? Alice will send the budget by Friday"`). The server sends
+  that segment's final as `text: "Alice will send the budget by Friday"`,
+  `lead: "?"`. `lead` is the run of `. , ; : ! ? …` the segment's raw text
+  opened with, in order, whitespace removed; it is **on every `final`** (`""`
+  when there were none) and **never on a `partial`**. A segment that decoded
+  only marks (the mark came after the speaker's last `flush`, then the next
+  `flush` or `end` arrived) is a final with `text: ""` and `lead: "."`.
+  **The client's duty:** `lead` belongs to the END of the previous non-empty
+  final on this stream; append it there (if that final does not already end
+  with a mark). A turn's last mark may therefore reach the client only with the
+  next speech, any time later, or with `end`.
 - **No leading punctuation:** a `partial`'s or `final`'s `text` never starts
-  with whitespace or `. , ; : ! ? …`. A mark that still opens a segment (it
-  came two steps late, or after a timed-out hold) is dropped, so its sentence's
-  final ends without it. Punctuation inside the text is never touched.
+  with whitespace or `. , ; : ! ? …` (a final's are in its `lead`; a partial's
+  are dropped, partials being transient). Punctuation inside the text is never
+  touched.
 - **Constant signal:** a segment in which every sample has the same value (a
-  dead capture, e.g. bit-exact zeros) yields `text: ""` and no partials,
-  whatever the model produced: the model invents words on such input. This is
+  dead capture, e.g. bit-exact zeros) yields `text: ""`, `lead: ""` and no
+  partials, whatever the model produced: the model invents words (and marks)
+  on such input. This is
   not an energy gate; quiet speech still varies. The last frame's padding does
   not count against it.
 - After the `end` final the server closes with **1000**.
@@ -147,7 +154,6 @@ The server listens only after the model has loaded.
 | `STT_RETRY_AFTER` | 30 | seconds, in the capacity `503` |
 | `STT_MAX_BACKLOG_SECONDS` | 30 | undecoded audio one stream may queue |
 | `STT_IDLE_SECONDS` | 30 | a stream with no frame for this long is closed 1001 and frees its slot |
-| `STT_FINAL_HOLD_SECONDS` | 1.0 | longest a `flush`'s final waits for the next model step to bring a late closing mark |
 | `STT_PORT` | 8000 | |
 | `HF_HOME` | `/models` | where the weights are cached: mount a volume |
 
@@ -199,10 +205,6 @@ into it.
 | 1 | **1892 MiB** | 3.5% | 0.001 / 0.017 s | 1.06 s |
 | 4 | **1902 MiB** | 4.8% | 0.000 / 0.021 s | 1.07 s |
 | 8 | **1960 MiB** | 4.4% | 0.000 / 0.031 s | 1.63 s |
-
-The `flush` → `final` column was measured BEFORE finals were held for the
-late closing mark (above); a held final now arrives after the next model
-step, so expect up to ~560 ms plus one step's decode time. Not re-measured.
 
 The streaming rows are the idle process figure plus the rise in total GPU
 memory while streams ran (the GPU had another tenant whose use did not
