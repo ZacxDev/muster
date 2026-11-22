@@ -42,6 +42,11 @@
 -- ROLLBACK (after rolling the image back; an older image never reads it). It
 -- leaves every subject as it is: subjects already shared stay shared, and
 -- people who first open either app afterwards get independent ones.
+-- ⚠ An image rolled back WITHOUT the DROP below leaves the table in place,
+-- and an older image's uninstall does not know it: the uninstalled app's
+-- pair row (and its mirror) stays, so the survivor still reads as linked
+-- once the newer image is back. Clear it with `muster-server app unlink
+-- <the survivor's id>`.
 --   DROP TABLE IF EXISTS public.plugin_server_pairs;
 --   DELETE FROM schema_migrations WHERE version = 178;
 

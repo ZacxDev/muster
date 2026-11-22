@@ -929,7 +929,9 @@ routing-rule writes) holds for it too (`authz.IsPluginVia`).
   subject per person between two server apps, so the two can join their own
   records. Only an admin can make one, by installing an app with `muster-server
   app install --link-to` (there is no route for it, so no token or person can
-  make or undo one), and only for an app that knows nobody yet, and each
+  make or undo one), and only for an app that knows nobody yet, linked to an
+  app whose subjects no other live server app holds (after an unlink, the
+  former pair's two apps can never be linked to a third), and each
   person it affects is told so on **Account → Apps**. It widens nothing a
   token can do: the grant, the act-for door, `owners/check`, the knock caps
   and the task ledger stay keyed on the token's own app, so a token acting

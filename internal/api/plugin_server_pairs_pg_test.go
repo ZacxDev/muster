@@ -233,6 +233,48 @@ func TestInstallLinkToRefusalsInstallNothing(t *testing.T) {
 	}
 }
 
+// TestALinkToAnAppWhoseSubjectsAreSharedIsRefused: the pair (source, B), P
+// opened both (one subject), then unlinked. 🔴 Installing C --link-to the
+// source, or --link-to B, is refused (it would make C share P's subject with
+// an app C was never linked to) and installs nothing. Once B is uninstalled,
+// the source's subjects are its own again and C links. A source never paired
+// links too (every other test's install --link-to).
+func TestALinkToAnAppWhoseSubjectsAreSharedIsRefused(t *testing.T) {
+	f := newSrvFix(t)
+	tokB, b := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
+	sub := f.open(f.a, f.app.ID, f.tok)
+	if got := f.open(f.a, b.ID, tokB); got != sub {
+		t.Fatalf("control: linked, A has %s and %s", sub, got)
+	}
+	if _, err := f.store.UnlinkServerApp(context.Background(), b.ID, users.Actor{Via: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name         string
+		source, with int64
+	}{{"--link-to the former source", f.app.ID, b.ID}, {"--link-to the former adopter", b.ID, f.app.ID}} {
+		_, _, err := f.tryInstall("srv-third", "Ember Index", c.source)
+		want := fmt.Sprintf("app %d already shares its people's subjects with app %d from an earlier link, so a new app linked to it "+
+			"would share them with app %d too; install the new app without --link-to instead", c.source, c.with, c.with)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("shared subjects: %s: %v; want %q", c.name, err, want)
+		}
+		if n := f.count(`SELECT count(*) FROM plugins WHERE name = $1`, "srv-third-"+f.suffix); n != 0 {
+			t.Errorf("shared subjects: %s left %d app row(s)", c.name, n)
+		}
+	}
+	if f.pairOf(f.app.ID) != 0 || f.pairOf(b.ID) != 0 {
+		t.Errorf("shared subjects: a refused install made a pair")
+	}
+	if _, err := f.store.UninstallServerApp(f.sys(), b.ID, users.Actor{Via: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	tokC, c := f.installLinked("srv-third", "Ember Index", f.app.ID)
+	if got := f.open(f.a, c.ID, tokC); got != sub {
+		t.Errorf("once the former partner is uninstalled, the new app answered A %s; want the source's %s", got, sub)
+	}
+}
+
 // TestHideOnAnAdopterBeforeFirstOpen: A knows the source; an app is installed
 // linked to it, and A hides it without ever opening it: the row Hide makes
 // (Hide is the second subject writer) carries the source's subject for A.
@@ -442,17 +484,33 @@ func TestUninstallDeletesThePair(t *testing.T) {
 }
 
 // TestLinkAndUnlinkAreAudited: the install's plugin.server.installed row
-// records linked_to; plugin.server.unlinked records the partner; each as the
-// command line (no user, via cli).
+// records linked_to; plugin.server.unlinked records the partner; an uninstall
+// that ended a pair records unlinked_from; each as the command line (no
+// user, via cli).
 func TestLinkAndUnlinkAreAudited(t *testing.T) {
 	f := newSrvFix(t)
 	_, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	if _, err := f.store.UnlinkServerApp(context.Background(), f.app.ID, users.Actor{Via: "cli"}); err != nil {
 		t.Fatal(err)
 	}
+	_, src := f.installLabelled("srv-src", "Cobalt Atlas")
+	_, ado := f.installLinked("srv-ado", "Ember Index", src.ID)
+	if _, err := f.store.UninstallServerApp(f.sys(), ado.ID, users.Actor{Via: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	// An uninstall that ended no pair names none (contacts was unlinked first).
+	if _, err := f.store.UninstallServerApp(f.sys(), contacts.ID, users.Actor{Via: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	var none string
+	if err := f.pool.QueryRow(f.sys(), `SELECT coalesce(detail->>'unlinked_from', '') FROM audit_log WHERE action = 'plugin.server.uninstalled' AND object = $1`,
+		plugins.Object(contacts.ID)).Scan(&none); err != nil || none != "" {
+		t.Errorf("an uninstall that ended no pair: unlinked_from %q (%v); want none", none, err)
+	}
 	for _, c := range []struct{ action, object, key, want string }{
 		{"plugin.server.installed", plugins.Object(contacts.ID), "linked_to", strconv.FormatInt(f.app.ID, 10)},
 		{"plugin.server.unlinked", plugins.Object(f.app.ID), "partner", strconv.FormatInt(contacts.ID, 10)},
+		{"plugin.server.uninstalled", plugins.Object(ado.ID), "unlinked_from", strconv.FormatInt(src.ID, 10)},
 	} {
 		var got, via string
 		var user *int64

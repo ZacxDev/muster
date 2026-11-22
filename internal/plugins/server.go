@@ -76,7 +76,9 @@ func ValidSubject(s string) bool {
 // newSubject is a new pairwise subject: 128 random bits, base64url. Random,
 // never derived from the user id, so it says nothing about who the person
 // is, and a person's subjects under two apps cannot be joined — unless an
-// admin LINKED the two apps (server_pairs.go). 🔴 ITS ONE CALLER IS subjectFor,
+// admin LINKED the two apps (server_pairs.go: installed one --link-to the
+// other; the two keep what they shared after an unlink, and neither may then
+// be linked to a third). 🔴 ITS ONE CALLER IS subjectFor,
 // which decides whether a pair's subject is taken instead (internal/api
 // TestOneFunctionChoosesASubject).
 func newSubject() (string, error) {
@@ -548,13 +550,20 @@ func (s *PGStore) UninstallServerApp(ctx context.Context, id int64, by users.Act
 			`DELETE FROM plugin_server_users WHERE plugin_id = $1`,
 			`DELETE FROM plugin_server_tasks WHERE plugin_id = $1`,
 			`DELETE FROM plugin_handoffs WHERE server_plugin_id = $1 AND redeemed_at IS NULL`,
-			`DELETE FROM plugin_server_pairs WHERE plugin_id = $1`,
 		} {
 			if _, err := tx.Exec(sys, q, id); err != nil {
 				return err
 			}
 		}
-		return users.AuditTx(sys, tx, by, "plugin.server.uninstalled", Object(p.ID), serverAppDetail(p))
+		detail := serverAppDetail(p)
+		var partner int64
+		switch err := tx.QueryRow(sys, `DELETE FROM plugin_server_pairs WHERE plugin_id = $1 RETURNING partner_id`, id).Scan(&partner); {
+		case err == nil:
+			detail["unlinked_from"] = partner
+		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+		return users.AuditTx(sys, tx, by, "plugin.server.uninstalled", Object(p.ID), detail)
 	})
 	return p, err
 }

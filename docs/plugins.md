@@ -478,6 +478,13 @@ muster-server app unlink <id>
   personal plugin, uninstalled, or already in a pair (an app is in at most
   one pair). The install's audit row (`plugin.server.installed`) records
   `linked_to`.
+- 🔴 **It is also refused when `<id>`'s subjects are already shared**: after
+  an unlink, the two apps still share the subjects of the people both knew,
+  so a new app linked to either would share them with the other too, an app
+  it was never linked to and that Account → Apps would not name. Install the
+  new app without `--link-to` instead (or link it once the former partner is
+  uninstalled). So a person's subject is shared only between the two apps of
+  one link.
 - **Everything else stays per app**: the grant and its 8 hours, Hide,
   `owners/check`, `Muster-Act-For`, the knock caps and the task ledger. A
   shared subject does not let one app's token act for a person through the
@@ -489,7 +496,7 @@ muster-server app unlink <id>
   opens either app afterwards gets a different subject under each. Audited
   `plugin.server.unlinked`.
 - **An uninstall of either app ends the pair**, in the uninstall's own
-  transaction. Install the replacement `--link-to` the surviving app and it
+  transaction, and its audit row names the partner (`unlinked_from`). Install the replacement `--link-to` the surviving app and it
   takes the very subjects the old install shared.
 - There is no page form and no `/plugin/v1` route for a link: it needs the
   server's database access. `app list` shows each pair, and **Account → Apps**

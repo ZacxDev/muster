@@ -112,9 +112,22 @@ func newSrvFix(t *testing.T) *srvFix {
 	// construction, as push_task_ref_pg_test.go does; nothing here fires them.
 	f.srv.taskCreateAfter, f.srv.taskCommentAfter = f.timers.after, f.timers.after
 	f.h = f.srv.Handler()
-	f.tok, f.app = f.install("srv-meet", true)
-	if f.admin == authz.OperatorUserID || f.admin == f.app.ID {
-		t.Fatalf("fixture: the admin's id %d must be neither 1 nor the app's id %d", f.admin, f.app.ID)
+	// The admin's id must be neither 1 nor the app's id. The users and plugins
+	// sequences move independently (a refused install in an earlier test
+	// spends a plugins id), so they can meet by chance: then uninstall that
+	// app and take another admin, whose id the users sequence has moved on.
+	for try := 0; ; try++ {
+		f.tok, f.app = f.install("srv-meet", true)
+		if f.admin != authz.OperatorUserID && f.admin != f.app.ID {
+			break
+		}
+		if try == 3 {
+			t.Fatalf("fixture: the admin's id %d must be neither 1 nor the app's id %d", f.admin, f.app.ID)
+		}
+		if _, err := f.store.UninstallServerApp(f.sys(), f.app.ID, users.Actor{Via: "cli"}); err != nil {
+			t.Fatal(err)
+		}
+		f.admin = f.person("Ingrid Vale "+strconv.Itoa(try+2), "admin", "")
 	}
 	for _, u := range []int64{f.a, f.b, f.admin} {
 		f.device(u)

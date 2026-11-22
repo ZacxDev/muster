@@ -30,7 +30,9 @@ import (
 //     (InstallServerApp with LinkTo), so the new app knows nobody when it is
 //     linked, and nothing ever rewrites a subject: no person's data under
 //     either app is ever moved under another subject or orphaned. Two apps
-//     already in use are never linked.
+//     already in use are never linked, and an app whose subjects are already
+//     shared (a former pair's, after an unlink) is never a source: a person's
+//     subject is shared only between the two apps of one link.
 //   - EVERYTHING ELSE STAYS PER APP: the grant, Hide, owners/check, the act-for
 //     door and the task ledger are keyed on (plugin_id, …) as before. A shared
 //     subject lets the two apps join their own records; it does not let one
@@ -79,8 +81,9 @@ func subjectFor(ctx context.Context, tx pgx.Tx, appID, ownerID int64) (string, e
 // row is inserted, it pairs app with live server app source. The source row
 // is held FOR SHARE, so an uninstall racing the install waits for it (or wins
 // first, and this refuses). Refused, each in its own words: no such row, a
-// personal plugin, an uninstalled app, an app already in a pair (the pair's
-// primary key). Any refusal fails the whole install: neither the app nor a
+// personal plugin, an uninstalled app, an app whose subjects another live
+// server app already holds (a former pair's, after an unlink), an app
+// already in a pair (the pair's primary key). Any refusal fails the whole install: neither the app nor a
 // pair is left. The new app has no plugin_server_users row: it was created a
 // moment ago in this same transaction.
 func linkAtInstall(ctx context.Context, tx pgx.Tx, app, source int64) error {
@@ -96,6 +99,25 @@ func linkAtInstall(ctx context.Context, tx pgx.Tx, app, source int64) error {
 		return invalid("app %d is a personal plugin; only server apps can be linked", source)
 	case revoked != nil:
 		return invalid("app %d is uninstalled", source)
+	}
+	// 🔴 A SOURCE WHOSE SUBJECTS ARE ALREADY SHARED is refused: after an
+	// unlink, the source and its former partner still hold one subject per
+	// person they both knew, and a new app linked to the source would take
+	// those subjects too — joining it with the former partner, which nobody
+	// linked to it and Account → Apps would never name. So "pairwise unless
+	// linked" holds only if no subject of the source is held by any other
+	// live server app.
+	var sharedWith int64
+	err = tx.QueryRow(ctx, `SELECT o.plugin_id FROM plugin_server_users s
+		  JOIN plugin_server_users o ON o.subject = s.subject AND o.plugin_id <> s.plugin_id
+		  JOIN plugins p ON p.id = o.plugin_id AND p.scope = 'server' AND p.revoked_at IS NULL
+		 WHERE s.plugin_id = $1 ORDER BY o.plugin_id LIMIT 1`, source).Scan(&sharedWith)
+	switch {
+	case err == nil:
+		return invalid("app %d already shares its people's subjects with app %d from an earlier link, so a new app linked to it "+
+			"would share them with app %d too; install the new app without --link-to instead", source, sharedWith, sharedWith)
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
 	}
 	sp, err := tx.Begin(ctx)
 	if err != nil {

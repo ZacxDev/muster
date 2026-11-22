@@ -88,6 +88,39 @@ func TestThePairsTableIsReadOnlyUnderTheSystem(t *testing.T) {
 	}
 }
 
+// TestOnlyTheCommandLineLinksAndUnlinks: the one site that sets
+// ServerAppIn.LinkTo and the one caller of UnlinkServerApp are both
+// cmd/muster-server's runAppCommand (`app install --link-to`, `app unlink`).
+// /admin/apps, a bearer route or any other door wiring either in fails here,
+// whether the set grows or shrinks.
+func TestOnlyTheCommandLineLinksAndUnlinks(t *testing.T) {
+	setters, unlinkers := map[string]bool{}, map[string]bool{}
+	moduleFuncs(t, func(site string, n ast.Node) {
+		switch x := n.(type) {
+		case *ast.KeyValueExpr:
+			if id, ok := x.Key.(*ast.Ident); ok && id.Name == "LinkTo" {
+				setters[site] = true
+			}
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "LinkTo" {
+					setters[site] = true
+				}
+			}
+		case *ast.CallExpr:
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "UnlinkServerApp" {
+				unlinkers[site] = true
+			}
+		}
+	})
+	if got := setOf(setters); strings.Join(got, ",") != "cmd/muster-server runAppCommand" {
+		t.Errorf("sites setting ServerAppIn.LinkTo: %v; want only cmd/muster-server runAppCommand", got)
+	}
+	if got := setOf(unlinkers); strings.Join(got, ",") != "cmd/muster-server runAppCommand" {
+		t.Errorf("callers of UnlinkServerApp: %v; want only cmd/muster-server runAppCommand", got)
+	}
+}
+
 // subjectRewrite matches a statement on plugin_server_users that SETs its
 // subject: the one write a link must never make.
 var subjectRewrite = regexp.MustCompile(`(?is)plugin_server_users\b.*\bSET\b[^;]*?\bsubject\s*=`)
