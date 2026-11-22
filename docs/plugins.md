@@ -1268,6 +1268,37 @@ The allowlist only widens the outbound screen. A reply your chief drafts,
 and a browser flow's text, have none — they refuse the repository's name
 too.
 
+##### What a reply answers
+
+A `reply` may carry **`context`**: the post or message it answers, as the
+officer read it upstream (an X status or a Reddit comment from its relay's
+read), so the owner sees what the reply is to:
+
+```json
+"context": {"author": "@ada", "text": "Does it run on a Pi?",
+            "written_at": "2026-11-22T14:05:00Z", "url": "https://x.com/ada/status/2122495152350453825"}
+```
+
+`text` is required (at most 16 KiB, its whole text); `author` (at most 200
+characters), `written_at` (RFC 3339) and `url` (an absolute http or https
+URL) are optional. It is screened as an inbound message is — UTF-8 without
+NUL, the same caps — never by the outbound screen, since it is not what is
+sent; any other target kind with `context` is refused. It is stored on the
+draft (`reply_context`, migration `0182`), and a retry successor carries its
+root's.
+
+Every face of the draft draws it **above** the draft, as the outside party's
+words: the Drafts tab's card, an officer's *Needs you* and its chat's
+confirm card quote it labelled **untrusted** — *In reply to @ada*, when it
+was written, an **ⓘ** link to the original showing its host, and its text,
+a long one folded under **Show more** — every character escaped and every
+hidden one a visible flag. The step-up card (*Reply on X? · Draft #N*)
+carries its own copy, cut to 1,000 characters, and the phone's prompt one
+line of it. `plugin_drafts_list` returns it as `reply_context`, its author,
+URL and text in one fenced block. 🔴 **muster never fetches it.** A reply
+filed without `context` (and with no message on its thread, below) says *The
+post this replies to was not provided*.
+
 #### `GET /plugin/v1/drafts/checks` for an outbound draft
 
 Every entry now says its `kind`. An outbound one carries its target and media
@@ -1356,9 +1387,10 @@ body as paragraphs (every hidden or bidi character a visible flag, every
 look-alike word highlighted, as for every draft), and every uploaded image
 rendered and every video playable (whole, never cropped; on the Asks feed's
 compact preview a video is its first frame under a play mark, and a tap opens
-the card where it plays). For a reply target, the human reply muster
-received with that `thread` is quoted above it, escaped and labelled
-untrusted, or a line says none arrived. The target, the reason it was drafted
+the card where it plays). For a reply target, its
+[context](#what-a-reply-answers) is quoted above it; without one, the human
+reply muster received with that `thread`, escaped and labelled untrusted; and
+with neither, a line says the post it answers was not provided. The target, the reason it was drafted
 and each medium's ref, type, size and SHA-256 are under **Details**.
 
 🔴 **Approval binds the body and every medium.** The card's **Approve and

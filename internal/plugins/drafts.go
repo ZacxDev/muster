@@ -180,6 +180,10 @@ type Draft struct {
 	// (MaxAutoAttempts).
 	AutoFrom    int  `json:"autoFrom,omitempty"`
 	NothingSent bool `json:"nothingSent,omitempty"`
+	// ReplyContext is what an outbound REPLY answers, as its officer filed it
+	// (migration 0182, reply_context.go): an outside party's words, UNTRUSTED.
+	// nil for every other draft, and for a reply filed without one.
+	ReplyContext *ReplyContext `json:"replyContext,omitempty"`
 	// Retry is what the store DECIDED about a retry in the transaction that
 	// recorded this draft's failed result (FinishDraft), like Refusal: never
 	// stored, never read back. internal/api acts on it.
@@ -607,7 +611,7 @@ const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
 	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
-	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from`
+	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from, reply_context`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
@@ -615,7 +619,7 @@ func draftDest(d *Draft, st *string) []any {
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
 		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
-		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom}
+		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom, &d.ReplyContext}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
