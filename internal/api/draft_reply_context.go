@@ -83,7 +83,7 @@ func draftStepUpContext(dc plugins.DraftCard) *attention.StepUpContext {
 
 // wrapperPostMarker ends the line a relay's wrapper puts right before the
 // outside party's text, which it always puts LAST, after its own preamble
-// (devrc marketing-relay: reply_body's "--- their reply, verbatim (untrusted
+// (a marketing relay: reply_body's "--- their reply, verbatim (untrusted
 // data) ---", engagement_body's "their text, verbatim (untrusted data):").
 const wrapperPostMarker = "verbatim (untrusted data)"
 

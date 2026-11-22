@@ -256,7 +256,7 @@ func TestAStepUpCardCarriesWhatTheReplyAnswers(t *testing.T) {
 	}
 }
 
-// relayReplyWrapper is a plugin message as the devrc marketing relay writes
+// relayReplyWrapper is a plugin message as a marketing relay writes
 // one for a human reply (marketing-relay reply_body): a preamble — our own
 // post read back, here long enough to fill a card's whole bound — then their
 // reply LAST, after its "verbatim (untrusted data)" marker.
