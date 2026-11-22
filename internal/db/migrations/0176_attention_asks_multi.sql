@@ -1,4 +1,4 @@
--- muster 0175 — MULTI-SELECT ASKS (internal/attention, internal/api).
+-- muster 0176 — MULTI-SELECT ASKS (internal/attention, internal/api).
 --
 --   attention_asks.multi   true: the asker's options are CHECKBOXES — the
 --       owner may pick any number — and the recorded answer is the picked
@@ -20,7 +20,7 @@
 -- ROLLBACK (after rolling the image back; an older image reads no multi column
 -- and treats every ask as single-select — a multi answer is then just text):
 --   ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS multi;
---   DELETE FROM schema_migrations WHERE version = 175;
+--   DELETE FROM schema_migrations WHERE version = 176;
 
 SET LOCAL lock_timeout = '3s';
 
