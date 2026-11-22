@@ -144,13 +144,29 @@ func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
 	for _, want := range []string{
 		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
 		`<button type="submit" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" data-ask-dismiss>Dismiss without answering</button>`,
-		`function gatePick(f) { return f && f.querySelector ? f.querySelector('input[name="option"]:checked') : null; }`,
 		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
 		`if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim() && !gatePick(f)) { e.preventDefault(); b.focus(); return; }`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the options page lacks %s:\n%s", want, body)
 		}
+	}
+	// gatePick reads the form's CONTROLS (f.elements), not its DOM
+	// descendants: a multi-select ask's checkboxes are form-associated with
+	// the answer form but are drawn ABOVE it, so a querySelector subtree walk
+	// never finds them. (Asserted behaviourally by e2e/tests/ask-page.spec.ts;
+	// pinned here so a regression to querySelector is caught without a
+	// browser.)
+	for _, want := range []string{
+		`function gatePick(f) {`,
+		`if (!f || !f.elements) return null;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the options page lacks %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `f.querySelector('input[name="option"]:checked')`) {
+		t.Errorf("gatePick walks the form's DOM descendants, so it cannot see the form-associated multi-select boxes:\n%s", body)
 	}
 	if got := askPageH1(body); got != "Worker Seven is asking" {
 		t.Errorf("the heading %q", got)

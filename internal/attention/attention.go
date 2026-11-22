@@ -473,6 +473,14 @@ func Clean(n New) (New, error) {
 		return n, fmt.Errorf("%w: at most %d options", ErrInvalid, MaxOptions)
 	}
 	n.Options = opts
+	// MULTI means "the asker's options are CHECKBOXES" (migration 0175), so an
+	// ask with none has nothing to tick: its page would draw a lone note box
+	// and no way to answer. Checked AFTER the blanks are dropped, so a list of
+	// blanks counts as no options — and a notice, which carries no options and
+	// is refused one below, never reaches a multi ask legitimately.
+	if n.Multi && len(n.Options) == 0 {
+		return n, fmt.Errorf("%w: a multi-select ask needs options to tick", ErrInvalid)
+	}
 	ictx, err := n.Context.clean()
 	if err != nil {
 		return n, err
