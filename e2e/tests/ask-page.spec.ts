@@ -434,8 +434,32 @@ test.describe('desktop 1280×800', () => {
     expect(form.width, 'the answer form reads in the column too').toBeLessThanOrEqual(680);
     await noSidewaysScroll(page);
     await expect(page.locator('#ask-live [data-asks-suggestion]')).toHaveCount(2, { timeout: 15_000 });
+    // 🔴 THE PAGE NAVIGATES ITSELF once the post lands: askPageScript's fetch
+    // follows the 303 and then loads the page again (location.assign). The
+    // live region shows the answer before that load (the queue's SSE event),
+    // so a navigation the test starts after seeing it races the page's own
+    // and is aborted (net::ERR_ABORTED, seen in CI). The two holds below pin
+    // that race open — the post's 303 reaches the page late, after the live
+    // region shows the answer, and the Asks page loads slowly — so a test
+    // that waits for the URL alone fails here every time it loses the race.
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+      const res = await r.fetch({ maxRedirects: 0 });
+      await pause(2500);
+      await r.fulfill({ response: res });
+    });
+    await page.route('**/attention', async (r) => {
+      if (r.request().isNavigationRequest()) await pause(4000);
+      await r.continue();
+    });
+    // So the test waits for the page's OWN load (the document it navigates to
+    // after the post), not for its URL, which is the same before and after.
+    const reloaded = page.waitForResponse(
+      (r) => r.request().isNavigationRequest() && r.request().method() === 'GET' && new URL(r.url()).pathname === `/attention/asks/${id}`,
+    );
     await Promise.all([answered(page, id), page.getByRole('button', { name: 'wait until Monday', exact: true }).click()]);
-    await page.waitForURL(origin + `/attention/asks/${id}`);
+    await reloaded;
+    await page.waitForLoadState('load');
     await expect(page.locator('[data-ask-answer]')).toHaveText('Your answer: wait until Monday');
     // The queue page itself is unchanged: the ask is no longer open there.
     await page.goto(origin + '/attention');
