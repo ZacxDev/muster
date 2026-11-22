@@ -88,6 +88,12 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
   700 ms into silence, so that tail is silence; the `final` arrives within
   milliseconds of the `flush` (measured below). `end` pads and decodes the tail,
   so the `end` final carries the last words.
+- **No leading punctuation:** a `partial`'s or `final`'s `text` never starts
+  with whitespace or `. , ; : ! ? …`. The model emits a sentence's closing mark
+  one step after its last word, so after a `flush` that mark is decoded into the
+  NEXT segment, where it would read `". Thanks everyone."`. The previous final
+  is already sent, so the mark is dropped (that final may end without its
+  period). Punctuation inside the text is never touched.
 - **Constant signal:** a segment in which every sample has the same value (a
   dead capture, e.g. bit-exact zeros) yields `text: ""` and no partials,
   whatever the model produced: the model invents words on such input. This is

@@ -37,6 +37,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -87,6 +88,21 @@ def check_sample_rate(rate) -> None:
             f"the model's preprocessor.sample_rate is {rate!r}, not {SAMPLE_RATE}: "
             f"this server's wire format is {SAMPLE_RATE} Hz and it will not resample"
         )
+
+
+# 🔴 A SEGMENT NEVER STARTS WITH PUNCTUATION. The model emits a sentence's
+# closing mark only after it has heard what follows, so a `flush` at the end of
+# a sentence often finals "... the off site" and the "." is decoded in the next
+# step, which belongs to the NEXT segment: that final read ". Thanks everyone."
+# (measured live, every final from the second on). The previous final has
+# already been sent and cannot take the mark back, so it is dropped here.
+# Only marks at the very start go; punctuation inside the text is untouched.
+_LEADING_PUNCT = re.compile(r"^[\s.,;:!?…]+")
+
+
+def strip_leading_punct(text: str) -> str:
+    """`text` without the run of whitespace and . , ; : ! ? … it starts with."""
+    return _LEADING_PUNCT.sub("", text)
 
 
 def bearer_ok(header: str | None) -> bool:
@@ -288,7 +304,7 @@ class DecodeLoop:
             self._partial(st)
 
     def _segment_text(self, st: Stream) -> str:
-        return self.engine.segment_text(st.es)
+        return strip_leading_punct(self.engine.segment_text(st.es))
 
     def _decoded_end(self, st: Stream) -> int:
         return min(self.engine.decoded_samples(st.es), st.received)

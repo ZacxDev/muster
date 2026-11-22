@@ -76,7 +76,11 @@ class StubEngine:
             s.toks.append(len(s.toks) + 1)
             s.decoded += CHUNK
 
+    words = None  # a script: chunk i decodes to words[i-1] (else WORD + i)
+
     def segment_text(self, s):
+        if self.words:
+            return " ".join(self.words[i - 1] for i in s.toks[s.mark:])
         return " ".join(f"{WORD}{i}" for i in s.toks[s.mark:])
 
     def cut(self, s):
@@ -388,6 +392,62 @@ class FlushTest(Base):
                 msgs, code = until_close(ws)
                 self.assertEqual(code, 1003)
                 self.assertEqual(msgs[-1]["code"], "bad_end")
+
+
+class LeadingPunctuationTest(Base):
+    """The model emits a sentence's closing mark one step late, so after a
+    flush it opens the NEXT segment; a segment's text never starts with it."""
+
+    def segments(self, words, cuts):
+        """Send one chunk per word, flushing after each chunk count in `cuts`;
+        return (finals, partials per segment)."""
+        self.eng.words = words
+        finals, partials, sent = [], [[]], 0
+        with self.connect() as ws:
+            for n in cuts:
+                for f in frames(tone(n * CHUNK, start=sent * CHUNK)):
+                    ws.send_bytes(f)
+                sent += n
+                ws.send_text('{"type": "flush"}')
+                while True:
+                    m = json.loads(ws.receive()["text"])
+                    if m["type"] == "final":
+                        finals.append(m["text"])
+                        partials.append([])
+                        break
+                    partials[-1].append(m["text"])
+            ws.send_text(json.dumps({"type": "end", "samples": sent * CHUNK}))
+            until_close(ws)
+        return finals, partials[:-1]
+
+    def test_a_late_period_does_not_open_the_next_final(self):
+        finals, partials = self.segments(
+            ["Carol", "books", "the room", ".", "Thanks", "everyone."], [3, 3])
+        self.assertEqual(finals, ["Carol books the room", "Thanks everyone."])
+        # The late "." alone was never a partial; the next one starts at the word.
+        self.assertEqual(partials[1], ["Thanks", "Thanks everyone."])
+
+    def test_every_leading_mark_and_space_goes_and_inner_ones_stay(self):
+        finals, _ = self.segments(
+            ["Hi", "?", "!", "…", ";", ":", ",", "ok, so.", "no:", "fine!"], [1, 9])
+        self.assertEqual(finals, ["Hi", "ok, so. no: fine!"])
+
+    def test_a_segment_that_is_only_the_late_mark_finals_empty(self):
+        finals, partials = self.segments(["Done", ".", "Next"], [1, 1, 1])
+        self.assertEqual(finals, ["Done", "", "Next"])
+        self.assertEqual(partials[1], [])
+
+    def test_strip_leading_punct_never_touches_a_word_start(self):
+        for text, want in [
+            (". Thanks everyone.", "Thanks everyone."),
+            (" .. Good morning, everyone.", "Good morning, everyone."),
+            ("Good morning. Alice will send it.", "Good morning. Alice will send it."),
+            ("'tis fine", "'tis fine"),
+            ("3.5 percent", "3.5 percent"),
+            ("", ""),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(self.app.strip_leading_punct(text), want)
 
 
 class ConstantSignalTest(Base):
