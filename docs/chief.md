@@ -1443,8 +1443,8 @@ Monday", "run the release-notes officer now", "move its pass to 10:00" or
 | `chief_officers_list` | — | your own officers, with each one's id, status, where it runs and `can_change` |
 | `chief_officer_read` | `officer`, `section?` (`status`, `items`, `outcomes`, `chat`, `asks`, `drafts`, `outreach`, `refusals`, `budget`, `schedules`) | the officer as its page shows it: status, open queue items, its questions to you, its pending drafts (exact text and media) and outreach batch, refusals waiting on you, today's spend against its budget, its schedules, its recent outcomes (What it did) and **your** chat with it |
 | `chief_officer_message` | `officer`, `message`, `wait_seconds?` (default 60, at most 120) | sends it a message as a turn of **your own** chat with it, and returns its reply (a slower one is read later with `chief_officer_read` `section: chat`) |
-| `chief_officer_control` | `officer`, `action`: `pause`, `resume` or `run_now` | the page's Pause, Resume and Run now |
-| `chief_officer_schedule` | `officer`, `action`: `list`, `put` or `delete`, `name?` (default `pass`), `cron?` (five fields, UTC) | lists, adds, changes or deletes a schedule |
+| `chief_officer_control` | `officer`, `action`: `pause`, `resume` or `run_now` | the page's Pause, Resume and Run now — but the chief's Run now is **held by the daily budget**: refused while today's budget is spent (you can still run it, or raise its cap, on its page), and filed as the officer's ordinary work |
+| `chief_officer_schedule` | `officer`, `action`: `list`, `put` or `delete`, `name?` (default `pass`), `cron?` (five fields, UTC), `enabled?` | lists, adds or changes a schedule, or deletes a **pass** schedule (the kind the page adds; any other is changed on the page) |
 | `chief_officer_confirm_card` | `officer`, `draft_id` or `batch_id` | puts a **confirm card** for a pending draft or the open outreach batch in your chat with the officer, on its page |
 
 🔴 **Your chief never approves anything an officer sends.** Approving a post,
@@ -1467,11 +1467,21 @@ can list them, not change them (its Pause, Resume and Run now work, as on
 its page). An HQ-backed officer's queue is its HQ's: the chief reads only its
 status.
 
+**What the officer wrote is data.** Its reply, the chat, its items'
+summaries and subjects, its drafts' text, its questions, refusal reasons and
+the people its plugin reports reach the chief inside muster's untrusted fence
+(`<<<officer-text untrusted nonce=…>>>`, a fresh nonce per call, every line
+behind `| `), as plugin messages do: nothing inside can close the fence or
+pass for an instruction. A paused officer takes no message: the chief is told
+to resume it first.
+
 **Every change is undoable and safe to repeat.** Pausing a paused officer, a
 second Run now while one waits, putting the cron a schedule already has and
 deleting a schedule that is not there change nothing, and the answer says
-so. Each answer carries its undo: `resume` for a pause, the previous cron for
-a changed schedule, what a deleted schedule was.
+so. Each answer carries its undo — `resume` for a pause, the previous cron for
+a changed schedule, what a deleted schedule was — also as `undo_call`, the
+exact tool call that makes it: a deleted pass schedule is put back exactly
+(cron and switch included).
 
 **Every act is recorded and shown.** Each message, pause, resume, Run now,
 schedule change and confirm card is one row in your own audit

@@ -1887,11 +1887,18 @@ func (s *Server) handleOfficerRunNow(w http.ResponseWriter, r *http.Request) {
 // first is still open returns that item, created false (the store's dedupe on
 // kind and subject).
 func (s *Server) runOfficerNow(ctx context.Context, owner int64, officer, key string) (int64, bool, error) {
-	id, created, err := s.officerStore.EnqueueChecked(ctx, owner, builtin.NewItem{Officer: officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner}, s.officerNow())
+	return s.runOfficerItem(ctx, owner, key, builtin.NewItem{Officer: officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner})
+}
+
+// runOfficerItem enqueues run item it (deduplicated on its kind and subject)
+// and wakes its officer: runOfficerNow's, and the chief's own budget-held
+// run (chief_officers.go).
+func (s *Server) runOfficerItem(ctx context.Context, owner int64, key string, it builtin.NewItem) (int64, bool, error) {
+	id, created, err := s.officerStore.EnqueueChecked(ctx, owner, it, s.officerNow())
 	if err != nil {
 		return id, created, err
 	}
-	s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, created %v)", authz.MustFrom(ctx).UserID, officer, owner, id, created)
+	s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, origin %q, created %v)", authz.MustFrom(ctx).UserID, it.Officer, owner, id, it.Origin, created)
 	if key != "" && s.officerRT.rec != nil {
 		s.officerRT.rec.Due(key)
 	}
