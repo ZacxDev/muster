@@ -97,6 +97,9 @@ type operatorChatTurn struct {
 	started time.Time
 	running bool
 	failed  string
+	// reply is the officer's answer to a turn that ended without failing:
+	// what the chief's chief_officer_message waits for (chief_officers.go).
+	reply string
 }
 
 // operatorChatKey keys a chat: the officer and the person's chat id.
@@ -117,11 +120,12 @@ func (c *operatorChats) begin(key, text string, now time.Time) bool {
 	return true
 }
 
-// end records chat key's turn over, with why it failed ("" when it did not).
-func (c *operatorChats) end(key, failed string) {
+// end records chat key's turn over, with why it failed ("" when it did not)
+// and the officer's reply.
+func (c *operatorChats) end(key, failed, reply string) {
 	c.mu.Lock()
 	if t, ok := c.turns[key]; ok {
-		t.running, t.failed = false, failed
+		t.running, t.failed, t.reply = false, failed, reply
 	}
 	c.mu.Unlock()
 	c.wg.Done()
@@ -187,16 +191,28 @@ func (s *Server) handleOfficerChat(w http.ResponseWriter, r *http.Request) {
 		s.renderOfficerDetail(w, r, sc, id, http.StatusBadRequest, fmt.Sprintf("That message is too long: at most %d characters.", operatorChatMaxRunes))
 		return
 	}
-	uid := authz.MustFrom(r.Context()).UserID
-	chatID := officers.OperatorChatID(uid, o.Owner, o.ID)
-	key := operatorChatKey(o, chatID)
-	if !s.officerChats.begin(key, text, time.Now()) {
+	if _, ok := s.startOperatorChat(r.Context(), o, authz.MustFrom(r.Context()).UserID, text); !ok {
 		s.renderOfficerDetail(w, r, sc, id, http.StatusConflict, "It is still answering your last message. Send this one once it has.")
 		return
 	}
-	ctx := context.WithoutCancel(r.Context())
-	safeGo(s.logger, "officer chat turn "+o.ID, func() { s.runOperatorChat(ctx, o, uid, chatID, text, key) })
 	http.Redirect(w, r, withNotice(officerHref(sc, id, ""), "chat-sent")+"#"+officerChatSectionID, http.StatusSeeOther)
+}
+
+// startOperatorChat sends text as person uid's next turn in their chat with o,
+// in the background: the page's Send and the chief's chief_officer_message
+// (chief_officers.go) both go through it, so a chief's message is a turn of
+// its owner's OWN chat with the officer — the same lane, the same budget
+// rule, the same usage booking (runOperatorChat). key is the turn's key in
+// officerChats; ok false while a turn of that chat is still running.
+func (s *Server) startOperatorChat(ctx context.Context, o officers.Officer, uid int64, text string) (key string, ok bool) {
+	chatID := officers.OperatorChatID(uid, o.Owner, o.ID)
+	key = operatorChatKey(o, chatID)
+	if !s.officerChats.begin(key, text, time.Now()) {
+		return key, false
+	}
+	bg := context.WithoutCancel(ctx)
+	safeGo(s.logger, "officer chat turn "+o.ID, func() { s.runOperatorChat(bg, o, uid, chatID, text, key) })
+	return key, true
 }
 
 // operatorChatHeaderEnd ends the first turn's header (operatorChatHeader):
@@ -221,8 +237,8 @@ func operatorChatHeader(o officers.Officer) string {
 // 🔴 NEVER THE BUDGET: nothing here reads it (the turn of a held officer, or
 // one past its cap, is sent like any other).
 func (s *Server) runOperatorChat(ctx context.Context, o officers.Officer, uid int64, chatID, text, key string) {
-	failed := ""
-	defer func() { s.officerChats.end(key, failed) }()
+	failed, reply := "", ""
+	defer func() { s.officerChats.end(key, failed, reply) }()
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.logger.Printf("officers: %s: PANIC in user %d's chat turn: %v", o.ID, uid, rec)
@@ -237,7 +253,6 @@ func (s *Server) runOperatorChat(ctx context.Context, o officers.Officer, uid in
 		return
 	}
 	deadline := time.Now().Add(operatorChatWait)
-	var reply string
 	for {
 		reply, err = s.operatorChatTurn(ctx, lanes, o, n, chatID, text)
 		if err == nil || !errors.Is(err, errOperatorChatRetry) || time.Now().After(deadline) {
@@ -264,6 +279,9 @@ func (s *Server) runOperatorChat(ctx context.Context, o officers.Officer, uid in
 		failed = "It did not answer just now. Try again in a moment."
 	case strings.TrimSpace(reply) == "":
 		failed = "It finished without a reply."
+	}
+	if failed != "" {
+		reply = ""
 	}
 }
 
@@ -433,6 +451,42 @@ func (s *Server) officerChatHTML(r *http.Request, sc officerScope, v declaredOff
 // words (the first turn's header cut off) and the officer's replies.
 func (s *Server) chatMessageEntries(ctx context.Context, o officers.Officer, chatID, name string) []chatEntry {
 	esc := html.EscapeString
+	var out []chatEntry
+	for _, m := range s.operatorChatMessages(ctx, o, chatID, operatorChatShown) {
+		who, cls, mark := name, "self-start bg-s2", "assistant"
+		switch {
+		case m.FromChief:
+			who, cls, mark = "Your chief", "self-end bg-accent/15", "chief"
+		case m.Role == "user":
+			who, cls, mark = "You", "self-end bg-accent/15", "user"
+		}
+		out = append(out, chatEntry{at: m.At, html: `<li class="flex max-w-[90%] flex-col gap-1 rounded-xl px-3 py-2 ` + cls + `" data-chat-message="` + mark + `">` +
+			`<span class="text-xs font-semibold text-fg2">` + esc(who) + `</span>` +
+			`<p class="whitespace-pre-wrap break-words text-sm text-fg">` + esc(flows.VisibleEscape(m.Text)) + `</p></li>`})
+	}
+	return out
+}
+
+// chiefChatMark heads a turn the chief sent into its owner's chat with an
+// officer (chief_officer_message): the officer reads who wrote it, and the
+// page draws it as "Your chief", not "You".
+const chiefChatMark = "[muster] Your owner's chief agent writes this for your owner. It cannot approve anything of yours either: " +
+	"an approval is still your owner's own click on a confirm card.\n\n"
+
+// operatorChatMessage is one message of a person's chat with an officer, as
+// the page and the chief read it: the person's words (the first turn's
+// header and a chief's mark cut off) or the officer's reply.
+type operatorChatMessage struct {
+	Role      string    `json:"role"` // "user" or "assistant"
+	FromChief bool      `json:"from_chief,omitempty"`
+	Text      string    `json:"text"`
+	At        time.Time `json:"at"`
+}
+
+// operatorChatMessages is the newest messages (at most limit) of chat chatID
+// with o, oldest first; none when it has no session on one of o's own
+// instances.
+func (s *Server) operatorChatMessages(ctx context.Context, o officers.Officer, chatID string, limit int) []operatorChatMessage {
 	st, ok := s.ext.Agents.(agents.OfficerChatStore)
 	if !ok {
 		return nil
@@ -454,29 +508,30 @@ func (s *Server) chatMessageEntries(ctx context.Context, o officers.Officer, cha
 	if oo, _, ok := s.officerOf(a); !ok || oo.Owner != o.Owner || oo.ID != o.ID {
 		return nil
 	}
-	msgs, err := s.ext.Agents.ListRecentChatMessages(octx, sess.ID, operatorChatShown)
+	msgs, err := s.ext.Agents.ListRecentChatMessages(octx, sess.ID, limit)
 	if err != nil {
 		s.logger.Printf("officers: %s: read chat %s's messages: %v", o.ID, chatID, err)
 		return nil
 	}
-	var out []chatEntry
+	var out []operatorChatMessage
 	for _, m := range msgs {
 		if m.Kind != "" && m.Kind != "text" {
 			continue
 		}
-		text := m.Content
-		who, cls, mark := name, "self-start bg-s2", "assistant"
-		if m.Role == "user" {
-			if _, after, found := strings.Cut(text, operatorChatHeaderEnd); found {
-				text = after
+		msg := operatorChatMessage{Role: m.Role, Text: m.Content, At: m.CreatedAt}
+		switch m.Role {
+		case "user":
+			if _, after, found := strings.Cut(msg.Text, operatorChatHeaderEnd); found {
+				msg.Text = after
 			}
-			who, cls, mark = "You", "self-end bg-accent/15", "user"
-		} else if m.Role != "assistant" {
+			if after, found := strings.CutPrefix(msg.Text, chiefChatMark); found {
+				msg.Text, msg.FromChief = after, true
+			}
+		case "assistant":
+		default:
 			continue
 		}
-		out = append(out, chatEntry{at: m.CreatedAt, html: `<li class="flex max-w-[90%] flex-col gap-1 rounded-xl px-3 py-2 ` + cls + `" data-chat-message="` + mark + `">` +
-			`<span class="text-xs font-semibold text-fg2">` + esc(who) + `</span>` +
-			`<p class="whitespace-pre-wrap break-words text-sm text-fg">` + esc(flows.VisibleEscape(text)) + `</p></li>`})
+		out = append(out, msg)
 	}
 	return out
 }

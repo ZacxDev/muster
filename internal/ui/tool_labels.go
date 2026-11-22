@@ -154,6 +154,12 @@ var musterToolLabels = map[string]string{
 	"officer_rollout_status":          "Checked a release's rollout",
 	"officer_rollout_evidence_attach": "Attached evidence for a release",
 	"officer_spawn_share":             "Managed shared helper sessions",
+	"chief_officers_list":             "Looked at your officers",
+	"chief_officer_read":              "Looked at an officer's work",
+	"chief_officer_message":           "Sent an officer a message",
+	"chief_officer_control":           "Paused, resumed or ran an officer",
+	"chief_officer_schedule":          "Looked at or changed an officer's schedule",
+	"chief_officer_confirm_card":      "Asked you to approve an officer's post",
 
 	// The MCP transport's own tool.
 	"muster_help": "Looked up how a tool works",

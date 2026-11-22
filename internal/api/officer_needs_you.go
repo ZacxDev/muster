@@ -402,33 +402,57 @@ func (s *Server) controlTarget(w http.ResponseWriter, r *http.Request) (sc offic
 		return sc, "", "", false, false
 	}
 	id = r.PathValue("officer")
-	if o, isEnv := s.officerRT.envOfficer(sc.Owner, id); isEnv {
-		if !o.IsBuiltin() {
-			s.renderNotice(w, r, http.StatusConflict, "Its queue is in its HQ", "This officer's queue and switch live in its HQ, not in muster.")
-			return sc, id, "", true, false
-		}
-		if !sc.Manage {
-			s.renderNotice(w, r, http.StatusForbidden, "Only a manager changes team officers", TeamOfficerManagerOnly)
-			return sc, id, "", true, false
-		}
-		return sc, id, o.Key(), true, true
-	}
-	if _, err := s.officerStore.GetDeclared(r.Context(), sc.Owner, id); err != nil {
+	key, env, err := s.controlTargetOf(r.Context(), sc, id)
+	switch {
+	case errors.Is(err, errQueueInHQ):
+		s.renderNotice(w, r, http.StatusConflict, "Its queue is in its HQ", "This officer's queue and switch live in its HQ, not in muster.")
+	case errors.Is(err, errManagerOnly):
+		s.renderNotice(w, r, http.StatusForbidden, "Only a manager changes team officers", TeamOfficerManagerOnly)
+	case err != nil:
 		code, msg := officerPageRefusal(err)
 		if code == http.StatusInternalServerError {
 			s.logger.Printf("officers: read officer %s of %d: %v", id, sc.Owner, err)
 		}
 		s.renderNotice(w, r, code, "No such officer", msg)
-		return sc, id, "", false, false
+	default:
+		return sc, id, key, env, true
+	}
+	return sc, id, "", env, false
+}
+
+// Why controlTargetOf refuses an officer.
+var (
+	// errQueueInHQ: an HQ-backed officer: its queue and switch are its HQ's.
+	errQueueInHQ = errors.New("this officer's queue and switch live in its HQ, not in muster")
+	// errManagerOnly: a team's officer, and the person does not manage it.
+	errManagerOnly = errors.New(TeamOfficerManagerOnly)
+)
+
+// controlTargetOf is controlTarget's rule over scope sc and officer id,
+// answering nothing (the page and the chief's chief_officer_control share
+// it): the officer's wake-loop key ("" for none) and whether MUSTER_OFFICERS
+// declares it, or errQueueInHQ, errManagerOnly, or the store's error for an
+// officer that is not declared (a def-only one included).
+func (s *Server) controlTargetOf(ctx context.Context, sc officerScope, id string) (key string, env bool, err error) {
+	if o, isEnv := s.officerRT.envOfficer(sc.Owner, id); isEnv {
+		if !o.IsBuiltin() {
+			return "", true, errQueueInHQ
+		}
+		if !sc.Manage {
+			return "", true, errManagerOnly
+		}
+		return o.Key(), true, nil
+	}
+	if _, err := s.officerStore.GetDeclared(ctx, sc.Owner, id); err != nil {
+		return "", false, err
 	}
 	if !sc.Manage {
-		s.renderNotice(w, r, http.StatusForbidden, "Only a manager changes team officers", TeamOfficerManagerOnly)
-		return sc, id, "", false, false
+		return "", false, errManagerOnly
 	}
 	if st, ok := s.officerRT.declaredView(sc.Owner, id); ok && st.officer != nil {
 		key = st.officer.Key()
 	}
-	return sc, id, key, false, true
+	return key, false, nil
 }
 
 // refusalItem is the {item} path value, ok false for none.
@@ -760,6 +784,9 @@ func (s *Server) timelineHTML(ctx context.Context, sc officerScope, v declaredOf
 		}
 		entries = append(entries, timelineEntry{at, sentEntryHTML(d, nil, isNew(at))})
 	}
+	// What the chief did to it (chief_officers.go): each of its acts is an
+	// audit row, read back here.
+	entries = append(entries, s.chiefActionEntries(ctx, sc, v.ID, isNew)...)
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].at.After(entries[j].at) })
 	if len(entries) > timelineShown {
 		entries = entries[:timelineShown]
