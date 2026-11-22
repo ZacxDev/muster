@@ -129,6 +129,34 @@ func TestAnApprovedOfficerDraftAndItsSendEachWakeTheSessionOnce(t *testing.T) {
 	}
 }
 
+// TestAnOfficerDraftDecidedFromAnotherSessionSaysWhere: approved through
+// plugin_draft_decide from another of the owner's sessions, the line names
+// that session instead of "you approved", and so does the outcome line.
+func TestAnOfficerDraftDecidedFromAnotherSessionSaysWhere(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-via")
+	id := w.draftForItem(item, retryPost)
+	if _, refused := w.srv.decideDraftAs(w.ctx, id, plugins.DraftDecision{Approve: true, BodySHA256: sumHex([]byte(retryPost)), MediaSHA256: []string{},
+		Via: plugins.DraftDecisionSource{Via: plugins.DraftViaMCP, Host: "laptop", Session: wakeOtherSID}}); refused != nil {
+		t.Fatalf("approve via MCP: %+v", refused)
+	}
+	w.tick()
+	want := "muster: " + officerRef(id, item) + ", was approved — via plugin_draft_decide from laptop/" + wakeOtherSID +
+		", not by you on the Asks page. Its plugin sends it next; muster tells this session how that went."
+	if got := w.pastes(); len(got) != 1 || got[0] != want {
+		t.Fatalf("the session took %q; want %q", got, want)
+	}
+	w.claimed(id)
+	if code, _ := w.postResult(id, `{"ok":true,"external_ref":"post-3"}`); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	w.tick()
+	want = "muster: " + officerRef(id, item) + ", approved via plugin_draft_decide from laptop/" + wakeOtherSID + " — it was sent."
+	if got := w.pastes(); len(got) != 2 || got[1] != want {
+		t.Fatalf("the session took %q; want the outcome %q", got, want)
+	}
+}
+
 // TestARetrySuccessorsOutcomeReachesTheSameSession: an approved draft whose
 // first attempt fails with nothing sent and a transient cause is retried as a
 // successor (0175); nothing is owed while the chain is still trying, and the

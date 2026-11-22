@@ -371,7 +371,7 @@ func renderWake(w sessionwake.Wake) string {
 	case sessionwake.KindOfficerDraftOutcome:
 		who := officerDraftRef(w)
 		if via != "" {
-			who += ", approved via plugin_draft_decide from " + via + ","
+			who += ", approved via plugin_draft_decide from " + via
 		}
 		switch w.Decision {
 		case sessionwake.DecisionSent:
