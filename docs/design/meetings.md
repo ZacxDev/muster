@@ -2192,9 +2192,13 @@ the token in the plugin's own Secret):
   and `samples` is the true total, so the server trims the padding from its
   timestamps.
 - server → client: `{"type": "partial", "text", "start_ms", "end_ms"}` as a
-  chunk is decoded, and `{"type": "final", "text", "start_ms", "end_ms"}` in
-  answer to each `flush` and to `end`; times are in the stream's own audio
-  time (sample count), never wall time.
+  chunk is decoded, and `{"type": "final", "text", "lead", "start_ms", "end_ms"}` in
+  answer to each `flush` and to `end`, sent without waiting for later audio;
+  times are in the stream's own audio time (sample count), never wall time.
+  The model decodes a sentence's closing mark only with the next speech, so
+  it opens the next segment: `text` never starts with a mark, and `lead`
+  carries the marks the segment opened with (`""` if none). The plugin
+  appends `lead` to that participant's previous non-empty final line.
 - **A frame of any other size** is refused: the server sends
   `{"type": "error", "code": "bad_frame"}` and closes with websocket code
   1003. The plugin treats that as a mid-stream drop (below) and logs it; it
