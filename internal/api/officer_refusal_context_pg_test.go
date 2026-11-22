@@ -79,7 +79,7 @@ func jsonEqual(t *testing.T, got any, raw string) bool {
 }
 
 // TestARejectedDraftsFollowUpCarriesItsBodyAndPlan: the owner's rejection's
-// draft.refused item holds the exact body and its hash, venue, target,
+// draft.refused item holds the exact body, venue, target,
 // media, the reason, and the plan item's id, kind and whole payload.
 func TestARejectedDraftsFollowUpCarriesItsBodyAndPlan(t *testing.T) {
 	w := newOutboundWorld(t, true)
@@ -93,8 +93,8 @@ func TestARejectedDraftsFollowUpCarriesItsBodyAndPlan(t *testing.T) {
 	if !ok {
 		t.Fatal("no draft.refused item")
 	}
-	if p["body"] != refusalBody || p["body_sha256"] != sumHex([]byte(refusalBody)) {
-		t.Fatalf("body %q sha %v; want the exact text and its hash", p["body"], p["body_sha256"])
+	if p["body"] != refusalBody {
+		t.Fatalf("body %q; want the exact text", p["body"])
 	}
 	if p["venue"] != "example.forum" || p["detail"] != reason || p["by"] != "owner" {
 		t.Fatalf("venue/detail/by: %v", p)

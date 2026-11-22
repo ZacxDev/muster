@@ -595,15 +595,19 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	if d.Body != "" {
 		// 🔴 WHAT IT WROTE, so it can redraft without asking its owner for its
 		// own text (an item with no body sent the officer back to its owner to
-		// ask what it had written). Stored as filed, and bounded as filing bounds it; the
-		// officer's copy of the item carries it FENCED, never raw
-		// (builtin.RefusedDraftCopy). The item the draft was for is added by
-		// the store, in the transaction that ends the draft (builtin.DraftEndedTx).
+		// ask what it had written). The officer's copy of the item carries it
+		// FENCED, never raw (builtin.RefusedDraftCopy). The item the draft was
+		// for is added by the store, in the transaction that ends the draft
+		// (builtin.DraftEndedTx).
 		body := d.Body
+		// DEFENSIVE ONLY, not a reachable path: every filing path already
+		// refuses a body over MaxDraftBytes (plugins drafts.go and
+		// muster_reply.go), so a stored draft never exceeds it. The cut only
+		// keeps this copy bounded should that ever change.
 		if len(body) > plugins.MaxDraftBytes {
 			body = strings.ToValidUTF8(body[:plugins.MaxDraftBytes], "")
 		}
-		fields["body"], fields["body_sha256"] = body, plugins.DraftBodySHA256(d.Body)
+		fields["body"] = body
 	}
 	if retryAt != nil {
 		fields["retry_at"] = retryAt.UTC().Format(time.RFC3339)

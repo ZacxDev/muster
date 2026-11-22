@@ -1351,10 +1351,9 @@ After the result, for an outbound draft filed with an `item_id`:
   Withdraw on the card, or `plugin_draft_decide` with `decision: "reject"`):
   muster queues a new item for the officer, kind `draft.refused`, subject
   `draft:<id>`, payload `{draft_id, item_id, venue, target, media, status,
-  by, detail, body, body_sha256, plan}` — `by` is `plugin` or `owner`; `detail` is the plugin's detail,
+  by, detail, body, plan}` — `by` is `plugin` or `owner`; `detail` is the plugin's detail,
   or your reason (`"rejected by the owner, no reason given"` when you gave
-  none); `body` is the refused draft's exact text (and `body_sha256` its
-  hash); `plan` is `{item_id, kind, payload}`, the item the draft was filed
+  none); `body` is the refused draft's exact text; `plan` is `{item_id, kind, payload}`, the item the draft was filed
   for and its payload (`payload_excerpt` and `truncated: true` past 8 KiB; for
   a redraft, the original plan item carried forward); plus `retry_at` when the plugin's refusal [named one](#retry_at-when-a-refused-draft-could-go)
   — so it can write a better one without asking you what it wrote. The

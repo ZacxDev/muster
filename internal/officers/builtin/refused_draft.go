@@ -21,7 +21,7 @@ import (
 // plan item it was written for, and the officer escalated to its owner to be
 // told what it wrote. The follow-up holds, stored as filed:
 //
-//   - body, body_sha256: the refused draft's exact text (internal/api
+//   - body: the refused draft's exact text (internal/api
 //     draftEndFor; bounded as filing bounds it), beside venue, target and
 //     media, which it already carried;
 //   - plan: {item_id, kind, payload}: the item the draft was filed for and
