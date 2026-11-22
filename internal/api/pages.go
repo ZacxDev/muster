@@ -289,7 +289,7 @@ func (s *Server) handlePageShell(w http.ResponseWriter, r *http.Request) {
 	}
 	base := pages.LinkPath(l.Token)
 	metrics.PageLinkRequests.WithLabelValues("shell", "served").Inc()
-	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce()}))
+	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce(), Keeps: pages.KeepKeys(v)}))
 }
 
 // handlePageContent is GET /s/{token}/content: the current version, sandboxed.
@@ -1468,7 +1468,7 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 		sessHref, sessLabel = "", ""
 	}
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
-	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed,
+	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed, Keeps: pages.KeepKeys(v),
 		Owner: &pages.OwnerChrome{PageID: id, Crumbs: crumbs, Updated: ui.PlainWhen(p.UpdatedAt, now), UpdatedMS: p.UpdatedAt.UnixMilli(),
 			Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
