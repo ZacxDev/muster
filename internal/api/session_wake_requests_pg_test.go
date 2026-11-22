@@ -86,7 +86,8 @@ func TestARejectedOfficerDraftWakesTheSessionThatEnqueuedItsItemOnce(t *testing.
 	if len(got) != 1 {
 		t.Fatalf("the session took %d pastes; want exactly 1: %q", len(got), got)
 	}
-	pre := "muster: you rejected " + officerRef(id, item) + ". It will not be sent. The block below is the reason you gave, relayed by muster.\n\n<<<owner-reason untrusted nonce="
+	pre := "muster: you rejected " + officerRef(id, item) + ". It will not be sent, and the officer will not redraft it: officer item #" + itoa(item) +
+		" is closed, and what happens next is this session's call. The block below is the reason you gave, relayed by muster.\n\n<<<owner-reason untrusted nonce="
 	if !strings.HasPrefix(got[0], pre) {
 		t.Fatalf("the line does not start with muster's sentence and the reason's fence:\n%s", got[0])
 	}
@@ -99,6 +100,122 @@ func TestARejectedOfficerDraftWakesTheSessionThatEnqueuedItsItemOnce(t *testing.
 	w.tick()
 	if n := len(w.pastes()); n != 1 {
 		t.Fatalf("more passes pasted again: %d, want 1", n)
+	}
+}
+
+// openItems counts owner 1's officer items that are not finished: what the
+// officer could still claim, or what waits on someone.
+func (w *officerWakeWorld) openItems() int {
+	w.t.Helper()
+	var n int
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM officer_items WHERE owner_id = 1
+		AND status IN ('open', 'claimed', 'waiting', 'escalated')`).Scan(&n); err != nil {
+		w.t.Fatal(err)
+	}
+	return n
+}
+
+// TestARejectionOfAnItemASessionEnqueuedGoesOnlyToThatSession: the owner
+// rejects an officer draft for an item a session enqueued. The rejection and
+// its reason reach that session, whose line says the officer will not redraft;
+// the officer gets no draft.refused item, no escalation, and the item is
+// finished, not left waiting — and the owner's reason is in no officer item.
+func TestARejectionOfAnItemASessionEnqueuedGoesOnlyToThatSession(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-reject-only-session")
+	id := w.draftForItem(item, "A launch post the owner does not want.")
+	const reason = "Wrong week; I will handle this one myself."
+	if rec := w.rejectForm(id, reason); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	if f, _, ok := w.refusedItemOf(id); ok {
+		t.Fatalf("the officer got draft.refused item %d for a rejection its requesting session was told", f)
+	}
+	it := w.itemFull(item)
+	want := "draft " + itoa(id) + " was rejected by the owner, not posted. The owner's decision went to the session that enqueued this item, " +
+		"which decides what happens next: there is nothing to redraft."
+	if it.status != "done" || it.outcome != "no_action" || it.summary != want {
+		t.Fatalf("the item is %s/%s %q; want done/no_action %q", it.status, it.outcome, it.summary, want)
+	}
+	if n := w.openItems(); n != 0 {
+		t.Fatalf("%d officer items are still open (a follow-up, an escalation, the item itself); want 0", n)
+	}
+	var leaked int
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM officer_items WHERE owner_id = 1
+		AND (payload::text LIKE '%' || $1 || '%' OR coalesce(summary, '') LIKE '%' || $1 || '%')`, "I will handle this one myself").Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("the owner's reason reached %d officer item(s); it is the session's alone", leaked)
+	}
+	got := w.pastes()
+	if len(got) != 1 {
+		t.Fatalf("the session took %d pastes; want 1: %q", len(got), got)
+	}
+	pre := "muster: you rejected " + officerRef(id, item) + ". It will not be sent, and the officer will not redraft it: officer item #" +
+		itoa(item) + " is closed, and what happens next is this session's call. The block below is the reason you gave, relayed by muster.\n\n" +
+		"<<<owner-reason untrusted nonce="
+	if !strings.HasPrefix(got[0], pre) || !strings.Contains(got[0], "|   "+reason+"\n") {
+		t.Fatalf("the session's line:\n%s\nwant it to start:\n%s\nand carry the reason fenced", got[0], pre)
+	}
+}
+
+// TestARejectionNoWakeCanReachGoesBackToTheOfficer: a session is recorded on
+// the item, but its host no longer mirrors here, so no wake could be filed for
+// it. The rejection is then the officer's, as with no session at all: it is
+// never dropped on the floor.
+func TestARejectionNoWakeCanReachGoesBackToTheOfficer(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-reject-unreachable")
+	id := w.draftForItem(item, "A post whose asker is gone.")
+	w.host.set(func(m *wakeMirror) { m.remote = true })
+	if rec := w.rejectForm(id, "Not now."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	if n := w.wakeRows(sessionwake.KindOfficerDraftDecided); n != 0 {
+		t.Fatalf("fixture: %d officer wakes filed for a host that does not mirror here; want 0", n)
+	}
+	if _, p, ok := w.refusedItemOf(id); !ok || p["detail"] != "Not now." {
+		t.Fatalf("the rejection did not go back to the officer (follow-up %v, payload %v)", ok, p)
+	}
+}
+
+// TestARejectionOfAnItemNoSessionEnqueuedStillGoesBackToTheOfficer: with no
+// requesting session recorded, a rejection is the officer's, as before — a
+// draft.refused item with the owner's reason, the draft's body and its plan,
+// and the item finished naming it. (An invariant guard: this path did not
+// change; it pins that the session rule above reaches no further.)
+func TestARejectionOfAnItemNoSessionEnqueuedStillGoesBackToTheOfficer(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	code, res := adminCall(t, w.h, "POST", "/api/officers/defs/"+builtinOfficerID+"/items", `{"kind":"owner.plan","subject_key":"plan-reject-officer"}`)
+	f, _ := res["id"].(float64)
+	if code != http.StatusCreated || f == 0 {
+		t.Fatalf("the admin API's enqueue: %d %v", code, res)
+	}
+	item := int64(f)
+	const body = "A post the owner sends back to its officer."
+	id := w.draftForItem(item, body)
+	if rec := w.rejectForm(id, "Too long."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	follow, p, ok := w.refusedItemOf(id)
+	if !ok {
+		t.Fatal("no draft.refused item: a rejection no session asked for must go back to the officer")
+	}
+	plan, _ := p["plan"].(map[string]any)
+	if p["detail"] != "Too long." || p["by"] != "owner" || p["body"] != body || plan == nil || plan["item_id"] != float64(item) {
+		t.Fatalf("the follow-up's payload: %v", p)
+	}
+	it := w.itemFull(item)
+	if want := "draft " + itoa(id) + " was rejected by the owner, not posted. The work continues on item " + itoa(follow) + "."; it.status != "done" ||
+		it.outcome != "no_action" || it.summary != want {
+		t.Fatalf("the item is %s/%s %q; want done/no_action %q", it.status, it.outcome, it.summary, want)
+	}
+	if got := w.pastes(); len(got) != 0 {
+		t.Fatalf("a session was woken: %q", got)
 	}
 }
 
@@ -571,7 +688,7 @@ func TestRenderWakeRequestKindsReadOnlyTheirParts(t *testing.T) {
 	w = base
 	w.Kind, w.Decision, w.ViaHost, w.ViaSession = sessionwake.KindOfficerDraftDecided, sessionwake.DecisionRejected, "via-43", "via-session-47"
 	got := renderWake(w)
-	if !strings.HasPrefix(got, "muster: draft #13, which an officer filed for officer item #29 that this session enqueued, was rejected — via plugin_draft_decide from via-43/via-session-47, not by you on the Asks page. It will not be sent. The block below is the reason given, relayed by muster.") ||
+	if !strings.HasPrefix(got, "muster: draft #13, which an officer filed for officer item #29 that this session enqueued, was rejected — via plugin_draft_decide from via-43/via-session-47, not by you on the Asks page. It will not be sent, and the officer will not redraft it: officer item #29 is closed, and what happens next is this session's call. The block below is the reason given, relayed by muster.") ||
 		!strings.Contains(got, "|   owner-words-31\n") {
 		t.Errorf("a rejection made from another session:\n%s", got)
 	}

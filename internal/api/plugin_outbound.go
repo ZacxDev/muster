@@ -622,6 +622,16 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	return e
 }
 
+// endForRequester is draftEndFor's end e of an owner's rejection whose item a
+// mirrored session enqueued (officerRejectionToRequester): no follow-up and no
+// escalation — the item is finished no_action saying where the decision went
+// — and none of the owner's reason in it: that is the session's alone.
+func endForRequester(e builtin.DraftEnd) builtin.DraftEnd {
+	e.FollowUp, e.Quiet = nil, true
+	e.Ended += " The owner's decision went to the session that enqueued this item, which decides what happens next: there is nothing to redraft."
+	return e
+}
+
 // outboundSettled is what follows a fresh result, refusal or rejection of
 // OUTBOUND draft d, for its officer: a send reported ok completes the item it
 // was filed for (done, with the post's reference — the item waits on the
@@ -632,8 +642,11 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 // for, naming that follow-up (draftEndFor, builtin.DraftEnded). held: the
 // officer already had maxOpenRefusedItems claimable draft.refused items, so
 // the follow-up is HELD until one of them is finished (the officer sweep
-// delivers it, promoteHeldRefusals) — the caller's push says so. Best
-// effort: the draft's own state is already recorded.
+// delivers it, promoteHeldRefusals) — the caller's push says so. The one
+// exception: the owner's rejection of a draft for an item a mirrored session
+// enqueued goes to that session only (officerRejectionToRequester,
+// endForRequester): no follow-up, the item finished quietly. Best effort: the
+// draft's own state is already recorded.
 func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string, retryAt *time.Time) (held bool) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
 		return false
@@ -684,7 +697,15 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	// follow-up is STILL filed, HELD (not claimable) until one of them is
 	// finished — never dropped (operator decision) — and the item the draft
 	// was for is finished naming it.
-	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail, retryAt), now)
+	e := draftEndFor(d, officer, "", by, detail, retryAt)
+	if by == settledByOwner && s.officerRejectionToRequester(ctx, d) {
+		// 🔴 THE OWNER'S REJECTION OF WORK A SESSION ASKED FOR IS THAT
+		// SESSION'S (operator decision): its wake carries the decision and the
+		// reason (session_wake_requests.go); the officer is not asked to
+		// redraft, and the item is closed.
+		e = endForRequester(e)
+	}
+	res, err := s.officerStore.DraftEnded(ctx, owner, e, now)
 	if err != nil {
 		s.logger.Printf("plugins: draft %d ended unsent (by %s); %s and its item left as they are: %v", d.ID, by, officer, err)
 		return false

@@ -60,6 +60,24 @@ func (s *Server) wakeOfficerItemRequester(ctx context.Context, d plugins.Draft) 
 	return host, sess, *d.OfficerItemID, ok
 }
 
+// officerRejectionToRequester reports whether the owner's rejection of
+// officer draft d goes ONLY to the session that enqueued its item (operator
+// decision): a session is recorded on the item and a wake to it would be filed
+// (wakeReaches, fileWake's own rule). Then the officer files no draft.refused
+// follow-up and no escalation for it — the item is finished quietly
+// (outboundSettled) — and the session's line says the officer will not
+// redraft (renderWake). false — no session recorded, or none a wake can reach
+// — and the rejection goes back to the officer, as it always has: a rejection
+// is never dropped on the floor.
+func (s *Server) officerRejectionToRequester(ctx context.Context, d plugins.Draft) bool {
+	if d.Status != plugins.DraftRejected {
+		return false
+	}
+	octx := s.queuedPrincipal(context.WithoutCancel(ctx), d.OwnerID)
+	host, _, _, ok := s.wakeOfficerItemRequester(octx, d)
+	return ok && s.wakeReaches(ctx, d.OwnerID, host)
+}
+
 // wakeForOfficerDraftDecision is the wake the owner's decision on officer
 // draft d owes the session that enqueued its item (host, sess): approved or
 // rejected, and — with a rejection — the reason the OWNER gave (0123), fenced.

@@ -1361,6 +1361,17 @@ After the result, for an outbound draft filed with an `item_id`:
   untrusted block, `refused_draft`; the raw fields are removed from its copy. In the same transaction the item the
   draft was for is finished `no_action`, its summary naming the new item: the
   work continues there.
+- **Your rejection of a draft for an item a mirrored session enqueued**
+  ([`officer_item_enqueue`](attention.md#officer-items-a-session-enqueues),
+  or `muster officer item enqueue` run inside such a session) is that
+  session's alone: the rejection and your reason are pasted into it, and the
+  officer gets **no** `draft.refused` item and no escalation. The item is
+  finished `no_action` (*"… The owner's decision went to the session that
+  enqueued this item, which decides what happens next: there is nothing to
+  redraft."*), and your reason is in no officer item. When no wake could reach
+  that session (its host no longer mirrors here), the rejection goes back to
+  the officer as above — it is never dropped. A plugin's refusal or a failed
+  send of such a draft still goes back to the officer.
 - `ok: false` with `nothing_sent: true` and `transient: true`, while the
   draft has time left: **none of that yet** — the draft is
   [retried on its own](#retries-approve-once), and the item keeps waiting

@@ -363,7 +363,11 @@ func renderWake(w sessionwake.Wake) string {
 		if w.Decision == sessionwake.DecisionApproved {
 			return "muster: " + who + " Its plugin sends it next; muster tells this session how that went."
 		}
-		pre := who + " It will not be sent."
+		// 🔴 A REJECTION OF WORK THIS SESSION ASKED FOR IS ITS ALONE: the
+		// officer files no redraft for it (officerRejectionToRequester), so the
+		// line says so and names the item as closed.
+		pre := who + " It will not be sent, and the officer will not redraft it: officer item #" +
+			strconv.FormatInt(w.OfficerItemID, 10) + " is closed, and what happens next is this session's call."
 		if strings.TrimSpace(w.OperatorText) == "" {
 			return "muster: " + pre
 		}
@@ -481,16 +485,10 @@ func fenced(preface, marker, head, text, readWhole string) string {
 // fileWake records wake n for owner and starts its delivery. A team owner, a
 // server without wakes, or a store error files nothing (logged).
 func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
-	if !s.wakesOn() || owner <= 0 {
+	if !s.wakeReaches(ctx, owner, n.Host) {
 		return
 	}
 	octx := s.queuedPrincipal(context.WithoutCancel(ctx), owner)
-	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
-		return
-	}
-	if !s.wakeHostHere(octx, n.Host) {
-		return
-	}
 	// The sign-in that decided it (its freshness is judged when the line is
 	// queued: wakeNeedsSignIn, the one rule).
 	n.StepUpAt = wakeDecisionSignIn(ctx)
@@ -503,6 +501,21 @@ func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
 		s.wakeChanged(w)
 		s.startWakeDelivery(owner, w.ID)
 	}
+}
+
+// wakeReaches reports whether a wake for owner's session on host would be
+// filed at all (fileWake's one rule, which the rejection of a session's
+// officer item reads too, officerRejectionToRequester): this server delivers
+// wakes, owner is a user (not a team), and host mirrors here.
+func (s *Server) wakeReaches(ctx context.Context, owner int64, host string) bool {
+	if !s.wakesOn() || owner <= 0 {
+		return false
+	}
+	octx := s.queuedPrincipal(context.WithoutCancel(ctx), owner)
+	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
+		return false
+	}
+	return s.wakeHostHere(octx, host)
 }
 
 // wakeHostHere reports whether host mirrors its sessions to THIS muster: it
