@@ -427,8 +427,8 @@ func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
 		return
 	}
 	// The sign-in that decided it (its freshness is judged when the line is
-	// queued: wakeNeedsSignIn).
-	n.StepUpAt, _ = stepup.AuthTime(ctx)
+	// queued: wakeNeedsSignIn, the one rule).
+	n.StepUpAt = wakeDecisionSignIn(ctx)
 	w, fresh, err := s.ext.SessionWakes.Create(octx, n)
 	if err != nil {
 		s.logger.Printf("session wake: %s for owner %d: %v", n.Kind, owner, err)
@@ -451,6 +451,21 @@ func (s *Server) wakeHostHere(ctx context.Context, host string) bool {
 		return false
 	}
 	return slices.Contains(hosts, host)
+}
+
+// wakeDecisionSignIn is the sign-in a decision was made with, as the ONE
+// freshness rule (wakeNeedsSignIn) judges it: the request's browser sign-in
+// (stepup.AuthTime), or — for an action the paired phone's step-up key signed
+// and the server verified (withVerifiedDeviceAction, set only after the
+// signature checked out) — the moment of that verification, the later of
+// the two. Zero for neither: a phone request with no verified signature, a
+// session's MCP call. The door a principal came through proves nothing here.
+func wakeDecisionSignIn(ctx context.Context) time.Time {
+	at, _ := stepup.AuthTime(ctx)
+	if dv, ok := verifiedDeviceActionAt(ctx); ok && dv.After(at) {
+		at = dv
+	}
+	return at
 }
 
 // wakeAnswered files the wake an answered ask owes (answerRecorded).

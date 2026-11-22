@@ -224,6 +224,28 @@ func (s *Server) deviceAskAction(w http.ResponseWriter, r *http.Request, action 
 	return id, c, true
 }
 
+// verifiedDeviceActionKey carries, on an action's context, that its paired
+// phone's step-up key SIGNED it — set only by withVerifiedDeviceAction, which
+// only the signed-action handlers call, after deviceAskAction's
+// SpendChallenge verified the signature. Never read from a header or derived
+// from the principal's door.
+type verifiedDeviceActionKey struct{}
+
+// withVerifiedDeviceAction records on ctx that the action was signed by the
+// device's step-up key and the signature verified at at: the same proof the
+// phone's step-up confirmations rest on, so the decision counts as a fresh
+// sign-in made at that moment (wakeDecisionSignIn).
+func withVerifiedDeviceAction(ctx context.Context, at time.Time) context.Context {
+	return context.WithValue(ctx, verifiedDeviceActionKey{}, at)
+}
+
+// verifiedDeviceActionAt is when ctx's action's signature was verified, and
+// false when it carries none.
+func verifiedDeviceActionAt(ctx context.Context) (time.Time, bool) {
+	at, ok := ctx.Value(verifiedDeviceActionKey{}).(time.Time)
+	return at, ok && !at.IsZero()
+}
+
 // askActionResult answers a performed (or refused) ask action, as the web
 // route's errors map, and audits the verified action WITH that outcome
 // (devices.RecordAction): the ask's new status, or the refusal's code.
@@ -275,7 +297,10 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 		s.askActionResult(w, r, c, attention.Ask{}, err)
 		return
 	}
-	a, err := s.answerAskFrom(r.Context(), id, body.Answer, attention.AnswerSource{})
+	// 🔴 SIGNED AND VERIFIED (deviceAskAction): the decision's proof travels
+	// with it to its session wake, as a fresh sign-in at this moment.
+	ctx := withVerifiedDeviceAction(r.Context(), s.stepUpNow())
+	a, err := s.answerAskFrom(ctx, id, body.Answer, attention.AnswerSource{})
 	s.askActionResult(w, r, c, a, err)
 }
 
@@ -400,11 +425,12 @@ func (s *Server) handleDeviceAskCancel(w http.ResponseWriter, r *http.Request) {
 		s.askActionResult(w, r, c, attention.Ask{}, err)
 		return
 	}
-	a, err := s.cancelAsk(r.Context(), id)
+	ctx := withVerifiedDeviceAction(r.Context(), s.stepUpNow())
+	a, err := s.cancelAsk(ctx, id)
 	if err == nil {
 		// The owner's Dismiss from their phone: as the Asks page's
 		// (session_wake.go).
-		s.wakeDismissed(r.Context(), a)
+		s.wakeDismissed(ctx, a)
 	}
 	s.askActionResult(w, r, c, a, err)
 }

@@ -1454,9 +1454,13 @@ message: read it whole with attention_wait{id: …})* — never dropped.
 that carries your words (an answer, a rejection's reason, your own page
 response) is queued only while the sign-in of the request that decided it is
 fresh (`MUSTER_STEPUP_WINDOW`, the send queue's rule for your own message,
-checked again at the paste). Decided from a stale sign-in, from your phone or
+checked again at the paste). An answer or Dismiss your **paired phone signed**
+with its step-up key (the signed device action, whose signature the server
+verifies — the same proof the phone's step-up confirmations rest on) counts as
+a fresh sign-in made at that moment, so its line goes at once. Decided from a
+stale browser sign-in, from a phone request with no verified signature, or
 through a session's `attention_answer` / `plugin_draft_decide` (none of which
-carries a browser sign-in), your decision is still recorded, and the line is
+carries a sign-in), your decision is still recorded, and the line is
 **held**: the card says *Sign in again to send to <session>*, with **Send to
 the session**, which asks you to confirm it's you and then sends it. A line
 with none of your words — a dismissal, an approval without a reason, a draft's
