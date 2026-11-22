@@ -533,6 +533,16 @@ func (s *Server) agentTools() []agentTool {
 	if s.notifyOwnerOn() {
 		tools = append(tools, agentTool{def: notifyOwnerToolDef(), mcp: true})
 	}
+	// The chief's control of its owner's officers (chief_officers.go, officers
+	// UX PR 4/4): read, message, pause/resume/run now, schedules, and a
+	// confirm card for an approval — never the approval itself. With the
+	// built-in officer store; MCP, so a claude-code chief reaches them;
+	// chief-only, and a PERSON's chief's only (a team's chief is refused).
+	if s.officerStore != nil && !s.featureOff(features.Officers) {
+		for _, d := range chiefOfficerToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true, personChiefOnly: true})
+		}
+	}
 	// The officer runtime (officers.go), present when officers are declared:
 	// an officer's instances reach their HQ queue through muster, which holds
 	// the officer's token. On MCP (officer instances are claude-code agents);
@@ -973,6 +983,14 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return toolErr("%s: your owner turned the chief off", name)
 	case notChief && s.isChiefAgent(ctx, a):
 		return toolErr("%s is not one of your owner's chief agent's tools", name)
+	case chiefOnly:
+		// 🔴 EVERYTHING A CHIEF-ONLY TOOL REACHES IS THE CHIEF'S CALL: a
+		// decision door refuses it whatever principal it runs under
+		// (officerDeciderRefusal) — the chief never approves an officer's
+		// outbound work (chief_officers.go). ⚠ An INVARIANT guard today: no
+		// chief-only tool's path reaches a decision door (mutating this line
+		// away fails no test); it is what keeps a future one from deciding.
+		ctx = withChiefCall(ctx)
 	}
 	// The officer tools: refused inside to any agent that is not a declared
 	// officer's instance, and bound to the caller's own officer (officers.go).
@@ -1056,6 +1074,13 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolReplyDraft(ctx, a, arguments)
 	case pluginMessageSettleToolName:
 		return s.toolPluginMessageSettle(ctx, a, arguments)
+	case chiefOfficersListTool, chiefOfficerReadTool, chiefOfficerMessageTool, chiefOfficerControlTool, chiefOfficerScheduleTool, chiefOfficerCardTool:
+		// Re-checked at the call: a gateway runtime can name a tool it was
+		// never offered.
+		if s.officerStore == nil || s.featureOff(features.Officers) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.dispatchChiefOfficerTool(ctx, a, name, arguments)
 	case officerSpawnShareTool:
 		if s.spawnLender == nil || s.featureOff(features.Officers) {
 			return toolErr("unknown tool %q", name)

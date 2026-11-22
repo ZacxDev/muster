@@ -429,6 +429,7 @@ The chief is offered these tools, and no other agent is:
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `agent_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 | `repos_list` (read-only: your connected GitHub repositories, [below](#which-repository)) | the same as `agent_dispatch` |
+| `chief_officers_list`, `chief_officer_read`, `chief_officer_message`, `chief_officer_control`, `chief_officer_schedule`, `chief_officer_confirm_card` ([your officers](#your-officers)): its owner's own officers only; a person's chief only, not a team's or the Compose chief | officers (a database) |
 
 The other way round, the chief is the one agent **not** offered
 `connector_request`, `connector_status`, `browser_flow_request` or
@@ -1429,6 +1430,73 @@ The routes: `POST /agents/{id}/sessions/side`, `POST
 /agents/{id}/sessions/fresh-primary`, and `GET
 /ui/agents/{name}/chat-context?session=N` for the chip. Each answers only for
 your own chief.
+
+## Your officers
+
+Your chief controls your own [officers](officers-builtin.md) for you: ask it
+"what is the marketing officer doing?", "pause the QA officer until
+Monday", "run the release-notes officer now", "move its pass to 10:00" or
+"tell it to draft the launch post". It has six tools:
+
+| tool | arguments | what it does |
+|---|---|---|
+| `chief_officers_list` | — | your own officers, with each one's id, status, where it runs and `can_change` |
+| `chief_officer_read` | `officer`, `section?` (`status`, `items`, `outcomes`, `chat`, `asks`, `drafts`, `outreach`, `refusals`, `budget`, `schedules`) | the officer as its page shows it: status, open queue items, its questions to you, its pending drafts (exact text and media) and outreach batch, refusals waiting on you, today's spend against its budget, its schedules, its recent outcomes (What it did) and **your** chat with it |
+| `chief_officer_message` | `officer`, `message`, `wait_seconds?` (default 60, at most 120) | sends it a message as a turn of **your own** chat with it, and returns its reply (a slower one is read later with `chief_officer_read` `section: chat`) |
+| `chief_officer_control` | `officer`, `action`: `pause`, `resume` or `run_now` | the page's Pause, Resume and Run now — but the chief's Run now is **held by the daily budget**: refused while today's budget is spent (you can still run it, or raise its cap, on its page), and filed as the officer's ordinary work |
+| `chief_officer_schedule` | `officer`, `action`: `list`, `put` or `delete`, `name?` (default `pass`), `cron?` (five fields, UTC), `enabled?` | lists, adds or changes a schedule, or deletes a **pass** schedule (the kind the page adds; any other is changed on the page) |
+| `chief_officer_confirm_card` | `officer`, `draft_id` or `batch_id` | puts a **confirm card** for a pending draft or the open outreach batch in your chat with the officer, on its page |
+
+🔴 **Your chief never approves anything an officer sends.** Approving a post,
+a reply, a follow or a like is yours alone, as it always was: the most the
+chief can do is `chief_officer_confirm_card`, which draws the same confirm
+card the officer's own [`officer_confirm_card`](officers-builtin.md#chat-with-it)
+draws — the exact text and every image and video, bound to their SHA-256 —
+and only your own signed-in click decides it. Every door that decides a
+draft, a batch or a card refuses a call the chief's tools reached, whatever
+it runs as (`Your chief never decides an officer's drafts or outreach: …`),
+and an officer still never approves its own work.
+
+**Your own officers only.** A team's officers are the team's own chief's (a
+team's data reaches only the team's chief, on the team's credentials), so
+your chief neither lists, reads nor acts on one, whatever your role in the
+team; it gets the same refusal as for another person's officer or an id that
+does not exist. A team's own chief does not have these tools. An officer
+`MUSTER_OFFICERS` declares has its schedules in the environment: the chief
+can list them, not change them (its Pause, Resume and Run now work, as on
+its page). An HQ-backed officer's queue is its HQ's: the chief reads only its
+status.
+
+**What the officer wrote is data.** Its reply, the chat, its items'
+summaries and subjects, its drafts' text, its questions, refusal reasons and
+the people its plugin reports reach the chief inside muster's untrusted fence
+(`<<<officer-text untrusted nonce=…>>>`, a fresh nonce per call, every line
+behind `| `), as plugin messages do: nothing inside can close the fence or
+pass for an instruction. A paused officer takes no message: the chief is told
+to resume it first.
+
+**Every change is undoable and safe to repeat.** Pausing a paused officer, a
+second Run now while one waits, putting the cron a schedule already has and
+deleting a schedule that is not there change nothing, and the answer says
+so. Each answer carries its undo — `resume` for a pause, the previous cron for
+a changed schedule, what a deleted schedule was — also as `undo_call`, the
+exact tool call that makes it: a deleted pass schedule is put back exactly
+(cron and switch included).
+
+**Every act is recorded and shown.** Each message, pause, resume, Run now,
+schedule change and confirm card is one row in your own audit
+(`officer.chief.<verb>`, object `officer_def:<id>`, naming the chief's
+agent), and the officer's page lists it under **What it did** (*Your chief
+paused it*, *Your chief changed its schedule pass from 0 9 * * * to 0 10 * * *
+(UTC)*, …). Reads are not recorded there.
+
+**A message is your chat.** The chief's message goes into **your own** chat
+with the officer, marked as the chief's: the officer page draws it as *Your
+chief*, beside your own messages, and the officer is told the chief writes for
+you and cannot approve anything either. Its model spend counts toward the
+officer's daily budget like any of its work (`officer_llm_usage`), and a
+spent budget never stops a chat: a held officer still answers. The officer
+must run in pods to chat ([Chat with it](officers-builtin.md#chat-with-it)).
 
 ## Fleet digest
 

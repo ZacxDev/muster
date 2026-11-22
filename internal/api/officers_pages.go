@@ -1809,17 +1809,7 @@ func (s *Server) officerSwitch(w http.ResponseWriter, r *http.Request, on bool) 
 	if !ok {
 		return
 	}
-	var err error
-	if env {
-		if err = s.officerStore.SetEnabled(r.Context(), sc.Owner, id, on); err == nil {
-			s.logger.Printf("officers: user %d switched env officer %s of owner %d on=%v", authz.MustFrom(r.Context()).UserID, id, sc.Owner, on)
-			if key != "" && s.officerRT.rec != nil {
-				s.officerRT.rec.Due(key)
-			}
-		}
-	} else {
-		err = s.switchDeclared(r.Context(), sc.Owner, id, on)
-	}
+	err := s.switchOfficer(r.Context(), sc.Owner, id, key, env, on)
 	notice := "paused"
 	if on {
 		notice = "resumed"
@@ -1828,6 +1818,24 @@ func (s *Server) officerSwitch(w http.ResponseWriter, r *http.Request, on bool) 
 		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer."+strings.TrimSuffix(notice, "d"), "officer_def:"+id, nil)
 	}
 	s.officerActionDone(w, r, sc, id, notice, err)
+}
+
+// switchOfficer is Pause / Resume's one write, for the page and the chief's
+// chief_officer_control (chief_officers.go): an env officer's def switch, a
+// database-declared one's declared row (switchDeclared). key is its wake-loop
+// key ("" for none), env whether MUSTER_OFFICERS declares it (controlTargetOf).
+func (s *Server) switchOfficer(ctx context.Context, owner int64, id, key string, env, on bool) error {
+	if !env {
+		return s.switchDeclared(ctx, owner, id, on)
+	}
+	if err := s.officerStore.SetEnabled(ctx, owner, id, on); err != nil {
+		return err
+	}
+	s.logger.Printf("officers: user %d switched env officer %s of owner %d on=%v", authz.MustFrom(ctx).UserID, id, owner, on)
+	if key != "" && s.officerRT.rec != nil {
+		s.officerRT.rec.Due(key)
+	}
+	return nil
 }
 
 // handleOfficerMode is the Shadow/Live switch: the mode and nothing else
@@ -1862,23 +1870,39 @@ func (s *Server) handleOfficerRunNow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// One live "run now" at a time: a second tap while the first is still
-	// open returns that item (the store's dedupe on kind and subject).
-	id, created, err := s.officerStore.EnqueueChecked(r.Context(), sc.Owner, builtin.NewItem{Officer: officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner}, s.officerNow())
+	id, created, err := s.runOfficerNow(r.Context(), sc.Owner, officer, key)
 	notice := "queued"
 	if err == nil && !created {
 		notice = "already-queued"
 	}
-	if err == nil {
-		s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, created %v)", authz.MustFrom(r.Context()).UserID, officer, sc.Owner, id, created)
-		if sc.Team {
-			s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.run", "officer_def:"+officer, map[string]any{"item": id, "created": created})
-		}
-		if key != "" && s.officerRT.rec != nil {
-			s.officerRT.rec.Due(key)
-		}
+	if err == nil && sc.Team {
+		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.run", "officer_def:"+officer, map[string]any{"item": id, "created": created})
 	}
 	s.officerActionDone(w, r, sc, officer, notice, err)
+}
+
+// runOfficerNow is Run now's one write, for the page and the chief's
+// chief_officer_control: one owner item in owner's officer's queue, woken at
+// once. 🔴 IDEMPOTENT: one live "run now" at a time — a second call while the
+// first is still open returns that item, created false (the store's dedupe on
+// kind and subject).
+func (s *Server) runOfficerNow(ctx context.Context, owner int64, officer, key string) (int64, bool, error) {
+	return s.runOfficerItem(ctx, owner, key, builtin.NewItem{Officer: officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner})
+}
+
+// runOfficerItem enqueues run item it (deduplicated on its kind and subject)
+// and wakes its officer: runOfficerNow's, and the chief's own budget-held
+// run (chief_officers.go).
+func (s *Server) runOfficerItem(ctx context.Context, owner int64, key string, it builtin.NewItem) (int64, bool, error) {
+	id, created, err := s.officerStore.EnqueueChecked(ctx, owner, it, s.officerNow())
+	if err != nil {
+		return id, created, err
+	}
+	s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, origin %q, created %v)", authz.MustFrom(ctx).UserID, it.Officer, owner, id, it.Origin, created)
+	if key != "" && s.officerRT.rec != nil {
+		s.officerRT.rec.Due(key)
+	}
+	return id, created, nil
 }
 
 func (s *Server) handleOfficerDeletePage(w http.ResponseWriter, r *http.Request) {
@@ -1918,8 +1942,7 @@ func (s *Server) handleOfficerSchedulePage(w http.ResponseWriter, r *http.Reques
 		s.renderOfficerDetail(w, r, sc, row.Officer, http.StatusBadRequest, "That schedule is not one muster reads: "+err.Error())
 		return
 	}
-	_, err := s.officerStore.PutSchedule(r.Context(), sc.Owner, row.Officer, builtin.Schedule{Name: name, Cron: cron, Kind: "scheduled.pass",
-		SubjectKey: "scheduled-" + name, SkipIfLive: true, Enabled: true}, s.officerNow())
+	_, err := s.officerStore.PutSchedule(r.Context(), sc.Owner, row.Officer, passSchedule(name, cron), s.officerNow())
 	if errors.Is(err, builtin.ErrInvalid) {
 		s.renderOfficerDetail(w, r, sc, row.Officer, http.StatusBadRequest, "That schedule is refused: "+strings.TrimPrefix(err.Error(), builtin.ErrInvalid.Error()+": "))
 		return
@@ -1928,6 +1951,12 @@ func (s *Server) handleOfficerSchedulePage(w http.ResponseWriter, r *http.Reques
 		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.schedule.put", "officer_def:"+row.Officer, map[string]any{"schedule": name, "cron": cron})
 	}
 	s.officerActionDone(w, r, sc, row.Officer, "schedule-saved", err)
+}
+
+// passSchedule is a schedule the page (and the chief) adds: a
+// `scheduled.pass` schedule named name, firing on cron.
+func passSchedule(name, cron string) builtin.Schedule {
+	return builtin.Schedule{Name: name, Cron: cron, Kind: "scheduled.pass", SubjectKey: "scheduled-" + name, SkipIfLive: true, Enabled: true}
 }
 
 func (s *Server) handleOfficerScheduleDeletePage(w http.ResponseWriter, r *http.Request) {

@@ -211,6 +211,24 @@ func (s *PGStore) OwnAudit(ctx context.Context, uid int64, action string, limit 
 		FROM audit_log WHERE user_id = $2 AND action = $3 ORDER BY at DESC, id DESC LIMIT $1`, limit, uid, action)
 }
 
+// ChiefOfficerActionPrefix starts the audit_log action of every chief action
+// on an officer (internal/api chief_officers.go: "officer.chief.pause", …).
+const ChiefOfficerActionPrefix = "officer.chief."
+
+// ChiefOfficerAudit returns the chief's audit rows on one of owner's own
+// officers, newest first, read under ctx's principal (audit_log's self_read):
+// object is the officer's audit object ("officer_def:<id>"). A chief acts
+// only on its owner's own officers, so the rows are the owner's own (user_id
+// = owner, no team).
+func (s *PGStore) ChiefOfficerAudit(ctx context.Context, owner int64, object string, limit int) ([]AuditEntry, error) {
+	if owner <= 0 {
+		return nil, nil
+	}
+	return s.auditRows(ctx, `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
+		FROM audit_log WHERE user_id = $2 AND team_id IS NULL AND object = $3 AND starts_with(action, $4) ORDER BY at DESC, id DESC LIMIT $1`,
+		limit, owner, object, ChiefOfficerActionPrefix)
+}
+
 // auditRows runs one audit_log read.
 func (s *PGStore) auditRows(ctx context.Context, q string, args ...any) ([]AuditEntry, error) {
 	rows, err := s.pool.Query(ctx, q, args...)

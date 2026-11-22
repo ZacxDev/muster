@@ -252,6 +252,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.TaskRouting, taskRoutingToolDefs(true)...)
 		add(features.Officers, officerToolDefs()...)
 		add(features.Officers, officerSpawnShareToolDef())
+		add(features.Officers, chiefOfficerToolDefs()...)
 		add(features.Pages, pageToolDefs()...)
 		add(features.Push, notifyOwnerToolDef())
 	case mirrorDoor:

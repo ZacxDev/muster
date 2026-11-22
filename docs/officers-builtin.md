@@ -217,7 +217,9 @@ other's. Details in [Chat with it](#chat-with-it).
 **What it did** — its finished work, newest first, in plain words: each
 item's kind and how it ended, with the officer's own summary; what it sent
 (*Posted on X*, the text, and **See the post** where muster can build the
-address — an X post's id), and today's spend. Work finished since your last
+address — an X post's id); what your [chief](chief.md#your-officers) did to
+it (*Your chief paused it*, *Your chief sent it a message*, with the
+message); and today's spend. Work finished since your last
 visit is marked **new**. The ids muster keeps for an entry (item, draft, the
 post's reference) are behind its ⓘ.
 
@@ -300,6 +302,11 @@ refuses an officer's own credential or tool call.
 daily budget, still answers. Its chat's model spend is counted toward that
 budget like any of its work (`officer_llm_usage`), and each turn books it
 as it ends.
+
+**Your chief can chat with it too.** Its `chief_officer_message` sends a
+turn of **your** chat, drawn here as *Your chief*; its
+`chief_officer_confirm_card` puts a confirm card here for you to decide —
+the chief never approves anything ([chief.md](chief.md#your-officers)).
 
 ⚠ Limits: an officer that runs in a window on one of your machines
 (`"runtime": "host"`) is chatted with in that window, not here; a reply
@@ -849,7 +856,8 @@ are on whether or not `MUSTER_OFFICERS` is set, so an officer
 restart. On a muster where nobody has declared one, the wake loop's roster
 refresh (every 15 s) makes **one index probe** and reads nothing more until
 one exists; the Attention sweep and the schedule runner run and find nothing;
-the chief is offered the `officer_spawn_share` tool; and the Features page
+the chief is offered the `officer_spawn_share` tool and its
+[officer tools](chief.md#your-officers); and the Features page
 reads Officers **on**. For a GitOps roster set `MUSTER_OFFICERS` (`"[]"`
 declares none). The boot log with none declared:
 

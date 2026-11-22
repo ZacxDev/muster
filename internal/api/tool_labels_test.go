@@ -34,6 +34,7 @@ var agentToolDefFuncs = map[string]func() []agents.ToolDef{
 		return append(attentionToolDefs(true), attentionToolDefs(false)...)
 	},
 	"chiefAttentionToolDefs":   chiefAttentionToolDefs,
+	"chiefOfficerToolDefs":     chiefOfficerToolDefs,
 	"connectorToolDefs":        connectorToolDefs,
 	"endSessionToolDef":        func() []agents.ToolDef { return []agents.ToolDef{endSessionToolDef()} },
 	"fleetReportToolDef":       func() []agents.ToolDef { return []agents.ToolDef{fleetReportToolDef()} },
