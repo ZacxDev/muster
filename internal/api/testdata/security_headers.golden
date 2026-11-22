@@ -169,6 +169,7 @@ GET /ui/agents/{id}/status	csp1	pp2
 GET /ui/agents/{name}/chat-context	csp1	pp2
 GET /ui/agents/{name}/chat-log	csp1	pp2
 GET /ui/agents/{name}/open-button	csp1	pp2
+GET /ui/agents/{name}/session-asks	csp1	pp2
 GET /ui/agents/{name}/session-pages	csp1	pp2
 GET /ui/agents/{name}/task	csp1	pp2
 GET /ui/apps/{id}/alive	csp1	pp2
@@ -184,6 +185,7 @@ GET /ui/connectors/{name}/rotate	csp1	pp2
 GET /ui/dispatch-card	csp1	pp2
 GET /ui/focus/history	csp1	pp2
 GET /ui/mirror/preview-button	csp1	pp2
+GET /ui/mirror/session-asks	csp1	pp2
 GET /ui/mirror/session-pages	csp1	pp2
 GET /ui/nav/agents	csp1	pp2
 GET /ui/nav/waiting	csp1	pp2

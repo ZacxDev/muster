@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { menuItem } from '../lib/menu';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -64,8 +63,13 @@ const FILLERS = Array.from({ length: 14 }, (_, i) => `Sorting batch ${String(i +
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
 const AGENT_HISTORY = 3;
+// The agent's current title has AGENT_STEPS earlier steps of its own before
+// the focus itself (e2e/mkchat titleSteps): a run of AGENT_STEPS + 1 rows,
+// which the history draws as ONE group — and which the 20-row page cuts in
+// two, so its second page continues the group.
+const AGENT_STEPS = Array.from({ length: 22 }, (_, i) => `Ledger step ${String(i + 1).padStart(2, '0')}.`);
 const focusEnv = JSON.stringify([
-  { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
+  { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY, titleSteps: AGENT_STEPS },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
   { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE], ageHours: 50 },
@@ -447,7 +451,7 @@ for (const vp of [
       const histTab = sheet.locator('[role="tab"][data-tab="focus"]');
       const msgsPanel = sheet.locator('#chat-index-tabs-panel-messages');
       const histPanel = sheet.locator('#chat-index-tabs-panel-focus');
-      await (await menuItem(page, '#chat-index-open')).click();
+      await page.locator('header #chat-index-open').click();
       await expect(sheet).toBeVisible();
       await expect(sheet.locator('[role="tablist"]')).toBeVisible();
       await expect(msgsTab).toHaveAttribute('aria-selected', 'true');
@@ -478,21 +482,21 @@ for (const vp of [
       await expect(histTab).toHaveAttribute('aria-selected', 'true');
       // Kept across a reload, for this window.
       await page.reload();
-      await (await menuItem(page, '#chat-index-open')).click();
+      await page.locator('header #chat-index-open').click();
       await expect(sheet.locator('[role="tab"][data-tab="focus"]')).toHaveAttribute('aria-selected', 'true');
       await expect(sheet.locator('#chat-index-tabs-panel-focus')).toBeVisible();
       await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeHidden();
       // A click selects too, and is kept.
       await sheet.locator('[role="tab"][data-tab="messages"]').click();
       await page.reload();
-      await (await menuItem(page, '#chat-index-open')).click();
+      await page.locator('header #chat-index-open').click();
       await expect(sheet.locator('[role="tab"][data-tab="messages"]')).toHaveAttribute('aria-selected', 'true');
     });
 
     test('the focus history scrolls back through every page, newest first, to its start', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(viewURL);
-      await (await menuItem(page, '#chat-index-open')).click();
+      await page.locator('header #chat-index-open').click();
       await page.locator('#chat-index [role="tab"][data-tab="focus"]').click();
       const panel = page.locator('#chat-index-tabs-panel-focus');
       const items = panel.locator('[data-focus-history-item]');
@@ -521,11 +525,11 @@ for (const vp of [
       expect(titles).toEqual(want);
     });
 
-    test("the dispatched agent's page has its focus history in a dialog", async ({ page }) => {
+    test("the dispatched agent's page has its focus history in a dialog, grouped by title", async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + agentName);
-      // Focus history is an item of the header's ⋯ menu (opened first).
-      const open = await menuItem(page, '#focus-history-open');
+      // What it worked on is the header's own button (no ⋯ menu to open).
+      const open = page.locator('header [data-header-tools] #focus-history-open');
       const dialog = page.locator('dialog#focus-history');
       await expect(open).toBeVisible();
       await expect(dialog).toBeHidden();
@@ -535,13 +539,30 @@ for (const vp of [
       await expect(dialog).toBeVisible();
       await expect(open).toHaveAttribute('aria-expanded', 'true');
       const items = dialog.locator('[data-focus-history-item]');
-      await expect(items).toHaveCount(AGENT_HISTORY + 1);
-      await expect(items.first()).toContainText('Reconciling the quarterly ledgers');
-      // The newest row is the current focus, whole: its description and age.
-      await expect(items.first().locator('[data-focus-history-description]')).toHaveText('Matching payouts to the bank export. Two left.');
-      await expect(items.first().locator('[data-focus-history-at]')).toContainText('ago');
-      await expect(items.last()).toContainText('Earlier focus 01');
+      // The first page: the current title's run alone, its title ONCE over
+      // its 20 newest steps; the newest step is the current focus, whole.
+      await expect(items).toHaveCount(1);
+      await expect(items.first().locator('[data-focus-history-title]')).toHaveText('Reconciling the quarterly ledgers');
+      const steps = items.first().locator('[data-focus-history-step]');
+      await expect(steps).toHaveCount(20);
+      await expect(steps.first().locator('[data-focus-history-description]')).toHaveText('Matching payouts to the bank export. Two left.');
+      await expect(steps.first().locator('[data-focus-history-at]')).toContainText('ago');
+      // Scrolled to its end: the next page CONTINUES the run (its oldest
+      // steps join the group, no second title), then the earlier titles.
+      const scroller = dialog.locator('#focus-history-scroll');
+      for (let i = 0; i < 4 && (await dialog.locator('[data-focus-history-end]').count()) === 0; i++) {
+        await scroller.evaluate((p) => { p.scrollTop = p.scrollHeight; });
+        await page.waitForTimeout(300);
+      }
       await expect(dialog.locator('[data-focus-history-end]')).toBeVisible();
+      await expect(items).toHaveCount(AGENT_HISTORY + 1);
+      await expect(dialog.locator('[data-focus-history-continued]'), 'the continuation was merged into its group').toHaveCount(0);
+      expect(await dialog.locator('[data-focus-history-title]').allTextContents()).toEqual(
+        ['Reconciling the quarterly ledgers', 'Earlier focus 03', 'Earlier focus 02', 'Earlier focus 01']);
+      await expect(steps).toHaveCount(AGENT_STEPS.length + 1);
+      expect(await steps.locator('[data-focus-history-description]').allTextContents()).toEqual(
+        ['Matching payouts to the bank export. Two left.', ...[...AGENT_STEPS].reverse()]);
+      await expect(items.last()).toContainText('Earlier focus 01');
       const db = (await dialog.boundingBox())!;
       expect(db.x).toBeGreaterThanOrEqual(0);
       expect(db.x + db.width).toBeLessThanOrEqual(vp.use.viewport.width);
@@ -550,7 +571,7 @@ for (const vp of [
       await expect(dialog).toBeHidden();
       await expect(open).toHaveAttribute('aria-expanded', 'false');
       // The close button closes it too.
-      await (await menuItem(page, '#focus-history-open')).click();
+      await open.click();
       await expect(dialog).toBeVisible();
       await dialog.locator('[data-focus-history-close]').click();
       await expect(dialog).toBeHidden();

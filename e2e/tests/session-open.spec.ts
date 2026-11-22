@@ -22,8 +22,14 @@ import { touchDrag } from '../lib/touch';
 //   - the Pages tab lists exactly the session's own pages, newest first, and
 //     opens one in the panel (the owner's own view, framed), with "Open full
 //     page";
-//   - the header fits ONE row at 390×844 and 1280×800, its secondary actions
-//     in a ⋯ menu, and the button's arrival and new count move nothing.
+//   - the Asks tab lists the session's asks — open ones first, then the
+//     answered ones with their answer — each opening its own ask page, and
+//     the button counts the open ones (a window with asks and no pages draws
+//     it);
+//   - the header fits ONE row at 390×844 and 1280×800 with the message index
+//     (a mirrored window) and Chat history and What it worked on (an agent)
+//     as their own buttons — no ⋯ menu and no Home on a mirrored window — and
+//     the button's arrival and new count move nothing.
 //
 // What each window has to preview is PLAYED by the host's
 // MUSTER_MIRROR_E2E_PREVIEWS_FILE; the viewer plugin's entry page by
@@ -47,9 +53,9 @@ const fix = (...args: string[]) =>
 const team = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/mkteam', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
-// The three windows' Claude sessions (a transcript's name is its session id,
+// The four windows' Claude sessions (a transcript's name is its session id,
 // e2emirror.go), and one session no window runs.
-const SA = `open-a-${stamp}`, SB = `open-b-${stamp}`, SC = `open-c-${stamp}`, SZ = `open-z-${stamp}`;
+const SA = `open-a-${stamp}`, SB = `open-b-${stamp}`, SC = `open-c-${stamp}`, SD = `open-d-${stamp}`, SZ = `open-z-${stamp}`;
 
 const q = (win: string) => `host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent(win)}`;
 const viewOf = (win: string) => `/mirror/view?${q(win)}`;
@@ -73,6 +79,17 @@ const AG_PAGES = [
   { title: `Agent report ${stamp}`, versions: 2, live: true, age: 500 },
   { title: `Agent table ${stamp}`, versions: 1, live: false, age: 50 },
 ];
+// @4's asks (session SD, which made no page): one open, one answered — its
+// answer holds markup, which the tab draws as text. Every question is
+// distinct from every other's.
+const D_OPEN = `Ship the delta build tonight? ${stamp}`;
+const D_ANSWERED = `Which delta branch? ${stamp}`;
+const D_ANSWER = `the <b>main</b> branch & its tag`;
+// The agent's asks: one open, one answered.
+const AG_OPEN = `Agent: may I rerun the report? ${stamp}`;
+const AG_ANSWERED = `Agent: which table? ${stamp}`;
+const AG_ANSWER = `the second table`;
+const askIDs: Record<string, string> = {};
 const made: string[] = [];
 const ids: Record<string, string> = {};
 let teamID = '';
@@ -99,7 +116,8 @@ test.beforeAll(async () => {
   const windows = rig.transcript(
     `work|@1|1|1|claude|${now - 60}|${tr(SA, 'the alpha window')}\n` +
       `work|@2|2|0|claude|${now - 90}|${tr(SB, 'the beta window')}\n` +
-      `work|@3|3|0|claude|${now - 120}|${tr(SC, 'the gamma window')}\n`,
+      `work|@3|3|0|claude|${now - 120}|${tr(SC, 'the gamma window')}\n` +
+      `work|@4|4|0|claude|${now - 150}|${tr(SD, 'the delta window')}\n`,
     'windows',
   );
   previewsFile = path.join(rig.dir, 'previews-played');
@@ -123,10 +141,26 @@ test.beforeAll(async () => {
   otherAgentID = fix('agent', OWNER, otherAgentName, `e2e-open-other-token-not-real-${stamp}`);
   for (const p of AG_PAGES) page(OWNER, p.title, agentID, '-', '-', p.versions, p.live, p.age);
   page(OWNER, `Other agent's page ${stamp}`, otherAgentID, '-', '-', 4, false, 20);
+  // The asks: @4's (answered first, then the open one, newer); NOT @4's: the
+  // session no window runs, and the team's from the same host and session.
+  const ask = (owner: string, agent: string, host: string, sid: string, age: number, q: string, answer?: string) => {
+    const id = fix('sessask', owner, agent, host, sid, String(age), q, ...(answer === undefined ? [] : [answer]));
+    askIDs[q] = id;
+    madeAsks.push([owner, id]);
+    return id;
+  };
+  ask(OWNER, '0', rig.host, SD, 300, D_ANSWERED, D_ANSWER);
+  ask(OWNER, '0', rig.host, SD, 100, D_OPEN);
+  ask(OWNER, '0', rig.host, SZ, 50, `Zeta question ${stamp}`);
+  ask(teamID, '0', rig.host, SD, 40, `Team question ${stamp}`);
+  ask(OWNER, agentID, '-', '-', 200, AG_ANSWERED, AG_ANSWER);
+  ask(OWNER, agentID, '-', '-', 80, AG_OPEN);
 });
+const madeAsks: [string, string][] = [];
 
 test.afterAll(async () => {
   for (const id of made) fix('rmpage', id);
+  for (const [owner, id] of madeAsks) fix('rmask', owner, id);
   for (const n of pluginNames) fix('rmplugin', OWNER, n);
   if (agentID) fix('rmagent', OWNER, agentName);
   if (otherAgentID) fix('rmagent', OWNER, otherAgentName);
@@ -134,7 +168,7 @@ test.afterAll(async () => {
   await rig.stop();
 });
 
-// ready signs in and waits until the host lists its three Claude windows.
+// ready signs in and waits until the host lists its four Claude windows.
 async function ready(page: Page): Promise<void> {
   await rig.login(page);
   await expect
@@ -145,7 +179,7 @@ async function ready(page: Page): Promise<void> {
         ).length,
       { message: `the Claude windows listed (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
     )
-    .toBe(3);
+    .toBe(4);
 }
 
 // mintViewer creates a viewer-only plugin through the real /plugins form,
@@ -286,8 +320,12 @@ test.describe.serial('the Open button and its panel', () => {
   test('an agent session lists its agent’s pages', async ({ page }) => {
     await ready(page);
     await page.goto(origin + `/agents/${agentName}`);
-    await expect(toggle(page)).toHaveAttribute('data-preview-count', '2');
+    // Its 2 pages and its 1 open ask.
+    await expect(toggle(page)).toHaveAttribute('data-preview-count', '3');
+    await expect(toggle(page)).toHaveAttribute('data-open-pages', '2');
+    await page.evaluate(() => localStorage.removeItem('muster:tabs:session-open:1'));
     await toggle(page).click();
+    // Nothing stored: the first tab that has something.
     await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
     await expect.poll(() => listTitles(page)).toEqual([...AG_PAGES].reverse().map((p) => p.title));
     const body = await page.locator('#preview-panel [data-session-pages-list]').innerText();
@@ -298,6 +336,64 @@ test.describe.serial('the Open button and its panel', () => {
     // The other agent: its one page.
     await page.goto(origin + `/agents/${otherAgentName}`);
     await expect(toggle(page)).toHaveAttribute('data-preview-count', '1');
+  });
+
+  test('a window with asks and no pages: the Open button counts its open ask; the Asks tab lists them, open first, and one opens its ask page', async ({ page }) => {
+    await ready(page);
+    await page.goto(origin + viewOf('@4'));
+    await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the delta window');
+    // ONE open ask (the answered one is listed, not counted; the session no
+    // window runs and the team's are not this window's).
+    await expect(toggle(page)).toHaveAttribute('data-preview-count', '1');
+    await expect(toggle(page)).toHaveAttribute('data-open-asks', '1');
+    await expect(toggle(page)).toHaveAttribute('data-open-pages', '0');
+    await expect(toggle(page)).toHaveAttribute('aria-label', 'Open: 1 open ask, 1 answered ask');
+    await toggle(page).click();
+    await expect(panel(page)).toBeVisible();
+    // Only asks to open: the panel opens on Asks.
+    await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
+    await expect(tab(page, 'asks')).toHaveText('Asks(1)');
+    const rows = page.locator('#preview-panel [data-session-ask]');
+    await expect(rows).toHaveCount(2);
+    expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-session-ask')))).toEqual([askIDs[D_OPEN], askIDs[D_ANSWERED]]);
+    await expect(rows.nth(0).locator('[data-session-ask-question]')).toHaveText(D_OPEN);
+    await expect(rows.nth(0).locator('[data-session-ask-state]')).toHaveText('Waiting on your answer');
+    await expect(rows.nth(1).locator('[data-session-ask-state]')).toHaveText('Answered');
+    // The answer is drawn as text: its markup is not markup.
+    await expect(rows.nth(1).locator('[data-session-ask-answer]')).toHaveText(D_ANSWER);
+    await expect(rows.nth(1).locator('[data-session-ask-answer] b')).toHaveCount(0);
+    const body = await page.locator('#preview-panel [data-session-asks-list]').innerText();
+    for (const t of ['Zeta question', 'Team question']) expect(body, t).not.toContain(t);
+    // The header at 390px with the asks badge and the Open button both drawn:
+    // still one row, the title keeping its room.
+    await page.locator('#preview-panel [data-preview-close]').click();
+    expectOneRow(await headerBoxes(page, 'header'), 'mirror @4, with its asks');
+    await toggle(page).click();
+    await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
+    await expect(rows).toHaveCount(2);
+    // A tap on the open one lands on its ask page.
+    await rows.nth(0).click();
+    await expect(page).toHaveURL(`${origin}/attention/asks/${askIDs[D_OPEN]}`);
+    await expect(page.locator('[data-ask-question]')).toContainText(D_OPEN);
+  });
+
+  test('an agent session’s Asks tab lists its agent’s asks; a keyboard Enter on one opens its ask page', async ({ page }) => {
+    await ready(page);
+    await page.goto(origin + `/agents/${agentName}`);
+    await expect(toggle(page)).toHaveAttribute('data-open-asks', '1');
+    await toggle(page).click();
+    await tab(page, 'asks').click();
+    await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
+    const rows = page.locator('#preview-panel [data-session-ask]');
+    await expect(rows).toHaveCount(2);
+    expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-session-ask')))).toEqual([askIDs[AG_OPEN], askIDs[AG_ANSWERED]]);
+    await expect(rows.nth(1).locator('[data-session-ask-answer]')).toHaveText(AG_ANSWER);
+    // The other agent has none.
+    expect(await page.locator('#preview-panel [data-session-asks-list]').innerText()).not.toContain('delta');
+    await rows.nth(0).focus();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(`${origin}/attention/asks/${askIDs[AG_OPEN]}`);
+    await expect(page.locator('[data-ask-question]')).toContainText(AG_OPEN);
   });
 
   test('with a viewer plugin: the badge is previews + pages; the Previews tab is the preview panel as before; the tab used last is remembered', async ({ page, context }) => {
@@ -361,7 +457,7 @@ test.describe.serial('the Open button and its panel', () => {
     expect(await page.evaluate(() => localStorage.getItem('muster:tabs:session-open:1')), 'choosing on open stores nothing').toBe('previews');
   });
 
-  test('a sideways swipe on the panel switches between Previews and Pages (touch, 390×844)', async ({ page }) => {
+  test('a sideways swipe on the panel switches between Previews, Pages and Asks (touch, 390×844)', async ({ page }) => {
     await ready(page);
     await mintViewer(page);
     playPreviews('@1 2 1\n');
@@ -389,18 +485,21 @@ test.describe.serial('the Open button and its panel', () => {
     await swipe('left', 'header');
     await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
     await expect(page.locator('#preview-panel [data-session-page]').first()).toBeVisible();
-    // On the last tab a leftwards swipe goes nowhere.
+    // Leftwards again: the Asks tab, the last; there a leftwards swipe goes
+    // nowhere.
     await swipe('left', 'list');
-    await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
+    await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
+    await swipe('left', 'list');
+    await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
     // And the tab chosen by swiping is remembered, as a tap's is.
-    expect(await page.evaluate(() => localStorage.getItem('muster:tabs:session-open:1'))).toBe('pages');
+    expect(await page.evaluate(() => localStorage.getItem('muster:tabs:session-open:1'))).toBe('asks');
   });
 });
 
 // THE HEADER: one row, no overlap, every target 44px, the title clear of the
 // controls — for a mirrored window and an agent, at both sizes, with the Open
 // button drawn.
-type Box = { what: string; x: number; y: number; w: number; h: number; tw: number; th: number; inTitle?: boolean };
+type Box = { what: string; x: number; y: number; w: number; h: number; tw: number; th: number; inTitle?: boolean; tool?: boolean; badge?: boolean };
 async function headerBoxes(page: Page, header: string): Promise<{ controls: Box[]; title: Box; header: Box; docWide: number; vw: number }> {
   return page.evaluate((sel) => {
     const h = document.querySelector(sel) as HTMLElement;
@@ -428,16 +527,32 @@ async function headerBoxes(page: Page, header: string): Promise<{ controls: Box[
     const row = els[els.length - 1].parentElement!.closest('header > div, header') as HTMLElement;
     let col: Element = title;
     while (col.parentElement && col.parentElement !== row) col = col.parentElement;
-    const controls = els.map((el) => ({ ...box(el, el.id || el.getAttribute('aria-label') || el.textContent!.trim().slice(0, 20)), inTitle: col.contains(el) }));
+    // tool: one of an agent's header tools (compact below sm); badge: the
+    // asks badge, a 44px-tall pill as wide as its count.
+    const controls = els.map((el) => ({ ...box(el, el.id || el.getAttribute('aria-label') || el.textContent!.trim().slice(0, 20)), inTitle: col.contains(el),
+      tool: !!el.closest('[data-header-tools]'), badge: el.hasAttribute('data-asker-asks-link') }));
     return { controls, title: box(title, 'title'), header: box(h, 'header'), docWide: document.documentElement.scrollWidth, vw: window.innerWidth };
   }, header);
 }
 
+// COMPACT_TOOL is a header tool's width below `sm` (ui agentHeaderTools: the
+// three agent tools are 36px wide there, still 44px tall); every other control
+// is a 44px square.
+const COMPACT_TOOL = 36;
+// MIN_TITLE is the least room the title's text keeps at 390px with the
+// header at its fullest (the Open button, the asks badge, every tool): 48px,
+// five to six characters of its text-sm, enough to tell one session from
+// another at a glance (the "…" beside it opens the whole title). The base
+// this change started from left it 8px (a claude-code agent) and 36px (a
+// gateway agent's first row) with the history buttons in the row.
+const MIN_TITLE = 48;
+
 function expectOneRow(m: Awaited<ReturnType<typeof headerBoxes>>, label: string) {
   const overlap = (a: Box, b: Box) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
   expect(m.docWide, `${label}: the document is no wider than the screen`).toBeLessThanOrEqual(m.vw);
+  const phone = m.vw < 640;
   for (const c of m.controls) {
-    expect(Math.round(c.tw), `${label}: ${c.what} is a 44px target (width)`).toBeGreaterThanOrEqual(44);
+    expect(Math.round(c.tw), `${label}: ${c.what} is a 44px target (width)`).toBeGreaterThanOrEqual(c.tool && phone ? COMPACT_TOOL : c.badge ? 24 : 44);
     expect(Math.round(c.th), `${label}: ${c.what} is a 44px target (height)`).toBeGreaterThanOrEqual(44);
     expect(c.x + c.w, `${label}: ${c.what} is inside the screen`).toBeLessThanOrEqual(m.vw + 0.5);
   }
@@ -457,7 +572,7 @@ function expectOneRow(m: Awaited<ReturnType<typeof headerBoxes>>, label: string)
   // measures the same 57 -> 65). A wrapped control adds a 44px row, so this
   // still fails on one.
   expect(m.header.h, `${label}: the header is one row tall`).toBeLessThanOrEqual(66);
-  expect(m.title.w, `${label}: the title keeps some room`).toBeGreaterThan(40);
+  expect(m.title.w, `${label}: the title keeps its room`).toBeGreaterThanOrEqual(MIN_TITLE);
 }
 
 // cls sums the page's layout shifts (not input-caused) while fn runs.
@@ -484,7 +599,7 @@ for (const vp of [
   test.describe(`the session header at ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    test('a mirrored window: one row, no overlap, 44px targets; the ⋯ menu holds Home and the message index, by keyboard; the Open button’s count moves nothing', async ({ page }) => {
+    test('a mirrored window: one row, no overlap, 44px targets; no ⋯ menu and no Home, the message index its own button, by mouse and keyboard; the Open button’s count moves nothing', async ({ page }) => {
       test.setTimeout(120_000);
       await ready(page);
       await mintViewer(page);
@@ -493,32 +608,26 @@ for (const vp of [
       await page.goto(origin + viewOf('@1'));
       await expect(toggle(page)).toHaveAttribute('data-preview-count', '7');
       expectOneRow(await headerBoxes(page, 'header'), `mirror ${vp.name}`);
-      // THE ⋯ MENU: Home and the message index, opened and walked by keyboard,
-      // closed by Escape.
-      const trigger = page.locator('#mv-menu-open');
-      const menu = page.locator('#mv-menu');
-      await expect(menu).toBeHidden();
-      await trigger.focus();
-      await page.keyboard.press('Enter');
-      await expect(menu).toBeVisible();
-      await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-      await expect(menu.locator('#mv-back')).toHaveText('Home');
-      await expect(menu.locator('#chat-index-open')).toBeVisible();
-      await page.keyboard.press('Tab');
-      expect(await page.evaluate(() => !!document.activeElement?.closest('#mv-menu')), 'Tab moves into the menu').toBe(true);
+      // NO ⋯ MENU AND NO HOME: the message index is the row's own button.
+      await expect(page.locator('#mv-menu, #mv-menu-open, #mv-back')).toHaveCount(0);
+      const index = page.locator('header #chat-index-open');
+      await expect(index).toBeVisible();
+      await expect(index).toHaveAttribute('aria-label', 'Your messages and what it worked on');
+      expect(await index.evaluate((el) => !!el.closest('[popover]')), 'the message index is in no menu').toBe(false);
+      // By mouse: it opens the sheet; Escape closes it.
+      await index.click();
+      await expect(page.locator('#chat-index')).toBeVisible();
+      await expect(index).toHaveAttribute('aria-expanded', 'true');
       await page.keyboard.press('Escape');
-      await expect(menu).toBeHidden();
-      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
-      // Its message index item opens the sheet, and closes the menu.
-      await trigger.click();
-      await menu.locator('#chat-index-open').click();
-      await expect(menu).toBeHidden();
+      await expect(page.locator('#chat-index')).toBeHidden();
+      // By keyboard: Enter on it opens the sheet; Escape closes it, and focus
+      // is back on it.
+      await index.focus();
+      await page.keyboard.press('Enter');
       await expect(page.locator('#chat-index')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(page.locator('#chat-index')).toBeHidden();
-      // Focus goes back to the ⋯ trigger: the item that opened the sheet is
-      // in the closed menu and cannot hold it (it fell to <body>).
-      await expect(trigger, 'focus returns to the ⋯ trigger when the sheet closes').toBeFocused();
+      await expect(index, 'focus returns to the message index when the sheet closes').toBeFocused();
       // A NEW COUNT MOVES NOTHING: 7 → 9.
       const shift = await cls(page, async () => {
         playPreviews('@1 4 1\n');
@@ -559,18 +668,24 @@ for (const vp of [
       expect(control, 'the CLS measurement sees an unprovoked shift').toBeGreaterThan(0.001);
     });
 
-    test('an agent session: one row, no overlap, 44px targets, with its Open button; Chat history in its ⋯ menu, by keyboard', async ({ page }) => {
+    test('an agent session: one row, no overlap, with its Open button and its open ask’s badge; Chat history and What it worked on its own buttons, by mouse and keyboard; the ⋯ keeps its other actions', async ({ page }) => {
       await ready(page);
       await page.goto(origin + `/agents/${agentName}`);
-      await expect(toggle(page)).toHaveAttribute('data-preview-count', '2');
-      expectOneRow(await headerBoxes(page, 'header[data-folded-header]'), `agent ${vp.name}`);
-      // Chat history moved to the ⋯ menu (New chat stays in the row).
-      await expect(page.locator('header [data-header-tools] button[aria-label="New chat session"]')).toBeVisible();
-      await expect(page.locator('header [data-header-tools] label[aria-label="Chat history"]')).toHaveCount(0);
-      await chatHistoryByKeyboard(page);
+      // Its 2 pages and 1 open ask: the asks badge is drawn too (the
+      // header's fullest state).
+      await expect(toggle(page)).toHaveAttribute('data-preview-count', '3');
+      const m = await headerBoxes(page, 'header[data-folded-header]');
+      expectOneRow(m, `agent ${vp.name}`);
+      // The three tools are the row's own controls.
+      const tools = page.locator('header[data-folded-header] [data-header-tools]');
+      await expect(tools.locator('button[aria-label="New chat session"]')).toBeVisible();
+      await expect(tools.locator('label[aria-label="Chat history"]')).toBeVisible();
+      await expect(tools.locator('#focus-history-open')).toBeVisible();
+      await historyButtons(page);
+      await menuKeepsItsActions(page);
     });
 
-    test('a gateway agent’s two-row header: its first row one line, no overlap, 44px targets, with its Open button', async ({ page }) => {
+    test('a gateway agent’s two-row header: its first row one line, no overlap, with its Open button and its history buttons', async ({ page }) => {
       await ready(page);
       await page.goto(origin + `/agents/${otherAgentName}`);
       await expect(toggle(page)).toHaveAttribute('data-preview-count', '1');
@@ -579,41 +694,74 @@ for (const vp of [
         const t = row.querySelector('h1')!.getBoundingClientRect();
         const cs = Array.from(row.querySelectorAll(':scope button, :scope a, :scope label[role="button"]'))
           .filter((el) => !el.closest('h1') && !el.closest('[popover]') && el.getBoundingClientRect().width > 0)
-          .map((el) => { const r = el.getBoundingClientRect(); return { what: el.getAttribute('aria-label') || el.id, x: r.x, y: r.y, w: r.width, h: r.height }; });
+          .map((el) => { const r = el.getBoundingClientRect(); return { what: el.getAttribute('aria-label') || el.id, x: r.x, y: r.y, w: r.width, h: r.height, tool: !!el.closest('[data-header-tools]') }; });
         return { t: { x: t.x, y: t.y, w: t.width, h: t.height }, cs, vw: window.innerWidth, wide: document.documentElement.scrollWidth };
       });
       expect(m.wide).toBeLessThanOrEqual(m.vw);
       const mids = m.cs.map((c) => c.y + c.h / 2);
       expect(Math.max(...mids) - Math.min(...mids), 'one line').toBeLessThanOrEqual(1);
       for (const c of m.cs) {
-        expect(Math.round(c.w), `${c.what} width`).toBeGreaterThanOrEqual(44);
+        expect(Math.round(c.w), `${c.what} width`).toBeGreaterThanOrEqual(c.tool && vp.use.viewport.width < 640 ? COMPACT_TOOL : 44);
         expect(Math.round(c.h), `${c.what} height`).toBeGreaterThanOrEqual(44);
         expect(c.x >= m.t.x + m.t.w - 0.5 || c.x + c.w <= m.t.x + 0.5, `the title collides with ${c.what}`).toBe(true);
       }
-      expect(m.t.w, 'the title keeps some room').toBeGreaterThan(40);
-      await chatHistoryByKeyboard(page);
+      for (let i = 0; i < m.cs.length; i++) {
+        for (let j = i + 1; j < m.cs.length; j++) {
+          const a = m.cs[i], b = m.cs[j];
+          expect(a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5, `${a.what} overlaps ${b.what}`).toBe(false);
+        }
+      }
+      expect(m.t.w, 'the title keeps its room').toBeGreaterThanOrEqual(MIN_TITLE);
+      await expect(page.locator('header [data-header-tools] label[aria-label="Chat history"]')).toBeVisible();
+      await historyButtons(page);
     });
   });
 }
 
-// chatHistoryByKeyboard opens an agent page's ⋯ menu from its trigger with
-// Enter, Tabs to its Chat history item and activates it with Enter: the
-// session drawer opens, and the menu closes.
-async function chatHistoryByKeyboard(page: Page): Promise<void> {
+// historyButtons works an agent page's header Chat history (and, where the
+// agent has one, What it worked on) — buttons of the row, in no menu: Chat
+// history by keyboard (Enter opens the session drawer) and by mouse (a tap
+// closes it again); What it worked on by mouse (its dialog opens) and by
+// keyboard (Enter opens it again after Escape, and focus is back on it).
+async function historyButtons(page: Page): Promise<void> {
+  const chat = page.locator('header [data-header-tools] label[aria-label="Chat history"]');
+  expect(await chat.evaluate((el) => !!el.closest('[popover]')), 'Chat history is in no menu').toBe(false);
+  await expect(page.locator('#agent-actions [data-chat-history], #agent-actions #focus-history-open'), 'the ⋯ menu holds no history item').toHaveCount(0);
+  await expect(page.locator('#session-drawer')).not.toBeChecked();
+  await chat.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#session-drawer'), 'Enter on Chat history opens the drawer').toBeChecked();
+  await page.locator('#session-drawer').uncheck({ force: true });
+  await chat.click();
+  await expect(page.locator('#session-drawer'), 'a tap on Chat history opens the drawer').toBeChecked();
+  await page.locator('#session-drawer').uncheck({ force: true });
+  const focus = page.locator('header [data-header-tools] #focus-history-open');
+  if ((await focus.count()) === 0) return;
+  await focus.click();
+  await expect(page.locator('dialog#focus-history')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog#focus-history')).toBeHidden();
+  await focus.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('dialog#focus-history')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog#focus-history')).toBeHidden();
+  await expect(focus, 'focus returns to What it worked on').toBeFocused();
+}
+
+// menuKeepsItsActions opens an agent page's ⋯ by keyboard: it still holds
+// Rename, Start or Stop (the one its status calls for), Delete and Terminal.
+async function menuKeepsItsActions(page: Page): Promise<void> {
   const trigger = page.locator('#agent-actions-open');
   const menu = page.locator('#agent-actions');
-  const item = menu.locator('[data-chat-history]');
-  await expect(page.locator('#session-drawer')).not.toBeChecked();
   await trigger.focus();
   await page.keyboard.press('Enter');
   await expect(menu).toBeVisible();
-  await expect(item).toHaveText('Chat history');
-  // Tab through the menu until Chat history has focus (a menu's first
-  // focusable items may come before it).
-  for (let i = 0; i < 6 && !(await item.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Tab');
-  await expect(item, 'Tab reaches Chat history').toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(page.locator('#session-drawer'), 'Enter on Chat history opens the drawer').toBeChecked();
+  await expect(menu.locator('[data-agent-action="rename"]'), 'Rename').toBeVisible();
+  await expect(menu.locator('[data-lifecycle]').filter({ visible: true }), 'Start or Stop').toHaveCount(1);
+  await expect(menu.getByText('Delete', { exact: true }), 'Delete').toBeVisible();
+  await expect(menu.locator('#view-terminal'), 'Terminal').toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
 }
 

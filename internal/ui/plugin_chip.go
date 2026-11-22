@@ -24,8 +24,10 @@ import (
 //   - THE BUTTON: "Open" (an icon alone below `sm`) and ONE count — the
 //     window's offers plus its open previews (mirror.WindowPreviews, which the
 //     window's host reports; counted only while the owner has a live viewer
-//     plugin to open them with, as before) plus the session's pages — drawn
-//     only while that count is above zero. It is in the header row at every
+//     plugin to open them with, as before) plus the session's pages plus its
+//     OPEN asks (session_asks.go in internal/api) — drawn only while that
+//     count is above zero, or while the session has an answered ask to read
+//     (drawn bare then, no count). It is in the header row at every
 //     width, at a FIXED width with its count laid over its corner, so neither
 //     its arrival (the title, which is flex-1, gives it the room; nothing
 //     right of it moves) nor a new count moves anything. ONE slot re-reads it
@@ -35,10 +37,13 @@ import (
 //     the owner has a live viewer plugin OR the pages feature is on (PagesOn);
 //     without a plugin the Previews tab says there is nothing to preview and
 //     nothing is minted.
-//   - THE PANEL'S TABS: "Previews (n) · Pages (n)" (tabs.go's tablist, with
-//     the shared tab swipe on the panel below it, tab_swipe.go). It opens on
-//     the tab that has something; when both do, on the one this viewer used
-//     last (tabs.go's stored choice, per viewer: openTabsKey). The Previews tab
+//   - THE PANEL'S TABS: "Previews (n) · Pages (n) · Asks (n)" (tabs.go's
+//     tablist, with the shared tab swipe on the panel below it,
+//     tab_swipe.go; Asks only while the queue is served, AsksOn). It opens
+//     on a tab that has something: the one this viewer used last when it has
+//     (tabs.go's stored choice, per viewer: openTabsKey), else the first that
+//     has. The Asks tab lists the session's asks, open first, each linking
+//     to its own page (SessionAsksList); it answers nothing. The Previews tab
 //     is the preview panel as it was; the Pages tab lists the session's pages
 //     newest first (SessionPagesList), and a tap on one shows it in the panel
 //     — the owner's own view of it (/pages/{id}/view?embed=1, its version
@@ -148,6 +153,10 @@ const PreviewButtonPath = "/ui/mirror/preview-button"
 // PreviewButtonPath, answering SessionPagesList.
 const SessionPagesPath = "/ui/mirror/session-pages"
 
+// SessionAsksPath is a mirrored window's Asks tab: GET, addressed as
+// PreviewButtonPath, answering SessionAsksList.
+const SessionAsksPath = "/ui/mirror/session-asks"
+
 // AgentOpenButtonPath is an agent page's Open button's refresh, and
 // AgentSessionPagesPath its Pages tab, for the agent named name.
 func AgentOpenButtonPath(name string) string {
@@ -157,6 +166,11 @@ func AgentOpenButtonPath(name string) string {
 // AgentSessionPagesPath is an agent page's Pages tab (see AgentOpenButtonPath).
 func AgentSessionPagesPath(name string) string {
 	return "/ui/agents/" + url.PathEscape(name) + "/session-pages"
+}
+
+// AgentSessionAsksPath is an agent page's Asks tab (see AgentOpenButtonPath).
+func AgentSessionAsksPath(name string) string {
+	return "/ui/agents/" + url.PathEscape(name) + "/session-asks"
 }
 
 // previewPollEvery is how often the slot re-reads the button while the tab is
@@ -214,6 +228,14 @@ type PluginChips struct {
 	// how many it has made, when the page was drawn.
 	PagesOn bool
 	Pages   int
+	// AsksOn: the attention queue is served, so the session's asks are
+	// listed (its Asks tab; the slot and the panel are drawn even with no
+	// viewer plugin and pages off). Asks is how many of them are open, and
+	// AsksListed how many the tab lists (open and answered, at most
+	// attention.MaxSessionAsks), when the page was drawn.
+	AsksOn     bool
+	Asks       int
+	AsksListed int
 	// Agent is a dispatched agent's name on ITS page (no window, no
 	// previews): the button's and the list's routes are the agent's.
 	Agent string
@@ -221,16 +243,16 @@ type PluginChips struct {
 	Viewer int64
 }
 
-// on: there is a plugin to open or pages to list, so the slot and the panel
-// are drawn.
-func (c *PluginChips) on() bool { return c != nil && (len(c.Chips) > 0 || c.PagesOn) }
+// on: there is a plugin to open, or pages or asks to list, so the slot and
+// the panel are drawn.
+func (c *PluginChips) on() bool { return c != nil && (len(c.Chips) > 0 || c.PagesOn || c.AsksOn) }
 
 // previewsOn: there is a viewer plugin to open the window's previews with.
 func (c *PluginChips) previewsOn() bool { return c != nil && len(c.Chips) > 0 }
 
 // counts is the button's first state.
 func (c *PluginChips) counts() OpenCounts {
-	o := OpenCounts{Pages: c.Pages}
+	o := OpenCounts{Pages: c.Pages, Asks: c.Asks, AsksListed: c.AsksListed}
 	if c.previewsOn() {
 		o.Previews = c.Previews
 	}
@@ -253,15 +275,32 @@ func (c *PluginChips) pagesSrc() string {
 	return SessionPagesPath + "?" + mirrorQuery(c.Owner, c.Host, c.Session, c.Window)
 }
 
+// asksSrc is the Asks tab's route.
+func (c *PluginChips) asksSrc() string {
+	if c.Agent != "" {
+		return AgentSessionAsksPath(c.Agent)
+	}
+	return SessionAsksPath + "?" + mirrorQuery(c.Owner, c.Host, c.Session, c.Window)
+}
+
 // OpenCounts is what the Open button counts: the window's previews (zero
-// without a live viewer plugin) and the session's pages.
+// without a live viewer plugin), the session's pages and its OPEN asks.
+// AsksListed is how many asks its Asks tab lists (open and answered): an
+// answered one is not counted, but a session with one still draws the
+// button, so its answers stay one tap away.
 type OpenCounts struct {
-	Previews mirror.WindowPreviews
-	Pages    int
+	Previews   mirror.WindowPreviews
+	Pages      int
+	Asks       int
+	AsksListed int
 }
 
 // Total is the button's one count.
-func (o OpenCounts) Total() int { return o.Previews.Total() + o.Pages }
+func (o OpenCounts) Total() int { return o.Previews.Total() + o.Pages + o.Asks }
+
+// shown reports whether there is anything to open: a count, or an answered
+// ask to read.
+func (o OpenCounts) shown() bool { return o.Total() > 0 || o.AsksListed > 0 }
 
 // openWords is what a session has to open, as words: "1 preview open,
 // 2 servers to preview, 3 pages".
@@ -283,6 +322,12 @@ func openWords(o OpenCounts) string {
 	if o.Pages > 0 {
 		parts = append(parts, plural(o.Pages, "page", "pages"))
 	}
+	if o.Asks > 0 {
+		parts = append(parts, plural(o.Asks, "open ask", "open asks"))
+	}
+	if n := o.AsksListed - o.Asks; n > 0 {
+		parts = append(parts, plural(n, "answered ask", "answered asks"))
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -300,17 +345,18 @@ const previewIcon = `<svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="non
 const OpenButtonLabel = "Open"
 
 // OpenButton is the Open button for counts o: nil while there is nothing to
-// open. It carries no htmx wiring (the slot does), so a swapped-in button
-// never re-arms a trigger.
+// open (shown). It carries no htmx wiring (the slot does), so a swapped-in
+// button never re-arms a trigger. Its count is drawn only while it is above
+// zero: a session whose asks are all answered draws the button bare.
 //
 // 🔴 ITS WIDTH IS FIXED (w-11; from `sm` w-[5.5rem] with its word), and its
 // count is laid over its top right corner: a count of 1 and one of 99+ are one
 // box, so a new count moves nothing in the header.
 func OpenButton(o OpenCounts) g.Node {
-	n := o.Total()
-	if n <= 0 {
+	if !o.shown() {
 		return nil
 	}
+	n := o.Total()
 	words := openWords(o)
 	return Button(
 		Type("button"),
@@ -319,6 +365,8 @@ func OpenButton(o OpenCounts) g.Node {
 		g.Attr("data-preview-count", strconv.Itoa(n)),
 		g.Attr("data-open-previews", strconv.Itoa(o.Previews.Total())),
 		g.Attr("data-open-pages", strconv.Itoa(o.Pages)),
+		g.Attr("data-open-asks", strconv.Itoa(o.Asks)),
+		g.Attr("data-open-asks-listed", strconv.Itoa(o.AsksListed)),
 		g.Attr("aria-controls", "preview-panel"),
 		g.Attr("aria-expanded", "false"),
 		g.Attr("aria-label", OpenButtonLabel+": "+words),
@@ -326,9 +374,9 @@ func OpenButton(o OpenCounts) g.Node {
 		Class("press relative inline-flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent sm:w-[5.5rem]"),
 		g.Raw(previewIcon),
 		Span(Class("max-sm:hidden"), g.Text(OpenButtonLabel)),
-		Span(g.Attr("aria-hidden", "true"), g.Attr("data-open-badge", ""),
+		g.If(n > 0, Span(g.Attr("aria-hidden", "true"), g.Attr("data-open-badge", ""),
 			Class("pointer-events-none absolute -right-1 -top-1 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent ring-2 ring-bg"),
-			g.Text(previewCount(n))),
+			g.Text(previewCount(n)))),
 	)
 }
 
@@ -410,6 +458,7 @@ const (
 	openTabsID      = "open-tabs"
 	OpenTabPreviews = "previews"
 	OpenTabPages    = "pages"
+	OpenTabAsks     = "asks"
 )
 
 // openTabsKey is the tablist's storage key for viewer (tabs.go stores it as
@@ -431,6 +480,7 @@ func openTabCount(tab string, n int) g.Node {
 const (
 	NothingToPreview = "Nothing to preview in this session."
 	SessionPagesNone = "This session has made no pages."
+	SessionAsksNone  = "This session has asked you nothing."
 )
 
 // previewPanel is the panel the button opens (closed), and its script.
@@ -491,10 +541,18 @@ func previewPanel(c *PluginChips) g.Node {
 			),
 		),
 	)
-	tabs := TabsSelected(openTabsID, openTabsKey(c.Viewer), "Previews and pages", OpenTabPreviews,
-		Tab{ID: OpenTabPreviews, Label: "Previews", Count: openTabCount(OpenTabPreviews, c.counts().Previews.Total()), Panel: previewsBody},
-		Tab{ID: OpenTabPages, Label: "Pages", Count: openTabCount(OpenTabPages, c.Pages), Panel: pagesBody},
-	)
+	list := []Tab{
+		{ID: OpenTabPreviews, Label: "Previews", Count: openTabCount(OpenTabPreviews, c.counts().Previews.Total()), Panel: previewsBody},
+		{ID: OpenTabPages, Label: "Pages", Count: openTabCount(OpenTabPages, c.Pages), Panel: pagesBody},
+	}
+	if c.AsksOn {
+		// The session's asks (SessionAsksList), read each time the tab is
+		// shown; its count is the OPEN ones, as the button's.
+		list = append(list, Tab{ID: OpenTabAsks, Label: "Asks", Count: openTabCount(OpenTabAsks, c.Asks),
+			Panel: Div(g.Attr("data-session-asks-list", ""), g.Attr("aria-live", "polite"), Class("min-h-0 flex-1 overflow-y-auto overscroll-contain"),
+				P(Class("px-4 py-6 text-sm text-fg2"), g.Text("Loading…")))})
+	}
+	tabs := TabsSelected(openTabsID, openTabsKey(c.Viewer), "Previews, pages and asks", OpenTabPreviews, list...)
 	var first PluginChip
 	if previews {
 		first = c.Chips[0]
@@ -512,6 +570,7 @@ func previewPanel(c *PluginChips) g.Node {
 				g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
 			}),
 			g.Attr("data-pages-src", c.pagesSrc()),
+			g.If(c.AsksOn, g.Attr("data-asks-src", c.asksSrc())),
 			g.Attr("data-open-tab", OpenTabPreviews),
 			// The screen above the message bar below `sm` (the script sets
 			// its bottom to the bar's top); a full-height side panel from
@@ -527,7 +586,7 @@ func previewPanel(c *PluginChips) g.Node {
 			// are its own document's, so over a preview or a page the tabs are
 			// swiped here.
 			Div(g.Attr(TabSwipeAttr, openTabsID), Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1 group-data-[preview-full]:hidden"),
-				H2(ID("preview-panel-title"), Class("sr-only"), g.Text("Previews and pages")),
+				H2(ID("preview-panel-title"), Class("sr-only"), g.Text("Previews, pages and asks")),
 				// The tabs (tabs.go), and the new-reply dot (see the file comment).
 				Div(Class("flex min-w-0 flex-1 items-center gap-1 overflow-hidden"),
 					tabs.List,
@@ -634,6 +693,63 @@ func SessionPagesList(ps []SessionPage) g.Node {
 		)))
 	}
 	return Ul(g.Attr("data-session-pages", ""), Class("divide-y divide-line"), g.Group(items))
+}
+
+// SessionAsk is one ask in a session's Asks tab.
+type SessionAsk struct {
+	ID       int64
+	Question string
+	// Open: it waits on an answer. Answer is an answered one's answer.
+	Open   bool
+	Answer string
+	// When is when it was asked, in words (ui.PlainWhen).
+	When string
+	// Page is the ask's own page (/attention/asks/{id}), "" where its reader
+	// may not open one (api askHasPage): it is then listed unlinked.
+	Page string
+}
+
+// SessionAsksList is the Asks tab's list: the session's asks as given (open
+// first, newest first in each), each a link to its own page. An open one says
+// it waits on an answer; an answered one shows its answer. The question is an
+// agent's words, plained (textplain.Title); the answer the owner's, as typed;
+// both escaped.
+//
+// 🔴 A FULL NAVIGATION (hx-boost="false"): the ask page is a standalone
+// document, never a body swap of the agent page's shell (AskerAsksBadgeHTML's
+// rule).
+func SessionAsksList(as []SessionAsk) g.Node {
+	if len(as) == 0 {
+		return P(g.Attr("data-open-empty", OpenTabAsks), Class("px-4 py-6 text-sm text-fg2"), g.Text(SessionAsksNone))
+	}
+	items := make([]g.Node, 0, len(as))
+	for _, a := range as {
+		q := textplain.Title(a.Question)
+		state, stateCls := "Answered", "text-muted"
+		if a.Open {
+			state, stateCls = "Waiting on your answer", "text-accent"
+		}
+		body := g.Group{
+			Span(Class("flex min-w-0 w-full items-start gap-2"),
+				Span(g.Attr("data-session-ask-question", ""), Class("line-clamp-2 min-w-0 flex-1 break-words text-sm font-semibold text-fg"), g.Text(q)),
+				g.If(a.When != "", Span(Class("shrink-0 text-xs text-muted"), g.Text(a.When))),
+			),
+			Span(g.Attr("data-session-ask-state", strconv.FormatBool(a.Open)), Class("text-xs font-medium "+stateCls), g.Text(state)),
+			// The answer is the owner's own words, drawn as they typed them
+			// (escaped), not plained as a title: "<b>" in an answer is text.
+			g.If(!a.Open && a.Answer != "", Span(g.Attr("data-session-ask-answer", ""), Class("line-clamp-3 break-words text-sm text-fg2"), g.Text(a.Answer))),
+		}
+		cls := "flex min-h-[44px] w-full flex-col gap-1 px-4 py-2.5 text-left"
+		id := strconv.FormatInt(a.ID, 10)
+		if a.Page == "" {
+			items = append(items, Li(Div(g.Attr("data-session-ask", id), Class(cls), body)))
+			continue
+		}
+		label := q + ", " + strings.ToLower(state)
+		items = append(items, Li(A(Href(a.Page), hx("hx-boost", "false"), g.Attr("data-session-ask", id), g.Attr("aria-label", label),
+			Class("press "+cls+" transition hover:bg-s2"), body)))
+	}
+	return Ul(g.Attr("data-session-asks", ""), Class("divide-y divide-line"), g.Group(items))
 }
 
 // previewPanelScriptSrc opens and closes the panel, mints at click time and
@@ -1116,11 +1232,14 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (ev.target && ev.target.id === 'preview-slot') { expanded(); recount(); }
   });
 
-  // 🔴 THE TABS (Previews | Pages): tabs.go's tablist, its choice stored per
-  // viewer. The panel opens on the tab that HAS something; when both do, on
-  // the stored one (tabs.go restored it on load, and a tap or a swipe stores
-  // it again); when neither does, on Previews. Choosing on open stores
-  // nothing: only the viewer's own choice is remembered.
+  // 🔴 THE TABS (Previews | Pages | Asks): tabs.go's tablist, its choice
+  // stored per viewer. The panel opens on a tab that HAS something: the
+  // stored one when it has (tabs.go restored it on load, and a tap or a swipe
+  // stores it again), else the first that has, in the tabs' order; when none
+  // has, on Previews. Asks "has something" while the session has an ask to
+  // list (open or answered). Choosing on open stores nothing: only the
+  // viewer's own choice is remembered.
+  var TABS = ['previews', 'pages', 'asks'];
   function tabsList() { return document.getElementById('`+openTabsID+`'); }
   function tabEl(name) { var l = tabsList(); return l ? l.querySelector('[data-tab="' + name + '"]') : null; }
   function tabNow() {
@@ -1133,20 +1252,23 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   }
   // countsNow is what the button on screen counts (the slot's last answer),
   // else what the tabs were drawn with.
+  // asksListed is how many asks the Asks tab lists (open and answered).
   function countsNow() {
     var t = toggle();
-    if (t) return { previews: Number(t.getAttribute('data-open-previews')) || 0, pages: Number(t.getAttribute('data-open-pages')) || 0 };
-    var out = { previews: 0, pages: 0 };
-    ['previews', 'pages'].forEach(function (n) {
+    if (t) return { previews: Number(t.getAttribute('data-open-previews')) || 0, pages: Number(t.getAttribute('data-open-pages')) || 0,
+      asks: Number(t.getAttribute('data-open-asks')) || 0, asksListed: Number(t.getAttribute('data-open-asks-listed')) || 0 };
+    var out = { previews: 0, pages: 0, asks: 0 };
+    TABS.forEach(function (n) {
       var c = panel() && panel().querySelector('[data-open-count="' + n + '"]');
       out[n] = c ? Number(String(c.textContent).replace(/[^0-9]/g, '')) || 0 : 0;
     });
+    out.asksListed = out.asks;
     return out;
   }
   function recount() {
     var n = countsNow(), p = panel();
     if (!p) return;
-    ['previews', 'pages'].forEach(function (k) {
+    TABS.forEach(function (k) {
       var c = p.querySelector('[data-open-count="' + k + '"]');
       var v = '(' + (n[k] > `+strconv.Itoa(mirror.MaxPreviewCount)+` ? '`+strconv.Itoa(mirror.MaxPreviewCount)+`+' : n[k]) + ')';
       if (c && c.textContent !== v) c.textContent = v;
@@ -1154,21 +1276,24 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   }
   function chooseTab() {
     recount();
-    var n = countsNow(), want = 'previews';
-    if (n.pages > 0 && n.previews === 0) want = 'pages';
-    else if (n.pages > 0 && n.previews > 0) want = storedTab() === 'pages' ? 'pages' : 'previews';
+    var n = countsNow(), has = function (k) { return tabEl(k) && (k === 'asks' ? n.asksListed : n[k]) > 0; };
+    var stored = storedTab(), want = 'previews';
+    if (stored && TABS.indexOf(stored) >= 0 && has(stored)) want = stored;
+    else for (var i = 0; i < TABS.length; i++) if (has(TABS[i])) { want = TABS[i]; break; }
     var t = tabEl(want), l = tabsList();
     if (t && l && window.muTabs && t.getAttribute('aria-selected') !== 'true') window.muTabs.select(l, t, {});
   }
   // onTab follows the tab shown: the panel's header shows the Previews
   // tab's controls only on it (data-open-tab); the Previews tab mints once
-  // per opening, the Pages tab reads its list each time it is shown.
+  // per opening, the Pages and Asks tabs read their lists each time they are
+  // shown.
   function onTab() {
     var p = panel();
     if (!p || p.hidden) return;
     var t = tabNow();
     p.setAttribute('data-open-tab', t);
     if (t === 'previews') { if (!minted) show(); }
+    else if (t === 'asks') loadAsks();
     else loadPages();
   }
   document.addEventListener('click', function (ev) {
@@ -1190,6 +1315,18 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
       .then(function (res) { if (!res.ok) throw new Error(String(res.status)); return res.text(); })
       .then(function (html) { if (seq === pagesSeq) list.innerHTML = html; })
       .catch(function () { if (seq === pagesSeq) list.textContent = 'Could not read this session\'s pages. Close the panel and open it again.'; });
+  }
+  // THE ASKS TAB: the session's asks (the list route, read fresh), each a
+  // link to its own page.
+  var asksSeq = 0;
+  function loadAsks() {
+    var p = panel(), list = p.querySelector('[data-session-asks-list]');
+    if (!list || !p.getAttribute('data-asks-src')) return;
+    var seq = ++asksSeq;
+    fetch(p.getAttribute('data-asks-src'), { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
+      .then(function (res) { if (!res.ok) throw new Error(String(res.status)); return res.text(); })
+      .then(function (html) { if (seq === asksSeq) list.innerHTML = html; })
+      .catch(function () { if (seq === asksSeq) list.textContent = 'Could not read this session\'s asks. Close the panel and open it again.'; });
   }
   function openPage(b) {
     var v = pageView(), list = pagesList();

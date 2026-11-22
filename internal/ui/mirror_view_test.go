@@ -156,7 +156,7 @@ func TestAMirroredPromptsBubbleIsNamedByItsTranscriptPlace(t *testing.T) {
 // once each — and on neither the agent chat page nor the chief panel.
 func TestTheMessageIndexIsOnTheMirroredViewOnly(t *testing.T) {
 	mirror := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"}))
-	for _, want := range []string{`id="chat-index-open" role="menuitem" data-menu-close="" data-chat-index-log="mv-log"`, `id="chat-index" hidden`, "window.muIndex = {", `id="chat-index-partial" hidden`} {
+	for _, want := range []string{`id="chat-index-open" data-chat-index-log="mv-log"`, `id="chat-index" hidden`, "window.muIndex = {", `id="chat-index-partial" hidden`} {
 		if n := strings.Count(mirror, want); n != 1 {
 			t.Errorf("mirror: %q appears %d times, want 1", want, n)
 		}

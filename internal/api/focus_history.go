@@ -82,12 +82,20 @@ func (s *Server) handleFocusHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load the focus history", http.StatusInternalServerError)
 		return
 	}
+	// prev: the title the page before this one ended on (the sentinel's URL
+	// carries it), so a run of one title that spans the two reads as one
+	// group (ui focus_history.go). It only decides how this page's first
+	// rows are drawn; a made-up one draws them without their title, nothing
+	// more.
 	v := ui.FocusHistoryPageView{First: cursor == ""}
+	if !v.First {
+		v.Prev = q.Get(ui.FocusHistoryPrevParam)
+	}
 	for _, e := range page.Entries {
 		v.Entries = append(v.Entries, ui.FocusHistoryEntry{Title: e.Title, Description: e.Description, At: e.CreatedAt})
 	}
 	if page.Next != "" {
-		v.Next = ui.FocusHistoryPath(sub.String(), page.Next)
+		v.Next = ui.FocusHistoryPagePath(sub.String(), page.Next, ui.LastFocusHistoryTitle(v.Entries))
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

@@ -25,16 +25,44 @@ import (
 // The fragment is server-rendered and escaped like every other view
 // (RenderFocusHistoryPage); the script parses it with a <template>, never runs
 // anything in it.
+//
+// 🔴 ENTRIES ARE GROUPED BY TITLE (operator report: "the what it worked on
+// history seems to frequently have the same title for every entry"). A row is
+// written whenever the title OR the description changes (internal/focus), so
+// a long piece of work is many rows under one title, each a step of it. The
+// list draws CONSECUTIVE rows with the same title as ONE group: the title
+// once, its steps (description and when) under it, newest first. A title
+// change starts a new group; the same title again later is a new group too,
+// since something else was worked on between.
+//
+// 🔴 A GROUP CAN SPAN A PAGE BOUNDARY, and is still one group. The sentinel's
+// URL carries the title the page ended on (FocusHistoryPagePath's prev); a
+// page whose first group has that title draws it as a CONTINUATION — no
+// title, just its steps, marked data-focus-history-continued — and the loader
+// moves those steps into the group already on the list and drops the empty
+// row. So the list reads as if it had been drawn whole.
 
 // FocusHistoryRoute is the history fragment's route.
 const FocusHistoryRoute = "/ui/focus/history"
 
 // FocusHistoryPath is one page of subject's ("agent:12", "mirror:<sid>")
 // history: the newest page for cursor "", else the page after cursor.
-func FocusHistoryPath(subject, cursor string) string {
+func FocusHistoryPath(subject, cursor string) string { return FocusHistoryPagePath(subject, cursor, "") }
+
+// FocusHistoryPrevParam is the page URL's parameter naming the title the page
+// before it ended on (FocusHistoryPagePath).
+const FocusHistoryPrevParam = "prev"
+
+// FocusHistoryPagePath is FocusHistoryPath for the page after one whose last
+// group's title was prev ("" for none): that page draws a first group with the
+// same title as its continuation (see the file's header).
+func FocusHistoryPagePath(subject, cursor, prev string) string {
 	q := url.Values{"subject": {subject}}
 	if cursor != "" {
 		q.Set("cursor", cursor)
+	}
+	if prev != "" {
+		q.Set(FocusHistoryPrevParam, prev)
 	}
 	return FocusHistoryRoute + "?" + q.Encode()
 }
@@ -48,11 +76,46 @@ type FocusHistoryEntry struct {
 
 // FocusHistoryPageView is one fetched page: its entries, newest first, and the
 // next page's URL ("" = this page reaches the oldest). First is true for the
-// newest page, so an empty one says so instead of ending a list.
+// newest page, so an empty one says so instead of ending a list. Prev is the
+// title the page before this one ended on ("" for none): a first group with
+// that title continues it.
 type FocusHistoryPageView struct {
 	Entries []FocusHistoryEntry
 	Next    string
 	First   bool
+	Prev    string
+}
+
+// FocusHistoryGroup is a run of consecutive entries with one title.
+type FocusHistoryGroup struct {
+	// Title is the run's title, plained (textplain.Title).
+	Title   string
+	Entries []FocusHistoryEntry
+}
+
+// GroupFocusHistory is entries (newest first) as runs of one title, in
+// order: an entry whose plained title is its predecessor's joins its group,
+// any other starts a new one.
+func GroupFocusHistory(entries []FocusHistoryEntry) []FocusHistoryGroup {
+	var out []FocusHistoryGroup
+	for _, e := range entries {
+		t := textplain.Title(e.Title)
+		if n := len(out); n > 0 && out[n-1].Title == t {
+			out[n-1].Entries = append(out[n-1].Entries, e)
+			continue
+		}
+		out = append(out, FocusHistoryGroup{Title: t, Entries: []FocusHistoryEntry{e}})
+	}
+	return out
+}
+
+// LastFocusHistoryTitle is the plained title of the last of entries ("" for
+// none): what the next page's prev names.
+func LastFocusHistoryTitle(entries []FocusHistoryEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	return textplain.Title(entries[len(entries)-1].Title)
 }
 
 // RenderFocusHistoryPage writes one page as list rows: what the sentinel it
@@ -65,17 +128,35 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 	if len(v.Entries) == 0 && v.First {
 		return focusHistoryEmpty()
 	}
-	rows := make([]g.Node, 0, len(v.Entries)+1)
-	for _, e := range v.Entries {
+	groups := GroupFocusHistory(v.Entries)
+	rows := make([]g.Node, 0, len(groups)+1)
+	for i, gr := range groups {
+		steps := make([]g.Node, 0, len(gr.Entries))
+		for _, e := range gr.Entries {
+			d := textplain.Title(e.Description)
+			steps = append(steps, Li(
+				g.Attr("data-focus-history-step", ""),
+				Class("flex items-start gap-3"),
+				Span(g.Attr("data-focus-history-description", ""), Class("min-w-0 flex-1 break-words text-sm text-fg2"), g.Text(d)),
+				Span(g.Attr("data-focus-history-at", ""), Class("inline-flex shrink-0 items-center gap-1 text-xs text-muted"), cardTime(e.At), g.Text("ago")),
+			))
+		}
+		list := Ol(g.Attr("data-focus-history-steps", ""), Class("flex flex-col gap-1.5"), g.Group(steps))
+		// A run the page before this one ended in: its steps alone, which the
+		// loader moves into that run's group (see the file's header).
+		if i == 0 && !v.First && v.Prev != "" && gr.Title == v.Prev {
+			rows = append(rows, Li(
+				g.Attr("data-focus-history-continued", ""),
+				Class("flex flex-col border-b border-line px-4 pb-3"),
+				list,
+			))
+			continue
+		}
 		rows = append(rows, Li(
 			g.Attr("data-focus-history-item", ""),
-			Class("flex flex-col gap-1 border-b border-line px-4 py-3"),
-			Div(
-				Class("flex items-start gap-3"),
-				Span(g.Attr("data-focus-history-title", ""), Class("min-w-0 flex-1 break-words text-sm font-semibold text-fg"), g.Text(textplain.Title(e.Title))),
-				Span(g.Attr("data-focus-history-at", ""), Class("inline-flex shrink-0 items-center gap-1 text-xs text-muted"), cardTime(e.At), g.Text("ago")),
-			),
-			g.If(textplain.Title(e.Description) != "", P(g.Attr("data-focus-history-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(e.Description)))),
+			Class("flex flex-col gap-1.5 border-b border-line px-4 py-3"),
+			Span(g.Attr("data-focus-history-title", ""), Class("break-words text-sm font-semibold text-fg"), g.Text(gr.Title)),
+			list,
 		))
 	}
 	if v.Next != "" {
@@ -141,26 +222,6 @@ func focusHistoryButton() g.Node {
 	)
 }
 
-// focusHistoryMenuItem is focusHistoryButton as an item of a claude-code
-// agent's ⋯ menu (foldedMenuItems): the same id and data-focus-history-open,
-// so focusHistoryScript opens the same dialog; it closes the menu as it is
-// picked (data-menu-close).
-func focusHistoryMenuItem() g.Node {
-	return Button(
-		Type("button"),
-		ID("focus-history-open"),
-		g.Attr("role", "menuitem"),
-		g.Attr("data-menu-close", ""),
-		g.Attr("data-focus-history-open", "focus-history"),
-		g.Attr("aria-haspopup", "dialog"),
-		g.Attr("aria-controls", "focus-history"),
-		g.Attr("aria-expanded", "false"),
-		Class(headerMenuItemClass),
-		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>`),
-		Span(g.Text(FocusHistoryLabel)),
-	)
-}
-
 // focusHistoryDialog is the agent page's focus history: a native modal
 // <dialog> (the browser traps focus in it and closes it on Escape), a bottom
 // sheet on a phone and centred from sm up, of a FIXED height so a page
@@ -218,6 +279,13 @@ func focusHistoryScript() g.Node {
         var tpl = document.createElement('template');
         tpl.innerHTML = html;
         var list = li.parentNode;
+        // A run the last page ended in continues here: its steps join that
+        // run's group (the row before the sentinel), and the empty row goes.
+        var cont = tpl.content.firstElementChild, prev = li.previousElementSibling;
+        if (cont && cont.hasAttribute('data-focus-history-continued') && prev && prev.hasAttribute('data-focus-history-item')) {
+          var to = prev.querySelector('[data-focus-history-steps]'), from = cont.querySelector('[data-focus-history-steps]');
+          if (to && from) { while (from.firstChild) to.appendChild(from.firstChild); cont.remove(); }
+        }
         li.replaceWith(tpl.content);
         scan(list);
       })

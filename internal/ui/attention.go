@@ -212,8 +212,29 @@ func AskerAsksBadgeHTML(n int, href string, open bool) string {
 // (askerAsksRefresh does it from inside), and the mirrored view has no htmx
 // (AskerAsksLive). Without a link inside it the slot is hidden (it may still
 // hold AskerAsksOpenMark), so it takes no room and no gap in the header.
-func AskerAsksBadge(inner string) g.Node {
-	return Span(ID(AskerAsksBadgeID), Class(AskerAsksSlotClass), g.Attr("aria-live", "polite"), g.Raw(inner))
+func AskerAsksBadge(inner string) g.Node { return askerAsksBadgeWith(inner, "") }
+
+// askerAsksBadgeWith is AskerAsksBadge with extra classes on its slot.
+func askerAsksBadgeWith(inner, extra string) g.Node {
+	cls := AskerAsksSlotClass
+	if extra != "" {
+		cls += " " + extra
+	}
+	return Span(ID(AskerAsksBadgeID), Class(cls), g.Attr("aria-live", "polite"), g.Raw(inner))
+}
+
+// agentAsksBadge is an agent page's asks badge (AskerAsksBadge). 🔴 BELOW `sm`
+// IT IS NOT DRAWN WHILE THE OPEN BUTTON LISTS THE AGENT'S ASKS (c.AsksOn):
+// that button counts the same open asks, and its Asks tab lists them, each
+// opening its page — so at 390px the badge said again what the button says,
+// in the room the title needed once Chat history and What it worked on were
+// back in the row (e2e session-open.spec.ts: it left a claude-code agent's
+// title 22px). From `sm` up there is room for both.
+func agentAsksBadge(inner string, c *PluginChips) g.Node {
+	if c.on() && c.AsksOn {
+		return askerAsksBadgeWith(inner, "max-sm:hidden")
+	}
+	return AskerAsksBadge(inner)
 }
 
 // AskerAsksSlotClass is the badge slot's class: hidden while it holds no link.

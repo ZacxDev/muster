@@ -29,6 +29,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix ccagent <owner-id> <name> <token>   → prints the agent id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix page <owner-id> <title> <agent-id|0> <mirror-host|-> <mirror-session|-> <versions> <live 0|1> <age-seconds>   → prints the page id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmpage <page-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix sessask <owner-id> <agent-id|0> <mirror-host|-> <mirror-session|-> <age-seconds> <question> [answer]   → prints the ask id
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -80,6 +81,10 @@
 //	    creator (an agent, or a mirrored session on its host), its versions
 //	    and, optionally, a live link — and its removal (session-open.spec.ts:
 //	    the session view's Pages tab).
+//	  - sessask: an attention ask raised <age-seconds> ago by agent <agent-id>
+//	    or by the mirrored session <mirror-session> on <mirror-host> — open,
+//	    or answered by the owner with [answer] (its delivery waited: nothing
+//	    is owed) — for session-open.spec.ts's Asks tab; rmask removes it.
 //	  - branding: clears the instance's branding (instance_branding, 0105) —
 //	    the server's, not an owner's, so it takes no owner: nothing set, the
 //	    built-in mark, is left behind for every later spec on the shared
@@ -650,6 +655,39 @@ func run(args []string) error {
 				VALUES ($1, $2::bigint, encode(sha256(convert_to('e2e-page-link-' || $2::bigint::text || '-' || clock_timestamp()::text, 'UTF8')), 'hex'), 'live', 'e2e', now())`, owner, id); err != nil {
 				return err
 			}
+		}
+		fmt.Println(id)
+	case "sessask":
+		owner, err := num(1)
+		if err != nil || len(args) < 7 || len(args) > 8 {
+			return fmt.Errorf("usage: sessask <owner-id> <agent-id|0> <mirror-host|-> <mirror-session|-> <age-seconds> <question> [answer]")
+		}
+		agent, err := num(2)
+		if err != nil {
+			return err
+		}
+		age, err := num(5)
+		if err != nil {
+			return err
+		}
+		var agentArg, hostArg, sessArg, answerArg, byArg, deliveryArg any
+		label := "e2e session"
+		if agent > 0 {
+			agentArg = agent
+		} else {
+			hostArg, sessArg, label = args[3], args[4], "work @ "+args[3]
+		}
+		status := "open"
+		if len(args) == 8 {
+			status, answerArg, byArg, deliveryArg = "answered", args[7], "operator", "waited"
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, mirror_host, mirror_session, asker_label, question, options,
+				status, answer, answered_by, delivery, created_at, expires_at, resolved_at)
+			VALUES ($1, $2, $3, $4, $5, $6, '[]'::jsonb, $7, $8, $9, $10, now() - make_interval(secs => $11), now() + interval '1 hour',
+				CASE WHEN $7 = 'open' THEN NULL ELSE now() END) RETURNING id`,
+			owner, agentArg, hostArg, sessArg, label, args[6], status, answerArg, byArg, deliveryArg, float64(age)).Scan(&id); err != nil {
+			return fmt.Errorf("sessask: %w", err)
 		}
 		fmt.Println(id)
 	case "rmpage":

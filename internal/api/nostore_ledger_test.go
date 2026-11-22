@@ -118,6 +118,8 @@ var noStoreLiterals = map[string]string{
 	"handleSessionPages":        "a session view's Pages tab: the viewer's own pages of the window's session",
 	"handleAgentOpenButton":     "an agent page's Open button: the agent's pages, counted now",
 	"handleAgentSessionPages":   "an agent page's Pages tab: the viewer's own pages of the agent",
+	"handleSessionAsks":         "a session view's Asks tab: the viewer's own asks of the window's sessions",
+	"handleAgentSessionAsks":    "an agent page's Asks tab: the viewer's own asks of the agent",
 	"redirectTo":                "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
 	"handleAgentsHome":          "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":         "an agent page's status strip, ⋯ menu and notices, live",

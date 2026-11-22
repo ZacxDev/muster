@@ -190,6 +190,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// The agent page's Open button and its panel's Pages tab (plugin_chip.go).
 	mux.HandleFunc("GET /ui/agents/{name}/open-button", s.requireSession(s.handleAgentOpenButton))
 	mux.HandleFunc("GET /ui/agents/{name}/session-pages", s.requireSession(s.handleAgentSessionPages))
+	mux.HandleFunc("GET /ui/agents/{name}/session-asks", s.requireSession(s.handleAgentSessionAsks))
 	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
 	// card's own refresh, and the live stream's.
 	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))

@@ -80,20 +80,20 @@ func TestAgentHeaderMenuRowIsTheMenusHeight(t *testing.T) {
 
 // TestAgentHeaderToolsReserveTheirWidth: the first header row's controls right
 // of the title sit in one box whose width class is the controls' own total —
-// each h-11 w-11 (2.75rem), gap-3 (0.75rem) between — with and without focus
-// history. A frame painted part-way through parsing the row then shows each
-// control where it ends up (agentHeaderTools; e2e cls-long-transcript's stall
-// after the new-chat button is the behavioural case).
+// each h-11 w-11 (2.75rem), gap-3 (0.75rem) between; below `sm` each 2.25rem
+// with no gap (headerPhoneTools) — with and without focus history. A frame
+// painted part-way through parsing the row then shows each control where it
+// ends up (agentHeaderTools; e2e cls-long-transcript's stall after the
+// new-chat button is the behavioural case).
 func TestAgentHeaderToolsReserveTheirWidth(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		focus string
 		want  []string // the controls' aria-labels, in order
 	}{
-		// New chat alone, focus history or not: Chat history and Focus
-		// history are ⋯ menu items (historyMenuItems).
-		{"no focus history", "", []string{"New chat session"}},
-		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session"}},
+		// New chat and Chat history; What it worked on with focus history.
+		{"no focus history", "", []string{"New chat session", "Chat history"}},
+		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session", "Chat history", "What it worked on"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := sampleAgentDetailView()
@@ -148,8 +148,15 @@ func TestAgentHeaderToolsReserveTheirWidth(t *testing.T) {
 			if n == 1 {
 				want = "w-11" // one control: its own width, Tailwind's spelling
 			}
-			if !hasClass(attrOf(box, "class"), want) {
-				t.Errorf("the tools box's width class: %q, want %s", attrOf(box, "class"), want)
+			if !hasClass(attrOf(box, "class"), "sm:"+want) {
+				t.Errorf("the tools box's width class from sm: %q, want sm:%s", attrOf(box, "class"), want)
+			}
+			// Below sm: n 2.25rem tools, no gap, each narrowed by the box.
+			phone := "w-[" + strconv.FormatFloat(n*2.25, 'f', -1, 64) + "rem]"
+			for _, c := range []string{phone, "max-sm:gap-0", "max-sm:[&>*]:w-9", "max-sm:[&>form>button]:w-9"} {
+				if !hasClass(attrOf(box, "class"), c) {
+					t.Errorf("the tools box's class below sm: %q, want %s", attrOf(box, "class"), c)
+				}
 			}
 		})
 	}

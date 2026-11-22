@@ -431,7 +431,8 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// two ended up disagreeing with the shell.
 			Class(contentWidth()+" flex flex-col gap-1.5 py-2"),
 			Div(
-				Class("flex items-center gap-3"),
+				// gap-2 below `sm` (headerPhoneTools: the row's room at 390px).
+				Class("flex items-center gap-2 sm:gap-3"),
 				// Hamburger: opens the shared slide-out sidebar (appScript's initPage
 				// binds #sidebar-open). Replaces the old back-arrow — the sidebar's
 				// boosted tabs are how you leave this page now. Same markup/classes as
@@ -447,7 +448,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
 				// The agent's open asks, a count that opens the Asks page
 				// filtered to them (AskerAsksBadge), as the folded header's.
-				g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
+				g.If(v.AsksSrc != "", agentAsksBadge(v.Asks, v.Open)),
 				// The agent's Open button (its pages), while it has any.
 				previewButtonSlot(v.Open),
 				agentHeaderTools(v),
@@ -474,9 +475,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
-				// The ⋯'s extra items: a chief's memory line (chiefMemorySlot), or
-				// every other agent's Chat history and Focus history.
-				agentMenuSlotWith(v.Card, gatewayMenuExtra(v)),
+				// The ⋯'s extra item: a chief's memory line (chiefMemorySlot).
+				// Chat history and What it worked on are the first row's
+				// (agentHeaderTools).
+				agentMenuSlotWith(v.Card, gatewayChiefMemory(v)),
 				agentModelControl(v),
 			),
 		),
@@ -488,7 +490,19 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 }
 
 // agentHeaderTools is the first header row's controls right of the title: new
-// chat, chat history and (when the agent has one) focus history.
+// chat, chat history and (when the agent has one) What it worked on.
+//
+// 🔴 ALL THREE ARE IN THE ROW, AND BELOW `sm` THEY ARE COMPACT (operator ask:
+// "just put the messages and what it worked on icon button back on the page").
+// #826 had moved Chat history and What it worked on into the ⋯ menu because,
+// with the Open button drawn, the row of ☰, the title and three 44px tools
+// left the title's text 8px at 390px on a claude-code agent's one-row header
+// and 36px on a gateway agent's first row (e2e session-open.spec.ts, measured
+// on this change's base). So below `sm` each tool is 36px wide (still 44px
+// tall: the row's height, and WCAG 2.5.8's 24px minimum with room), set
+// against each other with no gap, and the rows around them are a step
+// tighter (headerPhoneTools). From `sm` up they are the 44px squares they
+// always were. Measured again by session-open.spec.ts at 390×844 and 1280×800.
 //
 // 🔴 THEIR BOX IS ITS FINAL WIDTH FROM ITS OPENING TAG. The parser can yield
 // anywhere, and under load it did inside this row: a frame painted the
@@ -499,9 +513,14 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // after the new-chat button makes it deterministic). With the width reserved,
 // the controls fill from the box's fixed left edge and the title's width is
 // settled before any of them is parsed. The width is the controls' own — each
-// h-11 w-11 (2.75rem), gap-3 (0.75rem) between — and a unit test pins it
-// against the rendered children.
+// h-11 w-11 (2.75rem), gap-3 (0.75rem) between; below `sm` 2.25rem with none
+// — and a unit test pins it against the rendered children.
 func agentHeaderTools(v AgentDetailView) g.Node { return agentHeaderToolsWith(v, false) }
+
+// headerPhoneTools is the tools box's narrowing below `sm` (agentHeaderTools):
+// every tool in it — a direct child, or the button of newChatButton's
+// display:contents form — 2.25rem (36px) wide, and no gap between them.
+const headerPhoneTools = "max-sm:gap-0 max-sm:[&>*]:w-9 max-sm:[&>form>button]:w-9 "
 
 // agentHeaderToolsWith is agentHeaderTools; compact sets the controls 0.25rem
 // apart (gap-1) instead of 0.75rem, for a claude-code agent's one-row header (foldedHeader),
@@ -511,6 +530,7 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	if compact {
 		gap = "gap-1 "
 	}
+	phone := headerPhoneTools
 	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
 	// header has (chatIndexButton), opening the same sheet — Your messages and
 	// Focus history. No ＋, no clock, no target: the operator asked for the same
@@ -524,29 +544,17 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 			chatIndexButton("chat-log"),
 		)
 	}
-	// 🔴 EVERY OTHER AGENT'S HEADER KEEPS NEW CHAT ALONE: Chat history and
-	// Focus history are items of its ⋯ menu (historyMenuItems). With the Open
-	// button drawn, the row of ☰, the title and three tools left the title
-	// 8px at 390px on a claude-code agent's one-row header and 36px on a
-	// gateway agent's first row (e2e session-open.spec.ts, measured).
+	n := 2
+	if v.FocusHistory != "" {
+		n = 3
+	}
 	return Div(
 		g.Attr("data-header-tools", ""),
-		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
+		Class("flex shrink-0 items-center "+gap+phone+agentHeaderToolsWidth(n, compact)),
 		newChatButton(v.ID),
+		chatHistoryButton(sessionDrawerID),
+		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
-}
-
-// historyMenuItems is the ⋯ menu's Chat history and Focus history (the
-// header row keeps New chat alone, agentHeaderToolsWith): nothing on a
-// chief's chat, whose list icon opens both (chatIndexButton).
-func historyMenuItems(v AgentDetailView) g.Node {
-	if v.ChiefChat != nil {
-		return nil
-	}
-	return g.Group{
-		chatHistoryMenuItem(sessionDrawerID),
-		g.If(v.FocusHistory != "", focusHistoryMenuItem()),
-	}
 }
 
 // menuRowMin is the header second row's minimum height: the ⋯ trigger's own
@@ -560,20 +568,22 @@ func menuRowMin(a AgentCardView) string {
 }
 
 // agentHeaderToolsWidth is the width class of n 2.75rem controls with 0.75rem
-// gaps between them — 0.25rem when compact — spelled as literals so Tailwind's
-// content scan sees them.
+// gaps between them — 0.25rem when compact — and, for more than one control,
+// below `sm` n 2.25rem controls with none (headerPhoneTools), spelled as
+// literals so Tailwind's content scan sees them. One control (a chief's list
+// icon) is its own 44px at every width.
 func agentHeaderToolsWidth(n int, compact bool) string {
 	switch {
 	case n == 3 && compact:
-		return "w-[8.75rem]"
+		return "w-[6.75rem] sm:w-[8.75rem]"
 	case n == 3:
-		return "w-[9.75rem]"
+		return "w-[6.75rem] sm:w-[9.75rem]"
 	case n == 1:
 		return "w-11"
 	case compact:
-		return "w-[5.75rem]"
+		return "w-[4.5rem] sm:w-[5.75rem]"
 	}
-	return "w-[6.25rem]"
+	return "w-[4.5rem] sm:w-[6.25rem]"
 }
 
 // agentTitle renders the header title. For a task-linked agent it is a clickable
@@ -891,23 +901,6 @@ func chatHistoryButton(forID string) g.Node {
 	)
 }
 
-// chatHistoryMenuItem is chatHistoryButton as an item of a claude-code
-// agent's ⋯ menu (foldedMenuItems): the same <label for> the drawer's
-// checkbox, and it closes the menu as it is picked (data-menu-close), so the
-// drawer is not drawn under a menu still in the top layer.
-func chatHistoryMenuItem(forID string) g.Node {
-	return Label(
-		g.Attr("for", forID),
-		g.Attr("role", "menuitem"),
-		g.Attr("tabindex", "0"),
-		g.Attr("data-menu-close", ""),
-		g.Attr("data-chat-history", ""),
-		Class(headerMenuItemClass+" cursor-pointer"),
-		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
-		Span(g.Text("Chat history")),
-	)
-}
-
 // newChatButton is the header control that creates a new chat session. It is a
 // tiny form POSTing to /agents/{id}/sessions; the handler returns HX-Redirect to
 // the new (or reused-empty) session, which htmx follows. The form uses
@@ -980,25 +973,13 @@ func agentModelControl(v AgentDetailView) g.Node {
 // view with no card.
 func agentMenuSlot(a AgentCardView) g.Node { return agentMenuSlotWith(a, nil) }
 
-// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none; the
-// page's Chat history and Focus history, historyMenuItems, or a chief's memory
-// line, gatewayChiefMemory).
+// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none; a
+// chief's memory line, gatewayChiefMemory).
 func agentMenuSlotWith(a AgentCardView, extra g.Node) g.Node {
 	if a.ID == 0 {
 		return nil
 	}
 	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(a, "start", extra))
-}
-
-// gatewayMenuExtra is a gateway agent's ⋯ menu's extra items: a chief chat's
-// memory slot (gatewayChiefMemory), every other agent's Chat history and Focus
-// history (historyMenuItems). nil when there are none, so the menu keeps its
-// narrow width and no divider.
-func gatewayMenuExtra(v AgentDetailView) g.Node {
-	if v.ChiefChat != nil {
-		return gatewayChiefMemory(v)
-	}
-	return historyMenuItems(v)
 }
 
 // gatewayChiefMemory is a gateway chief's ⋯ menu's memory slot (its only
