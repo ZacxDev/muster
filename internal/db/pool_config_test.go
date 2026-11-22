@@ -1,24 +1,15 @@
 package db
 
 import (
-	"runtime"
 	"testing"
 	"time"
 )
 
-// pgxDefaultMaxConns is pgx v5's own default pool size, max(4, NumCPU) — what
-// a DSN without pool_max_conns got before muster set its own.
-func pgxDefaultMaxConns() int32 {
-	n := int32(runtime.NumCPU())
-	if n < 4 {
-		n = 4
-	}
-	return n
-}
-
 // TestPoolConfigDefaultsWhenTheDSNSaysNothing: a DSN with no pool_* keys gets
 // muster's pool size and idle timeout, not pgx's CPU-derived default — in both
-// DSN forms pgx accepts.
+// DSN forms pgx accepts. On an 8-CPU host pgx's max(4, NumCPU) default is also
+// 8, so there the idle-time assertion (pgx default 30m) is the one that
+// discriminates.
 func TestPoolConfigDefaultsWhenTheDSNSaysNothing(t *testing.T) {
 	for _, dsn := range []string{
 		"postgres://u:p@127.0.0.1:5432/muster?sslmode=disable",
@@ -33,16 +24,6 @@ func TestPoolConfigDefaultsWhenTheDSNSaysNothing(t *testing.T) {
 		}
 		if cfg.MaxConnIdleTime != 5*time.Minute {
 			t.Errorf("%q: MaxConnIdleTime = %s, want 5m", dsn, cfg.MaxConnIdleTime)
-		}
-		// The size must not follow the CPU count. Where pgx's default happens
-		// to equal 8 (an 8-CPU host) the assertion above cannot tell the two
-		// apart, so say so rather than pass silently.
-		if d := pgxDefaultMaxConns(); d != 8 {
-			if cfg.MaxConns == d {
-				t.Errorf("%q: MaxConns = %d = pgx's max(4, NumCPU) default", dsn, cfg.MaxConns)
-			}
-		} else {
-			t.Logf("NumCPU=%d: pgx's default is also 8 here, so only the idle-time assertion discriminates", runtime.NumCPU())
 		}
 	}
 }
