@@ -112,7 +112,8 @@ func TestARejectedDraftsFollowUpCarriesItsBodyAndPlan(t *testing.T) {
 }
 
 // TestTheOfficerSeesTheRefusedDraftFenced: the officer's copy — the brief's
-// open items, officer_items and the claim — holds the body and the plan's
+// open items, officer_items, and every item verb's answer (claim, heartbeat,
+// release, claim-next, ask_person, complete) — holds the body and the plan's
 // payload ONLY inside one fenced untrusted block: no raw body, no raw plan
 // payload, the block parses as exactly one fence, and the plan's attempt to
 // close it sits behind the content prefix.
@@ -172,25 +173,39 @@ func TestTheOfficerSeesTheRefusedDraftFenced(t *testing.T) {
 	}
 	check("brief", find("brief", w.call(officers.ToolBrief, `{}`), "open_items"))
 	check("items", find("items", w.call(officers.ToolItems, `{"status":"open"}`), "items"))
-	claim := func(where, args string) {
+	// verb is one item verb's answer, checked: {item: …} naming the refusal,
+	// its payload the officer's fenced copy.
+	ref := strconv.FormatInt(refused, 10)
+	verb := func(where, tool, args string) {
 		t.Helper()
-		out := w.call(officers.ToolClaim, args)
-		var claimed struct {
+		out := w.call(tool, args)
+		var got struct {
 			Item struct {
 				ID      json.Number    `json:"id"`
 				Payload map[string]any `json:"payload"`
 			} `json:"item"`
 		}
-		if isToolErr(out) || json.Unmarshal([]byte(out), &claimed) != nil || claimed.Item.ID.String() != strconv.FormatInt(refused, 10) {
+		if isToolErr(out) || json.Unmarshal([]byte(out), &got) != nil || got.Item.ID.String() != ref {
 			t.Fatalf("%s: %s", where, out)
 		}
-		check(where, claimed.Item.Payload)
+		check(where, got.Item.Payload)
 	}
-	claim("claim", `{"item_id":"`+strconv.FormatInt(refused, 10)+`"}`)
-	if out := w.call(officers.ToolRelease, `{"item_id":"`+strconv.FormatInt(refused, 10)+`"}`); isToolErr(out) {
-		t.Fatalf("release: %s", out)
+	verb("claim", officers.ToolClaim, `{"item_id":"`+ref+`"}`)
+	verb("heartbeat", officers.ToolHeartbeat, `{"item_id":"`+ref+`"}`)
+	verb("release", officers.ToolRelease, `{"item_id":"`+ref+`"}`)
+	verb("claim-next", officers.ToolClaim, `{}`) // the only open item
+	verb("complete", officers.ToolComplete, `{"item_id":"`+ref+`","outcome":"no_action","summary":"redrafted elsewhere"}`)
+	// ask_person leaves its item waiting on the ask, so it gets a refusal of
+	// its own: the same plan and text, rejected again.
+	plan = w.claimedPlan("plan:fence-ask", refusalPlanPayload) // check reads it
+	id2 := w.refusalMediaDraft(plan, refusalBody)
+	if rec := w.rejectForm(id2, "redo it"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d", rec.Code)
 	}
-	claim("claim-next", `{}`) // the only open item
+	refused, _, _ = w.refusedItemOf(id2)
+	ref = strconv.FormatInt(refused, 10)
+	verb("claim 2", officers.ToolClaim, `{"item_id":"`+ref+`"}`)
+	verb("ask_person", officers.ToolAskPerson, `{"item_id":"`+ref+`","to":"owner","question":"Lead with the fix or the link?"}`)
 }
 
 // TestARedraftFromTheRefusalKeepsTheOriginalPlan: the officer redrafts from

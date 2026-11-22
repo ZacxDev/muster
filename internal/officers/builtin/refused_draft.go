@@ -34,9 +34,11 @@ import (
 //
 // 🔴 BOTH ARE UNTRUSTED DATA TO THE MODEL: the body is text an instance wrote
 // from inputs it read, and a plan's payload may hold anything its filer put
-// there. The OFFICER'S COPY of the item (every Backend read: claim,
-// claim-next, items, brief) carries them only inside one fenced block,
-// refused_draft (RefusedDraftCopy); the raw fields are removed from it. The
+// there. The OFFICER'S COPY of the item — every Backend answer that carries
+// it, encoded through answer (officerView): claim, claim-next, heartbeat,
+// complete, release, ask_person, items, brief — carries them only inside one
+// fenced block, refused_draft (RefusedDraftCopy); the raw fields are removed
+// from it, and so is a plan's payload it cannot read. The
 // stored payload keeps them raw for the owner's views and a re-file.
 
 // MaxPlanPayloadBytes bounds the plan item's payload a draft.refused item
@@ -129,6 +131,25 @@ func RefusedDraftCopy(raw json.RawMessage) json.RawMessage {
 	_ = json.Unmarshal(m["body"], &body)
 	var plan refusedPlan
 	hasPlan := len(m["plan"]) > 0 && json.Unmarshal(m["plan"], &plan) == nil && plan.ItemID > 0
+	if !hasPlan && len(m["plan"]) > 0 {
+		// A plan this cannot read (not an object, no item id) is never handed
+		// over raw either: its payload and excerpt are dropped wherever they are.
+		var loose map[string]json.RawMessage
+		if json.Unmarshal(m["plan"], &loose) == nil && loose != nil {
+			delete(loose, "payload")
+			delete(loose, "payload_excerpt")
+			m["plan"], _ = json.Marshal(loose)
+		} else {
+			delete(m, "plan")
+		}
+		if body == "" {
+			out, err := json.Marshal(m)
+			if err != nil {
+				return raw
+			}
+			return out
+		}
+	}
 	if body == "" && !hasPlan {
 		return raw
 	}
@@ -175,11 +196,47 @@ func RefusedDraftCopy(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
-// officerCopy is item it's payload as its officer is handed it, for a read
-// that renders no person (items, brief): a draft.refused item's refused
-// draft fenced (RefusedDraftCopy).
-func officerCopy(it *itemRow) {
+// officerCopy is item it as its officer is handed it: a draft.refused
+// item's refused draft fenced (RefusedDraftCopy).
+func officerCopy(it itemRow) itemRow {
 	if it.Kind == DraftRefusedKind {
 		it.Payload = RefusedDraftCopy(it.Payload)
 	}
+	return it
+}
+
+// officerView is v with every itemRow in it — itself, behind a pointer, in a
+// slice, or a value of a map[string]any, at any depth — replaced by its
+// officer's copy (officerCopy). answer encodes through it. Any other value is
+// returned as it is.
+func officerView(v any) any {
+	switch t := v.(type) {
+	case itemRow:
+		return officerCopy(t)
+	case *itemRow:
+		if t == nil {
+			return t
+		}
+		c := officerCopy(*t)
+		return &c
+	case []itemRow:
+		out := make([]itemRow, len(t))
+		for i := range t {
+			out[i] = officerCopy(t[i])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = officerView(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = officerView(x)
+		}
+		return out
+	}
+	return v
 }

@@ -139,8 +139,14 @@ func noSuchItem() error { return refuse(http.StatusNotFound, "not_found", "no su
 
 func leaseLost() error { return refuse(http.StatusConflict, "lease_lost", "lease lost", nil) }
 
+// answer is v encoded as a verb's answer to an officer instance.
+//
+// 🔴 IT IS THE OFFICER'S VIEW OF EVERY ITEM IT CARRIES: each itemRow in v (at
+// any depth of maps and slices) is encoded as its officer's copy
+// (officerView: a draft.refused item's refused draft fenced), so no verb —
+// and no verb added later — can hand the model a raw body or plan.
 func answer(v any) ([]byte, error) {
-	raw, err := json.Marshal(v)
+	raw, err := json.Marshal(officerView(v))
 	if err != nil {
 		return nil, fmt.Errorf("builtin: encode: %v", err)
 	}
@@ -234,7 +240,6 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		if it.Payload, err = withPersonTx(ctx, tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
 			return nil, err
 		}
-		officerCopy(&it)
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -284,7 +289,6 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 		if it.Payload, err = withPersonTx(b.scope(ctx), tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
 			return nil, err
 		}
-		officerCopy(&it)
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -462,9 +466,6 @@ func (b *Backend) Items(ctx context.Context, q officers.ItemsQuery) (officers.It
 	if list == nil {
 		list = []itemRow{}
 	}
-	for i := range list {
-		officerCopy(&list[i])
-	}
 	raw, err := answer(map[string]any{"items": list, "next": next})
 	if err != nil {
 		return officers.ItemsPage{}, err
@@ -548,9 +549,6 @@ func (b *Backend) brief(ctx context.Context, instance string) ([]byte, error) {
 		list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (itemRow, error) { return scanItem(r) })
 		if list == nil {
 			list = []itemRow{}
-		}
-		for i := range list {
-			officerCopy(&list[i])
 		}
 		return list, err
 	}
