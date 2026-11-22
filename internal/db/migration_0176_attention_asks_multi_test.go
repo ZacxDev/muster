@@ -4,15 +4,15 @@ import (
 	"testing"
 )
 
-// TestMigration0175MultiSelectAsks: at 0174 attention_asks has no multi column
-// (the control: a row still inserts, and reads back single-select). At 0175 the
+// TestMigration0176MultiSelectAsks: at 0175 attention_asks has no multi column
+// (the control: a row still inserts, and reads back single-select). At 0176 the
 // column is a NOT NULL boolean defaulting to false, so every row before it reads
 // single-select, and a row filed with multi = true reads back true. The body
 // re-applies cleanly, and the header's ROLLBACK block runs as written and the
 // file applies again after it.
-func TestMigration0175MultiSelectAsks(t *testing.T) {
+func TestMigration0176MultiSelectAsks(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0175_attention_multi", 174)
+	pool := freshAt(ctx, t, "ms_0176_attention_multi", 175)
 
 	multiCol := func() (dataType, nullable, def string, n int) {
 		t.Helper()
@@ -28,7 +28,7 @@ func TestMigration0175MultiSelectAsks(t *testing.T) {
 		return
 	}
 	if _, _, _, n := multiCol(); n != 0 {
-		t.Fatal("control: attention_asks already has a multi column before 0175")
+		t.Fatal("control: attention_asks already has a multi column before 0176")
 	}
 
 	insert := func(multi string) (int64, error) {
@@ -44,17 +44,17 @@ func TestMigration0175MultiSelectAsks(t *testing.T) {
 		t.Fatalf("control: a plain ask did not insert at 0174: %v", err)
 	}
 	if _, err := insert("true"); err == nil {
-		t.Fatal("control: a multi column was accepted before 0175")
+		t.Fatal("control: a multi column was accepted before 0176")
 	}
 
-	applyThroughFrom(ctx, t, pool, 175)
+	applyThroughFrom(ctx, t, pool, 176)
 
 	dataType, nullable, def, n := multiCol()
 	if n != 1 {
-		t.Fatal("attention_asks.multi is missing after 0175")
+		t.Fatal("attention_asks.multi is missing after 0176")
 	}
 	if dataType != "boolean" || nullable != "NO" || def != "false" {
-		t.Fatalf("attention_asks.multi after 0175 is %s null=%s default=%q, want boolean NOT NULL default false", dataType, nullable, def)
+		t.Fatalf("attention_asks.multi after 0176 is %s null=%s default=%q, want boolean NOT NULL default false", dataType, nullable, def)
 	}
 
 	// Every row before the column reads single-select, and a multi row reads
@@ -69,11 +69,11 @@ func TestMigration0175MultiSelectAsks(t *testing.T) {
 		return m
 	}
 	if readMulti(plain) {
-		t.Fatal("a row inserted without multi after 0175 reads multi = true, want the false default")
+		t.Fatal("a row inserted without multi after 0176 reads multi = true, want the false default")
 	}
 	multi, err := insert("true")
 	if err != nil {
-		t.Fatalf("a multi ask did not insert after 0175: %v", err)
+		t.Fatalf("a multi ask did not insert after 0176: %v", err)
 	}
 	if !readMulti(multi) {
 		t.Fatal("a row inserted with multi = true reads back false")
@@ -81,20 +81,20 @@ func TestMigration0175MultiSelectAsks(t *testing.T) {
 
 	// The body is idempotent: applying it again changes nothing and does not
 	// error (its ADD COLUMN IF NOT EXISTS is the guard).
-	mustExec(ctx, t, pool, readMigration(t, "0175_attention_asks_multi.sql"))
+	mustExec(ctx, t, pool, readMigration(t, "0176_attention_asks_multi.sql"))
 	if _, _, _, gn := multiCol(); gn != 1 {
-		t.Fatal("re-applying 0175 dropped the multi column")
+		t.Fatal("re-applying 0176 dropped the multi column")
 	}
 
 	// The header's ROLLBACK block, as written: the column goes, the version is
 	// unrecorded, and re-applying the file restores both.
 	mustExec(ctx, t, pool, `ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS multi`)
-	mustExec(ctx, t, pool, `DELETE FROM schema_migrations WHERE version = 175`)
+	mustExec(ctx, t, pool, `DELETE FROM schema_migrations WHERE version = 176`)
 	if _, _, _, gn := multiCol(); gn != 0 {
 		t.Fatal("the ROLLBACK block did not drop the multi column")
 	}
-	applyThroughFrom(ctx, t, pool, 175)
+	applyThroughFrom(ctx, t, pool, 176)
 	if _, _, _, gn := multiCol(); gn != 1 {
-		t.Fatal("0175 did not re-apply after its ROLLBACK block")
+		t.Fatal("0176 did not re-apply after its ROLLBACK block")
 	}
 }
