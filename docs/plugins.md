@@ -3257,6 +3257,19 @@ turn for each message says when to do this.
      cannot be made for another reason (the message became `no_reply`, a reply
      to it is already on its way) is handed back the same way.
 
+     **The session that wrote it is told your decision.** When you approve or
+     reject such a draft — on the Drafts tab, the Open tab's card, an officer
+     chat, your phone's step-up, or `plugin_draft_decide` — muster queues one
+     line for that session's window (`muster: you approved reply draft #531
+     (route rt_…), which this session wrote. …`; a rejection carries the
+     reason you gave, fenced), and once its plugin reports the approved draft
+     sent, failed, or it lapses unconfirmed, one more (`… — it was sent.`).
+     Never the draft's text, the sender's message or the plugin's detail. The
+     draft's card says where the line went (*Sent to …*, *Waiting for … to be
+     idle*, *Not delivered: …* with Retry delivery). An already-approved draft
+     (an allowlisted sender) has no decision of yours, so it wakes nothing.
+     The rules are [attention.md](attention.md#waking-a-mirrored-session)'s.
+
    Allowlist entries are `<user id>:<plugin name>:<address>` or
    `<user id>:<plugin name>:*@<domain>`. Addresses are compared in ASCII only
    (no Unicode case folding), so a look-alike such as the Kelvin sign `K` never

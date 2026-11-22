@@ -1380,7 +1380,7 @@ When you answer an ask — on `/attention`, or through a mirrored session's
 | asker | what happens |
 |---|---|
 | a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask by id (no question text outside the fence), then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. An answer given through `attention_answer` says so in muster's line: *"— answered by the operator via MCP from `<host>`/`<claude session id>`, their mirrored Claude Code session, not on the Attention view"* (the host and id are re-checked against the mirror wire's shapes before they are written outside the fence). |
-| a mirrored Claude Code session | nothing is pushed: muster types into a mirrored window only for your own message (the send queue's step-up gate). The session reads the answer with `attention_wait`; an answer given through `attention_answer` carries `answered_via: "mcp"` and `answered_from: "<host>/<session>"` there. |
+| a mirrored Claude Code session | muster queues **one message** for the session's window, through its [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle): pasted once Claude Code is idle, never mid-turn ([below](#waking-a-mirrored-session)). It is muster's line naming the ask by id, then your answer, fenced exactly as a dispatched agent's (`<<<attention-answer untrusted …>>>`); the session's own question is not typed back. A session blocked in `attention_wait` reads the answer there instead, and then nothing is pasted. An answer given through `attention_answer` carries `answered_via: "mcp"` and `answered_from: "<host>/<session>"` in `attention_wait`. |
 | muster itself (a system ask) | nothing to deliver. |
 
 **Exactly once.** The delivery is a state on the ask's row, and every move is
@@ -1407,13 +1407,77 @@ did not take (busy, not ready) stays queued.
 **Where it went.** Below the open items, `/attention` lists the last day's
 answers and where each went: *Queued for …* (with why, while it waits),
 *Delivering…*, *Delivered to …*, *… read it while waiting for it*, *Waiting for …
-to read it* (a mirrored session), or *Delivery failed: …* with **Retry delivery**
+to read it* (a team's or an opencode session, which muster does not type into),
+a mirrored session's own lines ([below](#waking-a-mirrored-session)), or
+*Delivery failed: …* with **Retry delivery**
 (`POST /attention/asks/{id}/redeliver`, your own asks only), which queues it
 once more. An answer given through `attention_answer` also reads *Given via MCP
 from your mirrored session `<host>`/`<session>`*.
 
 **No backfill.** An answer recorded before 0031 has no delivery state and is
 never pushed.
+
+### Waking a mirrored session
+
+When you decide something a **mirrored Claude Code session** is waiting on,
+muster tells that session, so it carries on without you going back to type
+"I decided, check" (migration 0177, `internal/api/session_wake.go`):
+
+| what you did | the session it goes to | what is pasted |
+|---|---|---|
+| answered an ask it raised (the Asks page, your phone, or `attention_answer` from another session) | the ask's own session | `muster: you answered ask #984, which this session asked. …` then your answer, fenced (`<<<attention-answer untrusted …>>>`) |
+| dismissed an ask it raised (the Asks page's or your phone's Dismiss) | the ask's own session | `muster: you dismissed ask #984, which this session asked, without answering it. No answer is coming: …` |
+| approved or rejected a reply draft it wrote (a [routed message's](plugins.md#routing-a-message-to-a-session) answer), from any door | the route's session | `muster: you approved reply draft #531 (route rt_…), which this session wrote. …`, or `… you rejected …` with the reason you gave, fenced |
+| that approved draft was later sent, failed, or not confirmed | the route's session | `muster: you approved reply draft #531 (route rt_…), which this session wrote — it was sent.` (or could not be sent, or may or may not have been sent) |
+| responded on a page it made, from [your own view](pages.md#the-owners-view) | the page's session | `muster: you responded on page #12 (component q1), …` then your response, fenced |
+| anyone else responded on that page (a link's viewer, a team member) | the page's session | `muster: page #12, which this session made, got 3 new responses from its viewers — read them with page_responses{page_id: 12}.` |
+
+An answer typed into the session itself, the chief's answer to a question put
+to it, a dispatch approval and a draft muster approved on its own (an
+allowlisted sender) wake nothing.
+
+🔴 **Only muster's words and yours.** One function builds every one of these
+messages, and it reads only ids, a decision word, a count, a page component's
+name and your own words (your answer, your rejection reason, your own page
+response). A page response from anyone else is a count and never its text,
+which the database also refuses to store with it; a draft's body, its
+plugin's detail, the sender's message, a page's title and the session's own
+question are never typed. Your words travel inside the fence, each line
+sanitised.
+
+🔴 **Through the send queue, once.** The message is a row of the window's send
+queue of its own kind (`send_queue.session_wake_id`), so every queue rule
+holds: it waits until Claude Code has been idle for `MUSTER_SEND_QUEUE_IDLE`,
+one at a time, never into a prompt; "Pasted, not submitted" and a paste the
+host did not confirm count as possibly delivered and are never resent. It is
+not your message, so it needs no sign-in, and it is not listed, edited or
+retried in the window's queue. Its delivery is a state of its own, with the
+answer delivery's states: *queued* (no window shows the session yet) →
+*delivering* (in the window's queue) → *delivered*, or *unconfirmed*. At most
+one queue row is live per message, and the paste is refused unless the
+message still names that row.
+
+🔴 **Never twice, never to another session.** A session that read the answer
+or the dismissal in `attention_wait` is not typed into: the wait closes the
+message, and the paste re-reads both the message and the ask. The message is
+bound to the session's host and Claude Code session id, and goes only to the
+window whose host reports that session now; the queue row is pinned to it, so
+a `/clear` or a new `claude` in the window between queueing and the paste is
+refused with nothing typed. A message no window shows waits, saying why, and a
+day after it was given (or retried) settles **Not delivered**, as does one
+whose window kept refusing it or stayed busy for a day.
+
+**Where it went.** The answer's card on the Answered tab, the ask's own page
+and the draft's card say it: *Waiting for <session> to be idle*, *Waiting to
+send it to <session>: no window shows the session now*, *Sent to <session>*,
+*<session> read it while waiting for it*, or *Not delivered: …* with **Retry
+delivery** (the Answered card's own Retry; `POST /attention/wakes/{id}/retry`
+on the ask page and the draft card), which queues it once more. Page responses
+are not drawn anywhere yet.
+
+A **team's** sessions and **opencode** windows get none of these in this
+phase. Other viewers' responses fold into one line while it is still waiting
+to be queued (the attention sweep, every 30 seconds, queues it).
 
 ## Answering
 

@@ -6,13 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -27,92 +25,6 @@ import (
 // The host is played (wakeMirror: one window whose Claude Code session,
 // status and pastes the test controls); the send queue, its dispatcher, the
 // stores, the gate and every row are muster's own, on Postgres.
-
-// wakePaste is one paste the fake host took.
-type wakePaste struct {
-	window, text, shown string
-}
-
-// wakeMirror is a host "tower" with one Claude Code window (@4 in tmux
-// session "work"), visible only to its owner. sid is the Claude session the
-// window holds now; busy holds the queue; gone lists no window at all.
-type wakeMirror struct {
-	*routeMirror
-	mu     sync.Mutex
-	owner  int64
-	sid    string
-	busy   bool
-	gone   bool
-	since  int64
-	pastes []wakePaste
-}
-
-func (m *wakeMirror) window() mirror.Window {
-	return mirror.Window{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true, ClaudeSession: m.sid,
-		Status: m.status(), StatusSince: m.since}
-}
-
-func (m *wakeMirror) status() string {
-	if m.busy {
-		return mirror.StatusBusy
-	}
-	return mirror.StatusIdle
-}
-
-func (m *wakeMirror) Hosts(ctx context.Context) []mirror.HostView {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if p, ok := authz.From(ctx); !ok || p.UserID != m.owner {
-		return nil // another owner sees none of this host
-	}
-	var raw []mirror.Window
-	if !m.gone {
-		raw = append(raw, m.window())
-	}
-	ws := mirror.NormalizeWindows(raw, 0)
-	h := mirror.HostView{Host: "tower", Windows: ws, Online: true, Rendered: true, Interactive: true, PanePaste: true, StatusReport: true}
-	h.Sessions, h.Claude, h.Labels, h.Activity = mirror.SessionsOf(ws)
-	return []mirror.HostView{h}
-}
-
-func (m *wakeMirror) AgentState(ctx context.Context, host, session, window string) mirror.AgentState {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return mirror.AgentState{Runtime: mirror.RuntimeClaude, Status: m.status(), Since: m.since,
-		Observed: time.Now().Add(-time.Hour), Session: m.sid}
-}
-
-// PasteWindow takes a paste as the real host does for these purposes: into a
-// window still holding the session the paste is pinned to (ShownSession),
-// else refused with nothing typed.
-func (m *wakeMirror) PasteWindow(ctx context.Context, host, session, window, text string, _ mirror.PasteTarget, opts ...mirror.PasteOption) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	o := mirror.PasteOptionsOf(opts...)
-	if m.gone {
-		return mirror.ErrHostOffline
-	}
-	if err := m.window().ShownSessionRefusal(o.Shown); err != nil {
-		return err
-	}
-	m.pastes = append(m.pastes, wakePaste{window: window, text: text, shown: o.Shown})
-	// The turn the paste starts ends: a newer status time, so the next
-	// queued message is not held behind it.
-	m.since++
-	return nil
-}
-
-func (m *wakeMirror) set(f func(*wakeMirror)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	f(m)
-}
-
-func (m *wakeMirror) taken() []wakePaste {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]wakePaste(nil), m.pastes...)
-}
 
 type wakeFixture struct {
 	*routeFixture

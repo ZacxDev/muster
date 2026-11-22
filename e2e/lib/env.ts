@@ -595,6 +595,11 @@ export const qrGotruePort = Number(process.env.MUSTER_E2E_QR_GOTRUE_PORT ?? port
 // MUSTER_ANDROID_PACKAGE set, so no other spec's server names an app. +493:
 // clear of the blocks above.
 export const qrHandoffPort = port + 493;
+// tests/session-wake.spec.ts: a decision wakes the mirrored session — its own
+// password-mode server and its fake host's loopback MCP endpoint. +494 and
+// +495: clear of the blocks above.
+export const sessionWakePort = port + 494;
+export const sessionWakeMirrorMCPPort = port + 495;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

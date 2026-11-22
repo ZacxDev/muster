@@ -147,6 +147,7 @@ cookie POST /attention/asks/{id}/answer
 cookie POST /attention/asks/{id}/cancel
 cookie POST /attention/asks/{id}/redeliver
 cookie POST /attention/opencode/answer
+cookie POST /attention/wakes/{id}/retry
 cookie POST /auth/confirm
 cookie POST /auth/confirm/passkey/options
 cookie POST /auth/confirm/passkey/verify

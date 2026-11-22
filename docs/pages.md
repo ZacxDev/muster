@@ -769,6 +769,22 @@ links** (its own toggle on Account → Notifications), naming the page and the
 part by its label (*Through “Your details”*), never what was sent; at most
 one a minute per page.
 
+**The mirrored session that made the page is told too**, through its window's
+send queue ([attention.md](attention.md#waking-a-mirrored-session)), using the
+session and host recorded when the page was made:
+
+- **your own response** (from [your own view](#the-owners-view)) is relayed
+  with its content, fenced: `muster: you responded on page #12 (component
+  q1), which this session made, from your own view. …` then each field as
+  JSON, one per line (a file says only that you sent one);
+- **anyone else's** — a link's viewer, a team member — becomes ONE line,
+  `muster: page #12, which this session made, got 3 new responses from its
+  viewers — read them with page_responses{page_id: 12}.`, with no part of what
+  they sent. Responses that arrive before the line is queued fold into it.
+
+The page's title is not in either line. A dispatched agent's pages wake
+nothing (it reads `page_responses` itself).
+
 ### If a page's notification did not arrive
 
 Each page notification that reaches nobody is logged where it is dropped:

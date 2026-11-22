@@ -1053,20 +1053,14 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 // gates, then mirrorPaste into the window's Claude Code pane with opts. The
 // dispatcher's send passes the turn it decided on (mirror.ExpectTurn); a
 // person's Send now passes none, so it is pasted like a Send — busy or not.
-func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) sendqueue.Outcome {
-	o := s.sendQueueDeliverOnce(ctx, it, opts...)
+func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) (out sendqueue.Outcome) {
 	if it.SessionWakeID != 0 {
 		// A session wake's row: its outcome is the wake's (session_wake.go),
-		// recorded here on EVERY return — the gate's refusal, the host's, the
+		// recorded on EVERY return — the gate's refusal, the host's, the
 		// paste's — conditional on the wake still being this row's.
-		s.wakeOutcome(ctx, it, o)
+		wctx := ctx
+		defer func() { s.wakeOutcome(wctx, it, out) }()
 	}
-	return o
-}
-
-// sendQueueDeliverOnce is sendQueueDeliver's delivery, before a wake row's
-// outcome is recorded.
-func (s *Server) sendQueueDeliverOnce(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) sendqueue.Outcome {
 	ctx = stepup.WithAuthTime(ctx, it.StepUpAt)
 	if s.ext.Mirror == nil {
 		return sendqueue.Outcome{Detail: "Not sent: mirrored sessions are off on this server."}

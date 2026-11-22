@@ -201,7 +201,7 @@ Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
-menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [chief nudge](chief-nudges.md#live-mode) or a relayed answer), **Copy message**
+menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [chief nudge](chief-nudges.md#live-mode), a relayed answer or muster's line about your decision), **Copy message**
 and **Cancel**. It is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.
@@ -267,6 +267,19 @@ dispatched agents and the chief panel have no Queue.
   ([plugins.md](plugins.md#routing-a-message-to-a-session)).
 - 🔴 **A usage limit holds the queue.** See
   [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
+- **muster's own line about your decision.** When you answer, dismiss or
+  decide something a mirrored session is waiting on (an ask it raised, a reply
+  draft it wrote, a page it made), muster queues one message of its own for
+  the session's window ([attention.md](attention.md#waking-a-mirrored-session)).
+  It is sent like any queued message — once idle, one at a time, pinned to the
+  Claude session it is for — but it is muster's, not yours: it needs no
+  sign-in (its own record gates it at the paste instead, refusing a message
+  the session already read in `attention_wait`), and it is never edited or
+  retried in the queue. It is listed while it waits, like a routed message;
+  **Cancel** there stops it (the Asks page then says *Not delivered: it was
+  cancelled in the session's queue*, with Retry delivery). A failed one is
+  not kept in the list. 🔴 Its text is muster's sentence plus your own words
+  (your answer, your reason, your own page response), never a third party's.
 - **At most 20** messages can wait per window. The list shows only what still
   needs something: messages queued or being sent, and your own failed messages
   that you have not retried or deleted. A sent or cancelled message leaves the

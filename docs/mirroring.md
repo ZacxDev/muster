@@ -628,6 +628,14 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
+muster itself also types into an interactive host's Claude Code window, through
+the window's send queue only, for a few things you decided that a session is
+waiting on: your answer to its ask, your Dismiss, your decision on a reply
+draft it wrote and that draft's send outcome, and responses on a page it made
+([attention.md](attention.md#waking-a-mirrored-session)). Each is muster's
+line plus your own words, never anyone else's, pasted once the window is idle
+and only into the Claude Code session it is for.
+
 On a touch screen the **Rendered view's** box starts collapsed, to give the
 conversation the room: its row is **Type a message** (a keyboard) beside the
 mic, the session's **⋯** and Send. Tapping **Type a message** opens the box and
