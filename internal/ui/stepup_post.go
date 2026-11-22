@@ -63,6 +63,15 @@ const (
 	// (StepUpFeedThumbClass each, in the image's own proportions).
 	StepUpFeedMediaClass = "flex min-w-0 flex-wrap gap-1"
 	StepUpFeedThumbClass = "h-20 w-auto max-w-[12rem] rounded-lg border border-line bg-s1 object-cover"
+	// A VIDEO'S CLASSES (internal/api stepUpMediumHTML). Full size it is drawn
+	// whole (object-contain, on black), never cropped; on the feed it is a
+	// thumbnail — its first frame under StepUpPlayMarkClass's play mark, in
+	// StepUpFeedVideoThumbClass's box — with no controls.
+	StepUpVideoOneClass       = "block h-auto max-h-[32rem] w-full bg-black object-contain"
+	StepUpVideoTileClass      = "block aspect-square h-full w-full bg-black object-contain"
+	StepUpFeedVideoThumbClass = "relative inline-flex shrink-0 overflow-hidden rounded-lg border border-line bg-black"
+	StepUpFeedVideoClass      = "pointer-events-none block h-20 w-auto max-w-[12rem] object-cover"
+	StepUpPlayMarkClass       = "pointer-events-none absolute inset-0 flex items-center justify-center"
 	// The feed card's own lines: its title, its why and where lines
 	// (StepUpFeedLineClass), its changed-draft note.
 	StepUpFeedClass        = "flex min-w-0 flex-col gap-2"
@@ -128,3 +137,7 @@ func VenueLogoSVG(venue, cls string) string {
 	key := VenueLogoKey(venue)
 	return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="` + cls + `" data-venue-logo="` + key + `">` + venueLogos[key] + `</svg>`
 }
+
+// StepUpPlayGlyph is the play mark over a video's thumbnail: the theme's
+// text colour on a translucent disc of its background, legible over a frame.
+const StepUpPlayGlyph = `<svg class="h-7 w-7 drop-shadow" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><circle cx="14" cy="14" r="13" class="fill-bg/70"/><path d="M11 8.5v11l9-5.5z" class="fill-fg"/></svg>`

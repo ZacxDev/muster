@@ -1297,7 +1297,9 @@ it, the same preview as its step-up card: the venue's logo and name, what the
 draft does there ("New post", "Reply", "Direct message to @…"), the exact
 body as paragraphs (every hidden or bidi character a visible flag, every
 look-alike word highlighted, as for every draft), and every uploaded image
-rendered and every video playable. For a reply target, the human reply muster
+rendered and every video playable (whole, never cropped; on the Asks feed's
+compact preview a video is its first frame under a play mark, and a tap opens
+the card where it plays). For a reply target, the human reply muster
 received with that `thread` is quoted above it, escaped and labelled
 untrusted, or a line says none arrived. The target, the reason it was drafted
 and each medium's ref, type, size and SHA-256 are under **Details**.

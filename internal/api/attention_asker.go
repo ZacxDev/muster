@@ -145,7 +145,13 @@ func (s *Server) resolveAsker(ctx context.Context, r askerRef, hosts func() []mi
 
 // has reports whether it is one of k's asks: an ask (not a notice, not another
 // kind of item) raised by k (from).
+//
+// 🔴 FOR AN AGENT IT IS agentAskOf (asks_filter.go), the predicate the Asks
+// page's agent chip keeps by: the badge's count is the filtered list's cards.
 func (k askerOf) has(it attentionItem, hosts func() []mirror.HostView) bool {
+	if k.ref.agent != "" {
+		return k.agentID > 0 && agentAskOf(it) == k.agentID
+	}
 	return it.Kind == attentionKindAsk && k.from(it, hosts)
 }
 

@@ -430,6 +430,12 @@ var (
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
 		"e2e/asksfeedfix.run",
+		// The Asks page's filter-chip, scroll and video fixture
+		// (e2e/asksfiltfix): the same, for one owner's queue from several
+		// sources and a second (member) owner's officer items. A fixture
+		// command, never linked into a binary, and it refuses any database
+		// not ending in _e2e.
+		"e2e/asksfiltfix.asUser",
 		// The Pages screens' browser fixture (e2e/pagesfix): it writes and
 		// clears pages, versions, links and responses through the real store
 		// AS the named fixture user. A fixture command, never linked into a

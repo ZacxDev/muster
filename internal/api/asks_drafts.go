@@ -372,6 +372,11 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the reply drafts could not be read"})
 		return
 	}
+	// The page's filter (asks_filter.go): the same lists it drew.
+	if flt := s.requestAsksFilter(r, nil); flt.on() {
+		x := s.readAskSources(r.Context(), append(append([]plugins.DraftCard{}, pending...), archived...))
+		pending, archived = flt.draftCards(x, pending), flt.draftCards(x, archived)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"pending":     draftListHTML(pending, draftsPendingEmpty),
@@ -387,7 +392,10 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 //   - the tab is kept in the URL (?tab=), replaced not pushed, so a reload or
 //     a shared link opens the same tab. The PATH is always /attention: a
 //     refusal drawn in answer to a decision's POST (/plugins/drafts/N/approve)
-//     must not leave a POST-only address behind for a reload to 405 on;
+//     must not leave a POST-only address behind for a reload to 405 on. A tab
+//     CHANGE also drops the fragment and lands at the top of the page;
+//   - the live lists re-read with the address's filter (?type=, ?from=:
+//     asks_filter.go), filterQuery;
 //   - a fragment naming a card inside a hidden panel opens that panel's tabs
 //     and scrolls to it (a push opened on ?tab=drafts for a draft that was
 //     decided meanwhile lands on it in Archived);
@@ -403,21 +411,44 @@ const asksPageScript = `<script>
 (function () {
   var root = document.querySelector('[data-asks-tabs]');
   if (!root) return;
+  // filterQuery: the address's filter (?type=, ?from=: asks_filter.go) as a
+  // query to add after sep, "" for none — what every live list re-reads with.
+  function filterQuery(sep) {
+    var out = [];
+    try {
+      var u = new URL(window.location.href);
+      ['` + asksTypeParam + `', '` + askerFromParam + `'].forEach(function (k) { var v = u.searchParams.get(k); if (v) out.push(k + '=' + encodeURIComponent(v)); });
+    } catch (e) {}
+    return out.length ? sep + out.join('&') : '';
+  }
   function selected(id) {
     var list = document.getElementById(id);
     var t = list && list.querySelector('[role="tab"][aria-selected="true"]');
     return t ? t.getAttribute('data-tab') : '';
   }
+  // shown: the tab on screen, so syncURL can tell a tab CHANGE from a
+  // toggle inside one.
+  var shown = selected('asks-tabs');
   function syncURL() {
     var arch = document.getElementById('asks-drafts-archived-section');
     var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabAnswered + `' ? top : (arch && !arch.hidden ? '` + asksTabArchived + `' : '` + asksTabDrafts + `'));
+    var moved = top !== shown;
+    shown = top;
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
       if (v) u.searchParams.set('` + asksTabParam + `', v); else u.searchParams.delete('` + asksTabParam + `');
+      // 🔴 A TAB CHANGE DROPS THE FRAGMENT: it named a card of the tab left
+      // (#draft-12, where a decision landed), and kept it re-opened THAT tab
+      // and scrolled to that card on the next reload, whatever tab was chosen.
+      if (moved) u.hash = '';
       if (u.href !== window.location.href) history.replaceState(history.state, '', u.href);
     } catch (e) {}
+    // 🔴 A NEW TAB OPENS AT ITS TOP: the page kept the offset the last tab was
+    // scrolled to, so a long tab opened part-way down its list.
+    if (moved && window.scrollY > 0) window.scrollTo(0, 0);
     if (top === '` + asksTabLog + `') loadLog();
+    if (window.muAsksChips) window.muAsksChips(v);
   }
   // The Log tab's panel is fetched the first time the tab is opened
   // (ask_log_read.go): the page's own render reads nothing from the log.
@@ -486,6 +517,12 @@ const asksPageScript = `<script>
         if (tab) window.muTabs.select(tab.closest('[data-tabs]'), tab, {});
       }
     }
+    // The tab the jump opened is the tab on screen now (shown), as a tap
+    // would make it: a later tap on the tab it left is a tab CHANGE (top of
+    // the page, the fragment dropped). The address names the tab; the jump
+    // keeps its fragment.
+    shown = selected('asks-tabs');
+    syncURL();
     el.scrollIntoView({ block: 'start' });
   }
   reveal();
@@ -493,7 +530,7 @@ const asksPageScript = `<script>
   // The Answered feed follows the queue's event too (it has no field to keep).
   var answered = document.getElementById('attention-answered');
   if (answered) document.addEventListener('asks:changed', function () {
-    fetch('` + attentionPath + `/items?part=answered', { credentials: 'same-origin' }).then(function (r) {
+    fetch('` + attentionPath + `/items?part=answered' + filterQuery('&'), { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.text() : null;
     }).then(function (h) {
       if (h === null) return;
@@ -529,6 +566,7 @@ const asksPageScript = `<script>
     if (dlg && dlg.open) return;
     var q = '';
     try { var d = new URL(window.location.href).searchParams.get('` + asksDraftParam + `'); if (d) q = '?` + asksDraftParam + `=' + encodeURIComponent(d); } catch (e) {}
+    q += filterQuery(q ? '&' : '?');
     fetch('` + asksDraftsPath + `' + q, { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.json() : null;
     }).then(function (j) {

@@ -720,7 +720,7 @@ func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) (retryEnded []Draf
 			"plugin.draft.expired", "not sent within 7 days of being written", OutboundExpired},
 		{`UPDATE plugin_reply_drafts SET status = 'unconfirmed'
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
-			              WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now()
+			              WHERE ` + lapsedLeaseSQL("plugin_reply_drafts") + `
 			              ORDER BY id FOR UPDATE)
 			RETURNING ` + draftCols,
 			"plugin.draft.unconfirmed", "lease lapsed without a result", OutboundUnconfirmed},
@@ -898,6 +898,36 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
+// DraftCardsByID is the drafts ids names that ctx's principal can read
+// (row-level security: another owner's is simply absent), as cards — exactly
+// what DraftCard reads for one — in two fixed reads (the reply drafts' shape
+// and the outbound drafts'), however many ids. 🔴 IT DOES NOT SWEEP: the Asks
+// page calls it on every render (its step-up cards' drafts: their decision
+// controls and their filter chips), and a sweep is a write transaction. A
+// draft whose time has decided it but that no sweep has yet settled reads as
+// its stored status; the caller tells (DraftTimeDecided).
+func (s *PGStore) DraftCardsByID(ctx context.Context, ids []int64) ([]DraftCard, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err := s.replyDraftCards(ctx, `WHERE d.id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	outbound, err := s.outboundDraftCards(ctx, `WHERE d.id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, outbound...), nil
+}
+
+// DraftTimeDecided reports whether d is one the next sweep settles by time
+// alone (sweepDrafts' first step: pending or approved, unclaimed, past its
+// expiry) — what a read that does not sweep must not offer a decision on.
+func DraftTimeDecided(d Draft, now time.Time) bool {
+	return (d.Status == DraftPending || d.Status == DraftApproved) && d.ClaimedAt == nil && !d.ExpiresAt.After(now)
+}
+
 // SearchDraftCards is the Asks page's search box over drafts: the draft with
 // id draftID (0: none), or the caller's OWN drafts whose text contains text
 // ("" none: case-insensitive, a plain substring — % _ and \ are themselves)
@@ -973,10 +1003,25 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, order draftOrder,
 	return out, nil
 }
 
+// lapsedLeaseSQL is the condition, over table alias t, of a draft whose claim
+// lapsed without a result: what the sweep's second step makes `unconfirmed`.
+// ONE PLACE: the sweep and unconfirmedSQL both spell it from here.
+func lapsedLeaseSQL(t string) string {
+	return t + ".status = 'approved' AND " + t + ".claimed_at IS NOT NULL AND " + t + ".lease_until <= now()"
+}
+
+// unconfirmedSQL is the condition, over alias t, of a draft that IS
+// unconfirmed — stored so, or a lapsed lease no sweep has settled yet
+// (lapsedLeaseSQL): a read that does not sweep (DraftCardsByID) must still
+// warn that the sender may get both.
+func unconfirmedSQL(t string) string {
+	return t + ".status = 'unconfirmed' OR (" + lapsedLeaseSQL(t) + ")"
+}
+
 func (s *PGStore) replyDraftCards(ctx context.Context, tail string, args ...any) ([]DraftCard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
-		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
+		                WHERE o.message_id = d.message_id AND o.id <> d.id AND (`+unconfirmedSQL("o")+`)),
 		       coalesce(r.target_kind, ''), coalesce(r.target_key, ''), coalesce(r.target_label, '')
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id

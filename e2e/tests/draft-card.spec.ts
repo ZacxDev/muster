@@ -241,3 +241,71 @@ for (const vp of [
     });
   });
 }
+
+// THE OPEN TAB'S STEP-UP CARD ABOUT A DRAFT CARRIES THE DRAFT'S OWN DECISION
+// (internal/api stepup_draft_actions.go; the operator: "there is no button to
+// approve the asks in the ui anymore … I could do it from the drafts page, but
+// that's confusing"). A confirmation card a host session filed for a draft
+// ("Post to X? · Draft #N") stays phone-only for its own Confirm/Refuse, but
+// draws the draft's Approve and send and Reject — the Drafts tab's — so a tap
+// on the Open tab approves the draft, the card leaves the feed, and the
+// browser stays on the Open tab (never the Drafts tab).
+// 🔴 RED AT origin/main: the card drew only "Confirm this on your phone."
+const stepup = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/stepupfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+const OPEN_POST = 'Launch day: the new release is out.\n\nRead the notes on the blog.';
+const shotDir = process.env.OPEN_APPROVE_SHOTS ?? '';
+
+for (const vp of [
+  { name: 'phone 390×844', key: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', key: 'desktop', use: { viewport: { width: 1440, height: 900 } } },
+]) {
+  test.describe(`the Open tab's draft step-up card, ${vp.name}`, () => {
+    test.use(vp.use);
+    test.afterAll(() => {
+      stepup('clear', '1');
+    });
+    test('Approve and send on the Open tab approves the draft and the card leaves the feed', async ({ page }, testInfo) => {
+      const x = `e2e-openapprove-${vp.key}-${stamp}`;
+      plugins.push(x);
+      const draftID = fix('outbound', '1', agentName, x, 'x', OPEN_POST, 'launch/hero-1.png');
+      const cardID = stepup('draftcard', '1', draftID);
+      await page.route(/\/plugins\/drafts\/\d+\/media\/\d+$/, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: pngBytes }));
+      await signIn(page, origin);
+      await page.goto(`${origin}/attention`);
+      const card = page.locator(`li#ask-${cardID}`);
+      await expect(card).toBeVisible();
+      const controls = card.locator(`[data-asks-stepup-draft][data-draft-id="${draftID}"]`);
+      await expect(controls.locator('[data-ask-stepup-phone]')).toHaveText('Approve here, or confirm on your phone.');
+      const approve = controls.locator('[data-draft-approve]');
+      await expectFullLabel(approve, 'Approve and send');
+      await expect(controls.locator('[data-draft-reject]')).toBeVisible();
+      // The card's own Confirm/Refuse are never drawn: it is answered only on the phone.
+      await expect(card.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Refuse', exact: true })).toHaveCount(0);
+      await noSidewaysScroll(page);
+      await card.scrollIntoViewIfNeeded();
+      const before = testInfo.outputPath(`open-approve-${vp.key}-before.png`);
+      await page.screenshot({ path: before });
+      await testInfo.attach(`open-approve-${vp.key}-before.png`, { path: before, contentType: 'image/png' });
+      if (shotDir) await page.screenshot({ path: `${shotDir}/open-${vp.key}-before.png` });
+
+      await (vp.key === 'phone' ? approve.tap() : approve.click());
+      await expect(page.locator(`li#ask-${cardID}`)).toHaveCount(0);
+      // Still the Open tab: no navigation to the Drafts tab or its Archived view.
+      expect(new URL(page.url()).pathname).toBe('/attention');
+      expect(new URL(page.url()).searchParams.get('tab')).toBeNull();
+      const after = testInfo.outputPath(`open-approve-${vp.key}-after.png`);
+      await page.screenshot({ path: after });
+      await testInfo.attach(`open-approve-${vp.key}-after.png`, { path: after, contentType: 'image/png' });
+      if (shotDir) await page.screenshot({ path: `${shotDir}/open-${vp.key}-after.png` });
+
+      // The draft itself is approved (read on the Archived view, afterwards).
+      await page.goto(`${origin}/attention?tab=archived&draft=${draftID}`);
+      await expect(page.locator(`[data-draft-id="${draftID}"]`).first()).toHaveAttribute('data-draft-status', 'approved');
+      // And the card is answered, saying where it was decided.
+      await page.goto(`${origin}/attention/asks/${cardID}`);
+      await expect(page.locator('[data-ask-closed] [data-ask-answer]')).toContainText('Approved in the web UI');
+    });
+  });
+}

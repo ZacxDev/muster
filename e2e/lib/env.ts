@@ -566,6 +566,14 @@ export const serverAppEdgePort = port + 484;
 // cards — its own server (plugins and task routing on, for the fixture's
 // draft and task). +485: clear of the blocks above.
 export const asksSearchPort = port + 485;
+// The Asks page's scroll spec (asks-scroll.spec.ts), its filter chips spec
+// (asks-filters.spec.ts) and the step-up card's video spec
+// (draft-video.spec.ts, with its fake S3): each its own server. +600 on:
+// clear of every block above.
+export const asksScrollPort = port + 600;
+export const asksFiltersPort = port + 603;
+export const draftVideoPort = port + 606;
+export const draftVideoS3Port = port + 608;
 // tests/signin-progress.spec.ts: its own password-mode server, so its refused
 // and accepted sign-ins are charged to a budget of their own (lib/server.ts).
 export const signinProgressPort = port + 486;

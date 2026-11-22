@@ -299,6 +299,17 @@ type attentionItem struct {
 	// 0171: its push title is its Title and its push body its why and the
 	// start of its preview (stepUpPushText) — never its Details.
 	stepUp *attention.StepUpCard
+	// stepUpDraft is the draft a step-up card is about, as the reader may
+	// decide it (Server.stepUpDraftFor), nil for none: its card draws the
+	// draft's own decision controls (askStepUpDraftHTML). Set by withAskBoxes
+	// and the ask page; not serialised.
+	stepUpDraft *plugins.DraftCard
+	// stepUpDraftRead: withAskBoxes read the card's draft (stepUpDraftsFor);
+	// stepUpDraftSrc is who raised it, nil when the reader cannot read it —
+	// what the filter chips name the card by (readAskSources), with no second
+	// read.
+	stepUpDraftRead bool
+	stepUpDraftSrc  *draftSource
 	// Context is what a builtin officer's ask is about (attention.Ask's,
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
@@ -1004,6 +1015,9 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 	withAskPages(ctx, items)
 	owner := requestOwner(ctx)
 	dict := s.dictatePath()
+	// The step-up cards whose draft the reader may decide here: their drafts
+	// are read together after the loop (stepUpDraftsFor, one batch, no sweep).
+	var stepUps []int
 	for i := range items {
 		if items[i].Kind == attentionKindNotice && links && owner > 0 {
 			// A notice has no answer box (so no mic): only its session.
@@ -1029,6 +1043,9 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			items[i].watchOnly = TeamAskViewerNote
 		} else {
 			items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
+			if items[i].stepUp != nil && items[i].owner == owner {
+				stepUps = append(stepUps, i)
+			}
 		}
 		if items[i].ownerCard && owner > 0 {
 			items[i].pageOpen = s.pageAskOpen(ctx, items[i].AskID)
@@ -1046,6 +1063,22 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		}
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
+		}
+	}
+	if len(stepUps) > 0 {
+		ids := make([]int64, len(stepUps))
+		for k, i := range stepUps {
+			ids[k] = items[i].stepUp.DraftID
+		}
+		decide, read := s.stepUpDraftsFor(ctx, ids)
+		for _, i := range stepUps {
+			id := items[i].stepUp.DraftID
+			items[i].stepUpDraft = decide[id]
+			items[i].stepUpDraftRead = true
+			if d, ok := read[id]; ok {
+				src := draftCardSource(d)
+				items[i].stepUpDraftSrc = &src
+			}
 		}
 	}
 }
@@ -1754,16 +1787,21 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	var found asksSearchResult
 	if searching && r.URL.Path == attentionPath {
 		found = s.searchAsks(r.Context(), search)
-		// Not when htmx restores a history entry it holds no copy of (Back to
-		// an address the typing set): Back draws the list it left, not the ask.
-		if to := asksSearchJump(search, found); to != "" && code == http.StatusOK && problem == "" && r.Header.Get("HX-History-Restore-Request") != "true" {
-			http.Redirect(w, r, to, http.StatusSeeOther)
-			return
-		}
 	} else {
 		searching = false
 	}
 	rd := s.readAsks(r.Context()) // the render's one hub read (asksRead)
+	// THE FILTER (asks_filter.go): ?type= and ?from=, over every list below.
+	flt := s.requestAsksFilter(r, func() []mirror.HostView { return rd.hosts })
+	if searching {
+		// Not when htmx restores a history entry it holds no copy of (Back to
+		// an address the typing set): Back draws the list it left, not the ask.
+		// A filtered search jumps only to what the filter keeps.
+		if to := asksSearchJump(search, s.filteredSearch(r.Context(), found, flt)); to != "" && code == http.StatusOK && problem == "" && r.Header.Get("HX-History-Restore-Request") != "true" {
+			http.Redirect(w, r, to, http.StatusSeeOther)
+			return
+		}
+	}
 	items, err := s.attentionItemsWith(r.Context(), rd.hosts, rd.waiting)
 	s.withFocus(r.Context(), items)
 	s.withAskBoxes(r.Context(), items, true)
@@ -1775,29 +1813,63 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	var b strings.Builder
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
-	// A session page's asks badge lands here filtered to that session's asks
-	// (attention_asker.go, ?from=): the Open list is those asks alone.
-	flt, filtered := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts)
+	// The lists the filter and its chips read: the drafts, the answers.
+	var pending, archived []plugins.DraftCard
+	draftsOK := true
+	if s.ext.Plugins != nil {
+		pending, archived, draftsOK = s.readDraftViews(r.Context(), focus)
+	}
+	answeredAsks, answeredItems, proposals := s.recentAnswerItems(r.Context())
+	var searchItems []attentionItem
+	for _, a := range found.asks {
+		searchItems = append(searchItems, searchItem(a))
+	}
+	seen := make([]plugins.DraftCard, 0, len(pending)+len(archived)+len(found.drafts))
+	seen = append(append(append(seen, pending...), archived...), found.drafts...)
+	x := s.readAskSources(r.Context(), seen, items, answeredItems, searchItems)
 	var feed string
 	var open int
-	if filtered {
-		// The count is THE ONE OPEN COUNT's rule over the filtered asks
+	// The Open feed's items (askFeedNow's): read once, for the feed and the
+	// chips.
+	page, rows, rowsN := s.asksPage(r.Context(), items, rd, now)
+	if flt.on() {
+		// The count is THE ONE OPEN COUNT's rule over the filtered list
 		// (asksPendingOf: what waits on the reader — a team's ask a viewer
-		// watches is listed, not counted); no drafts or stalled rows here.
-		mine := flt.only(items, rd.hosts)
+		// watches is listed, not counted); no stalled rows here.
+		mine := flt.items(x, page)
 		feed, _ = askFeedHTML(mine, "", 0, now)
+		if len(mine) == 0 {
+			feed = asksFilterEmptyHTML("") + ui.AsksDraftsMarkerHTML(0)
+		}
 		open = asksPendingOf(r.Context(), mine, 0)
 	} else {
-		feed, open = s.askFeedNow(r.Context(), items, rd, now)
+		// askFeedNow over the page read above.
+		feed, _ = askFeedHTML(page, rows, rowsN, now)
+		open = asksPendingOf(r.Context(), page, rowsN)
 	}
 	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
 	// tabs, each a feed of cards.
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
 <div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) +
 		// THE SEARCH BOX ends the heading's row (asks_search.go): on it, not
-		// under it, so the feed starts where it did but for a few pixels.
-		ui.AsksSearchFormHTML(attentionPath, searchRaw) + `</div>
+		// under it, so the feed starts where it did but for a few pixels. A
+		// filter rides along on its submit and its live search.
+		ui.AsksSearchFormHTML(attentionPath, searchRaw, asksSearchKeep(flt)...) + `</div>
 `)
+	// THE CHIPS (asks_filter.go), under the search box: counted over what the
+	// page shows — the search's results while it searches, else the Open,
+	// Answered and Drafts tabs.
+	counts := newAsksChipCounts(flt)
+	if searching {
+		counts.addItems(x, searchItems)
+		counts.addDrafts(x, found.drafts)
+	} else {
+		counts.addItems(x, askTabItems(page))
+		counts.addItems(x, answeredItems)
+		counts.addDrafts(x, pending)
+		counts.addDrafts(x, archived)
+	}
+	b.WriteString(ui.AsksChipsHTML(asksChipsView(flt, counts, r.URL.Query())))
 	b.WriteString(problemNode(problem))
 	// THE RESULTS REGION, then THE PAGE (tabs and what goes over them), both
 	// always drawn: while the region holds results the stylesheet hides the
@@ -1805,28 +1877,26 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// with no reload (ui/asks_search.go).
 	results := ""
 	if searching {
-		results = asksSearchHTML(searchRaw, found, now)
+		results = asksSearchHTML(searchRaw, searchFiltered(found, flt, x), now)
 	}
 	b.WriteString(ui.AsksSearchRegionHTML(results))
 	b.WriteString(`<div class="` + ui.AsksMainClass + `" data-asks-main>`)
-	if filtered {
-		b.WriteString(ui.AsksFilterHTML(flt.label, attentionPath))
+	if flt.window != nil {
+		// A session page's badge (a window: no chip names it) says whose asks
+		// these are.
+		b.WriteString(ui.AsksFilterHTML(flt.label, asksChipHref(r.URL.Query(), flt.typ, "")))
 	}
 	b.WriteString(attentionNotice(r))
 	// The feed's notice: a card post refused after the card left the page.
 	b.WriteString(ui.AsksFeedNoticeHTML)
 	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
-	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + s.answeredAsksNow(r.Context(), now) + `</ul>`
+	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + answeredFiltered(answeredAsks, answeredItems, flt, x, now, proposals) + `</ul>`
 	// ALWAYS TABS (Open and Answered at least). The Log tab
 	// (ask_log_read.go) is drawn only with the ask log on.
-	var pending, archived []plugins.DraftCard
-	if s.ext.Plugins != nil {
-		var ok bool
-		pending, archived, ok = s.readDraftViews(r.Context(), focus)
-		if !ok && problem == "" {
-			b.WriteString(problemNode("The reply drafts could not be read."))
-		}
+	if !draftsOK && problem == "" {
+		b.WriteString(problemNode("The reply drafts could not be read."))
 	}
+	pending, archived = flt.draftCards(x, pending), flt.draftCards(x, archived)
 	nudges := ""
 	if s.chiefNudgesOn() {
 		nudges = s.chiefNudgesPanelHTML(r.Context(), now)
@@ -1843,14 +1913,18 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		logPanel = askLogLazyHTML(r.URL.Query())
 	}
 	b.WriteString(s.asksTabsHTML(askList, answered, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
+	empty := ui.AsksAllClearHTML
+	if flt.on() {
+		empty = asksFilterEmptyHTML("")
+	}
 	b.WriteString(`</div>
 </section>
-<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
+<template id="asks-empty-tpl">` + empty + `</template>
 <template id="asks-drafts-wait-tpl">` + ui.AsksDraftsWaitHTML(2) + `</template>
 `)
-	if filtered {
-		// The live list keeps the filter.
-		b.WriteString(ui.AttentionLiveScript("attention-items", "/attention/items?"+flt.ref.query(), EventAttentionChanged))
+	if flt.on() {
+		// The live lists keep the filter.
+		b.WriteString(ui.AttentionLiveScript("attention-items", "/attention/items?"+flt.query(), EventAttentionChanged))
 	} else {
 		b.WriteString(attentionPageScript)
 	}
@@ -1858,6 +1932,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	b.WriteString(asksPageScript)
+	b.WriteString(ui.AsksChipsScriptHTML())
 	b.WriteString(ui.AsksFeedScriptHTML())
 	// The cards' id chips (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
@@ -1899,9 +1974,16 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := s.now() // as renderAsksPage
-	// The filtered page's live list (?from=, renderAsksPage): the same filter.
-	if flt, ok := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts); ok {
-		feed, _ := askFeedHTML(flt.only(items, rd.hosts), "", 0, now)
+	// The filtered page's live list (?type=, ?from=, renderAsksPage): the
+	// same filter.
+	if flt := s.requestAsksFilter(r, func() []mirror.HostView { return rd.hosts }); flt.on() {
+		page, _, _ := s.asksPage(r.Context(), items, rd, now)
+		x := s.readAskSources(r.Context(), nil, page)
+		mine := flt.items(x, page)
+		feed, _ := askFeedHTML(mine, "", 0, now)
+		if len(mine) == 0 {
+			feed = asksFilterEmptyHTML("") + ui.AsksDraftsMarkerHTML(0)
+		}
 		_, _ = w.Write([]byte(feed))
 		return
 	}
@@ -1913,7 +1995,14 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAttentionAnswered(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(s.answeredAsksNow(r.Context(), s.now())))
+	flt := s.requestAsksFilter(r, nil)
+	if !flt.on() {
+		_, _ = w.Write([]byte(s.answeredAsksNow(r.Context(), s.now())))
+		return
+	}
+	asks, items, proposals := s.recentAnswerItems(r.Context())
+	x := s.readAskSources(r.Context(), nil, items)
+	_, _ = w.Write([]byte(answeredFiltered(asks, items, flt, x, s.now(), proposals)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -2658,6 +2747,13 @@ func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, boo
 // answeredAsksNow is answeredAsksHTML over ctx's principal's recent answers
 // and, when one of them is a mirrored session's, its windows (askSource).
 func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
+	asks, items, proposals := s.recentAnswerItems(ctx)
+	return answeredFeedHTML(asks, items, now, proposals)
+}
+
+// recentAnswerItems is the Answered tab's asks, each as a named item
+// (answeredItems), and which of them are chief proposal cards.
+func (s *Server) recentAnswerItems(ctx context.Context) ([]attention.Ask, []attentionItem, map[int64]bool) {
 	asks := s.recentAnswers(ctx)
 	var hosts []mirror.HostView
 	if s.ext.Mirror != nil && slices.ContainsFunc(asks, askNeedsHosts) {
@@ -2669,7 +2765,7 @@ func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
 			proposals[a.ID] = true
 		}
 	}
-	return answeredFeedHTML(asks, s.answeredItems(ctx, asks, hosts), now, proposals)
+	return asks, s.answeredItems(ctx, asks, hosts), proposals
 }
 
 // answerLabel names who gave an answer on the Answered tab: the owner, or —
