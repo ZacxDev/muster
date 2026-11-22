@@ -97,6 +97,11 @@ type Extensions struct {
 	// from MUSTER_ANDROID_PACKAGE and MUSTER_ANDROID_CERT_SHA256): the
 	// Android app's claim on this site's passkeys. Nil: the route answers 404.
 	AssetLinks []byte
+	// AndroidPackage is MUSTER_ANDROID_PACKAGE, set only when AssetLinks is
+	// (so validated, and paired with the certificates): the app the QR
+	// sign-in's phone page hands off to on Android (appSignInPhoneJS). Empty:
+	// no hand-off is offered.
+	AndroidPackage string
 	// SSOOrigins is MUSTER_ANDROID_SSO_ORIGINS as ParseSSOOrigins returned it:
 	// the sign-in origins the Android app may load in its WebView, served open
 	// at GET /api/device/web (device_web.go). Nil or empty: `[]`.

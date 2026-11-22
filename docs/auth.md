@@ -674,7 +674,9 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
   `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256` make muster serve
   `/.well-known/assetlinks.json` with the `get_login_creds` relation only
   ([configuration.md](configuration.md)): not `handle_all_urls`, since the app
-  handles no links. It is
+  verifies no links. The one link it takes is the QR sign-in's hand-off, an
+  `intent:` link addressed to its package, which needs no verification
+  ([design/qr-sign-in.md](design/qr-sign-in.md#the-android-app)). It is
   open, `application/json`, and your edge must serve it with no redirect.
 - The assertion's `clientDataJSON.origin` is
   `android:apk-key-hash:<the signing certificate's SHA-256, unpadded base64url>`,
@@ -771,17 +773,31 @@ model are in [design/qr-sign-in.md](design/qr-sign-in.md).
 - **Refused from another origin.** Starting, approving and redeeming are POSTs
   checked like every sign-in. In gotrue mode they are served on the browser
   listener only.
-- **The Android app** does not open the link itself yet: the phone's browser
-  or the installed web app does.
-  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app) says what the
-  app needs.
+- **On Android the phone's browser hands off to the muster app**, when the
+  server names the app: `MUSTER_ANDROID_PACKAGE` (with
+  `MUSTER_ANDROID_CERT_SHA256`, [configuration.md](configuration.md)). A
+  phone camera opens the QR's link in the browser. On Android, and not
+  already inside the app, the page shows **Open in the muster app** first,
+  with **Continue in this browser** (the approval described above) beneath
+  it. Nothing is opened on the server until you choose. Inside the app or
+  another app's built-in browser, on any other phone or browser, or with no app
+  configured, the page opens the request at once, as before.
+  - **Open in the muster app** opens the app, which approves in its own
+    screen. The code is still in no URL muster receives.
+  - **Without the app installed**, the browser comes back to the page, with no
+    code in its address, and the approval goes on in the browser.
+  - Which button comes first is a guess from the browser, not a security
+    check: a wrong guess changes only the order.
+  The contract with the app (the link, its extra, the fallback, how the page
+  tells the app from a browser) is in
+  [design/qr-sign-in.md](design/qr-sign-in.md#the-android-app).
 
 | route | what it does |
 |---|---|
 | `POST /login/app` | Starts a sign-in: sets the browser's binding cookie, answers `{code, url, svg, expires_in, interval}`. |
 | `GET /login/app/status` | The request's state by the cookie: `pending`, `scanned`, `approved` (with `approver`: `{name, email}`), `denied`, `redeemed` or `expired`, with `interval`. Too fast: 429 `slow_down`. |
 | `POST /login/app/redeem` | `code` and `next`, with the cookie: sets the session and answers `{redirect}`. |
-| `GET /auth/qr` | The phone's page: moves `#<code>` into a form and posts it. |
+| `GET /auth/qr` | The phone's page: moves `#<code>` into a form and posts it (on Android outside the app, after offering **Open in the muster app**). |
 | `POST /auth/qr` | `step=open` (the details), `step=approve` or `step=deny`, with `token`. |
 
 ## Cross-origin writes
