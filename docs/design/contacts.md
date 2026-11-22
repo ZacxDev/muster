@@ -13,7 +13,9 @@ A claim nothing confirmed is marked **UNVERIFIED** and has a
 This page proposes **muster-contacts**: a plugin that keeps the people its
 owner has met, the meetings they met in, and (later) the channels used to
 reach them. It is built beside [meetings](meetings.md) and talks to it over a
-small token-gated API. muster itself does not change.
+small token-gated API. muster changes in exactly one place: an admin can mark
+two server apps a **linked pair**, which then know each person by the same
+subject ([the core change](#the-core-change-linked-server-apps)).
 
 ## Summary
 
@@ -26,18 +28,22 @@ small token-gated API. muster itself does not change.
 - **From a guest's side:** when the meeting ends (or they leave), a card asks
   for their name (already filled in from the lobby) and email, says plainly
   that the details go to the host, and has **Skip**.
-- **Shape: a second server app, and no core change** (decision 2). The
-  plugin is a separate repository, `ZacxDev/muster-contacts`, built from the
+- **Shape: a second server app, a direct API, and one core change**
+  (decision 2). The plugin is a separate repository,
+  `ZacxDev/muster-contacts`, built from the
   [plugin template](https://github.com/ZacxDev/muster-plugin-template), and
   installed by an admin as a [server app](../plugins.md#server-apps) exactly
   as meetings is. Meetings gains an **optional** contacts URL and token; with
   neither set it behaves exactly as today.
-- 🔴 **The two plugins do not share a person id, by design.** muster gives
-  each person a different random subject under each server app
+- 🔴 **Today the two plugins cannot share a person id, by design.** muster
+  gives each person a different random subject under each server app
   (`internal/plugins/server.go:76-87`, [plugins.md](../plugins.md#server-apps)).
-  So the owner **connects** Meetings to Contacts once, by a round trip through
-  both tabs in their own browser ([connecting the two](#connecting-meetings-to-contacts)).
-  No core change is needed for it.
+  The one core change (decision 7) lets an **admin** link two server apps,
+  after which both receive the **same** subject for each person. The app
+  already in use keeps its subjects, so meetings' existing owners and
+  meetings are untouched. Owners do nothing: every owner works the moment
+  both apps are installed and linked. Every unlinked app keeps pairwise
+  subjects exactly as today.
 - **Phases** (decision 1): **P1** the contacts store, meeting history per
   contact, and the post-meeting card. **P2** scheduled meetings with emailed
   invites and an `.ics` file, sent through one SMTP relay per install with
@@ -88,7 +94,7 @@ small token-gated API. muster itself does not change.
 |---|---|---|
 | Server apps | [plugins.md](../plugins.md#server-apps); `internal/plugins/server.go`; migration `internal/db/migrations/0172_plugin_server_scope.sql` | an admin installs an app once; every person gets the tab; the token acts as nobody and learns a person only from a hand-off their own browser minted |
 | The pairwise subject | `internal/plugins/server.go:76-87` (`newSubject`: 128 random bits), `0172_plugin_server_scope.sql:151-152` (`UNIQUE (plugin_id, owner_id)`, `UNIQUE (plugin_id, subject)`), [plugins.md](../plugins.md#server-apps) ("It is **pairwise**") | the only person id a plugin receives: 22 base64url characters, different under every app, never derived from the user id. With it, the display name, and never a user id or an email |
-| The `ref` hint | [plugins.md](../plugins.md#app-tab) ("Opened as `/apps/{id}?ref=<ref>`"); muster-meetings `internal/muster/client.go:215-219` | a 1–64 character `[A-Za-z0-9_-]` hint muster passes from its page's address to the app's redeem. The [connect round trip](#connecting-meetings-to-contacts) rides on it |
+| The `ref` hint | [plugins.md](../plugins.md#app-tab) ("Opened as `/apps/{id}?ref=<ref>`"); muster-meetings `internal/muster/client.go:215-219` | a 1–64 character `[A-Za-z0-9_-]` hint muster passes from its page's address to the app's redeem. A contact's meeting line uses it to open that meeting in the Meetings tab |
 | The App tab's frame | [plugins.md](../plugins.md#app-tab) | `sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"`: popups yes, top navigation no |
 | Tab icons | `internal/plugins/app.go:35-52` | a fixed list of 16 emoji. No person; `book` (📖) is the address book |
 | UI kit | [ui-kit.md](../ui-kit.md) | `mu-card`, `mu-input`, `mu-sheet`, `mu-icon-btn`, `mu-chip`, `mu-avatar`, `mu-toast`. Its icons have `search`, `plus`, `send`, `link`, `copy`, `close`, `check`, `people`, `more`, but **no** person, pencil, bin, envelope, calendar or download |
@@ -104,32 +110,24 @@ The brief assumed both plugins receive the same subject for one muster user.
 They do not. Each grant row is `(plugin_id, owner_id)` with its own random
 subject (`0172_plugin_server_scope.sql:140-152`, `server.go:76-87`), and
 muster says so as a feature: "two apps cannot join their records on it".
-Meetings knows the owner as `S_m`; Contacts knows the same person as `S_c`;
+Meetings would know the owner by one subject and Contacts by another, and
 nothing either is told relates the two.
 
-What is needed is a binding `S_m → S_c` that **only the person themself can
-make**. Two ways:
-
-1. **No core change (recommended, and what decision 2 allows):** a one-time
-   connect round trip, Contacts → Meetings → Contacts, in the owner's own
-   browser ([below](#connecting-meetings-to-contacts)). Each leg is a muster
-   hand-off of the same person, so finishing it proves one browser held both
-   subjects within ten minutes.
-2. **A core seam:** an admin-declared pair of server apps that share one
-   subject. Simpler for the owner (nothing to connect), but it relaxes the
-   pairwise rule and it is a core change, which decision 2 rules out. It is
-   [open question 1](#open-questions-for-the-operator).
+The operator chose the fix (decision 7): **a small core change**. An admin
+marks the two installed apps a linked pair, and muster then gives both apps
+the same subject for each person
+([the core change](#the-core-change-linked-server-apps)). Two other ways
+were weighed and dropped: a connect step each owner does once through both
+tabs (no core change, but every owner must do it and it can be done wrong),
+and copying a person id between the plugins (impossible: neither is ever
+told one).
 
 ## User flow
 
 ### The owner
 
-1. **Once:** opens **Contacts** in the sidebar. An empty list says "Connect
-   Meetings to add the people you meet" with one button,
-   **Connect Meetings** (icon `link`). The round trip opens Meetings in a new
-   tab, which asks "Send the people you meet to Contacts?" with **Connect**;
-   one tap, and a third tab shows Contacts with "Meetings connected" and
-   closes itself after a moment, leaving the first. Three taps, once.
+1. Opens **Contacts** in the sidebar. Nothing to set up: once an admin has
+   installed and linked the two apps, the people met in Meetings arrive here.
 2. Holds meetings as today. Nothing changes in the call.
 3. After a meeting, opens Contacts: anyone who filled in the card is at the
    top, marked **Added by them** with the meeting's title.
@@ -170,12 +168,13 @@ make**. Two ways:
  ┌───────────────────┐  internal  ┌──────────────────────────────────────────────┐
  │ muster-contacts   │◄───────────│ muster-meetings                              │
  │  owner app, API   │  bearer    │  unchanged with no CONTACTS URL; with one:   │
- │  SQLite           │  token     │  card, outbox, connect screen                │
+ │  SQLite           │  token     │  card, outbox                                │
  └───────┬───────────┘            └──────────────┬───────────────────────────────┘
          │ redeem, /self, owners/check           │ redeem, /self, owners/check, notify, tasks
          ▼                                       ▼
  ┌──────────────────────────────────────────────────────────────────────────────┐
- │ muster-server (unchanged: two server apps, each its own token and subjects)  │
+ │ muster-server: two server apps, each its own token; one linked pair, one     │
+ │ subject per person across the two                                            │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -201,76 +200,208 @@ make**. Two ways:
 - **Meetings keeps no copy of the contact list.** It asks contacts only
   narrow questions about its own guest ([the API](#the-contacts-api)).
 
-## Connecting Meetings to Contacts
+## The core change: linked server apps
 
-The binding `S_m → S_c` is made once per owner, by this round trip. Every
-code is 32 random bytes, base64url (43 characters), stored only as SHA-256,
-single use, and lives **10 minutes**.
+One small muster change, its own PR before any plugin work
+([phase 0](#phased-plan)): an admin can **link** two server apps, and a
+linked pair knows each person by **one** subject. Everything else about
+server apps stays as it is.
 
-1. **Contacts tab** (session of `S_c`): **Connect Meetings** calls the owner
-   API `POST /api/link/start`, which stores `C` (owner `S_c`, stage `start`)
-   and answers the muster address
-   `/apps/<meetings app id>?ref=cl_<C>` (46 characters, inside the `ref`
-   pattern). The page opens it in a new tab (`window.open`, the frame's
-   `allow-popups`). The meetings app id is configuration
-   (`CONTACTS_MEETINGS_APP_ID`), not something muster tells contacts.
-2. **Meetings tab** (a fresh hand-off of `S_m`; the redeem carries the
-   `ref`): a `cl_` ref shows "Send the people you meet to Contacts?
-   **Connect**". **Connect** calls contacts' internal API
-   `POST /v1/links/claim {code: C, meetings_subject: S_m, display_name}`.
-   Contacts spends `C` and stores `D` (bound to the `S_c` that minted `C`
-   and to `S_m`, stage `confirm`), answering `/apps/<contacts app id>?ref=cc_<D>`,
-   which the meetings page opens.
-3. **Contacts tab again** (a fresh hand-off; the `ref` is `cc_<D>`):
-   contacts spends `D` **only if the session's subject is the `S_c` that
-   minted `C`**, and then writes `links(meetings_subject = S_m, owner = S_c)`.
-   Any other session, an unknown, used or old `D`, is one answer: "This
-   link has expired. Start again from Contacts."
+### What the admin does
 
-**Why three legs and not one.** With one leg (mint in one app, confirm in
-the other), someone could send you their own code: confirming it would send
-**their** meetings' guests to **your** contacts, or yours to theirs, which
-breaks what the card promised ("your details go to the host"). With the
-round trip, the leg that writes the binding checks it is the same contacts
-person who began it, in a browser that just held the meetings person too:
-an attacker who starts it cannot finish it without the `D` that only your
-browser was shown.
+The smallest surface is the command line muster already has for server
+apps (`cmd/muster-server/app_cmd.go`), plus a read-only line on the pages
+that already list them:
 
-**Rules.**
+```
+muster-server app link <source id> <adopter id>
+muster-server app unlink <id>
+muster-server app list            # gains a "linked with" column
+```
 
-- **One to one.** A contacts owner has at most one meetings subject, and a
-  meetings subject one owner (`UNIQUE` both ways). Connecting again replaces
-  the old link only from the contacts side, after the same round trip.
-- **Display names are compared, not trusted.** Contacts shows the meetings
-  display name it was sent beside its own; a mismatch is shown as a warning
-  ("Meetings says you are *X*"), never silently accepted or refused, since a
-  person with no display name sends `""` to both.
-- **Disconnect** is in Contacts → Settings (icon `close`): deletes the link
-  row. Meetings learns it on its next `GET /v1/links/{S_m}` (cached 60 s) and
-  stops showing the card.
-- **A muster reinstall of either app** gives everyone new subjects, so the
-  link dangles. Contacts shows "Meetings is not connected" and the owner
-  connects again; the contacts themselves are unaffected only if contacts was
-  not the one reinstalled.
+- `link` names a **source** (the app whose subjects are kept: meetings) and
+  an **adopter** (the app that takes them: contacts). It prints
+  `linked <adopter> to <source>: <n> people already known by <source>`.
+- **No page form and no bearer API** in this PR: linking changes what two
+  apps may join, it is done once per install, and the CLI already needs the
+  shell and database access only an operator has. `/admin/apps` shows
+  "Linked with *Meetings*" on each card; **Account → Apps** adds one line to
+  each linked app's description: "*Meetings* and *Contacts* know you as the
+  same person." A page button can follow if it is ever wanted.
+- Audited `plugin.server.linked` and `plugin.server.unlinked` (the two ids,
+  `via: cli`).
 
-**UNVERIFIED (spike S1):** that a `window.open` from inside muster's
-sandboxed frame opens muster's own `/apps/<id>` page fully usable (signed in,
-able to frame the other app) in every target browser. The popup inherits the
-frame's sandbox flags; the frame lacks `allow-popups-to-escape-sandbox`.
-Fallback if it fails: each leg shows the muster address with **Copy link**
-and the owner pastes it into a new tab. Either way no core change.
+### The rules
+
+- **Server apps only, live ones only, two at a time.** Both must be
+  `scope = 'server'` and not revoked; an app is in at most one pair; an app
+  is never linked to itself. Personal plugins are never linked.
+- 🔴 **The adopter must not know anyone yet.** `link` is refused while the
+  adopter has any `plugin_server_users` row ("*contacts* already knows N
+  people; uninstall and reinstall it, or link it before anyone opens it").
+  This is what makes the migration path safe: no subject is ever rewritten,
+  so neither plugin's stored data is ever orphaned. For contacts the order is
+  therefore: install, link, then let people open the tab
+  ([rollout](#rollout)).
+- **The source keeps every subject it has.** Linking writes no
+  `plugin_server_users` row. Meetings' owners, sessions and meetings, keyed
+  on its current subjects (`internal/store/store.go:99-125` in
+  muster-meetings), are untouched.
+- **A new grant takes the partner's subject.** When either app of a pair
+  needs a subject for a person (the redeem, or Hide), muster uses the
+  subject that person already has under the partner, and only when there is
+  none makes a new random one. So a person who has opened only Meetings is
+  known to Contacts by Meetings' subject the first time they open Contacts,
+  and one who opens Contacts first gives Meetings the subject Contacts drew.
+- **Everything else stays per app.** The grant (its 8 hours, its
+  `signin_at`), Hide, `owners/check`, `Muster-Act-For`, the knock caps and
+  the task ledger are each keyed `(plugin_id, …)` as today. A shared subject
+  lets the two apps join their **own** records; it does not let one app's
+  token act for a person through the other app's grant (the act-for door
+  reads `plugin_id` from the token, never from the subject).
+- **Unlink** deletes the pair row and nothing else. People already known
+  to both keep the same subject under both (what the two apps have learned
+  cannot be unlearned, so muster does not pretend to: re-keying would only
+  orphan their data). People who first open either app after the unlink get
+  independent subjects again. The command says so when it runs.
+- **Uninstall of either app ends the pair** in the uninstall's own
+  transaction (beside the grant and ledger deletes it already does). A
+  reinstalled app is a new id with no pair until an admin links it again.
+
+### Schema: the next free migration (`0178` at the time of writing)
+
+```sql
+-- A LINKED PAIR of server apps: both know each person by one subject.
+-- low_id < high_id so a pair has one spelling; each id is in at most one pair.
+CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
+    low_id     BIGINT      NOT NULL REFERENCES public.plugins (id) ON DELETE CASCADE,
+    high_id    BIGINT      NOT NULL REFERENCES public.plugins (id) ON DELETE CASCADE,
+    source_id  BIGINT      NOT NULL,   -- the app whose subjects were kept (bookkeeping, shown by list)
+    linked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (low_id, high_id),
+    CONSTRAINT plugin_server_pairs_order  CHECK (low_id < high_id),
+    CONSTRAINT plugin_server_pairs_source CHECK (source_id IN (low_id, high_id))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_low  ON public.plugin_server_pairs (low_id);
+CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_server_pairs (high_id);
+-- plus a trigger (or the store's check, under the same lock) refusing an id
+-- that already appears in the OTHER column of another row.
+```
+
+- **No owner column, so no row-level security arm admits it:** like a
+  server `plugins` row (0172's header), every read and write is an explicit
+  `authz.System` call in the System ledger (`internal/authz` ledger test).
+  `GRANT SELECT, INSERT, DELETE … TO muster_app`. Rollback: `DROP TABLE`,
+  which leaves every subject as it is (they were never rewritten).
+- `plugin_server_users` is **not changed**. Its `UNIQUE (plugin_id, subject)`
+  (`0172_plugin_server_scope.sql:152`) still holds: a shared subject appears
+  once under each of the two apps.
+
+### The code seams
+
+- 🔴 **One function chooses a subject.** Today two writers call
+  `newSubject()` (`internal/plugins/server.go:76-87`): the redeem
+  (`server.go:336-346`, the grant upsert) and Hide (`server.go:571-580`,
+  which makes a row for a person who hides an app they never opened). Both
+  become calls of one `subjectFor(tx, appID, ownerID)`: the partner's
+  subject for that owner if the app is paired and the partner has a row,
+  else `newSubject()`. A Go-AST ledger test pins `newSubject` to exactly one
+  caller, `subjectFor`, so a third writer cannot skip the pair.
+- **The race.** Two first redeems for one person, one per app of a pair, at
+  the same moment, would each find no partner row and draw two subjects.
+  `subjectFor` takes `pg_advisory_xact_lock` on (pair, owner) before it
+  reads, so the second waits and finds the first's row.
+- **Link and unlink** in `internal/plugins/server.go` beside
+  `InstallServerApp`/`UninstallServerApp` (`server.go:395`, `:513`):
+  `LinkServerApps(ctx, source, adopter, by)` and `UnlinkServerApp(ctx, id,
+  by)`, each one transaction holding both `plugins` rows `FOR UPDATE`, so an
+  uninstall or a redeem racing the link waits for it. `UninstallServerApp`
+  gains `DELETE FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`.
+- **Display:** `ServerApps` and `AccountServerApps` (`server.go:700`,
+  `:788`) read the partner's label.
+- **Docs:** [plugins.md](../plugins.md#server-apps)'s "It is **pairwise**:
+  one person has a different subject under each server app, so two apps
+  cannot join their records on it" gains the exception: "…unless an admin
+  linked the two apps (`muster-server app link`): a linked pair shares one
+  subject per person". [auth.md](../auth.md#server-apps-and-the-people-they-act-for)
+  and [cli.md](../cli.md) gain the command and the Account → Apps line.
+
+### The security argument
+
+- **Pairwise subjects protect people from apps colluding without the
+  admin.** Two apps a server offers could otherwise compare notes on a
+  person. A link is that comparison, made **explicit, by an admin**, for
+  two apps the same admin installed, whose origins and tokens that admin
+  already controls, and is shown to every person it affects (Account →
+  Apps).
+- **Only an admin can link.** There is no `/plugin/v1` route for it, so no
+  server token, personal token or person can make or undo one; the CLI
+  needs the server's database credentials.
+- **It widens nothing a token can do.** Acting, notifying, filing tasks and
+  `owners/check` stay keyed on the token's own app. A leaked contacts token
+  learns nothing it could not before but that one subject string equals
+  meetings' for the same person, which is the point of the link.
+- **It never rewrites a subject,** so a link cannot move one person's data
+  under another person's id: the adopter-has-no-grants rule and the
+  absence of any `UPDATE … SET subject` are both tested.
+
+### Tests (in muster)
+
+- **Invariant: unlinked stays pairwise.** Two unlinked apps, one person:
+  different subjects (an invariant guard: it pins today's behaviour; it is
+  not regression coverage).
+- **Linked: one subject, either order.** Source first then adopter; adopter
+  first then source (the subject the adopter drew is what the source gets);
+  three people with pairwise-distinct ids, each with their own subject.
+- **The source's subjects are kept.** A person known to meetings before the
+  link: after `link` and a contacts redeem, contacts answers meetings'
+  existing subject, and every `plugin_server_users` row of the source is
+  byte-for-byte what it was before the link (rows compared, not counted).
+- **Refusals:** the adopter already knows someone; either app revoked;
+  personal plugin; self-link; either app already paired; an unknown id.
+  Each with its own error text, asserted.
+- **Hide on an adopter before first open** makes a row with the partner's
+  subject (the second `newSubject` writer).
+- **The race:** two concurrent first redeems on the pair for one person end
+  with one subject (run 50 times).
+- **Cross-app acting is still refused:** contacts' token with
+  `Muster-Act-For: <shared subject>` on the knock route answers `404` while
+  meetings' grant is live and contacts has none; and the reverse.
+- **Unlink:** existing people keep one subject; a new person gets two.
+- **Uninstall** of either deletes the pair row in the same transaction.
+- **The ledger:** `newSubject` has one caller; the pairs table is only read
+  under `authz.System`.
+- **CLI:** `link`, `unlink`, `list` output and exit codes; audit rows.
+
+### Mutation rows (core)
+
+| guard | mutation | must turn red |
+|---|---|---|
+| pair lookup | `subjectFor` always calls `newSubject` | "linked: one subject" |
+| pair scoping | look up a partner row without the pair (any app's row for the owner) | "invariant: unlinked stays pairwise" |
+| one writer | Hide calls `newSubject` directly | "hide on an adopter" and the `newSubject` ledger |
+| adopter empty | drop the adopter-has-no-grants check | "refusals: adopter already knows someone" |
+| no rewrite | on link, copy the source's subjects onto the adopter's rows | "the source's subjects are kept" (and the no-`UPDATE` ledger) |
+| server only | allow a personal plugin in a pair | "refusals: personal plugin" |
+| one pair | drop the unique index on `low_id` | "refusals: already paired" |
+| race lock | drop the advisory lock | "the race" |
+| act-for per app | resolve the act-for grant by subject alone | "cross-app acting is still refused" |
+| uninstall | leave the pair row on uninstall | "uninstall deletes the pair" |
 
 ## Data model (the plugin's SQLite)
 
 One database, `contacts.db`, `STRICT` tables, `PRAGMA foreign_keys = ON`,
 `PRAGMA secure_delete = ON`, directory `0700`, file `0600`, as meetings
 does (`store.go:211-216`). Every row that holds a person's data carries
-`owner` (the contacts subject `S_c`) and every query filters on it.
+`owner` (the subject the linked pair shares for that person) and every
+query filters on it.
 
 ```sql
 CREATE TABLE owners (
-  subject      TEXT PRIMARY KEY CHECK (length(subject) = 22),  -- S_c; never a user id
+  subject      TEXT PRIMARY KEY CHECK (length(subject) = 22),  -- the pair's shared subject; never a user id
   display_name TEXT NOT NULL DEFAULT '',                       -- from the redeem; never an email
+  redeemed     INTEGER NOT NULL CHECK (redeemed IN (0, 1)),    -- 1 once this person opened Contacts
+  collect      INTEGER NOT NULL DEFAULT 1 CHECK (collect IN (0, 1)),  -- Settings: "Add people from Meetings"
   updated_at   INTEGER NOT NULL
 ) STRICT;
 
@@ -279,22 +410,6 @@ CREATE TABLE owner_sessions (                                  -- as meetings: b
   subject      TEXT NOT NULL REFERENCES owners (subject),
   created_at   INTEGER NOT NULL,
   expires_at   INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE links (                                           -- the connect round trip's result
-  meetings_subject TEXT PRIMARY KEY CHECK (length(meetings_subject) = 22),
-  owner            TEXT NOT NULL UNIQUE REFERENCES owners (subject) ON DELETE CASCADE,
-  meetings_name    TEXT NOT NULL DEFAULT '',                   -- display name meetings sent, for the warning
-  linked_at        INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE link_codes (
-  code_sha256      TEXT PRIMARY KEY,
-  owner            TEXT NOT NULL REFERENCES owners (subject) ON DELETE CASCADE,
-  stage            TEXT NOT NULL CHECK (stage IN ('start', 'confirm')),
-  meetings_subject TEXT,                                       -- set on 'confirm' only
-  expires_at       INTEGER NOT NULL,
-  used_at          INTEGER
 ) STRICT;
 
 CREATE TABLE contacts (
@@ -430,7 +545,7 @@ may merge by hand.
    transaction.
 5. 🔴 **The guest's answer never says which happened.** A card's submit
    answers the same body, status and timing class whether it created a
-   contact, merged into one, or was dropped (not connected, owner revoked):
+   contact, merged into one, or was dropped (not accepting):
    a guest cannot learn whether an email is in the owner's contacts.
 6. **Impostors.** Anyone admitted to a meeting can type anyone's email.
    Until P2 verification exists, a card that merges into an existing
@@ -468,16 +583,25 @@ serves meetings, and only meetings:
 - **Auth:** `Authorization: Bearer <CONTACTS_API_TOKEN>`, 32+ random
   bytes, compared in constant time, the same value in both plugins'
   Secrets. Missing or wrong: `401`, one body. Never logged.
-- **Per-owner scoping:** every route names `meetings_subject`. The door
-  resolves it through `links` to the contacts owner **once**, and every
-  query below runs with that owner. A subject with no link is
-  `404 {"error": "not connected"}`; a `contact_ref` of another owner is the
-  same `404` as an unknown one.
-- **The owner's standing:** contacts polls muster's `owners/check` for its
-  own subjects, as meetings does. `revoked` (hidden, disabled, signed out
-  everywhere) refuses every write for that owner with the same `404`.
-  🔴 **`expired` does not refuse**: it only means the owner has not opened
-  the Contacts tab in 8 hours, which is the normal state.
+- **Per-owner scoping:** every route names `owner`, the subject meetings
+  holds for the person, which is contacts' subject for them too because the
+  two apps are a [linked pair](#the-core-change-linked-server-apps). The
+  door validates its shape and every query below runs with it. A
+  `contact_ref` of another owner is the same `404` as an unknown one.
+- **The owner's standing:** contacts polls muster's `owners/check` for the
+  subjects it has redeemed, as meetings does. For those, `revoked` (hidden,
+  disabled, signed out everywhere) refuses every write with
+  `404 {"error": "not accepting"}`, and so does the owner's own **Add people
+  from Meetings** switch turned off. 🔴 **`expired` does not refuse**: it
+  only means the owner has not opened the Contacts tab in 8 hours, which is
+  the normal state.
+- **A person who has never opened Contacts** is accepted (an `owners` row
+  with `redeemed = 0` is made), so every owner works the moment both apps
+  are installed and linked. `owners/check` cannot help here: it answers
+  `revoked` for a subject the app never redeemed, the same as for one that
+  was hidden ([plugins.md](../plugins.md#server-apps)), so contacts cannot
+  tell "never opened" from "hid it before ever opening it"
+  ([open question 1](#open-questions-for-the-operator)).
 - **Bodies** are JSON, at most 4 KiB (16 KiB for P2's invitee list), unknown
   fields refused (`400`).
 - **Idempotency:** every write carries `Idempotency-Key`. The same key with
@@ -491,13 +615,12 @@ serves meetings, and only meetings:
 
 | route | phase | body → answer | purpose |
 |---|---|---|---|
-| `POST /v1/links/claim` | 1 | `{code, meetings_subject, display_name}` → `200 {"next": "/apps/<id>?ref=cc_<D>"}`, or `404` | leg 2 of [connecting](#connecting-meetings-to-contacts) |
-| `GET /v1/links/{meetings_subject}` | 1 | → `200 {"connected": true}` or `404` | may meetings offer the card for this owner? Cached by meetings 60 s |
-| `POST /v1/submissions` | 1 | `{meetings_subject, card_id, meeting: {id, title, started_at, ended_at}, participant: {id, identity, typed_name, joined_at, left_at}, name, email}` → `202 {"receipt": "<43 chars>"}` | a guest's card. Key `card:<card_id>` |
-| `POST /v1/receipts/check` | 1 | `{meetings_subject, receipt}` → `200 {"known": true, "contact_ref": "…"}` or `200 {"known": false}` | is this guest's own receipt still a contact of this owner? |
-| `POST /v1/attendance` | 1 | `{meetings_subject, contact_ref, via, meeting: {…}, participant: {…}}` → `204` | "met at meeting X" for a guest already known (receipt, P2 invite). Key `attend:<meeting>:<participant>` |
-| `POST /v1/invitees` | 2 | `{meetings_subject, meeting: {…}, invitees: [{email, name} or {contact_ref}]}` → `200 {"invitees": [{contact_ref, name, email}]}` | invitees become contacts (decision 1), merged by email |
-| `GET /v1/search?meetings_subject=&q=` | 2 | → `200 {"contacts": [{contact_ref, name, email}]}`, at most 10 | the Schedule form's invitee picker, proxied for the owner's own meetings session |
+| `GET /v1/owners/{owner}` | 1 | → `200 {"accepting": true}` or `404 {"error": "not accepting"}` | may meetings offer the card for this owner? Cached by meetings 60 s |
+| `POST /v1/submissions` | 1 | `{owner, card_id, meeting: {id, title, started_at, ended_at}, participant: {id, identity, typed_name, joined_at, left_at}, name, email}` → `202 {"receipt": "<43 chars>"}` | a guest's card. Key `card:<card_id>` |
+| `POST /v1/receipts/check` | 1 | `{owner, receipt}` → `200 {"known": true, "contact_ref": "…"}` or `200 {"known": false}` | is this guest's own receipt still a contact of this owner? |
+| `POST /v1/attendance` | 1 | `{owner, contact_ref, via, meeting: {…}, participant: {…}}` → `204` | "met at meeting X" for a guest already known (receipt, P2 invite). Key `attend:<meeting>:<participant>` |
+| `POST /v1/invitees` | 2 | `{owner, meeting: {…}, invitees: [{email, name} or {contact_ref}]}` → `200 {"invitees": [{contact_ref, name, email}]}` | invitees become contacts (decision 1), merged by email |
+| `GET /v1/search?owner=&q=` | 2 | → `200 {"contacts": [{contact_ref, name, email}]}`, at most 10 | the Schedule form's invitee picker, proxied for the owner's own meetings session |
 
 `receipt` is 32 random bytes, stored as SHA-256. The submission answers a
 receipt **whatever happened** (merge rule 5): a dropped submission's receipt
@@ -511,11 +634,10 @@ that is free text.
 
 | moment | call | only when |
 |---|---|---|
-| The owner taps **Connect** on a `cl_` ref | `POST /v1/links/claim` | always (it is the owner's own action) |
-| A meeting starts, and at most every 60 s while open | `GET /v1/links/{S_m}` | the URL is set |
-| A guest's knock carries a receipt | `POST /v1/receipts/check` | connected |
-| A guest submits the card | `POST /v1/submissions` (through the outbox) | connected, the card was offered |
-| **End** | `POST /v1/attendance` for each admitted participant bound to a contact (a checked receipt, a P2 invite) | connected |
+| A meeting starts, and at most every 60 s while open | `GET /v1/owners/{owner}` | the URL is set |
+| A guest's knock carries a receipt | `POST /v1/receipts/check` | accepting |
+| A guest submits the card | `POST /v1/submissions` (through the outbox) | accepting, the card was offered |
+| **End** | `POST /v1/attendance` for each admitted participant bound to a contact (a checked receipt, a P2 invite) | accepting |
 
 At End meetings sends **nothing about a guest who skipped the card or never
 saw it**: no name, no identity, no count. A guest is in contacts only by
@@ -525,15 +647,15 @@ their own card, the owner's invite, or the owner's hand.
 
 - 🔴 **Contacts down ⇒ meetings unaffected.** Every call to contacts runs
   off the request path of anything a call needs (knock, admit, token, End),
-  with a 3 s timeout. A failed `links` check uses the last answer for up to
+  with a 3 s timeout. A failed `owners` check uses the last answer for up to
   24 hours, and with none, offers no card. A failed `receipts/check` treats
   the guest as unknown (they see the card; their submission merges).
 - **The outbox.** A submission or an attendance row is written first to
   meetings' own `contacts_outbox` table, in the same transaction that spends
   the card, and the guest is answered from that. A worker delivers it with
   backoff (5 s doubling to 10 minutes), keyed by its idempotency key, so a
-  retry after a lost answer is harmless. `2xx` or `404` (not connected,
-  revoked) deletes the row; `400`/`409` deletes it and logs the event name;
+  retry after a lost answer is harmless. `2xx` or `404` (not accepting:
+  hidden, revoked or collection off) deletes the row; `400`/`409` deletes it and logs the event name;
   `401`, `429`, `5xx` and timeouts retry. A row older than **72 hours** is
   deleted undelivered and counted
   (`meetings_contacts_outbox_dropped_total`). The outbox holds a guest's
@@ -542,8 +664,7 @@ their own card, the owner's invite, or the owner's hand.
   `MEETINGS_CONTACTS_TOKEN` are both set or both unset (one alone refuses to
   start). With both unset: no card route is mounted (`404`, as any unknown
   path), no card token is minted, the guest's `ended` event and the Leave
-  answer are **byte for byte** today's, the `cl_` ref is ignored as any
-  unknown ref is, the outbox worker does not start, and on boot any rows
+  answer are **byte for byte** today's, the outbox worker does not start, and on boot any rows
   left in `contacts_outbox` are deleted (the URL was removed; their PII has
   nowhere to go). A golden test pins it ([test plan](#test-plan)).
 
@@ -554,7 +675,8 @@ their own card, the owner's invite, or the owner's hand.
 An admitted guest's page shows the card, once, when the meeting ends for
 them, if **all** of these hold:
 
-1. Meetings has a contacts URL and the owner is connected (`links` check).
+1. Meetings has a contacts URL and contacts is accepting for the owner
+   (`owners` check).
 2. The participant was **admitted** at some point. A guest who only waited,
    was denied, or was **removed** by the owner sees no card.
 3. The meeting ended (**End**, or the room emptied out), or the guest
@@ -574,8 +696,8 @@ holds**:
   invitee.
 - **A receipt** (P1): after a card is sent, the guest page stores the
   receipt in `localStorage` on the meetings origin under a key derived from
-  the meeting's owner (`HMAC(MEETINGS_LINK_KEY, S_m)`, first 16 bytes,
-  base64url: the page never learns `S_m`). The next knock to that owner
+  the meeting's owner (`HMAC(MEETINGS_LINK_KEY, owner subject)`, first 16 bytes,
+  base64url: the page never learns the subject). The next knock to that owner
   sends it in the knock body; meetings checks it with contacts. A `known`
   answer binds the participant to the contact; the guest sees, instead of
   the card, one quiet line: "*Ada* has your details." with **Forget this
@@ -670,11 +792,11 @@ little copy.**
 
 | view | what is drawn |
 |---|---|
-| **List** | a `mu-input` with the `search` icon (filters by name and email as you type, on the server, 200 ms debounce); an icon button `plus` (Add); `more` (Settings). Rows: `mu-avatar--sm` initials, the name (or the email when there is none), the first email in `muted`, and a chip only when it says something (**Added by them**, **Invited**). Newest activity first. An empty list is one line and **Connect Meetings** |
+| **List** | a `mu-input` with the `search` icon (filters by name and email as you type, on the server, 200 ms debounce); an icon button `plus` (Add); `more` (Settings). Rows: `mu-avatar--sm` initials, the name (or the email when there is none), the first email in `muted`, and a chip only when it says something (**Added by them**, **Invited**). Newest activity first. An empty list is one line: "People you meet in Meetings appear here." |
 | **Detail** | a `mu-sheet` (bottom sheet on a phone, dialog above 640 px): name, emails (each with `copy`), the note, **Met** (each meeting: title, date, role; tap opens `/apps/<meetings id>?ref=<meeting id>` in the top window through a link the owner taps), and the provenance lines. Header icon buttons: edit, download, delete |
 | **Edit** | the same sheet in place: name, emails (add, remove), note. **Save**, Escape cancels |
 | **Delete** | a confirm sheet: "Delete *Grace*? Removes their details and meeting history here. Meetings keeps its own record of the calls." **Delete** (`mu-btn--danger`) |
-| **Settings** | Meetings: connected or **Connect Meetings**, **Disconnect**; **Download all** (JSON); **Delete everything** (danger, typed confirmation) |
+| **Settings** | **Add people from Meetings** (a `mu-switch`, on); **Download all** (JSON); **Delete everything** (danger, typed confirmation) |
 
 - **Icons the kit lacks** (person, pencil, bin, download, envelope,
   calendar) are drawn from a small sprite in the plugin, on the kit's
@@ -718,7 +840,7 @@ subject): `GET /api/contacts?q=&cursor=`, `GET /api/contacts/{id}`,
 - **Invitees become contacts** (decision 1): scheduling calls
   `POST /v1/invitees` first; each email is merged or created
   (`invited` provenance), and meetings keeps only the `contact_ref`. If
-  contacts is not connected or is down, scheduling still works and the
+  contacts is not accepting or is down, scheduling still works and the
   invites still go; the invitee rows wait in the outbox.
 
 ### The sender: one per install, Reply-To the owner (decision 4)
@@ -846,7 +968,7 @@ past this until it is answered.
   asserts neither appears (with a positive control that a deliberately
   logged fixture does appear, so the grep can see one).
 - **Owner scoping** is one function: the door that resolves a session or a
-  `meetings_subject` to an owner, and a store whose every method takes that
+  `owner` to an owner, and a store whose every method takes that
   owner as its first argument. A ledger test lists every SQL statement that
   touches a person table and fails when one lacks `owner = ?`.
 - **Export on request:** **Download** on a contact gives every row about
@@ -856,9 +978,11 @@ past this until it is answered.
   owner: the owner is the one holding the data, and the card says so.
 - **Tokens and codes** are random 32 bytes, stored as SHA-256 where stored
   at all; compared in constant time; never logged.
-- **The connect round trip** is the guard against cross-owner mixing
-  ([why three legs](#connecting-meetings-to-contacts)). Its mutation rows
-  are below.
+- **One subject per person across the pair** is muster's doing, made by an
+  admin, never by either plugin or a person
+  ([the security argument](#the-security-argument)). Contacts trusts the
+  `owner` meetings names because only meetings holds the API token, and
+  meetings only ever names a subject muster gave it.
 - **Network:** the internal API is reachable only from meetings (network
   policy), and contacts refuses to start when `CONTACTS_API_TOKEN` is
   shorter than 32 bytes or equals either plugin's muster token.
@@ -886,12 +1010,12 @@ customers. What would need deciding first:
 
 | failure | what happens |
 |---|---|
-| Contacts is down | Meetings works as today; cards are still shown while the cached `links` answer says connected, submissions wait in the outbox for up to 72 h; the Contacts tab shows muster's frame error until it is back |
+| Contacts is down | Meetings works as today; cards are still shown while the cached `owners` answer says accepting, submissions wait in the outbox for up to 72 h; the Contacts tab shows muster's frame error until it is back |
 | Meetings is down | Contacts works: list, edit, delete, add. Nothing new arrives |
 | The API token is wrong on one side | Every call `401`; meetings logs `contacts: unauthorised` once per minute, offers no card after its cache runs out, and drops nothing from the outbox |
-| The owner disconnects | `404 not connected` on the next call: the outbox rows for that owner are dropped, no card from then on |
+| The owner turns **Add people from Meetings** off, or hides Contacts | `404 not accepting` on the next call: the outbox rows for that owner are dropped, no card from then on |
 | The owner is revoked in muster | Contacts refuses writes (`404`); meetings has already ended their meetings |
-| A reinstall of either app | Subjects change; the link dangles; the owner connects again (contacts data survives a meetings reinstall) |
+| A reinstall of either app | The pair ends with the uninstall. Install the app again and link it with the **surviving** app as the source: the new install knows nobody, so it may adopt, and it adopts the very subjects the old install shared, so its old database lines up again |
 | The SMTP relay refuses (P2) | The invitee row says "not delivered"; the meeting is scheduled all the same |
 | An adapter's service is down (P3) | `nothing_sent` with `transient`, so muster retries; inbound pauses at its cursor |
 
@@ -899,27 +1023,25 @@ customers. What would need deciding first:
 
 | phase | delivers | repositories | gate to the next |
 |---|---|---|---|
-| **0** | spikes S1–S3 | none | each answered in this page |
-| **1a** | contacts plugin: store, owner app, the Contacts tab, add/edit/delete/merge/export, the connect round trip | muster-contacts (new, from the template) | unit, contract and e2e green; mutation sweep; installed on the first deployment |
-| **1b** | meetings: `MEETINGS_CONTACTS_URL`/`_TOKEN`, the `cl_` connect screen, the card, the outbox, attendance at End | muster-meetings | the no-URL golden; contract tests against contacts' real server; the card e2e |
+| **0 (core PR)** | [linked server apps](#the-core-change-linked-server-apps): the migration, `subjectFor`, `LinkServerApps`/`UnlinkServerApp`, `muster-server app link\|unlink`, the `/admin/apps` and Account → Apps lines, the plugins.md / auth.md / cli.md exception | muster | its tests and mutation rows green; released and deployed on the first deployment before contacts is installed |
+| **0 (spike)** | spike S1 | none | answered in this page |
+| **1a** | contacts plugin: store, owner app, the Contacts tab, add/edit/delete/merge/export | muster-contacts (new, from the template) | unit, contract and e2e green; mutation sweep; installed **and linked** on the first deployment |
+| **1b** | meetings: `MEETINGS_CONTACTS_URL`/`_TOKEN`, the card, the outbox, attendance at End | muster-meetings | the no-URL golden; contract tests against contacts' real server; the card e2e |
 | **1c** | receipts: the guest browser's marker and the quiet line | both | after 1b has run for a while ([open question 3](#open-questions-for-the-operator)) |
 | **2** | scheduled meetings, invite emails with `.ics`, Reply-To confirmation, invitees as contacts, optional email verification | both | an invite received and opened in two calendar clients; the `.ics` validated by a parser in CI |
 | **3a** | handles on a contact | contacts | — |
 | **3b** | messages through the draft flow, behind adapters | contacts (+ whatever open question 5 decides) | the adapter conformance suite; one channel end to end with a real approval |
 
-muster's own repository changes only by this page and, optionally, the kit
-icons of open question 6.
+muster's own repository changes by this page, the phase-0 core PR, and,
+optionally, the kit icons of open question 6.
 
 ### Phase 0 spikes
 
-- **S1:** a `window.open` from inside muster's App-tab frame to muster's
-  `/apps/<other id>?ref=…`, in Chromium, Firefox and WebKit, signed in: does
-  the new tab sign in, frame the other app and pass the `ref`? Decides the
-  round trip's UX (popup or **Copy link**).
-- **S2:** two server apps on one test muster, one person opening both:
-  confirm on the wire that the two redeems answer different subjects and the
-  same display name (the code says so; this measures it).
-- **S3:** the guest's `ended` event reaches a guest page that has been in
+(The earlier popup spike for an owner-side connect step is gone with that
+step. That two unlinked apps answer different subjects, and a linked pair
+the same one, is measured by the core PR's own tests, not a spike.)
+
+- **S1:** the guest's `ended` event reaches a guest page that has been in
   the background for 10 minutes on a phone (the card's delivery path); if
   not, the page asks for the card on its next foreground through
   `POST /card/pending {ticket}`, which is the one place a ticket is accepted
@@ -946,10 +1068,9 @@ icons of open question 6.
   assertion names); every API and owner route called as owner A with owner
   B's ids answers the same `404` as an unknown id, byte for byte.
 - **The SQL ledger:** every statement on a person table has `owner = ?`.
-- **The connect round trip:** the happy path; `D` confirmed by another
-  contacts session (refused); `C` reused, `D` reused, either past 10 minutes
-  (refused); a second meetings subject for a connected owner (refused until
-  the round trip replaces it); the display-name warning.
+- **Accepting:** a subject contacts never redeemed is accepted; a redeemed
+  one answered `revoked` by muster is refused, `expired` accepted; the
+  owner's **Add people from Meetings** off is refused.
 - **Validation:** the shared field table (below).
 - **Logs:** the no-PII test with its positive control.
 
@@ -960,7 +1081,7 @@ repository and imported by meetings' tests at a pinned version: each case a
 request and the exact expected status and body. Contacts runs it against
 its real server; meetings runs it against the same real server binary in
 its integration job, so a change on either side that breaks the other is
-red in both repositories. It covers every route, `401`, `404 not connected`,
+red in both repositories. It covers every route, `401`, `404 not accepting`,
 idempotency (same key same body, same key different body `409`), the
 `429`, `expired` accepted and `revoked` refused, and the field table:
 valid and invalid names and emails, each with its literal expected answer.
@@ -998,9 +1119,11 @@ valid and invalid names and emails, each with its literal expected answer.
 - **The tab:** list, search, open, edit, delete (gone after reload; the
   meetings transcript still shows the guest's lines), export (the file
   holds the fixture), mobile and desktop goldens of list and sheet.
-- **Connect:** the round trip in one browser; the attack case: a second
-  browser context (another person) opens the first person's `cl_` address,
-  taps Connect, and the third leg in that context is refused.
+- **Linked pair, end to end:** against a test muster carrying the core PR,
+  with both apps installed and linked: a person who has never opened
+  Contacts holds a meeting, a guest sends the card, and the contact is
+  there the first time the person opens Contacts. A second person's
+  contacts stay empty (owner scoping across the real subjects).
 - **Theme:** the page under two kit themes (meetings' fixture kits).
 
 ### Phase 2 tests
@@ -1036,10 +1159,10 @@ in each batch as the positive control. A row names the test that must fail
 | merge: no oracle | answer `200` for a merge and `202` for a new contact | contract "submission answers alike" |
 | deletion | drop `ON DELETE CASCADE` from `meeting_links` | "deletion: every table" |
 | deletion | skip removing the orphaned meeting row | "deletion: orphaned meeting" |
-| connect leg 3 | confirm `D` without checking the minting subject | e2e "connect attack" and unit "D by another session" |
-| connect codes | skip the 10-minute expiry; allow reuse | the round-trip unit cases (one each) |
+| accepting: revoked | accept writes for a redeemed subject muster answers `revoked` | "accepting" revoked case |
+| accepting: switch | ignore **Add people from Meetings** off | "accepting" switch case |
 | card: admitted only | offer the card to a `denied` or `removed` participant | "card eligibility" (one each) |
-| card: not connected | offer the card with `links` answering `404` | "card eligibility: not connected" |
+| card: not accepting | offer the card with `owners` answering `404` | "card eligibility: not accepting" |
 | card: invitee | offer the card to a participant bound by invite | "card eligibility: invitee" |
 | card: receipt | offer the card after a `known` receipt | "card eligibility: receipt" |
 | card: single use | do not spend the id on Send; on Skip | "card spending" (one each) |
@@ -1061,24 +1184,31 @@ in each batch as the positive control. A row names the test that must fail
 
 **The first deployment only** (decision 3).
 
-1. **Contacts first.** Deploy the contacts plugin in the muster tenant
+0. **The core PR first:** released and deployed on the first deployment.
+   Check `muster-server app list` shows the new "linked with" column.
+1. **Contacts next.** Deploy the contacts plugin in the muster tenant
    beside meetings, on its own one-label subdomain of muster's host
    (`contacts-<x>.<domain>`), added to `MUSTER_PLUGIN_ORIGINS`. Install it on
    `/admin/apps` (label **Contacts**, icon `book`, no **Files tasks**);
-   check there is room (at most 5 server apps). Open the tab; add, edit and
-   delete a contact by hand.
-2. **Meetings second.** Set `MEETINGS_CONTACTS_URL` (the internal listener)
-   and `MEETINGS_CONTACTS_TOKEN`, and `CONTACTS_MEETINGS_APP_ID` on contacts;
-   redeploy meetings. Connect from the Contacts tab.
-3. **Verify on the click path:** a meeting with a second browser as the
+   check there is room (at most 5 server apps).
+2. 🔴 **Link before anyone opens it:** `muster-server app link <meetings id>
+   <contacts id>` (meetings is the source; it keeps its subjects). Opening
+   the Contacts tab first would give contacts a person of its own, and the
+   link would then be refused. If that happens: uninstall contacts,
+   reinstall, link, then open. Only then open the tab; add, edit and delete
+   a contact by hand.
+3. **Meetings next.** Set `MEETINGS_CONTACTS_URL` (the internal listener)
+   and `MEETINGS_CONTACTS_TOKEN`; redeploy meetings. Nobody connects
+   anything.
+4. **Verify on the click path:** a meeting with a second browser as the
    guest; End; the card; Send; the contact in the tab with the meeting. Then
    Skip in a second meeting and confirm nothing arrived.
-4. **Phase 2 and 3** follow the same order: contacts first, then meetings.
+5. **Phase 2 and 3** follow the same order: contacts first, then meetings.
 
 **What changes in the meetings plugin** (phase 1): two optional variables;
 one migration adding `card_sha256`, `card_expires_at`, `card_state` to
-`participants` and a `contacts_outbox` table; the `cl_` ref screen; the card
-in `guest.js` and the two card routes; the outbox worker; the `links` cache;
+`participants` and a `contacts_outbox` table; the card in `guest.js` and
+the two card routes; the outbox worker; the `owners` cache;
 attendance at End. Nothing on the call path waits for contacts.
 
 **Rollback.**
@@ -1089,17 +1219,28 @@ attendance at End. Nothing on the call path waits for contacts.
   volume until the operator deletes it. Meetings, still configured, finds
   contacts `404` or unreachable and offers no card once its cache runs out;
   unset its variables too.
+- **The link:** `muster-server app unlink <id>` stops new people from
+  sharing a subject; it does not re-key anyone (see
+  [the rules](#the-rules)). Rolling back the core PR itself is its
+  migration's `DROP TABLE`; subjects already shared stay shared.
 - Either order works, because meetings never depends on contacts to run.
 
 ## Open questions for the operator
 
-1. **No core change, or a shared subject?** The two apps get different
-   subjects for one person, so this design has the owner connect them once
-   with a three-tap round trip. The alternative is a small core seam: an
-   admin declares two server apps a pair, and muster gives both the same
-   subject. **Recommendation: keep the round trip** (it honours decision 2,
-   keeps muster's pairwise rule whole, and costs three taps once); revisit
-   only if spike S1 forces the **Copy link** fallback and it proves clumsy.
+1. **Collect for an owner who has never opened Contacts?** With the pair,
+   contacts can accept a card for a person from their very first meeting,
+   which is what "every owner works the moment both apps are installed"
+   asks. But `owners/check` answers `revoked` both for a subject an app
+   never redeemed and for one the person hid, so contacts cannot tell
+   "never opened Contacts" from "hid Contacts before ever opening it", and
+   would collect for the second. (The core question this replaces, a
+   connect step or a core change, was answered: decision 7.)
+   **Recommendation: collect, as designed,** and make the Hide case
+   visible instead: Account → Apps's line for a linked pair already says
+   the two apps know you as one person, and showing the app again shows
+   what was collected, with **Delete everything** one tap away. The strict
+   alternative (collect only after the first open) is a one-line change if
+   preferred.
 2. **The owner's Reply-To address (P2).** muster never tells a plugin an
    email, so Reply-To needs the owner to type theirs once.
    **Recommendation: typed once in Meetings → Settings and confirmed by a
@@ -1118,12 +1259,12 @@ attendance at End. Nothing on the call path waits for contacts.
    confirmed.
 5. **Messaging needs `messages`, which a server app cannot hold (P3b).**
    Options: a personal plugin token per person beside the server app (a
-   second thing for each person to set up, and a binding problem like the
-   one above), or a core seam letting a server app file drafts for a person
-   it holds a live grant for, plus a draft that starts a conversation rather
-   than answering one. **Recommendation: decide at P3b, leaning to the core
-   seam,** since decision 2's "no core change" was about the meetings
-   integration and a per-person token undoes the point of a server app.
+   second thing for each person to set up, whose owner contacts would know
+   by `owner_id`, never by the pair's subject), or a second core seam
+   letting a server app file drafts for a person it holds a live grant for,
+   plus a draft that starts a conversation rather than answering one.
+   **Recommendation: decide at P3b, leaning to the core seam,** for the
+   same reason decision 7 chose a core change over per-owner setup.
 6. **Kit icons.** The kit lacks person, pencil, bin, download, envelope and
    calendar. **Recommendation: the plugin draws its own in phase 1, and a
    small additive kit PR (allowed in `v1`) follows,** after which the plugin
@@ -1138,6 +1279,7 @@ attendance at End. Nothing on the call path waits for contacts.
 ## Decisions
 
 From the operator's brief and answers. All are binding on this design.
+Decision 7 answers this page's first open question and revises decision 2.
 
 1. **Phasing: contacts → invites → channels.** P1 a muster-contacts
    plugin (contacts, meeting history per contact, the post-meeting "add
@@ -1145,10 +1287,13 @@ From the operator's brief and answers. All are binding on this design.
    calendar (`.ics`) file; invitees become contacts. P3 channels (WhatsApp,
    Discord, Signal, email) as each contact's linked handles, then messaging
    through muster's draft and approve flow.
-2. **Integration: a direct, token-gated API.** muster-contacts exposes a
-   small API; the meetings plugin gets an optional contacts URL and token
-   and records "met at meeting X" and the card's submissions. With no URL
-   set, meetings behaves exactly as today. No muster core change.
+2. **Integration: a direct, token-gated API between the plugins, plus one
+   core change.** muster-contacts exposes a small API; the meetings plugin
+   gets an optional contacts URL and token and records "met at meeting X"
+   and the card's submissions. With no URL set, meetings behaves exactly as
+   today. The one muster change is decision 7's linked pair; there is no
+   other. (Revised by the operator's answer to the first open question:
+   originally "no muster core change".)
 3. **Ownership: per owner, the first deployment only.** Each muster user
    has their own contacts; nobody sees anyone else's. It ships to the
    operator's own deployment; any other waits for an explicit operator
@@ -1164,3 +1309,10 @@ From the operator's brief and answers. All are binding on this design.
 6. **Start: design doc, then build.** This page first, for the operator to
    read; then a new public repository, `ZacxDev/muster-contacts`, from
    muster-plugin-template, and the build with its tests.
+7. **Linked server apps: a small muster core change.** An admin marks two
+   installed apps a linked pair, and muster then gives both the same
+   per-person subject. One small server change and migration, with tests,
+   designed [here](#the-core-change-linked-server-apps). No connect step for
+   owners, nothing to mis-wire, and every owner works the moment both apps
+   are installed. Every unlinked app keeps pairwise subjects, and the app
+   already in use keeps its subjects.
