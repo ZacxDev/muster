@@ -215,22 +215,17 @@ func (s *PGStore) OwnAudit(ctx context.Context, uid int64, action string, limit 
 // on an officer (internal/api chief_officers.go: "officer.chief.pause", …).
 const ChiefOfficerActionPrefix = "officer.chief."
 
-// ChiefOfficerAudit returns the chief's audit rows on one officer, newest
-// first, read under ctx's principal (audit_log's self_read): object is the
-// officer's audit object ("officer_def:<id>"); a personal officer's rows are
-// its owner's own (user_id = owner, no team), a team officer's the team's
-// (team_id = owner) — row-level security then shows them to the team's
-// managers, as every team audit row.
-func (s *PGStore) ChiefOfficerAudit(ctx context.Context, owner int64, team bool, object string, limit int) ([]AuditEntry, error) {
+// ChiefOfficerAudit returns the chief's audit rows on one of owner's own
+// officers, newest first, read under ctx's principal (audit_log's self_read):
+// object is the officer's audit object ("officer_def:<id>"). A chief acts
+// only on its owner's own officers, so the rows are the owner's own (user_id
+// = owner, no team).
+func (s *PGStore) ChiefOfficerAudit(ctx context.Context, owner int64, object string, limit int) ([]AuditEntry, error) {
 	if owner <= 0 {
 		return nil, nil
 	}
-	where := `user_id = $2 AND team_id IS NULL`
-	if team {
-		where = `team_id = $2`
-	}
 	return s.auditRows(ctx, `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
-		FROM audit_log WHERE `+where+` AND object = $3 AND starts_with(action, $4) ORDER BY at DESC, id DESC LIMIT $1`,
+		FROM audit_log WHERE user_id = $2 AND team_id IS NULL AND object = $3 AND starts_with(action, $4) ORDER BY at DESC, id DESC LIMIT $1`,
 		limit, owner, object, ChiefOfficerActionPrefix)
 }
 

@@ -14,7 +14,6 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/dbtest"
-	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -28,8 +27,7 @@ import (
 // The refusal words, tool names and audit actions are pinned here as
 // literals, never derived from the code under test.
 const (
-	tNone         = "there is no officer with that id that your owner can see"
-	tManager      = "only a manager of its team changes, runs, messages or asks approval for a team's officer"
+	tNone         = "there is no officer of your owner's own with that id"
 	tTeamChief    = "a team's own chief does not control officers"
 	tNeverDecides = "Your chief never decides an officer's drafts or outreach: it can only put a confirm card in your chat, and your own click decides it."
 	tTeamOff      = "team:ops"
@@ -79,8 +77,8 @@ func wipeChiefAudit(t *testing.T) {
 }
 
 // chiefRig is a declRig with: user 1's DB officer declID; the team declTeam
-// (user 1 its MANAGER, declOther its VIEWER) and its DB officer tTeamOff;
-// declOther's own DB officer tOtherOwn.
+// (user 1 its MANAGER) and its DB officer tTeamOff; declOther's own DB
+// officer tOtherOwn.
 func newChiefRig(t *testing.T) *declRig {
 	t.Helper()
 	r := newDeclRig(t, declRigOpts{pods: true})
@@ -88,13 +86,15 @@ func newChiefRig(t *testing.T) *declRig {
 	t.Cleanup(func() {
 		wipeChiefAudit(t)
 		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM team_members WHERE team_id = 987302`)
+		// the control's page pause of the team's officer is in the team's audit
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE team_id = 987302`)
 	})
 	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
 	}
 	sys := authz.System(context.Background())
 	for _, q := range []string{
-		`INSERT INTO team_members (team_id, user_id, role, added_by) VALUES (987302, 1, 'manager', 1), (987302, 987301, 'viewer', 1)`,
+		`INSERT INTO team_members (team_id, user_id, role, added_by) VALUES (987302, 1, 'manager', 1)`,
 		`INSERT INTO officer_types (owner_id, key, name) VALUES (987302, 'team-ops-chief', 'Ops'), (987301, 'other-own-chief', 'Own')`,
 		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (987302, '` + tTeamOff + `', 'team-ops-chief', 'pod', 'team-ops-chief'),
 			(987301, '` + tOtherOwn + `', 'other-own-chief', 'pod', 'other-own-chief')`,
@@ -127,100 +127,72 @@ func errOf(out string) string {
 	return e.Error
 }
 
-// TestTheChiefActsOnlyOnOfficersItsOwnerOwns: the gate. User 1's chief lists
-// and reads its own officer and its team's (it manages the team), and acts on
-// both; it never sees, reads or acts on declOther's own officer, by id alone
-// or naming its owner. declOther's chief (a VIEWER of the team) reads the
-// team's officer and is refused every act on it. A chief agent that is not
-// the principal's, and a team principal, are refused. CONTROLS: each refused
-// officer is acted on by a chief allowed to, so the refusals are the gate,
-// not a broken fixture.
+// TestTheChiefActsOnlyOnOfficersItsOwnerOwns: the gate is OWNER-ONLY. User
+// 1's chief lists and reads its own officer and acts on it; it never lists,
+// reads or acts on declOther's own officer NOR on the team's officer — though
+// user 1 MANAGES that team (team sharing decision 10: a team's officers are
+// its own chief's) — by id alone or naming their owner, on every door a
+// chief turns through, and they get the same refusal. A chief agent that is
+// not the principal's, and a team principal, are refused. CONTROLS: each
+// refused officer is acted on by someone allowed to (its owner's chief; the
+// team's manager on the officer page), so the refusals are the gate, not a
+// broken fixture.
 func TestTheChiefActsOnlyOnOfficersItsOwnerOwns(t *testing.T) {
 	r := newChiefRig(t)
-	mine, viewer := chiefOf(1), chiefOf(declOther)
+	mine := chiefOf(1)
 	team := strconv.FormatInt(declTeam, 10)
 	other := strconv.FormatInt(declOther, 10)
 
-	// The list: its own and the team's, can_change by role.
 	var list struct {
 		Officers []struct {
-			Officer   string `json:"officer"`
-			OwnerID   int64  `json:"owner_id"`
-			CanChange bool   `json:"can_change"`
+			Officer string `json:"officer"`
 		} `json:"officers"`
 	}
 	if err := json.Unmarshal([]byte(chiefCall(r.s, 1, authz.ViaAgent, mine, chiefOfficersListTool, `{}`)), &list); err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]bool{}
-	for _, o := range list.Officers {
-		got[o.Officer+"@"+strconv.FormatInt(o.OwnerID, 10)] = o.CanChange
-	}
-	if len(got) != 2 || !got[declID+"@1"] || !got[tTeamOff+"@"+team] {
-		t.Fatalf("user 1's chief lists %v; want exactly its own %s and the team's %s, both changeable", got, declID, tTeamOff)
-	}
-	if err := json.Unmarshal([]byte(chiefCall(r.s, declOther, authz.ViaAgent, viewer, chiefOfficersListTool, `{}`)), &list); err != nil {
-		t.Fatal(err)
-	}
-	got = map[string]bool{}
-	for _, o := range list.Officers {
-		got[o.Officer+"@"+strconv.FormatInt(o.OwnerID, 10)] = o.CanChange
-	}
-	if c, ok := got[tTeamOff+"@"+team]; len(got) != 2 || !ok || c || !got[tOtherOwn+"@"+other] {
-		t.Fatalf("the viewer's chief lists %v; want its own (changeable) and the team's (read-only)", got)
+	if len(list.Officers) != 1 || list.Officers[0].Officer != declID {
+		t.Fatalf("user 1's chief lists %+v; want exactly its own %s (not the team's %s, not %s)", list.Officers, declID, tTeamOff, tOtherOwn)
 	}
 
-	// Another person's officer: refused with one answer, read or act, by id
-	// or naming its owner, on every door the chief turns through.
-	acts := []struct{ tool, args string }{
-		{chiefOfficerReadTool, `{"officer":"` + tOtherOwn + `"%s}`},
-		{chiefOfficerControlTool, `{"officer":"` + tOtherOwn + `","action":"pause"%s}`},
-		{chiefOfficerScheduleTool, `{"officer":"` + tOtherOwn + `","action":"put","cron":"0 9 * * *"%s}`},
-		{chiefOfficerMessageTool, `{"officer":"` + tOtherOwn + `","message":"hi","wait_seconds":0%s}`},
-		{chiefOfficerCardTool, `{"officer":"` + tOtherOwn + `","draft_id":1%s}`},
-	}
-	for _, via := range []authz.Via{authz.ViaAgent, authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaSession} {
-		for _, act := range acts {
-			for _, owner := range []string{"", `,"owner_id":` + other} {
-				args := strings.Replace(act.args, "%s", owner, 1)
-				if out := chiefCall(r.s, 1, via, mine, act.tool, args); !strings.HasPrefix(errOf(out), tNone) {
-					t.Errorf("user 1's chief via %s: %s %s: %s; want the not-yours refusal", via, act.tool, args, out)
+	// Another person's officer and the team's officer: refused with one
+	// answer, read or act, by id or naming the owner, on every door.
+	for _, target := range []struct{ officer, owner string }{{tOtherOwn, other}, {tTeamOff, team}} {
+		acts := []struct{ tool, args string }{
+			{chiefOfficerReadTool, `{"officer":"` + target.officer + `"%s}`},
+			{chiefOfficerControlTool, `{"officer":"` + target.officer + `","action":"pause"%s}`},
+			{chiefOfficerControlTool, `{"officer":"` + target.officer + `","action":"run_now"%s}`},
+			{chiefOfficerScheduleTool, `{"officer":"` + target.officer + `","action":"put","cron":"0 9 * * *"%s}`},
+			{chiefOfficerScheduleTool, `{"officer":"` + target.officer + `","action":"list"%s}`},
+			{chiefOfficerMessageTool, `{"officer":"` + target.officer + `","message":"hi","wait_seconds":0%s}`},
+			{chiefOfficerCardTool, `{"officer":"` + target.officer + `","draft_id":1%s}`},
+		}
+		for _, via := range []authz.Via{authz.ViaAgent, authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaSession} {
+			for _, act := range acts {
+				for _, owner := range []string{"", `,"owner_id":` + target.owner} {
+					args := strings.Replace(act.args, "%s", owner, 1)
+					if out := chiefCall(r.s, 1, via, mine, act.tool, args); !strings.HasPrefix(errOf(out), tNone) {
+						t.Errorf("user 1's chief via %s: %s %s: %s; want the not-yours refusal", via, act.tool, args, out)
+					}
 				}
 			}
 		}
 	}
-	if r.paused(t, declOther, tOtherOwn) || len(chiefAuditRows(t, r.f, "officer_def:"+tOtherOwn)) != 0 {
-		t.Fatalf("a refused chief changed or audited %s", tOtherOwn)
+	var schedules int
+	if err := r.f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM officer_schedules WHERE officer IN ($1, $2)`, tOtherOwn, tTeamOff).Scan(&schedules); err != nil {
+		t.Fatal(err)
 	}
-	// CONTROL: its owner's chief pauses it.
-	if out := chiefCall(r.s, declOther, authz.ViaAgent, viewer, chiefOfficerControlTool, `{"officer":"`+tOtherOwn+`","action":"pause"}`); isToolErr(out) || !r.paused(t, declOther, tOtherOwn) {
+	if r.paused(t, declOther, tOtherOwn) || r.paused(t, declTeam, tTeamOff) || schedules != 0 ||
+		len(chiefAuditRows(t, r.f, "officer_def:"+tOtherOwn)) != 0 || len(chiefAuditRows(t, r.f, "officer_def:"+tTeamOff)) != 0 {
+		t.Fatalf("a refused chief changed or audited another owner's officer (schedules %d)", schedules)
+	}
+	// CONTROLS: declOther's own chief pauses its officer; the team's manager
+	// pauses the team's on its page.
+	if out := chiefCall(r.s, declOther, authz.ViaAgent, chiefOf(declOther), chiefOfficerControlTool, `{"officer":"`+tOtherOwn+`","action":"pause"}`); isToolErr(out) || !r.paused(t, declOther, tOtherOwn) {
 		t.Fatalf("control: declOther's chief pausing its own officer: %s", out)
 	}
-
-	// The team's officer: the viewer's chief reads it, and is refused every act.
-	if out := chiefCall(r.s, declOther, authz.ViaAgent, viewer, chiefOfficerReadTool, `{"officer":"`+tTeamOff+`","owner_id":`+team+`,"section":"status"}`); isToolErr(out) {
-		t.Fatalf("a viewer's chief reading the team's officer: %s", out)
-	}
-	for _, act := range []struct{ tool, args string }{
-		{chiefOfficerControlTool, `{"officer":"` + tTeamOff + `","owner_id":` + team + `,"action":"pause"}`},
-		{chiefOfficerControlTool, `{"officer":"` + tTeamOff + `","owner_id":` + team + `,"action":"run_now"}`},
-		{chiefOfficerScheduleTool, `{"officer":"` + tTeamOff + `","owner_id":` + team + `,"action":"put","cron":"0 9 * * *"}`},
-		{chiefOfficerMessageTool, `{"officer":"` + tTeamOff + `","owner_id":` + team + `,"message":"hi","wait_seconds":0}`},
-		{chiefOfficerCardTool, `{"officer":"` + tTeamOff + `","owner_id":` + team + `,"draft_id":1}`},
-	} {
-		if out := chiefCall(r.s, declOther, authz.ViaAgent, viewer, act.tool, act.args); !strings.HasPrefix(errOf(out), tManager) {
-			t.Errorf("the viewer's chief: %s %s: %s; want the manager-only refusal", act.tool, act.args, out)
-		}
-	}
-	if r.paused(t, declTeam, tTeamOff) || len(chiefAuditRows(t, r.f, "officer_def:"+tTeamOff)) != 0 {
-		t.Fatalf("a viewer's chief changed or audited the team's officer")
-	}
-	// CONTROL: the manager's chief pauses it, in the TEAM's audit.
-	if out := chiefCall(r.s, 1, authz.ViaAgent, mine, chiefOfficerControlTool, `{"officer":"`+tTeamOff+`","owner_id":`+team+`,"action":"pause"}`); isToolErr(out) || !r.paused(t, declTeam, tTeamOff) {
-		t.Fatalf("control: the manager's chief pausing the team's officer: %s", out)
-	}
-	if rows := chiefAuditRows(t, r.f, "officer_def:"+tTeamOff); strings.Join(rows, ",") != "officer.chief.pause|true|"+team+"|1" {
-		t.Fatalf("the team officer's audit = %v; want one pause in the team's audit, by user 1", rows)
+	if rec := r.page(t, 1, http.MethodPost, "/officers/"+tTeamOff+"/pause", url.Values{"owner": {team}}); rec.Code != http.StatusSeeOther || !r.paused(t, declTeam, tTeamOff) {
+		t.Fatalf("control: the team's manager pausing its officer on the page: %d %.300s", rec.Code, rec.Body.String())
 	}
 
 	// A chief agent that is not the principal's own, and a team's chief.
@@ -230,9 +202,12 @@ func TestTheChiefActsOnlyOnOfficersItsOwnerOwns(t *testing.T) {
 	if out := chiefCall(r.s, declTeam, authz.ViaAgent, chiefOf(declTeam), chiefOfficerReadTool, `{"officer":"`+tTeamOff+`"}`); !strings.HasPrefix(errOf(out), tTeamChief) {
 		t.Errorf("a team's chief: %s", out)
 	}
-	// CONTROL: user 1's own chief reads its own officer.
+	// CONTROL: user 1's own chief reads and pauses its own officer.
 	if out := chiefCall(r.s, 1, authz.ViaAgent, mine, chiefOfficerReadTool, `{"officer":"`+declID+`"}`); isToolErr(out) {
 		t.Errorf("control: user 1's chief reading %s: %s", declID, out)
+	}
+	if out := chiefCall(r.s, 1, authz.ViaAgent, mine, chiefOfficerControlTool, `{"officer":"`+declID+`","action":"pause","owner_id":1}`); isToolErr(out) || !r.paused(t, 1, declID) {
+		t.Errorf("control: user 1's chief pausing %s, naming itself: %s", declID, out)
 	}
 }
 
@@ -359,26 +334,6 @@ func TestChiefSchedulesPutChangeAndDeleteWithTheirUndo(t *testing.T) {
 	}
 }
 
-// TestAChatPersonPrincipalAdmitsATeamManager: the officer door's rule for who
-// may decide a team officer's work admits the team's MANAGER and refuses its
-// viewer. 🔴 RED at the base (6af6d8357): it read the role from TeamScope(),
-// which the officer door never carries, so it refused every manager — and
-// chief_officer_confirm_card could never ask one. CONTROL: the owner itself.
-func TestAChatPersonPrincipalAdmitsATeamManager(t *testing.T) {
-	r := newChiefRig(t)
-	o := officers.Officer{ID: tTeamOff, Owner: declTeam, Backend: officers.BackendBuiltin}
-	if _, ok := r.s.chatPersonPrincipal(context.Background(), o, 1); !ok {
-		t.Errorf("the team's manager (user 1) was refused")
-	}
-	if _, ok := r.s.chatPersonPrincipal(context.Background(), o, declOther); ok {
-		t.Errorf("the team's viewer was admitted")
-	}
-	own := officers.Officer{ID: tOtherOwn, Owner: declOther, Backend: officers.BackendBuiltin}
-	if _, ok := r.s.chatPersonPrincipal(context.Background(), own, declOther); !ok {
-		t.Errorf("control: the owner of %s was refused", tOtherOwn)
-	}
-}
-
 // TestTheChiefNeverApprovesAnOfficersWork: the chief's confirm card is only
 // a card — recorded in user 1's own chat with the officer, the draft still
 // pending, drawn on its page — and every decision door refuses a call a
@@ -406,7 +361,9 @@ func TestTheChiefNeverApprovesAnOfficersWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = w.f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, chief.ID) })
+	t.Cleanup(func() {
+		_, _ = w.f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, chief.ID)
+	})
 	if !w.srv.isChiefAgent(sess, chief) {
 		t.Fatal("fixture: the agent labelled chief is not user 1's chief")
 	}
