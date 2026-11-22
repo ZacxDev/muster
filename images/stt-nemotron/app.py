@@ -22,6 +22,8 @@ Environment:
                            closed 1013 (default 30)
   STT_IDLE_SECONDS         a stream that sends nothing for this long is closed
                            1001 and frees its slot (default 30)
+  STT_FINAL_HOLD_SECONDS   longest a flush's final waits for the next model
+                           step to bring its late closing mark (default 1.0)
   STT_PORT                 listen port (default 8000)
 
 The model, its attention context (70,6: 560 ms chunks) and its precision
@@ -90,19 +92,31 @@ def check_sample_rate(rate) -> None:
         )
 
 
-# 🔴 A SEGMENT NEVER STARTS WITH PUNCTUATION. The model emits a sentence's
-# closing mark only after it has heard what follows, so a `flush` at the end of
-# a sentence often finals "... the off site" and the "." is decoded in the next
-# step, which belongs to the NEXT segment: that final read ". Thanks everyone."
-# (measured live, every final from the second on). The previous final has
-# already been sent and cannot take the mark back, so it is dropped here.
-# Only marks at the very start go; punctuation inside the text is untouched.
+# 🔴 A SENTENCE'S CLOSING MARK IS DECODED ONE STEP LATE. The model emits it
+# only after it has heard what follows, and at a `flush` up to one chunk of
+# audio is still undecoded, so the "?" of "Can Carol book the room?" lands in
+# the step AFTER the flush, which belongs to the NEXT segment (measured live:
+# every final from the second on read ". Thanks everyone."). So a flush's
+# final is HELD until that stream's next model step, and the marks that step
+# opens the next segment with are moved back onto it (DecodeLoop._release).
+# The hold is bounded: it is released by the next step, the next flush, `end`,
+# a failed step, or after FINAL_HOLD_SECONDS of wall time, whichever is first.
+# Any mark that still opens a segment (decoded two steps late, or after a
+# timed-out hold) is dropped by strip_leading_punct, the backstop: a segment's
+# text never starts with one. Punctuation inside the text is never touched.
+FINAL_HOLD_SECONDS = float(os.environ.get("STT_FINAL_HOLD_SECONDS", "1.0"))
 _LEADING_PUNCT = re.compile(r"^[\s.,;:!?…]+")
 
 
 def strip_leading_punct(text: str) -> str:
     """`text` without the run of whitespace and . , ; : ! ? … it starts with."""
     return _LEADING_PUNCT.sub("", text)
+
+
+def leading_marks(text: str) -> str:
+    """The marks (. , ; : ! ? …) `text` opens with, whitespace removed."""
+    m = _LEADING_PUNCT.match(text)
+    return "" if m is None else re.sub(r"\s", "", m.group(0))
 
 
 def bearer_ok(header: str | None) -> bool:
@@ -140,6 +154,8 @@ class Stream:
         self.pending: np.ndarray | None = None  # the newest frame, not yet in seg_min/max
         self.last_partial = ""
         self.done = False
+        self.held: dict | None = None  # a flush's final, waiting for its late marks
+        self.held_until = 0.0  # time.monotonic() at which it goes out regardless
 
     # -- constant-signal tracking -------------------------------------------
     def _fold(self, samples: np.ndarray) -> None:
@@ -204,7 +220,9 @@ class DecodeLoop:
     steps until no stream has a whole chunk, answer the markers, send partials.
 
     A flush therefore answers only after every chunk received before it was
-    decoded, and streams are batched together whatever their phase."""
+    decoded, and its final then waits for that stream's next step (or the
+    hold timeout) to collect a late closing mark. Streams are batched
+    together whatever their phase."""
 
     def __init__(self, engine):
         self.engine = engine
@@ -247,11 +265,18 @@ class DecodeLoop:
                 while not self.stop and not self.gone and not any(
                     s.inbox or self._runnable(s) for s in self.streams.values()
                 ):
-                    self.cv.wait()
+                    due = self._hold_deadline()
+                    if due is not None and due <= time.monotonic():
+                        break
+                    self.cv.wait(None if due is None else due - time.monotonic())
                 if self.stop:
                     return
                 gone, self.gone = self.gone, []
                 live = [s for s in self.streams.values() if not s.closed and not s.done]
+            now = time.monotonic()
+            for st in live:
+                if st.held is not None and st.held_until <= now:
+                    self._release(st)
             for st in gone:
                 try:
                     self.engine.close(st.es)
@@ -261,6 +286,9 @@ class DecodeLoop:
                 self._tick(live)
             except Exception:  # noqa: BLE001 - a crash here would silently stall every stream
                 log.exception("decode tick failed")
+
+    def _hold_deadline(self) -> float | None:
+        return min((s.held_until for s in self.streams.values() if s.held is not None), default=None)
 
     def _runnable(self, st: Stream) -> bool:
         return not st.done and self.engine.runnable(st.es, st.ending)
@@ -297,10 +325,16 @@ class DecodeLoop:
             log.exception("model step failed for %d stream(s)", len(batch))
             for st in batch:
                 st.done = True
+                self._release(st)
                 st.emit({"type": "error", "code": "internal", "message": f"model step failed: {type(e).__name__}"})
                 st.emit(("close", CLOSE_INTERNAL))
             return
         for st in batch:
+            if st.held is not None:
+                # The step after a flush: the marks it opens the next segment
+                # with close the held final's sentence.
+                late = "" if st.constant_so_far() else leading_marks(self.engine.segment_text(st.es))
+                self._release(st, late)
             self._partial(st)
 
     def _segment_text(self, st: Stream) -> str:
@@ -318,20 +352,35 @@ class DecodeLoop:
         st.last_partial = text
         st.emit({"type": "partial", "text": text, "start_ms": ms(st.seg_start), "end_ms": ms(max(self._decoded_end(st), st.seg_start))})
 
-    def _final(self, st: Stream, end_sample: int):
+    def _final(self, st: Stream, end_sample: int, hold: bool = False):
         text = "" if st.constant_so_far() else self._segment_text(st)
-        st.emit({"type": "final", "text": text, "start_ms": ms(st.seg_start), "end_ms": ms(end_sample)})
+        msg = {"type": "final", "text": text, "start_ms": ms(st.seg_start), "end_ms": ms(end_sample)}
+        if hold:
+            st.held, st.held_until = msg, time.monotonic() + FINAL_HOLD_SECONDS
+        else:
+            st.emit(msg)
         st.seg_start = end_sample
         self.engine.cut(st.es)
         st.seg_min = st.seg_max = None
         st.last_partial = ""
+
+    def _release(self, st: Stream, marks: str = ""):
+        """Send the held final, if any, with `marks` appended (never to an
+        empty final: a dead or mark-only segment stays empty)."""
+        msg, st.held = st.held, None
+        if msg is None:
+            return
+        if marks and msg["text"]:
+            msg["text"] += marks
+        st.emit(msg)
 
     def _command(self, st: Stream, cmd: tuple):
         if cmd[0] == "flush":
             # Every frame before a flush is real audio (padding only ever
             # precedes `end`), so the held-back frame counts in full.
             st.settle()
-            self._final(st, st.received)
+            self._release(st)  # finals stay in flush order
+            self._final(st, st.received, hold=True)
         elif cmd[0] == "end":
             n = cmd[1]
             pad = st.received - n
@@ -341,6 +390,7 @@ class DecodeLoop:
                 self._step([st])
                 if st.done:
                     return
+            self._release(st)  # no step ran since the flush: it goes as it is
             self._final(st, n)
             st.done = True
             st.emit(None)
