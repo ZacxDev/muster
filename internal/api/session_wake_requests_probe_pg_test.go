@@ -108,25 +108,18 @@ func (w *officerWakeWorld) draftForItem(item int64, body string) int64 {
 	return id
 }
 
-// sessionEnqueues is the session's enqueue of an owner plan for the officer:
-// through its own MCP door when the door has the tool, else — a build without
-// it — the CLI's admin API (the measured case's path). The item's id.
+// sessionEnqueues is the session's enqueue of an owner plan for the officer,
+// through its own MCP door (officer_item_enqueue). The item's id.
 func (w *officerWakeWorld) sessionEnqueues(subject string) int64 {
 	w.t.Helper()
 	out := w.mirrorCall(routeSID, "officer_item_enqueue", map[string]any{"officer": builtinOfficerID, "kind": "owner.plan", "subject_key": subject})
 	var got struct {
 		ID int64 `json:"id"`
 	}
-	if json.Unmarshal([]byte(out), &got) == nil && got.ID > 0 {
-		return got.ID
+	if json.Unmarshal([]byte(out), &got) != nil || got.ID <= 0 {
+		w.t.Fatalf("officer_item_enqueue from the session's door: %s", out)
 	}
-	w.t.Logf("the session's door has no officer_item_enqueue (%s): enqueued through the admin API instead", out)
-	code, res := adminCall(w.t, w.h, "POST", "/api/officers/defs/"+builtinOfficerID+"/items", `{"kind":"owner.plan","subject_key":"`+subject+`"}`)
-	id, _ := res["id"].(float64)
-	if code/100 != 2 || id == 0 {
-		w.t.Fatalf("the admin API's enqueue: %d %v", code, res)
-	}
-	return int64(id)
+	return got.ID
 }
 
 // tick runs the deliveries muster started, one attention sweep's wake steps
