@@ -152,9 +152,13 @@ var uiExempt = map[string]exemption{
 	// AppPage's reads 5 and 6 (meetings PR 1h.2) are a server app's Android
 	// card sentences (AppServerCardLine, AppServerFallbackLine): the same label,
 	// validated by the same ValidAppLabel at install (plugins.InstallServerApp).
-	"app_page.go AppPage v.Label":         {6, whyAppLabel},
-	"app_page.go appTabLinks a.Label":     {1, whyAppLabel},
-	"mirror_ask.go askForm o.Description": {2, whyOption},
+	"app_page.go AppPage v.Label":   {6, whyAppLabel},
+	"nav_pages.go navPages a.Label": {1, whyAppLabel},
+	// A nav page's label (nav_pages.go): a fixed screen name, or an app tab's
+	// label validated at mint, drawn by the sidebar and searched by the palette.
+	"nav_pages.go navPageLink p.Label":        {3, whyStatic + "; or " + whyAppLabel},
+	"palette.go palettePagesTemplate p.Label": {1, whyStatic + "; or " + whyAppLabel},
+	"mirror_ask.go askForm o.Description":     {2, whyOption},
 	// The chief's question card (owner_ask.go): an option is sent verbatim as the
 	// owner's answer, so it is shown verbatim; the decoder's reads only check it.
 	"owner_ask.go ownerAskForm o.Label":                  {4, whyOption},
@@ -175,7 +179,8 @@ var uiExempt = map[string]exemption{
 	"agents.go seededComboOption o.Label":                {2, whyStatic},
 	"agents.go modelFieldForDisplay m.Label":             {1, whyStatic},
 	"chief_sessions.go runtimeModelForms rt.Label":       {2, whyStatic},
-	"components.go sidebarIn t.Label":                    {1, whyStatic},
+	"nav_pages.go navPages t.Label":                      {1, whyStatic},
+	"palette.go paletteBox t.Label":                      {1, whyStatic},
 	"breadcrumbs.go Breadcrumbs s.Label":                 {2, "a breadcrumb step's words, muster's own (the ask page's \"Asks\", \"Ask #N\": askPageCrumbs), never author text"},
 	"nav_layout.go NavDocument v.Title":                  {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":                {1, whyStatic},

@@ -939,6 +939,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 // NavAccount, NavAdmin): the tab links then match nothing and that entry is
 // the one marked.
 func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, overlay bool) g.Node {
+	pages := navPages(feat)
 	return Div(
 		ID("sidebar-root"),
 		g.Attr("data-open", "false"),
@@ -1028,40 +1029,40 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			// 🔴 THE PAGES ARE IN ONE COLLAPSED "More" AT THE BOTTOM (operator
 			// decision), the install button and the account links with them; the
 			// Asks count is on More's header, so it shows while More is shut.
+			//
+			// 🔴 THE LINKS ARE THE NAV LIST'S (nav_pages.go), visibleTabs's tabs
+			// first: the palette searches the same list, so a page drawn here
+			// is found there, and one gated off here is found nowhere.
 			navMore(feat,
-				g.Map(visibleTabs(feat), func(t tab) g.Node {
-					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
-				}),
+				navPageLinks(navPagesOf(pages, navTab), activeTab, currentTab, hasPanels),
 				// The Connectors tab, when its feature is off: not dropped
 				// silently, but a muted entry saying so, linking to its ⓘ sheet on
 				// the Features page — for an ADMIN, who can turn it on. Anyone
 				// else is never sent to a page of server settings (the operator
 				// rule: how-to-enable details are an admin's), so theirs is
-				// simply not drawn.
+				// simply not drawn. A hint, not a page: not in the list.
 				g.If(!feat.Connectors && feat.Setup, featureOffNavLink("sidebar-connectors-off", features.Connectors, features.ConnectorsName, "🔌")),
-				// The attention queue (attention.go): a standalone page, not a tab.
-				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
-				// The shareable pages (page_card.go): a standalone screen too.
-				pagesLink(feat, activeTab == NavPages, currentTab == NavPages),
-				// The officers (internal/api officers_pages.go): a standalone page.
-				officersLink(feat, activeTab == NavOfficers, currentTab == NavOfficers),
-				// The app tabs (app_page.go): the owner's live app plugins,
-				// after every built-in section link, oldest first.
-				appTabLinks(feat, activeTab, currentTab),
+				// The standalone pages — Asks (attention.go), Pages
+				// (page_card.go), Officers (internal/api officers_pages.go) —
+				// then the app tabs (app_page.go): the owner's live app
+				// plugins, after every built-in section link, oldest first.
+				navPageLinks(navPagesOf(pages, navLink, navApp), activeTab, currentTab, hasPanels),
 				// The install button (shown only where the browser offers one) and
-				// the account links. The theme toggle that once sat here is gone —
-				// the UI is dark only (theme.go).
+				// the account links (Admin for an admin, Account, Features): full
+				// navigations, never a body swap. The theme toggle that once sat
+				// here is gone — the UI is dark only (theme.go).
 				Div(
 					ID("sidebar-prefs"),
 					Class("flex flex-col gap-1 border-t border-line pt-1"),
 					installButton(),
-					accountLinks(feat, activeTab, currentTab),
+					navPageLinks(navPagesOf(pages, navPref), activeTab, currentTab, hasPanels),
 				),
 			),
 		),
 		// The command palette (palette.go): one per document, in the root and
-		// not in the panel above, which a transform slides.
-		paletteBox(),
+		// not in the panel above, which a transform slides. It searches the
+		// same nav list.
+		paletteBox(pages),
 		// The switcher dock (switcher_dock.go): one per document, beside the
 		// palette and for its reason; closed and empty where no bar opens it.
 		switcherDock(),
@@ -1076,27 +1077,6 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// The error toasts' host, on every document with the sidebar.
 		actionToasts(),
 	)
-}
-
-// accountLinks is the sidebar's way to the account page (sign out, sign out
-// everywhere) and, for an admin, to the admin pages (accounts PR 5). Both are
-// standalone documents outside the shell, so the links opt out of boost: a
-// full navigation, never a body swap of a document that has no panels.
-//
-// activeTab / currentTab are sidebar's: the Admin link is the one marked on an
-// admin page (NavAdmin), Account on the account pages (NavAccount).
-func accountLinks(feat Features, activeTab, currentTab string) g.Node {
-	link := func(id, href, label, icon, entry string) g.Node {
-		return A(ID(id), Href(href), hx("hx-boost", "false"),
-			g.If(currentTab == entry, g.Attr("aria-current", "page")),
-			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(activeTab == entry)),
-			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
-	}
-	return g.Group([]g.Node{
-		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️", NavAdmin)),
-		link("sidebar-account", "/account", "Account", "👤", NavAccount),
-		link("sidebar-features", FeaturesPagePath, "Features", "🧰", NavFeatures),
-	})
 }
 
 // featureOffNavLink is a nav entry for a page whose feature is off: muted, and

@@ -574,6 +574,10 @@ export const asksScrollPort = port + 600;
 export const asksFiltersPort = port + 603;
 export const draftVideoPort = port + 606;
 export const draftVideoS3Port = port + 608;
+// tests/palette-everything.spec.ts: the command palette's search of every
+// kind (sessions, screens, asks, Pages documents) — its own server (pages on).
+// +610: clear of the above.
+export const paletteEverythingPort = port + 610;
 // tests/signin-progress.spec.ts: its own password-mode server, so its refused
 // and accepted sign-ins are charged to a budget of their own (lib/server.ts).
 export const signinProgressPort = port + 486;

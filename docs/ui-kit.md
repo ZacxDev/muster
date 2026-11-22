@@ -161,7 +161,7 @@ changes.
 | secondary button, `mu-btn--secondary` | the branding section's **Reset logo** (`rounded-md bg-bg px-3 py-2 text-base font-semibold ring-1 ring-inset ring-edge`) |
 | text field, `mu-input` | the branding section's **Display name** field (`rounded-md bg-bg px-3 py-2 text-base ring-1 ring-inset ring-edge`) |
 | card, `mu-card` | an Account page section (`rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line`) |
-| icon button, `mu-icon-btn` | the sidebar's **Search sessions** button (`h-11 w-11 rounded-lg text-muted`) |
+| icon button, `mu-icon-btn` | the sidebar's **Search** button (`h-11 w-11 rounded-lg text-muted`) |
 
 Matched by value but not by the browser test (muster draws its own only in
 places the test cannot open): `mu-chip--<status>` (muster's status chip:

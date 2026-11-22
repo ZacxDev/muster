@@ -58,6 +58,7 @@ var noStoreLiterals = map[string]string{
 	"noStore":                   "the helper itself",
 	"writeDocumentHeaders":      "the header set of both document writers",
 	"handleAppAlive":            "an app tab's alive poll: whether the plugin is live now",
+	"handlePaletteFind":         "the command palette's search: the caller's asks and pages by title",
 	"handleAccountApps":         "Account → Apps: whether each server app may act for you now",
 	"handleAppSignInStart":      "sign in with the muster app: a fresh single-use code and its QR",
 	"handleAppSignInStatus":     "sign in with the muster app: the request's state now",

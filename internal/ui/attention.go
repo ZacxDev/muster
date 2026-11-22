@@ -63,23 +63,6 @@ func attentionBadgeSlot() g.Node {
 		hx("hx-swap", "innerHTML"), g.Raw(AttentionBadgeHTML(0)))
 }
 
-// attentionLink is the sidebar's entry, drawn only when the queue is served.
-// A full navigation (hx-boost="false"): /attention is a standalone document,
-// never a body swap of the shell. active/current mark it as the entry the
-// page belongs to (the /attention page itself): see sidebar.
-//
-// 🔴 THE COUNT IS NOT ON THIS LINK: it is on the header of the sidebar's
-// collapsed "More" (navMore), which holds this link — on the link it would be
-// hidden whenever More is shut, and it is the one actionable count in there.
-func attentionLink(feat Features, active, current bool) g.Node {
-	if !feat.Attention {
-		return nil
-	}
-	return A(ID("sidebar-attention"), Href("/attention"), hx("hx-boost", "false"), g.If(current, g.Attr("aria-current", "page")),
-		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(active)),
-		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Asks")))
-}
-
 // askBusyFunc is THE "the owner is typing an answer" rule, in JavaScript:
 // focus in a field of the list, any non-blank answer box in it, or a mic of
 // the list opening the microphone, recording or transcribing (dictate.go's

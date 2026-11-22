@@ -354,7 +354,11 @@ for (const vp of [
       // The codename is not drawn twice: the bare codename line OFF drew is
       // gone, the place (which starts with it) in its stead.
       await expect(bareCode, 'no bare codename next to the place').toHaveCount(0);
-      // Under the name.
+      // Under the name — measured once the palette's opening animation
+      // (input.css: a transform) has ended: the two boxes are read in two
+      // round trips, and mid-animation the box moves between them (measured:
+      // still animating here, ~1px apart on the phone, where it rises).
+      await page.locator('#switcher-search').evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
       const ob = (await opt(w).locator('span').first().boundingBox())!, pb = (await pl.boundingBox())!;
       expect(pb.y, 'the line is under the name').toBeGreaterThanOrEqual(ob.y + ob.height - 0.5);
       await expect(page.locator('#switcher-search-results [data-palette-tmux]'), 'only the named windows').toHaveCount(2);

@@ -82,23 +82,6 @@ func AppFrameAllow(origin string) string {
 	return strings.Join(parts, "; ")
 }
 
-// appTabLinks is the sidebar's app entries (Features.Apps), nil for none.
-func appTabLinks(feat Features, activeTab, currentTab string) g.Node {
-	if len(feat.Apps) == 0 {
-		return nil
-	}
-	links := make([]g.Node, 0, len(feat.Apps))
-	for _, a := range feat.Apps {
-		entry := NavAppEntry(a.ID)
-		links = append(links, A(ID("sidebar-app-"+strconv.FormatInt(a.ID, 10)), Href(AppPagePath(a.ID)), hx("hx-boost", "false"),
-			g.Attr("data-app-tab", strconv.FormatInt(a.ID, 10)),
-			g.If(currentTab == entry, g.Attr("aria-current", "page")),
-			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(activeTab == entry)),
-			Span(Class("text-base"), g.Attr("aria-hidden", "true"), g.Text(a.Icon)), Span(Class("min-w-0 truncate"), g.Text(a.Label))))
-	}
-	return g.Group(links)
-}
-
 // AppPageView is an app tab's page.
 type AppPageView struct {
 	Nav NavChrome

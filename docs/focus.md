@@ -3,7 +3,8 @@
 Every session — a dispatched agent or a mirrored Claude Code window — can carry
 a **focus**: a short title (stored whole) and one to three sentences saying what
 it is working on now. The search palette (the magnifier in the sidebar or on the
-bottom bar, or `/`) finds a session by its focus title and shows it beside the
+bottom bar, or `/`; it finds screens, asks and pages too, see
+[mirroring.md](mirroring.md)) finds a session by its focus title and shows it beside the
 session's name, but ranks matches by the **name** first, so typing a name still
 puts that session first. A session's page lists its focus over time behind the
 header's focus-history button ([below](#focus-history)). (The Agents list page,

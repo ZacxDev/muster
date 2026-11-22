@@ -197,6 +197,9 @@ never expands its card. Without JavaScript it is plain text.
 
 ### Searching your asks
 
+(From any page, the search box behind the magnifier or `/` finds an ask too,
+by its id or its words: [mirroring.md](mirroring.md), under **Search**.)
+
 The box on the page heading's row searches your asks — open, answered,
 dismissed, expired, notices too — and your plugin drafts. The
 search is the page's own query, `/attention?q=…`, so a search is a link and

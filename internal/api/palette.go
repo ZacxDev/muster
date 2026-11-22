@@ -36,6 +36,7 @@ type paletteHit struct {
 
 func (s *Server) registerPaletteRoutes(mux Mux) {
 	mux.HandleFunc("GET "+ui.PaletteHistoryRoute, s.requireSession(s.handlePaletteHistory))
+	s.registerPaletteFindRoutes(mux)
 }
 
 // handlePaletteHistory is GET /ui/palette/history?q=…: {"hits": [...]}, newest

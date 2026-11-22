@@ -470,6 +470,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
 		"GET /ui/palette/history",
+		// The palette's asks and pages search (palette_find.go): requireSession.
+		"GET /ui/palette/find",
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
 		"GET /ui/agents/{name}/chat-context",

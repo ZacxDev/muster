@@ -672,8 +672,8 @@ func switcherBarWith(s *Switcher, pinned, moreElsewhere bool) g.Node {
 					g.Attr("aria-expanded", "false"),
 					g.Attr("aria-controls", paletteID),
 					g.Attr("aria-keyshortcuts", "/"),
-					g.Attr("aria-label", "Search sessions"),
-					g.Attr("title", "Search sessions (/)"),
+					g.Attr("aria-label", "Search"),
+					g.Attr("title", "Search (/)"),
 					Class(switcherIconButtonClass),
 					Span(
 						Class(switcherIconFaceClass),

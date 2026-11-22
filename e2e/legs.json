@@ -194,6 +194,7 @@
       "tests/pages-declutter.spec.ts",
       "tests/pages-share.spec.ts",
       "tests/pages.spec.ts",
+      "tests/palette-everything.spec.ts",
       "tests/plugin-app.spec.ts",
       "tests/plugin-knock-push.spec.ts",
       "tests/plugin-server-app.spec.ts",

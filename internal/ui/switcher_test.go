@@ -407,11 +407,11 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	list[3].DisplayName = "ag-four" // the same as its name: no title
 	page := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
 	nav := page[:strings.Index(page, "<script>")]
-	open := strings.Index(nav, `<button id="switcher-search-open" type="button" data-palette-open="" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search sessions"`)
+	open := strings.Index(nav, `<button id="switcher-search-open" type="button" data-palette-open="" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search"`)
 	if open < 0 || open < strings.LastIndex(nav[:strings.Index(nav, `id="switcher-views"`)], `data-switcher-list=`) {
 		t.Fatalf("no search button after the rows:\n%s", nav)
 	}
-	if !regexp.MustCompile(`<div id="switcher-search" popover="" role="dialog" aria-label="Search sessions"[^>]*><div[^>]*><svg[^>]*>.*?</svg><input id="switcher-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-search-results" aria-autocomplete="list"[^>]*>.*?<ul id="switcher-search-results" role="listbox"`).MatchString(renderString(t, paletteBox())) {
+	if !regexp.MustCompile(`<div id="switcher-search" popover="" role="dialog" aria-label="Search"[^>]*><div[^>]*><div[^>]*><svg[^>]*>.*?</svg><input id="switcher-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-search-results" aria-autocomplete="list"[^>]*>.*?<ul id="switcher-search-results" role="listbox"`).MatchString(renderString(t, paletteBox(nil))) {
 		t.Error("the palette is not a popover dialog holding a combobox over a listbox")
 	}
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]

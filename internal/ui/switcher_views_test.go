@@ -117,7 +117,7 @@ func TestTheSidebarSearchOpensTheOnePalette(t *testing.T) {
 			t.Errorf("%s: %d palettes, want one", name, n)
 		}
 		btn := regexp.MustCompile(`<button id="` + SidebarSearchID + `"[^>]*>`).FindString(page)
-		if !strings.Contains(btn, paletteOpenAttr+`=""`) || !strings.Contains(btn, `aria-controls="`+paletteID+`"`) || !strings.Contains(btn, `aria-label="Search sessions"`) {
+		if !strings.Contains(btn, paletteOpenAttr+`=""`) || !strings.Contains(btn, `aria-controls="`+paletteID+`"`) || !strings.Contains(btn, `aria-label="Search"`) {
 			t.Errorf("%s: the sidebar's search button does not open the palette: %q", name, btn)
 		}
 		side := page[strings.Index(page, `<nav id="sidebar"`):]

@@ -52,6 +52,24 @@ func withoutDock(t *testing.T, html string) string {
 	return html[:i] + html[i+j+len("</dialog>"):]
 }
 
+// withoutPalette is html with the command palette's box (palette.go, drawn
+// once in every document with the sidebar) cut out: for a test about the
+// page's OWN controls, which the palette's type pills (a radio group) are not.
+// Fails when html has no palette, so it cannot go on cutting nothing.
+func withoutPalette(t *testing.T, html string) string {
+	t.Helper()
+	i := strings.Index(html, `<div id="`+paletteID+`"`)
+	if i < 0 {
+		t.Fatal("withoutPalette: the document draws no palette")
+	}
+	end := `</template></div>`
+	j := strings.Index(html[i:], end)
+	if j < 0 {
+		t.Fatal("withoutPalette: the palette is not closed by its template")
+	}
+	return html[:i] + html[i+j+len(end):]
+}
+
 // renderNode is renderString under the name some tests call it by.
 func renderNode(t *testing.T, n g.Node) string {
 	t.Helper()
