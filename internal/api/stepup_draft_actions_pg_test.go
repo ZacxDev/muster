@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -42,6 +43,13 @@ const stepUpDraftBody = "The launch post, with its two media."
 
 func newStepUpDraftFixture(t *testing.T, decision string) *stepUpDraftFixture {
 	t.Helper()
+	return newStepUpDraftFixtureFor(t, decision, "example.forum", stepUpDraftBody)
+}
+
+// newStepUpDraftFixtureFor is the fixture with the draft posted to venue with
+// body.
+func newStepUpDraftFixtureFor(t *testing.T, decision, venue, body string) *stepUpDraftFixture {
+	t.Helper()
 	f := newDraftToolFixture(t)
 	f.srv.ext.Attention = attention.NewPG(f.pool)
 	dsn := dbtest.DSN(t)
@@ -51,7 +59,7 @@ func newStepUpDraftFixture(t *testing.T, decision string) *stepUpDraftFixture {
 		dbtest.OwnerExec(t, dsn, `UPDATE plugins SET deliver_to = NULL WHERE id = `+strconv.FormatInt(f.plugin.ID, 10))
 	})
 	d, err := f.plugins.FileOutbound(f.asOwner, f.chief.ID, f.owner, f.chief.Name, plugins.NewOutbound{Officer: "example:main",
-		Plugin: f.plugin.Name, Venue: "example.forum", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: stepUpDraftBody,
+		Plugin: f.plugin.Name, Venue: venue, Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: body,
 		Media: []string{"launch/hero-7", "launch/demo-8"}})
 	if err != nil {
 		t.Fatalf("file an outbound draft: %v", err)
@@ -66,7 +74,7 @@ func newStepUpDraftFixture(t *testing.T, decision string) *stepUpDraftFixture {
 		t.Fatalf("check: %v", err)
 	}
 	declareHostOfficerOn(t, f.srv, f.owner, "tower")
-	args := map[string]any{"id": d.ID, "decision": decision, "body_sha256": sha(stepUpDraftBody),
+	args := map[string]any{"id": d.ID, "decision": decision, "body_sha256": sha(body),
 		"media_sha256": []string{sha("launch/hero-7"), sha("launch/demo-8")}}
 	text, isErr := f.mcp(t, f.tok, otherRouteSID, "plugin_draft_decide", args)
 	if isErr {
@@ -76,7 +84,7 @@ func newStepUpDraftFixture(t *testing.T, decision string) *stepUpDraftFixture {
 	if r := f.row(t, d.ID); r.status != "pending" {
 		t.Fatalf("the draft after the gated decide: %+v", r)
 	}
-	return &stepUpDraftFixture{draftToolFixture: f, draft: d, card: card, body: stepUpDraftBody}
+	return &stepUpDraftFixture{draftToolFixture: f, draft: d, card: card, body: body}
 }
 
 // page GETs path as the browser the fixture's session override names.
@@ -261,4 +269,126 @@ func TestAnotherOwnersStepUpCardNeverGetsTheDraftControls(t *testing.T) {
 	owner := f.owner
 	f.srv.sessionUserOverride = func(*http.Request) int64 { return owner }
 	assertDraftControls(t, "the owner's card", feedCard(f.page(t, attentionPath), f.card), f, attentionPath)
+}
+
+// approveForm reports whether html holds draft id's Approve form.
+func approveForm(html string, id int64) bool {
+	return strings.Contains(html, `action="/plugins/drafts/`+strconv.FormatInt(id, 10)+`/approve"`)
+}
+
+// longWords is n characters of words (synthetic, distinct per seed).
+func longWords(seed string, n int) string {
+	var b strings.Builder
+	for i := 0; b.Len() < n; i++ {
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(seed + strconv.Itoa(i))
+	}
+	return b.String()[:n]
+}
+
+// TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows: 🔴 what is approved
+// is what is seen. A thread (several X posts) shows only its first post on
+// the Open feed, so its feed card has NO Approve — a "Review and approve" link
+// to the card's page instead, and Reject — while its page, which draws every
+// post, has Approve. A body past the card's preview bound is an excerpt on
+// every face, so its page has no Approve either — a link to the Drafts tab's
+// card, which draws the whole text. A single short post keeps Approve on the
+// feed (TestAStepUpCardAboutADraftDrawsTheDraftsDecision).
+//
+// 🔴 RED AT cdc28ce8e: both faces drew Approve whatever they showed.
+func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
+	t.Run("a thread", func(t *testing.T) {
+		f := newStepUpDraftFixtureFor(t, "approve", "x", longWords("first", 200)+"\n---8<---\n"+longWords("second", 200)+"\n---8<---\n"+longWords("third", 200))
+		card := feedCard(f.page(t, attentionPath), f.card)
+		if card == "" || !strings.Contains(card, "data-stepup-thread-more") {
+			t.Fatalf("the fixture is not a thread on the feed: %s", card)
+		}
+		if approveForm(card, f.draft.ID) {
+			t.Error("the thread's feed card draws Approve, which binds posts it does not show")
+		}
+		if !strings.Contains(card, `href="`+askPagePath(f.card)+`"`) || !strings.Contains(card, "data-draft-review>Review and approve</a>") {
+			t.Errorf("the thread's feed card has no Review and approve link to its page: %s", card)
+		}
+		if !strings.Contains(card, "data-draft-reject>Reject</button>") || !strings.Contains(card, askStepUpDraftReviewLine) {
+			t.Errorf("the thread's feed card lost Reject or its line")
+		}
+		if page := f.page(t, askPagePath(f.card)); !approveForm(page, f.draft.ID) {
+			t.Error("the thread's page, which draws every post, has no Approve")
+		}
+	})
+	t.Run("an excerpt", func(t *testing.T) {
+		f := newStepUpDraftFixtureFor(t, "approve", "example.forum", longWords("excerpt", 3000))
+		page := f.page(t, askPagePath(f.card))
+		if !strings.Contains(page, "data-stepup-excerpt") {
+			t.Fatalf("the fixture's card is not an excerpt")
+		}
+		if approveForm(page, f.draft.ID) {
+			t.Error("the excerpted card's page draws Approve, which binds text it does not show")
+		}
+		want := `href="` + html.EscapeString(draftTabLink(f.draft.ID)) + `"`
+		if !strings.Contains(page, want) {
+			t.Errorf("the excerpted card's page has no link to the draft's whole text (%s)", want)
+		}
+		if !strings.Contains(page, "data-draft-reject>Reject</button>") {
+			t.Error("the excerpted card's page lost Reject")
+		}
+		if card := feedCard(f.page(t, attentionPath), f.card); approveForm(card, f.draft.ID) {
+			t.Error("the excerpted card's feed face draws Approve")
+		}
+	})
+	t.Run("a card whose preview is not the draft", func(t *testing.T) {
+		// Not an excerpt, one post — but what it shows is not the draft's
+		// text (a card filed with another preview), so it is not what an
+		// approval would bind.
+		f := newStepUpDraftFixture(t, "approve")
+		other, err := f.srv.ext.Attention.Create(f.asOwner, attention.New{
+			Asker: attention.Asker{System: true, Label: hostDecisionLabel},
+			StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to example.forum? · Draft #" + strconv.FormatInt(f.draft.ID, 10),
+				Why: "Another preview", Preview: "Not the draft's text at all.", DraftID: f.draft.ID, Asker: "work:4", Details: "A session asks."},
+			Options: []string{hostDecisionConfirm, hostDecisionRefuse},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if card := feedCard(f.page(t, attentionPath), other.ID); card == "" || approveForm(card, f.draft.ID) {
+			t.Errorf("a card showing another text draws Approve (or is missing): %q", card)
+		}
+		if page := f.page(t, askPagePath(other.ID)); approveForm(page, f.draft.ID) {
+			t.Error("its page draws Approve")
+		}
+	})
+}
+
+// TestABatchDecisionSettlesItsDraftsStepUpCards: an outreach batch decided on
+// the Asks page settles the open step-up card about one of its drafts, as a
+// single draft's decision does.
+//
+// 🔴 RED AT cdc28ce8e: the batch decision approved the follow and left its
+// card open.
+func TestABatchDecisionSettlesItsDraftsStepUpCards(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	ids, _ := w.followsFor("kip")
+	batch := plugins.BatchID(1, builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
+	owner := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	card, err := w.srv.ext.Attention.Create(owner, attention.New{
+		Asker: attention.Asker{System: true, Label: hostDecisionLabel},
+		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Follow on X? · Draft #" + strconv.FormatInt(ids[0], 10),
+			Why: "A session asks", Preview: "Follow kip", DraftID: ids[0], Asker: "work:3", Details: "A session asks to decide it."},
+		Options: []string{hostDecisionConfirm, hostDecisionRefuse},
+	})
+	if err != nil {
+		t.Fatalf("file the card: %v", err)
+	}
+	if rec := w.decideBatchForm(batch, plugins.BatchSHA256(ids), ids[0]); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the batch decision: %d %s", rec.Code, rec.Body)
+	}
+	if got := w.draft(ids[0]).Status; got != plugins.DraftApproved {
+		t.Fatalf("the follow after the batch decision: %s", got)
+	}
+	got, err := w.srv.ext.Attention.Get(owner, card.ID)
+	if err != nil || got.Status != attention.Answered || got.Answer != "Approved in the web UI" {
+		t.Fatalf("the follow's step-up card after the batch decision: %+v %v", got, err)
+	}
 }

@@ -1149,6 +1149,13 @@ func draftDecisionHTML(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		}
 		approve := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + p.backField() + binding + `<button type="submit" class="` +
 			approveClass + `" data-draft-approve>Approve and send</button></form>`
+		if p.reviewHref != "" {
+			// 🔴 THIS FACE DOES NOT SHOW THE WHOLE DRAFT (a clamped feed card, a
+			// thread's later posts, an excerpt): no Approve here, which would
+			// bind the whole body to a part of it. A way to the face that does
+			// show it instead; Reject stays (rejecting sends nothing).
+			approve = `<a href="` + html.EscapeString(p.reviewHref) + `" class="` + approveClass + ` inline-flex items-center justify-center" data-draft-review>Review and approve</a>`
+		}
 		if p.rejectLead {
 			b.WriteString(`<div class="` + ui.AsksDecisionClass + `">` + reject + approve + `</div>
 `)

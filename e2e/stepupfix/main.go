@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // The card's parts (synthetic): an X post of two paragraphs and one image,
@@ -114,8 +115,20 @@ func run(args []string) error {
 		if len(args) > 3 && args[3] == "reject" {
 			title, why, decision = "Reject this draft? · Draft #"+args[2], "Reject this draft", "reject"
 		}
-		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: title, Why: why, Asker: Asker,
-			Preview: strings.TrimSpace(Preview), Venue: "X", Platform: "x", Target: "post", DraftID: draft,
+		// The card shows the draft's own text and media, as the gate files
+		// it: only then may its face offer the draft's Approve.
+		dc, err := plugins.NewPG(pool).DraftCard(as, draft)
+		if err != nil {
+			return fmt.Errorf("read draft %d: %w", draft, err)
+		}
+		var media []attention.StepUpMedium
+		for i, ref := range dc.Draft.MediaRefs {
+			if m, ok := dc.Draft.MediaFor(ref); ok {
+				media = append(media, attention.StepUpMedium{N: i, Ref: ref, Type: m.ContentType, SHA256: m.SHA256})
+			}
+		}
+		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: title, Why: why, Asker: Asker, Media: media,
+			Preview: dc.Draft.Body, Venue: "X", Platform: "x", Target: "post", DraftID: draft,
 			Details: "A session on host-a (work:1 @ host-a) asks to approve or reject a reply or outbound draft as you.\nThe call: plugin_draft_decide, with id " +
 				args[2] + ", decision “" + decision + "”."}
 		a, err := attention.NewPG(pool).Create(as, attention.New{

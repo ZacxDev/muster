@@ -301,7 +301,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		// A card about a draft the reader may decide draws the DRAFT's own
 		// decision controls (askStepUpDraftHTML, the Drafts tab's), returning
 		// here; the card itself stays answerable only from the phone.
-		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, "text-sm", now)
+		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, askPagePath(it.AskID), "text-sm", true, now)
 		if line == "" {
 			line = askStepUpPhoneHTML("text-sm")
 		}

@@ -75,25 +75,74 @@ func stepUpRejects(c *attention.StepUpCard) bool {
 const (
 	askStepUpDraftLine       = "Approve here, or confirm on your phone."
 	askStepUpDraftRejectLine = "Reject here, or confirm on your phone."
+	askStepUpDraftReviewLine = "Review the whole post to approve it, or confirm on your phone."
 )
+
+// stepUpShowsWholeDraft reports whether step-up card c's face shows ALL of
+// draft dc — the only face an Approve bound to the draft's whole body and
+// media may be drawn on (🔴 what is approved is what is seen):
+//   - the card is not an excerpt and not a changed-draft card;
+//   - its preview IS the draft's text and its media the draft's media, as the
+//     Drafts tab draws them (draftPostCard), so nothing differs from what the
+//     approval binds;
+//   - on the Open feed (feed), the draft is ONE post: the feed draws only a
+//     thread's first post, clamped, and "+N more posts".
+func stepUpShowsWholeDraft(c *attention.StepUpCard, dc *plugins.DraftCard, feed bool) bool {
+	if c == nil || dc == nil || c.Excerpt != "" || c.Changed {
+		return false
+	}
+	whole := draftPostCard(*dc)
+	if c.Preview != whole.Preview || len(c.Media) != len(whole.Media) {
+		return false
+	}
+	for i := range c.Media {
+		if c.Media[i].SHA256 != whole.Media[i].SHA256 {
+			return false
+		}
+	}
+	if feed {
+		if _, total := stepUpPostParts(stepUpWithVenue(c)); total != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// draftTabLink is draft id's card on the Asks page's Drafts tab, which draws
+// its whole text.
+func draftTabLink(id int64) string {
+	n := strconv.FormatInt(id, 10)
+	return attentionPath + "?" + asksTabParam + "=" + asksTabDrafts + "&" + asksDraftParam + "=" + n + "#" + draftCardAnchor(id)
+}
 
 // askStepUpDraftHTML is a step-up card's draft controls, drawn in back's place
 // (attentionPath on the Open feed, the card's own page there), and the line
 // above them; "" when dc is nil or the draft has nothing left to decide —
 // the card then draws its phone line alone (askStepUpPhoneHTML). size is the
 // line's text size class.
-func askStepUpDraftHTML(c *attention.StepUpCard, dc *plugins.DraftCard, back, size string, now time.Time) string {
+//
+// review is where the whole draft can be read when this face does not show
+// all of it (stepUpShowsWholeDraft false): its Approve becomes a "Review and
+// approve" link there.
+func askStepUpDraftHTML(c *attention.StepUpCard, dc *plugins.DraftCard, back, review, size string, feed bool, now time.Time) string {
 	if dc == nil {
 		return ""
 	}
 	rejects := stepUpRejects(c)
-	controls := draftDecisionHTML(*dc, now, cardPlace{back: back, rejectLead: rejects})
+	place := cardPlace{back: back, rejectLead: rejects}
+	if !stepUpShowsWholeDraft(c, dc, feed) {
+		place.reviewHref = review
+	}
+	controls := draftDecisionHTML(*dc, now, place)
 	if controls == "" {
 		return ""
 	}
 	line := askStepUpDraftLine
-	if rejects {
+	switch {
+	case rejects:
 		line = askStepUpDraftRejectLine
+	case place.reviewHref != "" && strings.Contains(controls, "data-draft-review"):
+		line = askStepUpDraftReviewLine
 	}
 	return `<div class="flex min-w-0 flex-col gap-2" data-asks-stepup-draft data-draft-id="` + strconv.FormatInt(dc.Draft.ID, 10) + `">` +
 		`<p class="break-words ` + size + ` text-fg2" data-ask-stepup-phone>` + line + `</p>` + controls + `</div>`

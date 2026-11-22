@@ -367,7 +367,11 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		// a status line, never drawn as a control (askStepUpPhoneHTML) — with,
 		// for a card about a draft the owner may decide, the DRAFT's own
 		// decision controls under it (askStepUpDraftHTML), back to this page.
-		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), "text-base", time.Now()); d != "" {
+		review := ""
+		if it.stepUpDraft != nil {
+			review = draftTabLink(it.stepUpDraft.Draft.ID)
+		}
+		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now()); d != "" {
 			return d
 		}
 		return askStepUpPhoneHTML("text-base")
