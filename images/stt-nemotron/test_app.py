@@ -41,9 +41,9 @@ RETRY = 47
 CHUNK = 8960  # the stub's chunk: 560 ms, the real model's chunk size
 FRAME = 1280
 WORD = "fx7741w"
-# A flush's final is held for the next step or this long (app default 1.0 s).
+# A flush's final is held for the next words or this long (app default 4.0 s).
 # Short, so the tests that wait for a final with no audio after the flush stay
-# fast; the late-mark tests use LONG, so only a model step can release a hold.
+# fast; the late-mark tests use LONG, so the timeout never releases a hold.
 HOLD = 0.3
 LONG = 5.0
 
@@ -401,11 +401,12 @@ class FlushTest(Base):
 
 
 class LeadingPunctuationTest(Base):
-    """The model emits a sentence's closing mark one step late, so after a
-    flush it opens the NEXT segment. The flush's final is held for that step
-    and the mark moved back onto it; no segment's text starts with a mark."""
+    """The model emits a sentence's closing mark only with the NEXT speech, so
+    after a flush it opens the NEXT segment. The flush's final is held until
+    that segment's first words (or the next flush, or `end`) and the mark moved
+    back onto it; no segment's text starts with a mark."""
 
-    env = {"hold": LONG}  # only a model step (or flush/end) releases a hold here
+    env = {"hold": LONG}  # only the next words (or flush/end) release a hold here
 
     def _run(self, words, cuts, tail=0):
         """One chunk per word, a flush after each chunk count in `cuts`, then
@@ -474,15 +475,88 @@ class LeadingPunctuationTest(Base):
         finals, _ = self._run(["Hi"], [1, 0])
         self.assertEqual(finals, ["Hi", "", ""])
 
-    def test_a_mark_two_steps_late_is_dropped_not_leaked(self):
-        # The backstop: the step after the flush decoded nothing, so the hold
-        # went out bare; the mark that comes a step later must not open the
-        # segment (nor be appended to a final already sent).
-        finals, partials = self._run(["Hi", "", ". Bye"], [1], tail=2)
-        self.assertEqual(finals, ["Hi", "Bye"])
-        self.assertEqual(partials[1], ["Bye"])
+    def test_a_pause_after_the_flush_keeps_the_final_until_the_next_words(self):
+        # Measured live: after a pause the mark comes with the next sentence's
+        # first words, not in the step after the flush. The steps of silence
+        # in between must not release the final bare.
+        self.eng.words = ["Can everyone hear me clearly", "", "", "", "? Alice will", "send"]
+        with self.connect() as ws:
+            self._send(ws, tone(CHUNK))
+            ws.send_text('{"type": "flush"}')
+            self._send(ws, tone(4 * CHUNK, start=CHUNK))  # 3 silent steps, then "? Alice will"
+            t0 = time.monotonic()
+            first = next_of(ws, "final")  # before `end`: only the words can release it
+            waited = time.monotonic() - t0
+            p = next_of(ws, "partial")
+            self._send(ws, tone(CHUNK, start=5 * CHUNK))
+            ws.send_text(json.dumps({"type": "end", "samples": 6 * CHUNK}))
+            rest, code = until_close(ws)
+        self.assertEqual(first["text"], "Can everyone hear me clearly?")
+        self.assertLess(waited, LONG / 2, "the held final waited for the timeout, not the words")
+        self.assertEqual(p["text"], "Alice will")
+        self.assertEqual([m["text"] for m in rest if m["type"] == "final"], ["Alice will send"])
+        self.assertEqual(code, 1000)
 
-    def test_the_next_step_releases_the_held_final_without_waiting_for_the_timeout(self):
+    def test_the_next_flush_while_held_moves_the_marks_so_far(self):
+        # The mark alone was decoded, then the next flush came first.
+        finals, _ = self._run(["Hear me clearly", "?"], [1, 1])
+        self.assertEqual(finals, ["Hear me clearly?", "", ""])
+        # The words came in the step whose audio only varies in its newest
+        # frame (still constant to the server, so the step cannot release);
+        # the flush counts that frame and must move the "?" before it cuts.
+        self.eng.words = ["Hear me clearly", "? Alice will send"]
+        with self.connect() as ws:
+            self._send(ws, tone(CHUNK))
+            ws.send_text('{"type": "flush"}')
+            self._send(ws, np.concatenate([np.zeros(CHUNK - FRAME, "<i2"), tone(FRAME)]))
+            ws.send_text('{"type": "flush"}')
+            ws.send_text(json.dumps({"type": "end", "samples": 2 * CHUNK}))
+            msgs, code = until_close(ws)
+        self.assertEqual([m["text"] for m in msgs if m["type"] == "final"],
+                         ["Hear me clearly?", "Alice will send", ""])
+        self.assertEqual(code, 1000)
+
+    def test_marks_after_bit_exact_silence_are_kept_once_speech_begins(self):
+        # The next segment opens with bit-exact zeros (a muted gap), then its
+        # speech: the "." the model decodes as the speech begins is the held
+        # final's. While the segment is still entirely constant it must keep
+        # holding, not go out bare.
+        self.eng.words = ["Who owns it", "", ". Bob", "owns"]
+        with self.connect() as ws:
+            self._send(ws, tone(CHUNK))
+            ws.send_text('{"type": "flush"}')
+            self._send(ws, np.zeros(CHUNK, "<i2"))
+            self._send(ws, np.concatenate([np.zeros(CHUNK - FRAME, "<i2"), tone(FRAME)]))
+            self._send(ws, tone(CHUNK, start=FRAME))
+            ws.send_text(json.dumps({"type": "end", "samples": 4 * CHUNK}))
+            msgs, code = until_close(ws)
+        self.assertEqual([m["text"] for m in msgs if m["type"] == "final"], ["Who owns it.", "Bob owns"])
+        self.assertEqual(code, 1000)
+
+    def test_marks_invented_on_a_dead_capture_are_not_moved(self):
+        """INVARIANT GUARD (green before this change too): marks from a
+        segment that is still entirely constant are the model's invention on
+        a dead capture and never close the held final."""
+        self.eng.words = ["Hi", ". Yeah", "right"]
+        dead = np.full(2 * CHUNK, 2311, "<i2")
+        with self.connect() as ws:
+            self._send(ws, tone(CHUNK))
+            ws.send_text('{"type": "flush"}')
+            self._send(ws, dead)
+            ws.send_text('{"type": "flush"}')
+            ws.send_text(json.dumps({"type": "end", "samples": 3 * CHUNK}))
+            msgs, code = until_close(ws)
+        self.assertGreaterEqual(sum(self.eng.batches), 3, "control: the stub never decoded the dead chunks")
+        self.assertEqual([m["text"] for m in msgs if m["type"] == "final"], ["Hi", "", ""])
+        self.assertEqual([m for m in msgs if m["type"] == "partial"], [{"type": "partial", "text": "Hi", "start_ms": 0, "end_ms": 560}])
+        self.assertEqual(code, 1000)
+
+    @staticmethod
+    def _send(ws, pcm):
+        for f in frames(pcm):
+            ws.send_bytes(f)
+
+    def test_the_next_words_release_the_held_final_without_waiting_for_the_timeout(self):
         self.eng.words = ["Hi", "there"]
         with self.connect() as ws:
             for f in frames(tone(CHUNK)):
@@ -527,6 +601,53 @@ class HoldTimeoutTest(Base):
             until_close(ws)
         self.assertEqual(final["text"], f"{WORD}1")
         self.assertLess(waited, HOLD + 2.0)
+
+    def _flush_then(self, words, after):
+        """One chunk, a flush, then `after` chunks and NOTHING else until the
+        held final arrives; then one more chunk and `end`. Returns (held
+        final, seconds it took after the audio was sent, later messages)."""
+        self.eng.words = words
+        with self.connect() as ws:
+            for f in frames(tone(CHUNK)):
+                ws.send_bytes(f)
+            ws.send_text('{"type": "flush"}')
+            for f in frames(tone(after * CHUNK, start=CHUNK)):
+                ws.send_bytes(f)
+            t0 = time.monotonic()
+            held = next_of(ws, "final")
+            waited = time.monotonic() - t0
+            for f in frames(tone(CHUNK, start=(1 + after) * CHUNK)):
+                ws.send_bytes(f)
+            ws.send_text(json.dumps({"type": "end", "samples": (2 + after) * CHUNK}))
+            rest, code = until_close(ws)
+        self.assertEqual(code, 1000)
+        return held, waited, rest
+
+    def test_no_words_within_the_hold_releases_the_final_bare_after_it(self):
+        held, waited, rest = self._flush_then(["Hi", "", ". Bob"], after=1)
+        self.assertEqual(held["text"], "Hi")
+        self.assertGreater(waited, HOLD / 2, "a step of silence released the final before the hold ran out")
+        # The mark that comes after the release is the backstop's: dropped.
+        self.assertEqual([m["text"] for m in rest], ["Bob", "Bob"])
+
+    def test_a_mark_with_no_words_yet_goes_with_the_timed_out_final(self):
+        held, _, rest = self._flush_then(["Hi", "?", ". Bob"], after=1)
+        self.assertEqual(held["text"], "Hi?")
+        self.assertEqual([m["text"] for m in rest], ["Bob", "Bob"])
+
+
+class DefaultHoldTest(unittest.TestCase):
+    def test_the_default_hold_is_four_seconds(self):
+        load_app()
+        saved = os.environ.pop("STT_FINAL_HOLD_SECONDS")
+        try:
+            sys.path.insert(0, str(HERE))
+            sys.modules.pop("app", None)
+            mod = importlib.import_module("app")
+        finally:
+            sys.path.remove(str(HERE))
+            os.environ["STT_FINAL_HOLD_SECONDS"] = saved
+        self.assertEqual(mod.FINAL_HOLD_SECONDS, 4.0)
 
 
 class ConstantSignalTest(Base):

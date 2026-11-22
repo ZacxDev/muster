@@ -22,8 +22,8 @@ Environment:
                            closed 1013 (default 30)
   STT_IDLE_SECONDS         a stream that sends nothing for this long is closed
                            1001 and frees its slot (default 30)
-  STT_FINAL_HOLD_SECONDS   longest a flush's final waits for the next model
-                           step to bring its late closing mark (default 1.0)
+  STT_FINAL_HOLD_SECONDS   longest a flush's final waits for the next words,
+                           which bring its late closing mark (default 4.0)
   STT_PORT                 listen port (default 8000)
 
 The model, its attention context (70,6: 560 ms chunks) and its precision
@@ -92,19 +92,24 @@ def check_sample_rate(rate) -> None:
         )
 
 
-# 🔴 A SENTENCE'S CLOSING MARK IS DECODED ONE STEP LATE. The model emits it
-# only after it has heard what follows, and at a `flush` up to one chunk of
-# audio is still undecoded, so the "?" of "Can Carol book the room?" lands in
-# the step AFTER the flush, which belongs to the NEXT segment (measured live:
-# every final from the second on read ". Thanks everyone."). So a flush's
-# final is HELD until that stream's next model step, and the marks that step
-# opens the next segment with are moved back onto it (DecodeLoop._release).
-# The hold is bounded: it is released by the next step, the next flush, `end`,
-# a failed step, or after FINAL_HOLD_SECONDS of wall time, whichever is first.
-# Any mark that still opens a segment (decoded two steps late, or after a
-# timed-out hold) is dropped by strip_leading_punct, the backstop: a segment's
-# text never starts with one. Punctuation inside the text is never touched.
-FINAL_HOLD_SECONDS = float(os.environ.get("STT_FINAL_HOLD_SECONDS", "1.0"))
+# 🔴 A SENTENCE'S CLOSING MARK ARRIVES WITH THE NEXT SPEECH. The model emits
+# it only once it hears what follows, and after a pause that is the NEXT
+# sentence's first words, not the silence after the last one (measured live,
+# one unflushed stream, 1.5 s pauses: "... hear me clearly" stays unchanged
+# through the pause and becomes "... hear me clearly? Alice will" with the next
+# words). The plugin flushes about 700 ms into silence, so the "?" is decoded
+# into the NEXT segment. So a flush's final is HELD until the next segment's
+# decoded text holds a word (something after its leading run of whitespace and
+# marks), and the marks that text opens with are moved back onto it
+# (DecodeLoop._release). A model step that decodes only silence or only marks
+# does NOT release it. The hold is bounded: the next flush, `end` and the
+# timeout release it too, each taking whatever marks the next segment opens
+# with by then; a failed step releases it bare. FINAL_HOLD_SECONDS is wall
+# time, so a turn's last sentence before a silence longer than it goes out
+# without its mark. Any mark that still opens a segment (it came after the
+# release) is dropped by strip_leading_punct, the backstop: a segment's text
+# never starts with one. Punctuation inside the text is never touched.
+FINAL_HOLD_SECONDS = float(os.environ.get("STT_FINAL_HOLD_SECONDS", "4.0"))
 _LEADING_PUNCT = re.compile(r"^[\s.,;:!?…]+")
 
 
@@ -220,9 +225,9 @@ class DecodeLoop:
     steps until no stream has a whole chunk, answer the markers, send partials.
 
     A flush therefore answers only after every chunk received before it was
-    decoded, and its final then waits for that stream's next step (or the
-    hold timeout) to collect a late closing mark. Streams are batched
-    together whatever their phase."""
+    decoded, and its final then waits for the next segment's first words (or
+    the next flush, `end`, or the hold timeout) to collect a late closing
+    mark. Streams are batched together whatever their phase."""
 
     def __init__(self, engine):
         self.engine = engine
@@ -325,17 +330,31 @@ class DecodeLoop:
             log.exception("model step failed for %d stream(s)", len(batch))
             for st in batch:
                 st.done = True
-                self._release(st)
+                self._release(st, collect=False)
                 st.emit({"type": "error", "code": "internal", "message": f"model step failed: {type(e).__name__}"})
                 st.emit(("close", CLOSE_INTERNAL))
             return
         for st in batch:
-            if st.held is not None:
-                # The step after a flush: the marks it opens the next segment
-                # with close the held final's sentence.
-                late = "" if st.constant_so_far() else leading_marks(self.engine.segment_text(st.es))
-                self._release(st, late)
+            # The next sentence's words have begun: the marks before them
+            # close the held final's sentence. A step of silence or of marks
+            # alone keeps holding (the mark comes WITH the next words).
+            if st.held is not None and self._next_words_began(st):
+                self._release(st)
             self._partial(st)
+
+    def _next_words_began(self, st: Stream) -> bool:
+        return not st.constant_so_far() and bool(self._segment_text(st))
+
+    def _late_marks(self, st: Stream) -> str:
+        """The marks the current segment's raw text opens with, or "" while
+        the segment is still entirely constant (a dead capture, on which the
+        model invents text, marks included). Once its samples vary, speech
+        has begun and the marks are the model's reading of it. The held-back
+        newest frame does not count (constant_so_far), so a constant stream
+        whose zero-padded last frame is already decoded cannot pass."""
+        if st.constant_so_far():
+            return ""
+        return leading_marks(self.engine.segment_text(st.es))
 
     def _segment_text(self, st: Stream) -> str:
         return strip_leading_punct(self.engine.segment_text(st.es))
@@ -364,14 +383,17 @@ class DecodeLoop:
         st.seg_min = st.seg_max = None
         st.last_partial = ""
 
-    def _release(self, st: Stream, marks: str = ""):
-        """Send the held final, if any, with `marks` appended (never to an
-        empty final: a dead or mark-only segment stays empty)."""
+    def _release(self, st: Stream, collect: bool = True):
+        """Send the held final, if any, with the marks the next segment opens
+        with appended (unless `collect` is False: a failed step). Never to an
+        empty final: a dead or mark-only segment stays empty. Every release
+        path but a failed step collects them: the next words, the next flush
+        (before it cuts), `end` (after its padded steps), the timeout."""
         msg, st.held = st.held, None
         if msg is None:
             return
-        if marks and msg["text"]:
-            msg["text"] += marks
+        if collect and msg["text"]:
+            msg["text"] += self._late_marks(st)
         st.emit(msg)
 
     def _command(self, st: Stream, cmd: tuple):
@@ -379,7 +401,7 @@ class DecodeLoop:
             # Every frame before a flush is real audio (padding only ever
             # precedes `end`), so the held-back frame counts in full.
             st.settle()
-            self._release(st)  # finals stay in flush order
+            self._release(st)  # with the marks so far; finals stay in flush order
             self._final(st, st.received, hold=True)
         elif cmd[0] == "end":
             n = cmd[1]
@@ -390,7 +412,7 @@ class DecodeLoop:
                 self._step([st])
                 if st.done:
                     return
-            self._release(st)  # no step ran since the flush: it goes as it is
+            self._release(st)  # with whatever marks the padded steps decoded
             self._final(st, n)
             st.done = True
             st.emit(None)

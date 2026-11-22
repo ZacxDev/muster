@@ -87,21 +87,29 @@ over the cap are refused, never queued. `Retry-After` is in seconds (default
   words in that tail land in the **next** segment. The plugin flushes about
   700 ms into silence, so that tail is silence. `end` pads and decodes the
   tail, so the `end` final carries the last words.
-- **A `flush`'s final lags it by up to one model step.** The model emits a
-  sentence's closing mark one step after its last word, so at a sentence-final
-  `flush` the `.`/`?` is decoded in the step AFTER it. The server therefore
-  holds a flush's final until that stream's next model step (a client streaming
-  continuously supplies the next 560 ms chunk within 560 ms) and moves the
-  marks that step opens the next segment with (`. , ; : ! ? …`) onto the held
-  final: `"Can Carol book the room?"`, not `"Can Carol book the room"` plus a
-  next segment `"? Thanks"`. The hold is released by that step, the next
-  `flush`, `end`, a failed step, or after `STT_FINAL_HOLD_SECONDS` (default
-  1.0) of wall time with no step, whichever comes first; finals stay one per
-  `flush`, in order. A mark is never appended to an empty final.
+- **A `flush`'s final lags it until the next words, up to
+  `STT_FINAL_HOLD_SECONDS` (default 4.0).** The model emits a sentence's
+  closing mark only once it hears what follows; after a pause that is the NEXT
+  sentence's first words, not the silence after the last one (measured: one
+  unflushed stream with 1.5 s pauses reads `"... hear me clearly"` unchanged
+  through the pause, then `"... hear me clearly? Alice will"`). Since `flush`
+  comes about 700 ms into silence, the `.`/`?` is decoded into the next
+  segment. The server therefore holds a flush's final until the next
+  segment's decoded text has a word, and moves the marks that text opens with
+  (`. , ; : ! ? …`) onto the held final: `"Can Carol book the room?"`, not
+  `"Can Carol book the room"` plus a next segment `"? Thanks"`. Model steps
+  that decode only silence or only marks do not release it. It is also
+  released by the next `flush`, `end`, or after `STT_FINAL_HOLD_SECONDS` of
+  wall time, each moving whatever marks the next segment opens with by then;
+  a failed step releases it as it is. Finals stay one per `flush`, in order. A
+  mark is never appended to an empty final, nor taken from a segment that is
+  still entirely constant (see below).
 - **No leading punctuation:** a `partial`'s or `final`'s `text` never starts
   with whitespace or `. , ; : ! ? …`. A mark that still opens a segment (it
-  came two steps late, or after a timed-out hold) is dropped, so its sentence's
-  final ends without it. Punctuation inside the text is never touched.
+  came after its final was released) is dropped, so its sentence's final ends
+  without it: in practice a turn's last sentence before more than about 4 s of
+  silence goes out without its closing mark. Punctuation inside the text is
+  never touched.
 - **Constant signal:** a segment in which every sample has the same value (a
   dead capture, e.g. bit-exact zeros) yields `text: ""` and no partials,
   whatever the model produced: the model invents words on such input. This is
@@ -147,7 +155,7 @@ The server listens only after the model has loaded.
 | `STT_RETRY_AFTER` | 30 | seconds, in the capacity `503` |
 | `STT_MAX_BACKLOG_SECONDS` | 30 | undecoded audio one stream may queue |
 | `STT_IDLE_SECONDS` | 30 | a stream with no frame for this long is closed 1001 and frees its slot |
-| `STT_FINAL_HOLD_SECONDS` | 1.0 | longest a `flush`'s final waits for the next model step to bring a late closing mark |
+| `STT_FINAL_HOLD_SECONDS` | 4.0 | longest a `flush`'s final waits for the next words, which bring its late closing mark |
 | `STT_PORT` | 8000 | |
 | `HF_HOME` | `/models` | where the weights are cached: mount a volume |
 
@@ -201,8 +209,9 @@ into it.
 | 8 | **1960 MiB** | 4.4% | 0.000 / 0.031 s | 1.63 s |
 
 The `flush` → `final` column was measured BEFORE finals were held for the
-late closing mark (above); a held final now arrives after the next model
-step, so expect up to ~560 ms plus one step's decode time. Not re-measured.
+late closing mark (above); a held final now arrives with the next speech's
+first words or after `STT_FINAL_HOLD_SECONDS`, so with pauses between
+sentences expect seconds, up to 4 s. Not re-measured.
 
 The streaming rows are the idle process figure plus the rise in total GPU
 memory while streams ran (the GPU had another tenant whose use did not
