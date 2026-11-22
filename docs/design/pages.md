@@ -20,7 +20,7 @@ questions, upload things, fill out a form etc."*
 
 | | Decision |
 |---|---|
-| What a page is | A row the owner owns, with **versions** (immutable) and a current-version pointer. A version is a list of **blocks**: markdown, built-in components (question, choice, form, upload, approval) and raw `html` (custom HTML and JavaScript) |
+| What a page is | A row the owner owns, with **versions** (immutable) and a current-version pointer. A version is a list of **blocks**: markdown, built-in components (question, choice, form, upload, approval, gallery) and raw `html` (custom HTML and JavaScript) |
 | Who makes one | An agent, with MCP tools on both agent doors (`POST /mcp` and `POST /mirror/mcp`): `page_create`, `page_update`, `page_get`, `page_list`, `page_share_request`, `page_responses`, `page_link_revoke`. **As built:** a mirrored *opencode* session's narrower set (attention and task tools only, #595) does not include them |
 | Who sees it | Its owner, signed in, at any time (their own view, `/pages/{id}/view`, where what they send is recorded as theirs). Anyone else only through a **share link**: `/s/<token>`, 256 random bits, revocable |
 | Making a link | An agent **asks**; the owner **approves** it on the Asks page or their phone (an attention ask, owner's door only). The owner can also mint and revoke links on the Pages screen |
@@ -308,6 +308,23 @@ own op. Round 0's D1, measured: when the markup was in the body, a page that
 called `document.open()` from a `setTimeout` received the port, at both
 sizes; with this order it cannot. The shell takes only the first hello and
 ignores every other window message.
+
+**As built (the gallery):** a `gallery` block's full-size viewer is the
+SDK's, in the frame, but Back belongs to the top window, and an entry a
+sandboxed subframe pushes is not seen by an Android WebView's own back
+handling (it reports the main frame's history changes only). So the SDK posts
+`{op: "viewer", open}` on the port and the shell pushes one history entry on
+open and pops it on a close inside the frame; a Back that pops it is answered
+`{op: "back"}` and the viewer closes. The shell decides by `history.state`
+(a token of the entry it pushed), never by a timer: a queued `history.back()`
+counts its target when it runs, so a push made before a slow pop lands would
+be popped instead. The frame has no storage, so a gallery's unsaved picks are
+kept by the shell in its own `sessionStorage` (`{op: "keep"|"recall", key,
+value}`, the key the version and the gallery's id, under the shell's path).
+A page's own script never holds the port, but it CAN add gallery-shaped
+sections that the SDK's gallery script then keeps for; so the shell takes only
+the keys the server named for the version it rendered (its pick galleries),
+at most 16 under one path, 16 KiB each.
 
 The header shows on load, near the top, and on any scroll up, and hides
 only on a scroll down past its own height. It also comes back on its own 3

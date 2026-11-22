@@ -234,7 +234,10 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
  R(SIP,ev,[]);`,
 		`},true]);`,
 		`if(ev.isTrusted!==true||R(gTarget,ev,[])!==D)return;if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
-		`R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);`,
+		`R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:
+  op==="keep"?{muster:1,id:id,op:"keep",key:component,value:value}:op==="recall"?{muster:1,id:id,op:"recall",key:component}:{muster:1,id:id,op:"submit",component:component,data:value}]);`,
+		// A gallery's viewer (gallery.go): open or closed, nothing else.
+		`function viewer(open){if(port)R(PM,port,[{muster:1,op:"viewer",open:open===true}]);}`,
 		`waiting=Object.create(null)`, `P=W.Promise`,
 		// Round 3's 🟢-2: the SDK waits longer than the owner's bar (600000),
 		// so it never says "No answer came back" while the bar is open.
@@ -244,7 +247,7 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 			t.Errorf("the SDK lacks %q", want)
 		}
 	}
-	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Count(sdk, "R(PM,port,") != 2 {
+	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Count(sdk, "R(PM,port,") != 3 {
 		t.Error("the SDK sends some other way than its port, or posts a scroll report from elsewhere")
 	}
 	for _, gone := range []string{"userActivation", "isActive", "act:", ".act", ".map(", "SLICE", "MAP"} {
@@ -270,7 +273,7 @@ func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
 	for _, want := range []string{
 		`if(!f||port||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;`,
-		`port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};`,
+		`port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else if(m.op==="viewer")viewer(m.open===true);else relay(m);};`,
 		`function reply(ok,x){port.postMessage(`,
 	} {
 		if !strings.Contains(js, want) {

@@ -13,6 +13,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { withMCPSession } from '../lib/localmcp';
+import { touchDrag } from '../lib/touch';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
 // page_share.go; docs/pages.md):
@@ -1556,3 +1557,467 @@ for (const vp of ROUND_VIEWPORTS) {
     });
   });
 }
+
+// --- THE GALLERY BLOCK (internal/pages gallery.go; docs/pages.md#gallery) ---
+// A mirrored session attaches six real PNGs (each a different width, so which
+// one is on screen is measurable) and publishes a gallery of them. Every
+// gesture is a real one: touches are CDP touch events through the browser's
+// own gesture handling (lib/touch.ts), keys are keys, Back is the browser's
+// history traversal of the TOP window (what a phone's Back and an edge swipe
+// do; in the Android app, ShellBack's goBack()).
+
+const GALLERY_N = 6;
+const galleryWidth = (i: number) => 120 + i * 10;
+let galleryRefs: string[] = [];
+
+// galleryPage makes a page and attaches the six images to it (galleryRefs:
+// their refs, in order), then publishes a gallery of them — captions 1a..2c in
+// groups "Round 1" and "Round 2" — with pick (none: a gallery to look at).
+async function galleryPage(title: string, pick: Record<string, unknown> | null, extra: Record<string, unknown>[] = []): Promise<number> {
+  const created = await call('page_create', { title: title + ' ' + stamp, blocks: [{ type: 'markdown', text: 'Images coming.' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const id = created.body.page_id as number;
+  const refs: string[] = [];
+  for (let i = 0; i < GALLERY_N; i++) {
+    const file = `gallery-${i}.png`;
+    if (!fs.existsSync(path.join(workDir, file))) fs.writeFileSync(path.join(workDir, file), noisePNG(galleryWidth(i), 90));
+    const up = await call('page_asset_upload', { page_id: id, path: file });
+    expect(up.isError, JSON.stringify(up.body)).toBe(false);
+    refs.push(up.body.ref as string);
+  }
+  galleryRefs = refs;
+  const items = refs.map((asset, i) => ({ asset, caption: `${Math.floor(i / 3) + 1}${'abc'[i % 3]}`, group: `Round ${Math.floor(i / 3) + 1}` }));
+  const block: Record<string, unknown> = { type: 'gallery', id: 'logos', label: 'Pick the logos', items };
+  if (pick) block.pick = pick;
+  const upd = await call('page_update', { page_id: id, blocks: [{ type: 'markdown', text: '# Logo review' }, block, ...extra] });
+  expect(upd.isError, JSON.stringify(upd.body)).toBe(false);
+  return id;
+}
+
+type Touch = { x: number; y: number; id?: number };
+async function touches(page: Page, steps: { type: 'touchStart' | 'touchMove' | 'touchEnd'; pts: Touch[] }[], gap = 16) {
+  const cdp = await page.context().newCDPSession(page);
+  for (const s of steps) {
+    await cdp.send('Input.dispatchTouchEvent', { type: s.type, touchPoints: s.pts.map((p, i) => ({ x: p.x, y: p.y, id: p.id ?? i })) });
+    await page.waitForTimeout(gap);
+  }
+  await cdp.detach();
+}
+const tapAt = (page: Page, p: Touch) => touches(page, [{ type: 'touchStart', pts: [p] }, { type: 'touchEnd', pts: [] }], 30);
+async function doubleTap(page: Page, p: Touch) {
+  await tapAt(page, p);
+  await page.waitForTimeout(60);
+  await tapAt(page, p);
+}
+// pinch spreads two fingers from 40px apart to 240px apart around c.
+async function pinch(page: Page, c: Touch) {
+  const steps: { type: 'touchStart' | 'touchMove' | 'touchEnd'; pts: Touch[] }[] = [{ type: 'touchStart', pts: [{ x: c.x - 20, y: c.y }, { x: c.x + 20, y: c.y }] }];
+  for (let i = 1; i <= 10; i++) steps.push({ type: 'touchMove', pts: [{ x: c.x - 20 - i * 10, y: c.y }, { x: c.x + 20 + i * 10, y: c.y }] });
+  steps.push({ type: 'touchEnd', pts: [] });
+  await touches(page, steps);
+}
+
+// viewerEntry is 1 while the shell's history entry for an open viewer is the
+// current one, else 0.
+const viewerEntry = (page: Page) => page.evaluate(() => (history.state as { musterViewer?: number } | null)?.musterViewer ?? 0);
+
+// viewerOf is the gallery's full-size viewer in the frame, and what it shows.
+function viewerOf(page: Page) {
+  const frame = page.frameLocator('iframe#page');
+  const dlg = frame.locator('[data-muster-viewer="logos"]');
+  const track = dlg.locator('.mp-viewer-track');
+  return {
+    frame,
+    dlg,
+    track,
+    count: dlg.locator('.mp-viewer-count'),
+    cap: dlg.locator('.mp-viewer-cap'),
+    // The slide the track is scrolled to: its index, its image's width as
+    // decoded, and its zoom.
+    shown: () =>
+      track.evaluate((t: HTMLElement) => {
+        const i = Math.round(t.scrollLeft / t.clientWidth);
+        const im = t.children[i]?.querySelector('img') as HTMLImageElement | null;
+        return { i, w: im && im.complete ? im.naturalWidth : 0, zoom: Number(im?.getAttribute('data-muster-zoom') ?? '1') };
+      }),
+    // drawn is how the current slide's picture is DRAWN: its natural size
+    // scaled to fit its img's box (object-fit:contain letterboxes it in the
+    // box; an img box of exactly the natural size draws it at 1x), beside the
+    // track's size, and the zoom transform's offset and scale.
+    drawn: () =>
+      track.evaluate((t: HTMLElement) => {
+        const i = Math.round(t.scrollLeft / t.clientWidth);
+        const im = t.children[i]?.querySelector('img') as HTMLImageElement;
+        const nw = im.naturalWidth, nh = im.naturalHeight, bw = im.clientWidth, bh = im.clientHeight;
+        const s = nw && nh ? Math.min(bw / nw, bh / nh) : 0;
+        const m = new DOMMatrix(getComputedStyle(im).transform === 'none' ? '' : getComputedStyle(im).transform);
+        return { nw, nh, w: nw * s, h: nh * s, tw: t.clientWidth, th: t.clientHeight, x: m.m41, y: m.m42, z: m.a };
+      }),
+    // rest waits for the track to come to rest on a slide (a swipe's snap
+    // finished): a finger lands on a still image, as a person's does.
+    rest: () =>
+      expect
+        .poll(
+          () =>
+            track.evaluate(async (t: HTMLElement) => {
+              const a = t.scrollLeft;
+              await new Promise((r) => setTimeout(r, 120));
+              return a === t.scrollLeft && Math.abs(a - Math.round(a / t.clientWidth) * t.clientWidth) < 1;
+            }),
+          { message: 'the track comes to rest on a slide' },
+        )
+        .toBe(true),
+  };
+}
+
+test('a gallery on a phone: tap opens full size, a swipe moves on, pinch and double-tap zoom and stop the swipe, Back closes it and stays, a second Back leaves', async ({ browser }) => {
+  test.setTimeout(150_000);
+  const id = await galleryPage('Gallery phone', { multiple: true });
+  await asOwner(browser, ROUND_VIEWPORTS[0], async (page) => {
+    // Somewhere to go back to: the Pages screen, then the page.
+    await page.goto(origin + '/pages');
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const open1 = v.frame.getByRole('button', { name: 'Open 1a full size' });
+    await expect(open1).toBeVisible();
+    await expect.poll(() => open1.locator('img').evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth), { timeout: 30_000 }).toBe(galleryWidth(0));
+    await expect(v.frame.locator('.mp-gallery-group')).toHaveText(['Round 1', 'Round 2']);
+    await shot(page, 'gallery-phone-grid');
+    const before = await page.evaluate(() => history.length);
+
+    // Tap the first thumbnail: the viewer, image 1, its counter and caption.
+    await open1.tap();
+    await expect(v.dlg).toBeVisible();
+    await expect(v.count).toHaveText('1 / 6');
+    await expect(v.cap).toHaveText('1a');
+    await expect.poll(v.shown).toEqual({ i: 0, w: galleryWidth(0), zoom: 1 });
+    await expect(v.dlg.getByRole('button', { name: 'Close full size' })).toBeFocused();
+    // A small image (120x90 on a 390-wide phone) is ENLARGED to fill the
+    // viewer's width or height, not drawn at its own size in the middle.
+    {
+      const d = await v.drawn();
+      expect(d.nw, 'the first image is decoded').toBe(galleryWidth(0));
+      expect(d.w, `drawn ${d.w}x${d.h} in a ${d.tw}x${d.th} viewer: larger than its natural ${d.nw}`).toBeGreaterThan(d.nw * 2);
+      expect(Math.abs(d.w - d.tw) <= 2 || Math.abs(d.h - d.th) <= 2, `drawn ${d.w}x${d.h} fills the ${d.tw}x${d.th} viewer's width or height`).toBe(true);
+    }
+    await shot(page, 'gallery-phone-viewer');
+
+    // A swipe left: image 2 (snapped, its neighbour already loaded).
+    const tb = (await page.locator('iframe#page').boundingBox())!;
+    const box = (await v.track.boundingBox())!;
+    const mid = { x: tb.x + box.x + box.width / 2, y: tb.y + box.y + box.height / 2 };
+    await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 160, y: mid.y });
+    await v.rest();
+    await expect(v.count).toHaveText('2 / 6');
+    await expect(v.cap).toHaveText('1b');
+    await expect.poll(v.shown).toEqual({ i: 1, w: galleryWidth(1), zoom: 1 });
+
+    // Double-tap zooms in; a swipe then pans, it does not move on.
+    await doubleTap(page, mid);
+    await expect.poll(async () => (await v.shown()).zoom, 'a double-tap zooms in').toBeGreaterThan(1);
+    await expect(v.dlg).toHaveClass(/mp-zoomed/);
+    await shot(page, 'gallery-phone-zoomed');
+    await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 160, y: mid.y });
+    await page.waitForTimeout(400);
+    await expect(v.count, 'no swipe while zoomed').toHaveText('2 / 6');
+    expect((await v.shown()).i).toBe(1);
+    // A pan stops at the PICTURE's edges, not the viewer's: dragged far down,
+    // the zoomed picture moves only as far as its drawn height overhangs the
+    // track (none at all when it is shorter than the track).
+    await touchDrag(page, { x: mid.x, y: mid.y - 150 }, { x: mid.x, y: mid.y + 250 });
+    await page.waitForTimeout(200);
+    {
+      const d = await v.drawn();
+      const room = Math.max(0, (d.z * d.h - d.th) / 2);
+      expect(d.z, 'still zoomed').toBeGreaterThan(1);
+      expect(Math.abs(d.y), `panned ${d.y}px down; the ${d.z}x picture (${d.z * d.h}px high in a ${d.th}px track) has ${room}px of room`).toBeLessThanOrEqual(room + 1);
+    }
+    // A second double-tap zooms back out; the swipe works again.
+    await doubleTap(page, mid);
+    await expect.poll(async () => (await v.shown()).zoom).toBe(1);
+
+    // Pinch: two fingers apart zoom in, and again no swipe.
+    await pinch(page, mid);
+    await expect.poll(async () => (await v.shown()).zoom, 'a pinch zooms in').toBeGreaterThan(2);
+    await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 160, y: mid.y });
+    await page.waitForTimeout(400);
+    await expect(v.count, 'no swipe while pinched in').toHaveText('2 / 6');
+    await doubleTap(page, mid);
+    await expect.poll(async () => (await v.shown()).zoom).toBe(1);
+    await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 160, y: mid.y });
+    await v.rest();
+    await expect(v.count, 'zoomed out, the swipe moves on again').toHaveText('3 / 6');
+
+    // Back closes the viewer and stays on the page.
+    expect(await viewerEntry(page), 'opening pushed the viewer entry').toBe(1);
+    expect(await page.evaluate(() => history.length), 'opening pushed one entry').toBe(before + 1);
+    await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+    await expect(v.dlg).toBeHidden();
+    expect(page.url()).toBe(origin + `/pages/${id}/view`);
+    await expect(open1, 'focus goes back to the thumbnail it opened from').toBeFocused();
+    // A second Back leaves the page.
+    await Promise.all([page.waitForURL(origin + '/pages'), page.goBack()]);
+  });
+});
+
+test('a gallery leaves no history entry behind: opens closed by ×, Esc, a tap beside the image and Back, then one Back leaves', async ({ browser }) => {
+  const id = await galleryPage('Gallery history', null);
+  await asOwner(browser, ROUND_VIEWPORTS[1], async (page) => {
+    await page.goto(origin + '/pages');
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const open2 = v.frame.getByRole('button', { name: 'Open 1b full size' });
+    await expect(open2).toBeVisible();
+    const before = await page.evaluate(() => history.length);
+    const closes: [string, () => Promise<void>][] = [
+      ['×', () => v.dlg.getByRole('button', { name: 'Close full size' }).click()],
+      ['Esc', () => page.keyboard.press('Escape')],
+      ['a tap beside the image', () => v.track.click({ position: { x: 20, y: 20 } })],
+      // Back closes it too, and stays on the page.
+      ['Back', async () => void (await page.goBack({ waitUntil: 'commit' }).catch(() => null))],
+    ];
+    for (const [how, close] of closes) {
+      await open2.click();
+      await expect(v.dlg).toBeVisible();
+      await expect.poll(() => viewerEntry(page), `${how}: the shell pushed its entry`).toBe(1);
+      expect(await page.evaluate(() => history.length), `${how}: one entry while open`).toBe(before + 1);
+      await close();
+      await expect(v.dlg, `${how} closes it`).toBeHidden();
+      expect(page.url(), `${how}: still on the page`).toBe(origin + `/pages/${id}/view`);
+      await expect(open2, `${how}: focus returns to the thumbnail`).toBeFocused();
+      await expect.poll(() => viewerEntry(page), `${how}: its entry is popped`).toBe(0);
+    }
+    expect(await page.evaluate(() => history.length), 'no entry piled up').toBeLessThanOrEqual(before + 1);
+    // The next Back is the page's own: it leaves.
+    await Promise.all([page.waitForURL(origin + '/pages'), page.goBack()]);
+  });
+});
+
+test('a gallery survives a slow history pop: reopened while the close is still popping, it stays open with ONE entry; Forward into a closed viewer\'s entry and reopening adds none', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const id = await galleryPage('Gallery slow pop', null);
+  await asOwner(browser, ROUND_VIEWPORTS[1], async (page) => {
+    await page.goto(origin + '/pages');
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const open2 = v.frame.getByRole('button', { name: 'Open 1b full size' });
+    const close = () => v.dlg.getByRole('button', { name: 'Close full size' }).click();
+    await expect(open2).toBeVisible();
+    const before = await page.evaluate(() => history.length);
+    // A slow traversal, as on a cold or loaded phone: the shell's history.back()
+    // lands 1.5 s after it is called (a back() is queued, and its target is
+    // counted when it runs, so this is the same race).
+    await page.evaluate(() => {
+      const back = history.back.bind(history);
+      (history as unknown as { back: () => void }).back = () => void setTimeout(back, 1500);
+    });
+    await open2.click();
+    await expect.poll(() => viewerEntry(page)).toBe(1);
+    await close();
+    await expect(v.dlg).toBeHidden();
+    // Reopened while that pop is still on its way.
+    await open2.click();
+    await expect(v.dlg).toBeVisible();
+    // Past the pop, and past any one-second guess at it.
+    await page.waitForTimeout(2500);
+    await expect(v.dlg, 'the late pop does not close the reopened viewer').toBeVisible();
+    expect(await viewerEntry(page), "the viewer's entry is current while it is open").toBe(1);
+    expect(await page.evaluate(() => history.length), 'one entry while open').toBe(before + 1);
+    await close();
+    await expect(v.dlg).toBeHidden();
+    await expect.poll(() => viewerEntry(page), { message: 'the close pops its entry', timeout: 5000 }).toBe(0);
+    await page.evaluate(() => void delete (history as unknown as { back?: unknown }).back);
+
+    // Back closes it; Forward lands on that closed viewer's entry; opening
+    // takes the entry over rather than pushing another.
+    await open2.click();
+    await expect.poll(() => viewerEntry(page)).toBe(1);
+    await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+    await expect(v.dlg).toBeHidden();
+    await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+    await expect.poll(() => viewerEntry(page), 'Forward is on the old viewer entry').toBe(1);
+    await expect(v.dlg, 'Forward does not open the viewer').toBeHidden();
+    await open2.click();
+    await expect(v.dlg).toBeVisible();
+    expect(await page.evaluate(() => history.length), 'reopening on that entry adds none').toBe(before + 1);
+    await close();
+    await expect.poll(() => viewerEntry(page)).toBe(0);
+    // The next Back is the page's own: it leaves.
+    await Promise.all([page.waitForURL(origin + '/pages'), page.goBack()]);
+  });
+});
+
+// FORGED_GALLERIES is an html block's markup and script posing as 20 hidden
+// picking galleries: the SDK's gallery script takes every gallery-shaped
+// section, so a tap on each fake Pick makes it send a keep for an id the page
+// does not have.
+const FORGED_GALLERIES =
+  Array.from({ length: 20 }, (_, i) =>
+    `<section hidden data-muster-kind="gallery" data-muster-component="forged${i}" data-muster-pick="several"><ul><li data-muster-item="0"><button type="button" class="mp-gallery-pick">P</button></li></ul></section>`,
+  ).join('') +
+  `<p id="forged-out"></p><script>document.addEventListener('DOMContentLoaded',function(){var b=document.querySelectorAll('section[data-muster-component^="forged"] .mp-gallery-pick');for(var i=0;i<b.length;i++)b[i].click();document.getElementById('forged-out').textContent='clicked:'+b.length;});</script>`;
+
+test('a page script forging gallery sections keeps nothing: only the version\'s own pick gallery is kept in the shell\'s sessionStorage', async ({ browser }) => {
+  const id = await galleryPage('Gallery forged keeps', { multiple: true }, [{ type: 'html', html: FORGED_GALLERIES }]);
+  await asOwner(browser, ROUND_VIEWPORTS[0], async (page) => {
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    await expect(v.frame.locator('#forged-out')).toHaveText('clicked:20');
+    // The real gallery's pick IS kept (the positive control: keeps work and
+    // this read sees them). The port is in order, so once it is stored every
+    // forged keep sent before it has been answered.
+    await v.frame.locator('.mp-gallery-grid').getByRole('button', { name: 'Pick 1a' }).tap();
+    const keys = () => page.evaluate(() => Object.keys(sessionStorage).filter((k) => k.startsWith('muster-picks:')));
+    await expect.poll(async () => (await keys()).filter((k) => k.endsWith(':logos')).length, 'the real pick is kept').toBe(1);
+    const all = await keys();
+    expect(all.filter((k) => k.includes('forged')), 'no key for a forged gallery: ' + JSON.stringify(all)).toEqual([]);
+    expect(all.length).toBe(1);
+  });
+});
+
+test('a gallery on a desktop: the arrows and ← / → move through every item, the dialog keeps focus, Esc closes', async ({ browser }) => {
+  const id = await galleryPage('Gallery desktop', null);
+  await asOwner(browser, ROUND_VIEWPORTS[1], async (page) => {
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    await v.frame.getByRole('button', { name: 'Open 2c full size' }).click();
+    await expect(v.count).toHaveText('6 / 6');
+    await page.keyboard.press('ArrowLeft');
+    await expect(v.count).toHaveText('5 / 6');
+    await expect.poll(v.shown).toEqual({ i: 4, w: galleryWidth(4), zoom: 1 });
+    await page.keyboard.press('ArrowRight');
+    await expect(v.count).toHaveText('6 / 6');
+    // At the end, → stays.
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(300);
+    await expect(v.count).toHaveText('6 / 6');
+    await v.dlg.getByRole('button', { name: 'Previous image' }).click();
+    await expect(v.count).toHaveText('5 / 6');
+    await v.dlg.getByRole('button', { name: 'Next image' }).click();
+    await expect(v.count).toHaveText('6 / 6');
+    await expect.poll(v.shown).toEqual({ i: 5, w: galleryWidth(5), zoom: 1 });
+    // Tab cycles inside the dialog.
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('Tab');
+      expect(await v.frame.locator('body').evaluate(() => !!document.activeElement?.closest('[data-muster-viewer]')), 'focus stays in the dialog').toBe(true);
+    }
+    // A double-click zooms on a desktop (on the image, once the track is at rest).
+    await v.rest();
+    await v.track.dblclick();
+    await expect.poll(async () => (await v.shown()).zoom).toBeGreaterThan(1);
+    await page.keyboard.press('Escape');
+    await expect(v.dlg).toBeHidden();
+    await expect(v.frame.getByRole('button', { name: 'Open 2c full size' })).toBeFocused();
+  });
+});
+
+test('gallery picks: grid and viewer toggle the same picks, a reload keeps them, Save sends ONCE as the owner, a link viewer double-tapping Save records one', async ({ browser }) => {
+  test.setTimeout(150_000);
+  const id = await galleryPage('Gallery picks', { multiple: true, required: true, submit_label: 'Save picks' });
+  await asOwner(browser, ROUND_VIEWPORTS[0], async (page) => {
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const item = (n: number) => v.frame.locator(`li[data-muster-item="${n}"]`);
+    const pickBtn = (name: string) => v.frame.locator('.mp-gallery-grid').getByRole('button', { name: 'Pick ' + name });
+    const bar = v.frame.locator('.mp-gallery-bar');
+    await expect(bar.locator('[data-muster-picked]')).toHaveText('0 picked');
+    // Required: an empty Save asks for a pick and sends nothing.
+    await bar.getByRole('button', { name: 'Save picks' }).tap();
+    await expect(bar.locator('[data-muster-status]')).toHaveText('Pick at least one first.');
+    await expect(confirmBar(page)).toBeHidden();
+
+    // Pick 1a in the grid: its badge, its button pressed.
+    await pickBtn('1a').tap();
+    await expect(pickBtn('1a')).toHaveAttribute('aria-pressed', 'true');
+    await expect(item(0).locator('.mp-gallery-badge')).toBeVisible();
+    await expect(item(1).locator('.mp-gallery-badge')).toBeHidden();
+    await expect(bar.locator('[data-muster-picked]')).toHaveText('1 picked');
+    // The viewer shows the same pick, and picks 1b: the grid follows.
+    await v.frame.getByRole('button', { name: 'Open 1a full size' }).tap();
+    const vpick = v.dlg.locator('.mp-viewer-pick');
+    await expect(vpick).toHaveAttribute('aria-label', 'Pick 1a');
+    await expect(vpick).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('ArrowRight');
+    await v.rest();
+    await expect(vpick).toHaveAttribute('aria-label', 'Pick 1b');
+    await expect(vpick).toHaveAttribute('aria-pressed', 'false');
+    await vpick.tap();
+    await expect(vpick).toHaveAttribute('aria-pressed', 'true');
+    await shot(page, 'gallery-phone-viewer-picked');
+    await v.dlg.getByRole('button', { name: 'Close full size' }).tap();
+    await expect(pickBtn('1b')).toHaveAttribute('aria-pressed', 'true');
+    await expect(bar.locator('[data-muster-picked]')).toHaveText('2 picked');
+    expect(await rowsOf(id), 'a pick sends nothing').toBe(0);
+    await expect.poll(() => viewerEntry(page), "the viewer's entry is popped before the reload").toBe(0);
+
+    // A reload keeps the unsaved picks.
+    await page.reload();
+    await expect(pickBtn('1a')).toHaveAttribute('aria-pressed', 'true');
+    await expect(pickBtn('1b')).toHaveAttribute('aria-pressed', 'true');
+    await expect(pickBtn('1c')).toHaveAttribute('aria-pressed', 'false');
+    await expect(bar.locator('[data-muster-picked]')).toHaveText('2 picked');
+    await shot(page, 'gallery-phone-picked-grid');
+
+    // Save, twice in a row: ONE confirm, ONE response, the owner's.
+    const save = bar.getByRole('button', { name: 'Save picks' });
+    await save.dblclick();
+    await answerConfirm(page, `"picks": [{"index":0,"asset":"${galleryRefs[0]}","caption":"1a"},{"index":1,"asset":"${galleryRefs[1]}","caption":"1b"}]`, true);
+    await expect(bar.locator('[data-muster-status]')).toHaveText('Saved.');
+    await page.waitForTimeout(500);
+    await expect(confirmBar(page), 'no second confirm').toBeHidden();
+    const read = await call('page_responses', { page_id: id });
+    expect(read.body.count, JSON.stringify(read.body)).toBe(1);
+    const fenced = read.body.responses as string;
+    expect(fenced).toContain(`"by_owner":true,"component":"logos","data":{"picks":[{"asset":"${galleryRefs[0]}","index":0,"caption":"1a"},{"asset":"${galleryRefs[1]}","index":1,"caption":"1b"}]}`);
+    // A change after saving says so, and can be saved again.
+    await pickBtn('1a').tap();
+    await expect(bar.locator('[data-muster-status]')).toHaveText('Changed since you saved: Save again to send these picks.');
+    await pickBtn('1a').tap();
+    await expect(bar.locator('[data-muster-status]')).toHaveText('Saved.');
+
+    // A link's viewer has no confirm: a double-tap of Save must still record
+    // ONE response (the gallery's own guard, not the owner's bar).
+    const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+    const stranger = await browser.newContext({ viewport: ROUND_VIEWPORTS[0].viewport, hasTouch: true, isMobile: true });
+    try {
+      const sp = await stranger.newPage();
+      await sp.goto((await shared.json()).url as string);
+      const sv = viewerOf(sp);
+      await sv.frame.locator('.mp-gallery-grid').getByRole('button', { name: 'Pick 2b' }).tap();
+      const sbar = sv.frame.locator('.mp-gallery-bar');
+      await sbar.getByRole('button', { name: 'Save picks' }).dblclick();
+      await expect(sbar.locator('[data-muster-status]')).toHaveText('Saved.');
+      await sp.waitForTimeout(1000);
+    } finally {
+      await stranger.close();
+    }
+    const after = await call('page_responses', { page_id: id });
+    expect(after.body.count, 'a double-tap of Save is one response: ' + JSON.stringify(after.body)).toBe(2);
+    expect(after.body.responses as string).toContain(`"by_owner":false,"component":"logos","data":{"picks":[{"asset":"${galleryRefs[4]}","index":4,"caption":"2b"}]}`);
+  });
+});
+
+test('a single-pick gallery: a new pick replaces the last, in the grid and the viewer', async ({ browser }) => {
+  const id = await galleryPage('Gallery single', { multiple: false });
+  await asOwner(browser, ROUND_VIEWPORTS[0], async (page) => {
+    await page.goto(origin + `/pages/${id}/view`);
+    const v = viewerOf(page);
+    const pickBtn = (name: string) => v.frame.locator('.mp-gallery-grid').getByRole('button', { name: 'Pick ' + name });
+    const count = v.frame.locator('.mp-gallery-bar [data-muster-picked]');
+    await pickBtn('1a').tap();
+    await pickBtn('2a').tap();
+    await expect(pickBtn('2a')).toHaveAttribute('aria-pressed', 'true');
+    await expect(pickBtn('1a')).toHaveAttribute('aria-pressed', 'false');
+    await expect(count).toHaveText('1 picked');
+    await v.frame.getByRole('button', { name: 'Open 1c full size' }).tap();
+    await v.dlg.locator('.mp-viewer-pick').tap();
+    await v.dlg.getByRole('button', { name: 'Close full size' }).tap();
+    await expect(pickBtn('1c')).toHaveAttribute('aria-pressed', 'true');
+    await expect(pickBtn('2a')).toHaveAttribute('aria-pressed', 'false');
+    await expect(count).toHaveText('1 picked');
+    // Tapping the one pick again clears it.
+    await pickBtn('1c').tap();
+    await expect(count).toHaveText('0 picked');
+  });
+});
+
