@@ -151,6 +151,29 @@ func (s *Store) DraftEnded(ctx context.Context, owner int64, e DraftEnd, now tim
 // neither's uncommitted row).
 func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e DraftEnd, now time.Time) (DraftSettled, error) {
 	var out DraftSettled
+	// A retry chain whose draft e.Draft already has a LIVE later attempt (the
+	// owner retried it by hand in the moment between its failure and this
+	// settlement): it is not over, so nothing goes back to the officer and its
+	// item is left to that attempt.
+	//
+	// 🔴 THE FAILED DRAFT'S ROW IS LOCKED FIRST, the lock a manual retry
+	// takes on the chain's latest attempt (plugins.PGStore.RetryDraft): the
+	// two serialise on it, so either the retry sees this follow-up (and
+	// closes it) or this settlement sees the retry's attempt (and files
+	// none) — never an open follow-up beside a live attempt. Draft row, then
+	// items: the retry's order too.
+	if _, err := tx.Exec(ctx, `SELECT id FROM plugin_reply_drafts WHERE id = $2 AND owner_id = $1 FOR UPDATE`, owner, e.Draft); err != nil {
+		return out, err
+	}
+	var live bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts n, plugin_reply_drafts d
+		WHERE d.id = $2 AND d.owner_id = $1 AND n.owner_id = $1 AND n.id > d.id AND n.retry_of = coalesce(d.retry_of, d.id)
+		  AND n.status IN ('pending', 'approved'))`, owner, e.Draft).Scan(&live); err != nil {
+		return out, err
+	}
+	if live {
+		return out, nil
+	}
 	if n := e.FollowUp; n != nil {
 		if err := lockBound(ctx, tx, owner, n.Officer, n.Kind); err != nil {
 			return out, err
@@ -250,6 +273,66 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 	}
 	out.Item = officers.StatusDone
 	return out, nil
+}
+
+// --- a retry chain handed back, and the owner's manual retry -------------------
+//
+// A RETRY CHAIN (internal/plugins draft_retry.go) that ended unsent went back
+// to its officer: a draft.refused follow-up, subject draft:<attempt id>. The
+// owner may still retry the chain by hand — but never once the officer has
+// TAKEN IT UP, or the redraft and the retry would both be posted.
+
+// chainRedraftedSQL is THE ONE RULE for "the officer has taken up retry chain
+// $2's hand-back" (owner $1, the chain's item $3, 0 for none): a draft.refused
+// follow-up of any attempt of the chain is no longer open (claimed, waiting on
+// a new draft, finished or escalated), or a draft outside the chain, newer
+// than its root, names one of those follow-ups or the chain's own item.
+// RetryRedrafted reads it for display; RetryTakeOverTx, under the
+// follow-ups' row locks, before a retry.
+const chainRedraftedSQL = `WITH chain AS (SELECT id FROM plugin_reply_drafts WHERE owner_id = $1 AND (id = $2 OR retry_of = $2)),
+	follow AS (SELECT i.id, i.status FROM officer_items i WHERE i.owner_id = $1 AND i.kind = '` + DraftRefusedKind + `'
+	            AND i.subject_key IN (SELECT 'draft:' || id FROM chain))
+	SELECT EXISTS (SELECT 1 FROM follow WHERE status <> 'open')
+	    OR EXISTS (SELECT 1 FROM plugin_reply_drafts n WHERE n.owner_id = $1 AND n.id > $2 AND n.id NOT IN (SELECT id FROM chain)
+	                AND (n.officer_item_id IN (SELECT id FROM follow) OR ($3 > 0 AND n.officer_item_id = $3)))`
+
+// RetryRedrafted reports whether the officer has taken up owner's retry
+// chain root's hand-back (chainRedraftedSQL), read through q.
+func RetryRedrafted(ctx context.Context, q rowQuerier, owner, root, item int64) (bool, error) {
+	var taken bool
+	err := q.QueryRow(ctx, chainRedraftedSQL, owner, root, item).Scan(&taken)
+	return taken, err
+}
+
+// RetryRedraftedNow is RetryRedrafted through the store's pool, as ctx's
+// principal.
+func (s *Store) RetryRedraftedNow(ctx context.Context, owner, root, item int64) (bool, error) {
+	return RetryRedrafted(ctx, s.pool, owner, root, item)
+}
+
+// RetryTakeOverTx is a manual retry's half, inside its transaction tx: the
+// chain's follow-ups are locked, then ErrRedrafted when the officer has taken
+// up the hand-back (chainRedraftedSQL); otherwise every still-open follow-up
+// is finished no_action, so the officer never redrafts what the retry sends.
+func (s *Store) RetryTakeOverTx(ctx context.Context, tx pgx.Tx, owner, root, item, retried int64, now time.Time) error {
+	if _, err := tx.Exec(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND kind = $2
+		AND subject_key IN (SELECT 'draft:' || id FROM plugin_reply_drafts WHERE owner_id = $1 AND (id = $3 OR retry_of = $3))
+		ORDER BY id FOR UPDATE`, owner, DraftRefusedKind, root); err != nil {
+		return err
+	}
+	taken, err := RetryRedrafted(ctx, tx, owner, root, item)
+	if err != nil {
+		return err
+	}
+	if taken {
+		return ErrRedrafted
+	}
+	_, err = tx.Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'no_action', blocked = false, claimed_by = NULL, lease_expires_at = NULL,
+		summary = $4, updated_at = $5
+		WHERE owner_id = $1 AND kind = $2 AND status = 'open'
+		  AND subject_key IN (SELECT 'draft:' || id FROM plugin_reply_drafts WHERE owner_id = $1 AND (id = $3 OR retry_of = $3))`,
+		owner, DraftRefusedKind, root, fmt.Sprintf("the owner retried draft %d, which sends the approved post again: nothing to redraft.", retried), now)
+	return err
 }
 
 // lockBound takes the transaction-scoped advisory lock that serialises the

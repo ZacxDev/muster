@@ -252,7 +252,7 @@ func TestATeamPushReachesItsOperatorsAndManagers(t *testing.T) {
 	w.srv.notifyDraftAwaitingNoting(context.Background(), f.team, plugins.Draft{ID: 990102, OwnerID: f.team}, plugins.Message{}, "")
 	check("a team's reply draft", "plugin-draft-990102")
 
-	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Which launch date?", nil, time.Hour); err != nil {
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Which launch date?", nil, false, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	check("a team officer's ask", "attention-")
@@ -275,7 +275,7 @@ func TestATeamNotificationReachesEachMemberOnce(t *testing.T) {
 	w := newIsoWorld(t)
 	f, rec := newFanTeam(t, w)
 	officer := builtinOfficerID
-	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: officer, Owner: f.team}, builtin.AskAbout{}, "One copy?", nil, time.Hour); err != nil {
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: officer, Owner: f.team}, builtin.AskAbout{}, "One copy?", nil, false, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	w.srv.notifyDraftAwaitingNoting(context.Background(), f.team, plugins.Draft{ID: 990201, OwnerID: f.team, Officer: &officer}, plugins.Message{}, "")
@@ -393,7 +393,7 @@ func TestATeamPushTitleNamesTheTeam(t *testing.T) {
 func TestAnAnsweredTeamAskIsWithdrawnFromItsMembers(t *testing.T) {
 	w := newIsoWorld(t)
 	f, rec := newFanTeam(t, w)
-	id, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Withdraw me?", nil, time.Hour)
+	id, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Withdraw me?", nil, false, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestADecidedTeamDraftIsWithdrawnFromItsMembers(t *testing.T) {
 func TestLeavingATeamWithdrawsItsOpenItems(t *testing.T) {
 	w := newIsoWorld(t)
 	f, rec := newFanTeam(t, w)
-	ask, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Still open?", nil, time.Hour)
+	ask, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Still open?", nil, false, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,7 +691,7 @@ func TestATeamItemRefreshesItsMembersPages(t *testing.T) {
 	check("an outreach batch arriving", batchKey(batch))
 	w.srv.draftFiled(f.team, plugins.Draft{ID: dm, OwnerID: f.team, ExpiresAt: time.Now().Add(time.Hour)})
 	check("a team draft arriving", draftKey(dm))
-	ask, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Refresh?", nil, time.Hour)
+	ask, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Refresh?", nil, false, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -770,7 +770,7 @@ func TestADisabledMembersPhoneIsSentTheWithdrawals(t *testing.T) {
 	if _, err := pushStore.Claim(me, phone, sub, "fan browser"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "On your phone?", nil, time.Hour); err != nil {
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "On your phone?", nil, false, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	w.srv.WaitForPushes()

@@ -79,7 +79,7 @@ func officerBatchDraft(o string) plugins.Draft {
 func TestEveryOfficerPushIsClassified(t *testing.T) {
 	want := map[officerPush]bool{
 		"ask": true, "escalation": true, "draft": true, "outreach_batch": true, "connector_request": true,
-		"budget": true, "cap_hold": true, "restart_held": true,
+		"budget": true, "cap_hold": true, "restart_held": true, "draft_retrying": true, "draft_retry_ended": true,
 		"draft_refused": false, "auto_restart": false, "budget_unreadable": false, "unclaimed": false, "page_published": false, "page_shared": false,
 		"page_updated": false, "notify_owner": false,
 	}
@@ -114,6 +114,8 @@ func TestOfficerDecisionCardsAreTheirCards(t *testing.T) {
 		{officerPushAutoRestart, officerCardRef{ID: "ops relay", Owner: 913}, ""},
 		{officerPushBudgetUnreadable, officerCardRef{ID: "scout:docs", Owner: 1}, ""},
 		{officerPushDraftRefused, officerCardRef{ID: "5317"}, ""},
+		{officerPushDraftRetrying, officerCardRef{ID: "5341"}, "/attention?tab=drafts#draft-5341"},
+		{officerPushDraftRetryEnded, officerCardRef{ID: "5343"}, "/attention?tab=drafts#draft-5343"},
 	} {
 		if got := officerDecisionCard(c.k, c.ref); got != c.want {
 			t.Errorf("officerDecisionCard(%s, %+v) = %q, want %q", c.k, c.ref, got, c.want)

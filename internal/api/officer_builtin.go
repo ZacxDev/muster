@@ -63,14 +63,14 @@ var _ builtin.Asker = officerAsker{}
 // muster as its asker (nothing waits on its answer in a session: the sweep
 // carries it to the item) and what it is about (officerItemContext), and the
 // owner's devices told.
-func (a officerAsker) Raise(ctx context.Context, o officers.Officer, about builtin.AskAbout, question string, options []string, timeout time.Duration) (int64, error) {
+func (a officerAsker) Raise(ctx context.Context, o officers.Officer, about builtin.AskAbout, question string, options []string, multi bool, timeout time.Duration) (int64, error) {
 	s := a.s
 	if s.ext.Attention == nil {
 		return 0, fmt.Errorf("%w: no attention store", officers.ErrHQUnavailable)
 	}
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, o.Owner), attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(o.ID)},
-		Question: question, Options: options, Timeout: timeout,
+		Question: question, Options: options, Multi: multi, Timeout: timeout,
 		Context: s.officerItemContext(ctx, o.Owner, o.ID, about),
 	})
 	switch {

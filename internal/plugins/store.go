@@ -153,6 +153,9 @@ type Store interface {
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
 	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (d Draft, fresh bool, err error)
+	// RetryDraft is the owner's manual retry of an outbound draft's chain
+	// (draft_retry.go): a successor of its latest attempt, claimable now.
+	RetryDraft(ctx context.Context, id int64, via DraftDecisionSource) (Draft, error)
 	// DraftsAwaitingCheck is pluginID's drafts awaiting its pre-approval check
 	// (CapDraftChecks), oldest first; CheckDraft records its verdict on one.
 	DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit int) ([]AwaitingCheck, error)
@@ -200,6 +203,9 @@ type PGStore struct {
 	// (WithOfficerLink; outbound.go). nil: bindings and their messages are
 	// refused.
 	officers OfficerLink
+	// retryEnded is told, after the sweep commits, of each retry chain that
+	// ended unsent at its expiry (WithRetryEnded; drafts.go).
+	retryEnded func(context.Context, Draft)
 }
 
 // NewPG returns the Postgres store.

@@ -127,7 +127,8 @@ func TestAStepUpCardIsMustersOwnOnTheFeed(t *testing.T) {
 // TestTheAskPageAnswerIsDisabledWhileBlank: Answer is drawn aria-disabled (the
 // box starts empty; not the disabled attribute, which disabled the mic's ↑ —
 // ui.AsksSendDisabledClass), the page's script turns it on while the box holds
-// text, and a blank answer is not posted;
+// text — or, on a MULTI-SELECT ask, while a box is TICKED (migration 0175) —
+// and a blank answer is not posted;
 // beside options it is quiet and Dismiss is a text link, without them the
 // filled primary and the full-width quiet Dismiss. The badge row no longer
 // repeats who asks (the heading says it). RED before the asks audit: Answer
@@ -143,8 +144,9 @@ func TestTheAskPageAnswerIsDisabledWhileBlank(t *testing.T) {
 	for _, want := range []string{
 		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50" aria-disabled="true" data-ask-send>Answer</button>`,
 		`<button type="submit" class="inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-sm font-semibold text-fg2 underline transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" data-ask-dismiss>Dismiss without answering</button>`,
-		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim()) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
-		`if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim()) { e.preventDefault(); b.focus(); return; }`,
+		`function gatePick(f) { return f && f.querySelector ? f.querySelector('input[name="option"]:checked') : null; }`,
+		`function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }`,
+		`if (e.submitter && e.submitter.id === 'ask-send' && !b.value.trim() && !gatePick(f)) { e.preventDefault(); b.focus(); return; }`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the options page lacks %s:\n%s", want, body)

@@ -55,6 +55,10 @@ officer_gap_task
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -462,6 +466,10 @@ officer_gap_task
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -862,6 +870,10 @@ officer_obs_raw
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -1225,6 +1237,10 @@ officer_obs_raw
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -1584,6 +1600,10 @@ officer_obs_query
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
+      },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
       },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
@@ -1975,6 +1995,10 @@ officer_obs_raw
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -2338,6 +2362,10 @@ officer_rollout_evidence_attach
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
+      },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
       },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
@@ -2766,6 +2794,10 @@ officer_task_ask
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -3158,6 +3190,10 @@ officer_obs_query
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -3475,6 +3511,10 @@ officer_pr_context
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
+      },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
       },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
@@ -3901,6 +3941,10 @@ officer_obs_raw
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
       },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
+      },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",
         "items": {
@@ -4266,6 +4310,10 @@ officer_rollout_status
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
+      },
+      "multi": {
+        "description": "true with options: let the person pick MORE THAN ONE (checkboxes on the ask's page); their picks are recorded joined by \"; \", with an optional note of theirs appended.",
+        "type": "boolean"
       },
       "options": {
         "description": "Optional answers to pick from: short, unique labels.",

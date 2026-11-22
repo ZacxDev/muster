@@ -130,7 +130,7 @@ func TestEveryMirrorToolIsClassifiedForTheStepUp(t *testing.T) {
 		dispatchRequestTool, internalHTTPToolName, notifyOwnerTool, officers.ToolAskPerson, officers.ToolBrief, officers.ToolClaim,
 		officers.ToolComplete, officers.ToolContactGet, officers.ToolContactNote, officers.ToolContactsList, officers.ToolHeartbeat,
 		officers.ToolItems, officers.ToolPostDraft, officers.ToolRelease, pageAssetDeleteTool, pageAssetUploadTool, pageCreateTool, pageGetTool, pageLinkRevokeTool,
-		pageListTool, pageResponsesTool, pageShareRequestTool, pageUpdateTool, pluginDraftsListTool, pluginMessagesListTool,
+		pageListTool, pageResponsesTool, pageShareRequestTool, pageUpdateTool, pluginDraftRetryTool, pluginDraftsListTool, pluginMessagesListTool,
 		pluginOutboundBatchGetTool, pluginRequestsListTool, postgresQueryToolName, taskCommentTool, taskGetTool,
 		taskSetStatusTool, tasksListTool, trackTaskTool}
 	slices.Sort(exemptWant)

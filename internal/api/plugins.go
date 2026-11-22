@@ -128,6 +128,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// which is a reject) does not.
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
+	// Retrying an outbound draft that failed with nothing sent
+	// (plugin_draft_retry.go): no fresh sign-in, it re-sends only what the
+	// owner approved.
+	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/retry", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftRetry)))
 	mux.HandleFunc("POST "+outreachBatchPath+"/{id}/decide", s.requirePluginsOn(s.requireOperatorWrite(s.handleOutreachBatchDecide)))
 
 	// Retrying a message the chief never confirmed (plugin_retry.go).

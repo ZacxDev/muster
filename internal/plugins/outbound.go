@@ -227,6 +227,13 @@ type OfficerLink interface {
 	// OutreachSentTx records, inside the result's transaction, that outreach
 	// draft d reached its person.
 	OutreachSentTx(ctx context.Context, tx pgx.Tx, d Draft) error
+	// RetryTakeOverTx, inside a manual retry's transaction, answers
+	// ErrRedrafted when outbound draft d's retry chain was handed back to
+	// its officer and the officer has taken it up (its draft.refused
+	// follow-up is no longer open, or a newer draft names the follow-up or
+	// the chain's item); otherwise it closes the chain's open follow-ups, so
+	// they can never be redrafted after the retry (draft_retry.go).
+	RetryTakeOverTx(ctx context.Context, tx pgx.Tx, d Draft) error
 }
 
 // OutboundEnd is how an outbound draft ended unsent by muster's own hand,
