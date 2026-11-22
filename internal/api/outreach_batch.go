@@ -325,6 +325,9 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 		owner = bOwner
 	}
 	for _, d := range append(append([]plugins.Draft{}, res.Approved...), res.Rejected...) {
+		// Its open step-up cards settle as any decided draft's do
+		// (settleDraftStepUps, decideDraftAs's own).
+		s.settleDraftStepUps(ctx, d, dec.Via.Via)
 		if d.OwnerID > 0 {
 			s.draftSettled(d.OwnerID, d.ID)
 		} else {

@@ -228,6 +228,7 @@ func TestCleanBounds(t *testing.T) {
 		"dup option":   {Asker: session, Question: "q", Options: []string{"a", " a"}},
 		"long option":  {Asker: session, Question: "q", Options: []string{strings.Repeat("o", MaxOptionRunes+1)}},
 		"many options": {Asker: session, Question: "q", Options: strings.Split("a b c d e f g h i j k", " ")},
+		"multi, none":  {Asker: session, Question: "q", Multi: true},
 	} {
 		if _, err := Clean(n); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)

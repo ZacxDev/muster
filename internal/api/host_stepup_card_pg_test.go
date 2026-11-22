@@ -177,8 +177,12 @@ func TestADraftStepUpCardShowsThePostAndWhy(t *testing.T) {
 			t.Errorf("the page's face lacks %s", want)
 		}
 	}
+	// The draft's own Approve form (stepup_draft_actions.go) binds the body
+	// and media SHA-256 in HIDDEN fields, as the Drafts tab's does: never on
+	// the face the owner reads, so they are left out of the face here.
+	visible := regexp.MustCompile(`<input type="hidden" name="(body|media)_sha256" value="[^"]*">`).ReplaceAllString(face, "")
 	for _, never := range []string{"A session on tower", "body_sha256", "paired phone"} {
-		if strings.Contains(face, never) {
+		if strings.Contains(visible, never) {
 			t.Errorf("the page's face carries %q", never)
 		}
 	}

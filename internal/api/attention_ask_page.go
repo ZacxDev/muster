@@ -112,6 +112,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
+	if a.Status == attention.Open && a.StepUp != nil {
+		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
+	}
 	now := time.Now()
 	live := askLiveHTML(a, it)
 	if r.URL.Query().Get("part") == "live" {
@@ -215,6 +218,11 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
+	if it.stepUpDraft != nil {
+		// The draft's Approve asks "Confirm it's you" on a stale sign-in, as
+		// on the Asks page (draftStepUpHTML); the server checks it either way.
+		b.WriteString(s.draftStepUpHTML(r))
+	}
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
 
@@ -356,7 +364,16 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 	if a.StepUp != nil {
 		// A step-up card is answered only from the paired phone
 		// (errHostDecisionNeedsPhone): no options, no suggestions, one line —
-		// a status line, never drawn as a control (askStepUpPhoneHTML).
+		// a status line, never drawn as a control (askStepUpPhoneHTML) — with,
+		// for a card about a draft the owner may decide, the DRAFT's own
+		// decision controls under it (askStepUpDraftHTML), back to this page.
+		review := ""
+		if it.stepUpDraft != nil {
+			review = draftTabLink(it.stepUpDraft.Draft.ID)
+		}
+		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now()); d != "" {
+			return d
+		}
 		return askStepUpPhoneHTML("text-base")
 	}
 	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
@@ -480,9 +497,25 @@ const askPageScript = `<script>
   // The answer box is drawn AFTER this script (it is pinned below the
   // content), so it is looked up when used, never at load.
   function grow(b) { b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight, 160) + 'px'; }
-  // gatePick: the multi-select ask's first TICKED box in form f (migration
+  // gatePick: the multi-select ask's first TICKED box of form f (migration
   // 0175), null for none and for a single-select ask (no such box).
-  function gatePick(f) { return f && f.querySelector ? f.querySelector('input[name="option"]:checked') : null; }
+  //
+  // 🔴 f.elements, NOT f.querySelector: a multi ask's checkboxes are
+  // FORM-ASSOCIATED with f (form="ask-answer") but are drawn in the live region
+  // ABOVE it, so they are never DOM DESCENDANTS of the form — a querySelector
+  // subtree walk cannot see them and returned null however many were ticked,
+  // leaving the composer's Answer off and its tap preventDefault()ed.
+  // f.elements is every control the form owns, wherever it sits in the
+  // document.
+  function gatePick(f) {
+    if (!f || !f.elements) return null;
+    var els = f.elements;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.name === 'option' && el.type === 'checkbox' && el.checked) return el;
+    }
+    return null;
+  }
   function gate(b) { var s = document.getElementById('ask-send'); if (!s) return; if (b.value.trim() || gatePick(b.form)) s.removeAttribute('aria-disabled'); else s.setAttribute('aria-disabled', 'true'); }
   // OTHER ANSWER…: an ask with options draws its free-text row collapsed
   // (askComposerHTML); opening it shows the row and puts the caret in the box.
