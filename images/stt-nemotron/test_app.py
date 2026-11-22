@@ -42,9 +42,6 @@ RETRY = 47
 CHUNK = 8960  # the stub's chunk: 560 ms, the real model's chunk size
 FRAME = 1280
 WORD = "fx7741w"
-# The removed STT_FINAL_HOLD_SECONDS, set to a value a server that still held
-# finals would visibly honour: a flush's final must come long before it.
-LONG = 5.0
 # A flush's final must arrive within this of the flush when no audio follows
 # (measured before any hold: 0.001-0.031 s p95 on a GPU; the old hold's
 # default was 1.0 s, so a re-introduced one cannot hide under it).
@@ -109,10 +106,6 @@ def load_app(token=TOKEN, engine=None, **env):
     os.environ["STT_RETRY_AFTER"] = str(env.get("retry", RETRY))
     os.environ["STT_MAX_BACKLOG_SECONDS"] = str(env.get("backlog", 30))
     os.environ["STT_IDLE_SECONDS"] = str(env.get("idle", 300))
-    if "hold" in env:  # a removed knob: set only to prove it is ignored
-        os.environ["STT_FINAL_HOLD_SECONDS"] = str(env["hold"])
-    else:
-        os.environ.pop("STT_FINAL_HOLD_SECONDS", None)
     sys.path.insert(0, str(HERE))
     try:
         sys.modules.pop("app", None)
@@ -530,8 +523,6 @@ class PromptFinalTest(Base):
     never waits for a later model step (the meetings design: final p95 within
     1.5 s, and an utterance's final stored before the next one begins)."""
 
-    env = {"hold": LONG}  # the removed knob, at a value a holding server would obey
-
     def test_a_flush_final_is_sent_without_waiting_for_a_later_step(self):
         with self.connect() as ws:
             for f in frames(tone(CHUNK)):
@@ -546,22 +537,6 @@ class PromptFinalTest(Base):
         self.assertLess(waited, PROMPT, f"the flush's final took {waited:.2f}s: it was held")
         self.assertEqual(steps, 1, "control: exactly the one chunk before the flush was decoded")
         self.assertEqual((final["text"], final.get("lead")), (f"{WORD}1", ""))
-
-
-class RemovedHoldKnobTest(unittest.TestCase):
-    """CONFIG/DOC GUARD: STT_FINAL_HOLD_SECONDS no longer exists, so neither the
-    server's documented settings nor the protocol contract may name it. (That
-    the server ignores it when set is PromptFinalTest's behavioural check.)"""
-
-    def test_the_hold_setting_is_neither_read_nor_documented(self):
-        for name in ("app.py", "README.md"):
-            with self.subTest(file=name):
-                self.assertFalse("STT_FINAL_HOLD_SECONDS" in (HERE / name).read_text(),
-                                 f"{name} still names the removed STT_FINAL_HOLD_SECONDS")
-        app, _ = load_app()
-        self.assertFalse(hasattr(app, "FINAL_HOLD_SECONDS"), "app.py still has a FINAL_HOLD_SECONDS setting")
-        # Positive control: the check reads the files it names.
-        self.assertIn("STT_IDLE_SECONDS", (HERE / "README.md").read_text())
 
 
 class ConstantSignalTest(Base):
