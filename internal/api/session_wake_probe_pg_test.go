@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // THE FAKE HOST every session-wake test runs against, and FOUR PROBES of the
@@ -39,6 +40,7 @@ type wakeMirror struct {
 	sid    string
 	busy   bool
 	gone   bool
+	remote bool
 	since  int64
 	pastes []wakePaste
 }
@@ -98,6 +100,17 @@ func (m *wakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	return nil
 }
 
+// LiveTokenHosts: the host mirrors to this muster (its token is live here),
+// unless remote names it mirrored to another.
+func (m *wakeMirror) LiveTokenHosts(context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.remote {
+		return nil, nil
+	}
+	return []string{"tower"}, nil
+}
+
 func (m *wakeMirror) set(f func(*wakeMirror)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,8 +140,10 @@ func probeFixture(t *testing.T) (*routeFixture, *wakeMirror, *attention.PGStore,
 	return f, m, att, pg
 }
 
+// probeOwner is the owner's browser session, signed in a minute ago.
 func probeOwner(f *routeFixture) context.Context {
-	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession})
+	return stepup.WithAuthTime(authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession}),
+		time.Now().Add(-time.Minute))
 }
 
 // probeTick runs the deliveries muster started, one attention sweep and one

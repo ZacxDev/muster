@@ -358,13 +358,10 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 			// A mirrored session's answer or dismissal: where its session wake
 			// went (session_wake.go), with its Retry delivery.
 			who, _, _ := attentionTitle(it)
-			text, retry := wakeDeliveryText(*it.wake, who)
+			text, act := wakeDeliveryText(*it.wake, who)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery data-wake-state="` + esc(string(it.wake.State)) + `">` + esc(text) + `</p>
 `)
-			if retry {
-				b.WriteString(`<form method="POST" action="` + sessionWakeRetryPath(it.wake.ID) + `"><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
-`)
-			}
+			b.WriteString(wakeActionFormHTML(it.wake.ID, act, ui.AsksSecondaryButtonClass, ` data-attention-redeliver`))
 		} else if a.Status == attention.Answered {
 			// The session in words (attentionTitle), as the card's head names
 			// it; its exact target is the card's ⓘ.

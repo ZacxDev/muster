@@ -86,7 +86,20 @@ CREATE TABLE IF NOT EXISTS public.session_wakes (
     decision        TEXT        NOT NULL DEFAULT '' CHECK (decision IN ('', 'approved', 'rejected', 'sent', 'failed', 'unconfirmed')),
     response_count  INTEGER     NOT NULL DEFAULT 0 CHECK (response_count BETWEEN 0 AND 100000),
     component       TEXT        NOT NULL DEFAULT '' CHECK (component = '' OR component ~ '^[A-Za-z0-9_-]{1,64}$'),
-    operator_text   TEXT        NOT NULL DEFAULT '' CHECK (octet_length(operator_text) <= 16384),
+    -- The owner's words, at most an answer's 8000 runes of 4 bytes and some:
+    -- what is pasted is cut to the paste's bound (internal/api renderWake),
+    -- saying so, never the row.
+    operator_text   TEXT        NOT NULL DEFAULT '' CHECK (octet_length(operator_text) <= 40960),
+    -- WHERE THE DECISION WAS MADE, when not by the owner on muster's own
+    -- pages: a mirrored session's attention_answer or plugin_draft_decide
+    -- names its host and Claude Code session here, and the line says so.
+    via_host        TEXT        NOT NULL DEFAULT '' CHECK (via_host = '' OR via_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
+    via_session     TEXT        NOT NULL DEFAULT '' CHECK (via_session = '' OR via_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'),
+    -- 🔴 THE SIGN-IN THAT DECIDED IT: a line carrying the owner's own words is
+    -- queued only while this sign-in is fresh (the send queue's rule for the
+    -- owner's own message, stepup.Window); NULL or stale, it waits for the
+    -- owner's "Send to session" from a fresh sign-in, which records its own.
+    stepup_at       TIMESTAMPTZ,
     -- The session it goes to: a mirrored Claude Code session on one host.
     mirror_host     TEXT        NOT NULL CHECK (mirror_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
     mirror_session  TEXT        NOT NULL CHECK (mirror_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'),
@@ -110,6 +123,7 @@ CREATE TABLE IF NOT EXISTS public.session_wakes (
     -- carries other people's responses holds no text at all.
     CONSTRAINT session_wakes_count_has_no_text CHECK (kind <> 'page_responses' OR (operator_text = '' AND component = '')),
     -- A wake in the queue names its row.
+    CONSTRAINT session_wakes_via_pair CHECK ((via_host = '') = (via_session = '')),
     CONSTRAINT session_wakes_delivering_has_row CHECK (state <> 'delivering' OR send_queue_id IS NOT NULL),
     CONSTRAINT session_wakes_delivered_has_time CHECK ((state = 'delivered') = (delivered_at IS NOT NULL))
 );

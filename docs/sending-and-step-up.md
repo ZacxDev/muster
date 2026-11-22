@@ -272,10 +272,14 @@ dispatched agents and the chief panel have no Queue.
   draft it wrote, a page it made), muster queues one message of its own for
   the session's window ([attention.md](attention.md#waking-a-mirrored-session)).
   It is sent like any queued message — once idle, one at a time, pinned to the
-  Claude session it is for — but it is muster's, not yours: it needs no
-  sign-in (its own record gates it at the paste instead, refusing a message
-  the session already read in `attention_wait`), and it is never edited or
-  retried in the queue. It is listed while it waits, like a routed message;
+  Claude session it is for — and its own record gates it at the paste too,
+  refusing a message the session already read in `attention_wait`. 🔴 A line
+  that carries your words (your answer, your reason, your own page response)
+  is held to your own message's rule: queued only with the deciding request's
+  sign-in while it is fresh, else held on the Asks page until you **Send to
+  the session** from a fresh sign-in. A line with none of your words is
+  muster's sentence alone and needs no sign-in. It is never edited or retried
+  in the queue. It is listed while it waits, like a routed message;
   **Cancel** there stops it (the Asks page then says *Not delivered: it was
   cancelled in the session's queue*, with Retry delivery). A failed one is
   not kept in the list. 🔴 Its text is muster's sentence plus your own words

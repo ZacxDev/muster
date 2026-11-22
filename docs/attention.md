@@ -1425,9 +1425,9 @@ muster tells that session, so it carries on without you going back to type
 
 | what you did | the session it goes to | what is pasted |
 |---|---|---|
-| answered an ask it raised (the Asks page, your phone, or `attention_answer` from another session) | the ask's own session | `muster: you answered ask #984, which this session asked. …` then your answer, fenced (`<<<attention-answer untrusted …>>>`) |
+| answered an ask it raised (the Asks page, your phone, or `attention_answer` from another session) | the ask's own session | `muster: you answered ask #984, which this session asked. …` then your answer, fenced (`<<<attention-answer untrusted …>>>`). Given through `attention_answer` it reads `muster: ask #984, which this session asked, has an answer — answered via attention_answer from <host>/<session>, not by you on the Attention view. …` |
 | dismissed an ask it raised (the Asks page's or your phone's Dismiss) | the ask's own session | `muster: you dismissed ask #984, which this session asked, without answering it. No answer is coming: …` |
-| approved or rejected a reply draft it wrote (a [routed message's](plugins.md#routing-a-message-to-a-session) answer), from any door | the route's session | `muster: you approved reply draft #531 (route rt_…), which this session wrote. …`, or `… you rejected …` with the reason you gave, fenced |
+| approved or rejected a reply draft it wrote (a [routed message's](plugins.md#routing-a-message-to-a-session) answer), from any door | the route's session | `muster: you approved reply draft #531 (route rt_…), which this session wrote. …`, or `… you rejected …` with the reason you gave, fenced. Decided through `plugin_draft_decide` it reads `… was approved — via plugin_draft_decide from <host>/<session>, not by you on the Asks page.` (its outcome line names it too) |
 | that approved draft was later sent, failed, or not confirmed | the route's session | `muster: you approved reply draft #531 (route rt_…), which this session wrote — it was sent.` (or could not be sent, or may or may not have been sent) |
 | responded on a page it made, from [your own view](pages.md#the-owners-view) | the page's session | `muster: you responded on page #12 (component q1), …` then your response, fenced |
 | anyone else responded on that page (a link's viewer, a team member) | the page's session | `muster: page #12, which this session made, got 3 new responses from its viewers — read them with page_responses{page_id: 12}.` |
@@ -1443,23 +1443,45 @@ response). A page response from anyone else is a count and never its text,
 which the database also refuses to store with it; a draft's body, its
 plugin's detail, the sender's message, a page's title and the session's own
 question are never typed. Your words travel inside the fence, each line
-sanitised.
+sanitised, every kind of line break (`\r\n` from a form posted without
+script, a lone `\r`) one break. A decision made from a mirrored session says
+so, naming the host and session (each re-checked against the mirror wire's
+shapes before it is written outside the fence). Words too long for one message
+(16 KiB) are cut by whole characters and end with *(cut by muster to fit one
+message: read it whole with attention_wait{id: …})* — never dropped.
+
+🔴 **Your words need your fresh sign-in, as your own message does.** A line
+that carries your words (an answer, a rejection's reason, your own page
+response) is queued only while the sign-in of the request that decided it is
+fresh (`MUSTER_STEPUP_WINDOW`, the send queue's rule for your own message,
+checked again at the paste). Decided from a stale sign-in, from your phone or
+through a session's `attention_answer` / `plugin_draft_decide` (none of which
+carries a browser sign-in), your decision is still recorded, and the line is
+**held**: the card says *Sign in again to send to <session>*, with **Send to
+the session**, which asks you to confirm it's you and then sends it. A line
+with none of your words — a dismissal, an approval without a reason, a draft's
+outcome, another viewer's count — is muster's sentence alone and needs no
+sign-in.
 
 🔴 **Through the send queue, once.** The message is a row of the window's send
 queue of its own kind (`send_queue.session_wake_id`), so every queue rule
 holds: it waits until Claude Code has been idle for `MUSTER_SEND_QUEUE_IDLE`,
 one at a time, never into a prompt; "Pasted, not submitted" and a paste the
 host did not confirm count as possibly delivered and are never resent. It is
-not your message, so it needs no sign-in, and it is not listed, edited or
-retried in the window's queue. Its delivery is a state of its own, with the
+never edited or retried in the window's queue (its Retry is on the Asks page),
+and a line carrying your words is queued with your sign-in (above). Its delivery is a state of its own, with the
 answer delivery's states: *queued* (no window shows the session yet) →
 *delivering* (in the window's queue) → *delivered*, or *unconfirmed*. At most
 one queue row is live per message, and the paste is refused unless the
 message still names that row.
 
 🔴 **Never twice, never to another session.** A session that read the answer
-or the dismissal in `attention_wait` is not typed into: the wait closes the
-message, and the paste re-reads both the message and the ask. The message is
+or the dismissal in `attention_wait` is not typed into: the wait records it
+read — even before the message exists (a Dismiss settles the ask, waking the
+wait, before it files the message, and the message filed after finds it read)
+— and the paste re-reads both the message and the ask. A session on a host
+that mirrors to another muster (no live mirror token here) gets no message at
+all: its card keeps *Waiting for … to read it*. The message is
 bound to the session's host and Claude Code session id, and goes only to the
 window whose host reports that session now; the queue row is pinned to it, so
 a `/clear` or a new `claude` in the window between queueing and the paste is
@@ -1470,9 +1492,10 @@ whose window kept refusing it or stayed busy for a day.
 **Where it went.** The answer's card on the Answered tab, the ask's own page
 and the draft's card say it: *Waiting for <session> to be idle*, *Waiting to
 send it to <session>: no window shows the session now*, *Sent to <session>*,
-*<session> read it while waiting for it*, or *Not delivered: …* with **Retry
-delivery** (the Answered card's own Retry; `POST /attention/wakes/{id}/retry`
-on the ask page and the draft card), which queues it once more. Page responses
+*<session> read it while waiting for it*, *Sign in again to send to <session>*
+with **Send to the session**, or *Not delivered: …* with **Retry delivery**
+(`POST /attention/wakes/{id}/retry`; a line carrying your words asks for a
+fresh sign-in first), which queues it once more. Page responses
 are not drawn anywhere yet.
 
 A **team's** sessions and **opencode** windows get none of these in this

@@ -2687,7 +2687,10 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 	if s.ext.SessionWakes != nil {
 		if ws, err := s.ext.SessionWakes.ForAsks(r.Context(), []int64{id}); err == nil {
 			if wk, ok := ws[id]; ok && wk.State == sessionwake.Unconfirmed {
-				if _, err := s.retryWake(r.Context(), wk.ID); err != nil && !errors.Is(err, sessionwake.ErrNotRetryable) {
+				if s.wakeRetryStale(w, r, wk) {
+					return
+				}
+				if _, err := s.retryWake(r.Context(), wk); err != nil && !errors.Is(err, sessionwake.ErrNotRetryable) {
 					s.logger.Printf("attention: retry the session wake of %d: %v", id, err)
 				}
 				http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)

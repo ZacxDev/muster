@@ -639,11 +639,15 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	text, retry := answerDeliveryText(a, who, proposal)
 	pill := answerDeliveryPill(a, proposal)
 	delivery := firstNonBlank(string(a.Delivery), "none")
+	wakeForm := ""
 	if it.wake != nil {
 		// A mirrored session's answer: where its session wake went
-		// (session_wake.go), with the wake's own Retry.
-		text, retry = wakeDeliveryText(*it.wake, who)
+		// (session_wake.go), with the wake's own action in place of Retry.
+		var act wakeAction
+		text, act = wakeDeliveryText(*it.wake, who)
+		retry = false
 		pill, delivery = wakeDeliveryPill(*it.wake), "wake-"+string(it.wake.State)
+		wakeForm = wakeActionFormHTML(it.wake.ID, act, ui.AsksSecondaryButtonClass, ` data-attention-redeliver`)
 	}
 	var sub []string
 	if !a.ResolvedAt.IsZero() {
@@ -673,6 +677,7 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 ` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<div class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
 ` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(pill)+`</span></div>`) + `
 `)
+	b.WriteString(wakeForm)
 	if retry {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
 `)

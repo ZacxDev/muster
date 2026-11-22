@@ -2,19 +2,24 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionwake"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // A DECISION WAKES THE MIRRORED SESSION IT IS FOR (session_wake.go): the
@@ -54,7 +59,7 @@ func newWakeFixture(t *testing.T) *wakeFixture {
 
 // owner is the owner's browser session (their own door).
 func (f *wakeFixture) ownerCtx() context.Context {
-	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession})
+	return probeOwner(f.routeFixture)
 }
 
 // ask files an ask raised by the window's mirrored session sid.
@@ -340,7 +345,7 @@ func TestAWindowGoneForADayIsNotDeliveredAndRetryQueuesItOnce(t *testing.T) {
 	if code := retry(); code != http.StatusSeeOther {
 		t.Fatalf("Retry delivery: %d", code)
 	}
-	if _, err := f.wakes.Retry(f.ownerCtx(), w.ID); !errors.Is(err, sessionwake.ErrNotRetryable) {
+	if _, err := f.wakes.Retry(f.ownerCtx(), w.ID, time.Time{}); !errors.Is(err, sessionwake.ErrNotRetryable) {
 		t.Fatalf("a second Retry of a wake already queued again: %v; want ErrNotRetryable", err)
 	}
 	f.tick(t)
@@ -600,5 +605,210 @@ func TestRenderWakeReadsOnlyTheWake(t *testing.T) {
 	w.Kind = sessionwake.KindPageResponses
 	if got := renderWake(w); !strings.Contains(got, "got 23 new responses") {
 		t.Fatalf("the count line does not carry the count: %s", got)
+	}
+}
+
+// staleCtx is the owner's browser session signed in past the step-up window.
+func (f *wakeFixture) staleCtx() context.Context {
+	return stepup.WithAuthTime(authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession}),
+		time.Now().Add(-stepup.Window()-time.Hour))
+}
+
+// send posts wake id's Send to the session (or Retry delivery) as ctx.
+func (f *wakeFixture) send(t *testing.T, ctx context.Context, id int64) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, sessionWakeRetryPath(id), nil).WithContext(ctx)
+	req.SetPathValue("id", itoa(id))
+	f.srv.handleSessionWakeRetry(rec, req)
+	f.srv.WaitForAttentionDeliveries()
+	return rec.Code
+}
+
+// TestADismissalReadInAttentionWaitBeforeItsWakeIsFiledIsNotPasted: the
+// Dismiss door settles the ask (waking the session's attention_wait) BEFORE it
+// files the wake. A wait that returns the dismissal in between must still keep
+// it from being pasted: the handlers' real order — cancel, the waiter reads,
+// then the wake — types nothing.
+func TestADismissalReadInAttentionWaitBeforeItsWakeIsFiledIsNotPasted(t *testing.T) {
+	f := newWakeFixture(t)
+	a := f.ask(t, routeSID, "Delete the branch?")
+	cur, err := f.srv.cancelAsk(f.ownerCtx(), a.ID) // the door's first step (askSettled wakes the waiter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.waitResult(f.ownerCtx(), cur)    // the woken waiter returns the dismissal
+	f.srv.wakeDismissed(f.ownerCtx(), cur) // the door's last step
+	f.srv.WaitForAttentionDeliveries()
+	f.tick(t)
+	f.sweep()
+	f.tick(t)
+	if n := len(f.host.taken()); n != 0 {
+		t.Fatalf("a dismissal the session read in attention_wait was pasted %d times; want 0", n)
+	}
+	if w := f.askWake(t, a.ID); w.State != sessionwake.Waited {
+		t.Fatalf("the wake is %s; want waited", w.State)
+	}
+}
+
+// TestAWakeCarryingTheOwnersWordsNeedsAFreshSignIn: an answer given from a
+// stale sign-in is recorded, but its line is HELD — the card says to sign in
+// again — and nothing is queued; a stale Send to the session is refused; a
+// fresh one sends it. A line queued with a stale sign-in anyway is refused at
+// the paste (the send queue's own rule).
+func TestAWakeCarryingTheOwnersWordsNeedsAFreshSignIn(t *testing.T) {
+	t.Run("held, then sent from a fresh sign-in", func(t *testing.T) {
+		f := newWakeFixture(t)
+		a := f.ask(t, routeSID, "Merge?")
+		if _, err := f.srv.answerAsk(f.staleCtx(), a.ID, "merge it"); err != nil {
+			t.Fatal(err)
+		}
+		f.srv.WaitForAttentionDeliveries()
+		f.sweep()
+		f.tick(t)
+		if n := len(f.host.taken()); n != 0 {
+			t.Fatalf("an answer from a stale sign-in was pasted %d times; want 0", n)
+		}
+		w := f.askWake(t, a.ID)
+		if w.State != sessionwake.Queued || w.Detail != sessionwake.HeldForSignIn || w.SendQueueID != 0 {
+			t.Fatalf("the wake is %s %q (row %d); want queued, held for a sign-in, no row", w.State, w.Detail, w.SendQueueID)
+		}
+		html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now())
+		if !strings.Contains(html, "Sign in again to send to ") || !strings.Contains(html, `data-step-up-form data-asks-controls><button type="submit"`) {
+			t.Fatalf("the card does not say to sign in again, with a step-up Send:\n%s", html)
+		}
+		if code := f.send(t, f.staleCtx(), w.ID); code != http.StatusForbidden {
+			t.Fatalf("a stale Send to the session: %d; want 403", code)
+		}
+		f.sweep()
+		f.tick(t)
+		if n := len(f.host.taken()); n != 0 {
+			t.Fatalf("a stale Send pasted %d times; want 0", n)
+		}
+		if code := f.send(t, f.ownerCtx(), w.ID); code != http.StatusSeeOther {
+			t.Fatalf("a fresh Send to the session: %d", code)
+		}
+		f.tick(t)
+		f.onePaste(t)
+	})
+	t.Run("a stale row is refused at the paste", func(t *testing.T) {
+		f := newWakeFixture(t)
+		f.host.set(func(m *wakeMirror) { m.busy = true })
+		a := f.ask(t, routeSID, "Merge?")
+		f.answer(t, a.ID, "merge it")
+		f.tick(t)
+		w := f.askWake(t, a.ID)
+		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE send_queue SET stepup_at = now() - interval '30 days' WHERE id = $1`, w.SendQueueID); err != nil {
+			t.Fatal(err)
+		}
+		f.host.set(func(m *wakeMirror) { m.busy = false })
+		f.tick(t)
+		if n := len(f.host.taken()); n != 0 {
+			t.Fatalf("a row whose sign-in was stale when queued was pasted %d times; want 0", n)
+		}
+	})
+}
+
+// TestADecisionMadeFromAnotherSessionSaysSo: an answer given through
+// attention_answer from another mirrored session, and a draft decided through
+// plugin_draft_decide, are worded as such — never "you answered" / "you
+// approved" — naming that session.
+func TestADecisionMadeFromAnotherSessionSaysSo(t *testing.T) {
+	const viaSID = "5e55a1d0-0000-4000-8000-00000000b0b1"
+	t.Run("attention_answer", func(t *testing.T) {
+		f := newWakeFixture(t)
+		a := f.ask(t, routeSID, "Which region?")
+		// The MCP door: the operator's principal, no browser sign-in.
+		mcp := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession})
+		if _, err := f.srv.answerAskFrom(mcp, a.ID, "us-east", attention.AnswerSource{Via: attention.ViaMCP, Host: "bench", Session: viaSID}); err != nil {
+			t.Fatal(err)
+		}
+		f.srv.WaitForAttentionDeliveries()
+		w := f.askWake(t, a.ID)
+		if w.Detail != sessionwake.HeldForSignIn {
+			// No browser sign-in on the MCP door: held until the owner sends it.
+			f.sweep()
+			w = f.askWake(t, a.ID)
+		}
+		if code := f.send(t, f.ownerCtx(), w.ID); code != http.StatusSeeOther {
+			t.Fatalf("Send to the session: %d", code)
+		}
+		f.tick(t)
+		pre := "muster: ask #" + itoa(a.ID) + ", which this session asked, has an answer — answered via attention_answer from bench/" + viaSID +
+			", not by you on the Attention view. The block below is that answer, relayed by muster:"
+		if text := f.onePaste(t); !strings.HasPrefix(text, pre) || strings.Contains(text, "you answered") {
+			t.Fatalf("the line:\n%s\nwant it to start:\n%s", text, pre)
+		}
+	})
+	t.Run("plugin_draft_decide", func(t *testing.T) {
+		f := newWakeFixture(t)
+		_, id, rid := f.routedDraft(t)
+		d, err := f.plugins.Draft(f.ownerCtx(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte(d.Body))
+		mcp := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaSession})
+		if _, refused := f.srv.decideDraftAs(mcp, id, plugins.DraftDecision{Approve: true, BodySHA256: hex.EncodeToString(sum[:]),
+			Via: plugins.DraftDecisionSource{Via: plugins.DraftViaMCP, Host: "bench", Session: viaSID}}); refused != nil {
+			t.Fatalf("approve: %+v", refused)
+		}
+		f.srv.WaitForAttentionDeliveries()
+		f.tick(t)
+		want := "muster: reply draft #" + itoa(id) + " (route " + rid + "), which this session wrote, was approved — via plugin_draft_decide from bench/" + viaSID +
+			", not by you on the Asks page. Its plugin sends it next; muster tells this session how that went."
+		if got := f.onePaste(t); got != want {
+			t.Fatalf("the line:\n%q\nwant:\n%q", got, want)
+		}
+	})
+}
+
+// TestRenderWakeFoldsEveryLineBreak: a form posted without script sends
+// \r\n; every kind of break is one break, and no line carries U+FFFD.
+func TestRenderWakeFoldsEveryLineBreak(t *testing.T) {
+	got := renderWake(sessionwake.Wake{Kind: sessionwake.KindAskAnswered, AskID: 5, OperatorText: "first\r\nsecond\rthird\nfourth"})
+	if strings.ContainsRune(got, '�') || strings.ContainsRune(got, '\r') {
+		t.Fatalf("the line carries a replacement character or a carriage return:\n%q", got)
+	}
+	if !strings.Contains(got, "\n| answer:\n|   first\n|   second\n|   third\n|   fourth\n<<<end ") {
+		t.Fatalf("the breaks did not fold into lines:\n%s", got)
+	}
+}
+
+// TestALongAnswerIsCutToOnePasteNeverDropped: an answer of 8000 four-byte
+// runes (attention's own bound) gets its wake, and is pasted once, cut to one
+// message with a line saying where to read it whole.
+func TestALongAnswerIsCutToOnePasteNeverDropped(t *testing.T) {
+	f := newWakeFixture(t)
+	a := f.ask(t, routeSID, "Paste the log?")
+	long := strings.Repeat("\U0001D11E", attention.MaxAnswerRunes)
+	f.answer(t, a.ID, long)
+	f.tick(t)
+	text := f.onePaste(t)
+	if len(text) > mirror.MaxPaste {
+		t.Fatalf("the paste is %d bytes; the bound is %d", len(text), mirror.MaxPaste)
+	}
+	note := "(cut by muster to fit one message: read it whole with attention_wait{id: " + itoa(a.ID) + "})"
+	if !strings.Contains(text, note) || !strings.Contains(text, "\U0001D11E\U0001D11E") {
+		t.Fatalf("the cut paste lacks its note or its text:\n%.300s … %s", text, text[max(0, len(text)-300):])
+	}
+	if w := f.askWake(t, a.ID); utf8.RuneCountInString(w.OperatorText) != attention.MaxAnswerRunes {
+		t.Fatalf("the wake kept %d runes of the answer; want all %d", utf8.RuneCountInString(w.OperatorText), attention.MaxAnswerRunes)
+	}
+}
+
+// TestAnAskFromASessionMirroredElsewhereFilesNoWake: a host that does not
+// mirror to this muster (no live token here) has no window to wake: no wake is
+// filed, and the card keeps the old wording.
+func TestAnAskFromASessionMirroredElsewhereFilesNoWake(t *testing.T) {
+	f := newWakeFixture(t)
+	f.host.set(func(m *wakeMirror) { m.remote = true })
+	a := f.ask(t, routeSID, "Proceed?")
+	f.answer(t, a.ID, "Proceed")
+	if ws, err := f.wakes.ForAsks(f.ownerCtx(), []int64{a.ID}); err != nil || len(ws) != 0 {
+		t.Fatalf("a wake was filed for a session mirrored elsewhere: %v %v", ws, err)
+	}
+	if html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "to read it: a mirrored session reads its answer itself") {
+		t.Fatalf("the card lost the old wording:\n%s", html)
 	}
 }

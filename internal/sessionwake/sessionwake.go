@@ -88,7 +88,7 @@ const (
 )
 
 // MaxOperatorTextBytes bounds Wake.OperatorText (0177's CHECK).
-const MaxOperatorTextBytes = 16384
+const MaxOperatorTextBytes = 40960
 
 // MaxDetailRunes bounds Wake.Detail (0177's CHECK).
 const MaxDetailRunes = 300
@@ -120,8 +120,17 @@ type Wake struct {
 	OperatorText string
 	// Host and Session are the mirrored session it goes to: its host and its
 	// Claude Code session id.
-	Host        string
-	Session     string
+	Host    string
+	Session string
+	// ViaHost and ViaSession name the mirrored session the decision was made
+	// from (attention_answer, plugin_draft_decide), "" for the owner's own
+	// pages and phone.
+	ViaHost    string
+	ViaSession string
+	// StepUpAt is the sign-in time of the request that decided it (or of the
+	// owner's later "Send to session"); zero for none. A line carrying
+	// OperatorText is queued only while it is fresh (internal/api).
+	StepUpAt    time.Time
 	State       State
 	Detail      string
 	Attempts    int
@@ -143,6 +152,9 @@ type New struct {
 	OperatorText string
 	Host         string
 	Session      string
+	ViaHost      string
+	ViaSession   string
+	StepUpAt     time.Time
 }
 
 var (
@@ -168,7 +180,8 @@ type Store interface {
 	Finish(ctx context.Context, id, queueID int64, delivered bool, detail string) (bool, error)
 	GiveUp(ctx context.Context, id int64, detail string) (bool, error)
 	MarkWaited(ctx context.Context, askID int64) ([]Wake, error)
-	Retry(ctx context.Context, id int64) (Wake, error)
+	MarkRead(ctx context.Context, n New) ([]Wake, error)
+	Retry(ctx context.Context, id int64, stepUpAt time.Time) (Wake, error)
 	DraftOutcomesOwed(ctx context.Context, limit int) ([]OutcomeOwed, error)
 }
 
@@ -180,17 +193,21 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 const cols = `id, owner_id, created_at, kind, coalesce(ask_id, 0), coalesce(draft_id, 0), coalesce(page_id, 0),
 	coalesce(response_id, 0), route_id, decision, response_count, component, operator_text, mirror_host, mirror_session,
-	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz)`
+	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz),
+	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz)`
 
 func scan(row pgx.Row) (Wake, error) {
 	var w Wake
 	var kind, state string
 	err := row.Scan(&w.ID, &w.Owner, &w.CreatedAt, &kind, &w.AskID, &w.DraftID, &w.PageID, &w.ResponseID, &w.RouteID,
 		&w.Decision, &w.Count, &w.Component, &w.OperatorText, &w.Host, &w.Session, &state, &w.Detail, &w.Attempts,
-		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt)
+		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt)
 	w.Kind, w.State = Kind(kind), State(state)
 	if w.DeliveredAt.Unix() == 0 {
 		w.DeliveredAt = time.Time{}
+	}
+	if w.StepUpAt.Unix() == 0 {
+		w.StepUpAt = time.Time{}
 	}
 	return w, err
 }
@@ -220,6 +237,10 @@ func (n New) Valid() error {
 	if !mirror.ValidClaudeSession(n.Session) {
 		return fmt.Errorf("%w: not a Claude Code session id", ErrInvalid)
 	}
+	if (n.ViaHost == "") != (n.ViaSession == "") ||
+		(n.ViaHost != "" && (mirror.ValidHost(n.ViaHost) != nil || !mirror.ValidClaudeSession(n.ViaSession))) {
+		return fmt.Errorf("%w: not a mirrored session to have decided it", ErrInvalid)
+	}
 	if len(n.OperatorText) > MaxOperatorTextBytes {
 		return fmt.Errorf("%w: the owner's text is over %d bytes", ErrInvalid, MaxOperatorTextBytes)
 	}
@@ -243,6 +264,13 @@ func (n New) Valid() error {
 	return nil
 }
 
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
 func nullID(id int64) any {
 	if id > 0 {
 		return id
@@ -259,10 +287,10 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 		return Wake{}, false, err
 	}
 	w, err := scan(s.pool.QueryRow(ctx, `INSERT INTO session_wakes (kind, ask_id, draft_id, page_id, response_id, route_id,
-			decision, component, operator_text, mirror_host, mirror_session)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING `+cols,
+			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+cols,
 		string(n.Kind), nullID(n.AskID), nullID(n.DraftID), nullID(n.PageID), nullID(n.ResponseID), n.RouteID, n.Decision,
-		n.Component, n.OperatorText, n.Host, n.Session))
+		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt)))
 	if err == nil {
 		return w, true, nil
 	}
@@ -428,11 +456,40 @@ func (s *PGStore) MarkWaited(ctx context.Context, askID int64) ([]Wake, error) {
 		WHERE ask_id = $1 AND state IN ('queued', 'delivering', 'unconfirmed') RETURNING `+cols, askID))
 }
 
-// Retry queues unconfirmed wake id once more (the owner's Retry): ErrNotRetryable
-// for any other state, with the wake as it stands.
-func (s *PGStore) Retry(ctx context.Context, id int64) (Wake, error) {
-	w, err := scan(s.pool.QueryRow(ctx, `UPDATE session_wakes SET state = 'queued', detail = '', queued_at = now(), send_queue_id = NULL
-		WHERE id = $1 AND state = 'unconfirmed' RETURNING `+cols, id))
+// MarkRead records that the session read ask n.AskID's answer or dismissal
+// itself (attention_wait returned it), WHETHER OR NOT its wake exists yet: an
+// existing one that is queued, delivering or unconfirmed moves to waited, and
+// a missing one is written as waited — so the wake the decision files after
+// the wait returned (Create's one-per-decision index) finds it already read
+// and is never delivered. Order cannot matter. It returns the rows it moved or
+// wrote.
+func (s *PGStore) MarkRead(ctx context.Context, n New) ([]Wake, error) {
+	if n.Kind != KindAskAnswered && n.Kind != KindAskDismissed {
+		return nil, fmt.Errorf("%w: only an ask's wake is read in attention_wait", ErrInvalid)
+	}
+	if err := n.Valid(); err != nil {
+		return nil, err
+	}
+	return collect(s.pool.Query(ctx, `INSERT INTO session_wakes (kind, ask_id, mirror_host, mirror_session, state)
+		VALUES ($1, $2, $3, $4, 'waited')
+		ON CONFLICT (ask_id, kind) WHERE ask_id IS NOT NULL
+		DO UPDATE SET state = 'waited', detail = ''
+		  WHERE session_wakes.state IN ('queued', 'delivering', 'unconfirmed')
+		RETURNING `+cols, string(n.Kind), n.AskID, n.Host, n.Session))
+}
+
+// HeldForSignIn is the detail of a queued wake that waits for the owner's
+// fresh sign-in (internal/api): Retry takes it as well as an unconfirmed one.
+const HeldForSignIn = "it waits for a fresh sign-in"
+
+// Retry queues wake id once more — an unconfirmed one, or one held for a
+// fresh sign-in (HeldForSignIn) — recording stepUpAt (the sign-in of the
+// request that asked; zero keeps the wake's own): ErrNotRetryable for any
+// other state, with the wake as it stands.
+func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time) (Wake, error) {
+	w, err := scan(s.pool.QueryRow(ctx, `UPDATE session_wakes SET state = 'queued', detail = '', queued_at = now(), send_queue_id = NULL,
+		  stepup_at = coalesce($2, stepup_at)
+		WHERE id = $1 AND (state = 'unconfirmed' OR (state = 'queued' AND detail = $3)) RETURNING `+cols, id, nullTime(stepUpAt), HeldForSignIn))
 	if errors.Is(err, pgx.ErrNoRows) {
 		cur, gerr := s.Get(ctx, id)
 		if gerr != nil {

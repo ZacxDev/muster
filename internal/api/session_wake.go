@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
 	"slices"
 	"strconv"
@@ -89,7 +90,11 @@ import (
 const wakeGiveUp = 24 * time.Hour
 
 // wakeMaxAttempts bounds how many queue rows one wake may have refused before
-// it stops trying on its own (a host that keeps refusing the paste).
+// it stops trying on its own. The day's give-up bounds the TIME, not the ROWS:
+// a refusal that recurs at every paste while the window stays listed (the
+// account signed out everywhere after the decision, a disabled account) would
+// otherwise queue and fail a row on every 30-second sweep — ~2,900 failed rows
+// for one line before the day ran out.
 const wakeMaxAttempts = 10
 
 // wakeBatch bounds one sweep's wakes.
@@ -132,7 +137,13 @@ func wakeForAnswer(a attention.Ask) (sessionwake.New, bool) {
 	if !ok || a.Kind == attention.KindNotice || a.Status != attention.Answered || a.AnsweredBy != attention.ByOperator {
 		return sessionwake.New{}, false
 	}
-	return sessionwake.New{Kind: sessionwake.KindAskAnswered, AskID: a.ID, OperatorText: a.Answer, Host: host, Session: sess}, true
+	n := sessionwake.New{Kind: sessionwake.KindAskAnswered, AskID: a.ID, OperatorText: a.Answer, Host: host, Session: sess}
+	if a.AnsweredVia.ViaSession() {
+		// Given through attention_answer from a mirrored session: the line
+		// says where (renderWake), never "you answered".
+		n.ViaHost, n.ViaSession = a.AnsweredVia.Host, a.AnsweredVia.Session
+	}
+	return n, true
 }
 
 // wakeForDismiss is the wake an ask the owner dismissed owes its session: no
@@ -254,10 +265,13 @@ func pageResponseText(data []byte) string {
 
 // renderWake is THE text a wake becomes — every line muster pastes into a
 // mirrored session for a decision. muster's own sentence (ids, decision
-// words, counts) outside any fence; the owner's own words, when the wake
-// carries any (OperatorText), inside one, every line sanitised
-// (fence.Sanitize) behind the fence's content prefix. Nothing else of a row
-// is read, so nothing else reaches the window.
+// words, counts, and where a decision made from a mirrored session came from,
+// re-checked against the mirror wire's shapes) outside any fence; the owner's
+// own words, when the wake carries any (OperatorText), inside one, every line
+// sanitised (fence.Sanitize) behind the fence's content prefix — and cut, with
+// a line saying so and where to read it whole, to fit the paste's bound
+// (mirror.MaxPaste). Nothing else of a row is read, so nothing else reaches
+// the window.
 func renderWake(w sessionwake.Wake) string {
 	ask := "ask #" + strconv.FormatInt(w.AskID, 10)
 	draft := "reply draft #" + strconv.FormatInt(w.DraftID, 10)
@@ -265,31 +279,53 @@ func renderWake(w sessionwake.Wake) string {
 		draft += " (route " + w.RouteID + ")"
 	}
 	page := "page #" + strconv.FormatInt(w.PageID, 10)
-	readPage := "read it with page_responses{page_id: " + strconv.FormatInt(w.PageID, 10) + "}"
+	readPage := "page_responses{page_id: " + strconv.FormatInt(w.PageID, 10) + "}"
+	via := wakeViaFrom(w)
 	switch w.Kind {
 	case sessionwake.KindAskAnswered:
-		return fenced("muster: you answered "+ask+", which this session asked. The block below is your answer, relayed by muster: "+
-			"act on it now. It is delivered once; you do not need to call attention_wait for it.", wakeAnswerMarker, "answer:", w.OperatorText)
+		readAsk := "attention_wait{id: " + strconv.FormatInt(w.AskID, 10) + "}"
+		tail := " act on it now. It is delivered once; you do not need to call attention_wait for it."
+		if via != "" {
+			return fenced(ask+", which this session asked, has an answer — answered via attention_answer from "+via+
+				", not by you on the Attention view. The block below is that answer, relayed by muster:"+tail, wakeAnswerMarker, "answer:", w.OperatorText, readAsk)
+		}
+		return fenced("you answered "+ask+", which this session asked. The block below is your answer, relayed by muster:"+tail,
+			wakeAnswerMarker, "answer:", w.OperatorText, readAsk)
 	case sessionwake.KindAskDismissed:
 		return "muster: you dismissed " + ask + ", which this session asked, without answering it. No answer is coming: " +
 			"carry on without it, or ask again if you still need the decision."
 	case sessionwake.KindDraftDecided:
+		who, whose := "you approved "+draft+", which this session wrote.", "you gave"
+		if w.Decision != sessionwake.DecisionApproved {
+			who = "you rejected " + draft + ", which this session wrote."
+		}
+		if via != "" {
+			verb := "approved"
+			if w.Decision != sessionwake.DecisionApproved {
+				verb = "rejected"
+			}
+			who, whose = draft+", which this session wrote, was "+verb+" — via plugin_draft_decide from "+via+", not by you on the Asks page.", "given"
+		}
 		if w.Decision == sessionwake.DecisionApproved {
-			return "muster: you approved " + draft + ", which this session wrote. Its plugin sends it next; muster tells this session how that went."
+			return "muster: " + who + " Its plugin sends it next; muster tells this session how that went."
 		}
-		pre := "muster: you rejected " + draft + ", which this session wrote. It will not be sent."
+		pre := who + " It will not be sent."
 		if strings.TrimSpace(w.OperatorText) == "" {
-			return pre
+			return "muster: " + pre
 		}
-		return fenced(pre+" The block below is the reason you gave, relayed by muster.", wakeReasonMarker, "reason:", w.OperatorText)
+		return fenced(pre+" The block below is the reason "+whose+", relayed by muster.", wakeReasonMarker, "reason:", w.OperatorText, "")
 	case sessionwake.KindDraftOutcome:
+		who := "you approved " + draft + ", which this session wrote"
+		if via != "" {
+			who = draft + ", which this session wrote and which was approved via plugin_draft_decide from " + via + ","
+		}
 		switch w.Decision {
 		case sessionwake.DecisionSent:
-			return "muster: you approved " + draft + ", which this session wrote — it was sent."
+			return "muster: " + who + " — it was sent."
 		case sessionwake.DecisionFailed:
-			return "muster: you approved " + draft + ", which this session wrote — it could not be sent (its plugin reported a failure). Nothing more is sent on its own."
+			return "muster: " + who + " — it could not be sent (its plugin reported a failure). Nothing more is sent on its own."
 		default:
-			return "muster: you approved " + draft + ", which this session wrote — it may or may not have been sent (its plugin did not confirm it). Nothing more is sent on its own."
+			return "muster: " + who + " — it may or may not have been sent (its plugin did not confirm it). Nothing more is sent on its own."
 		}
 	case sessionwake.KindPageOwn:
 		at := page
@@ -297,28 +333,80 @@ func renderWake(w sessionwake.Wake) string {
 			at += " (component " + w.Component + ")"
 		}
 		if strings.TrimSpace(w.OperatorText) == "" {
-			return "muster: you responded on " + at + ", which this session made, from your own view: " + readPage + "."
+			return "muster: you responded on " + at + ", which this session made, from your own view: read it with " + readPage + "."
 		}
-		return fenced("muster: you responded on "+at+", which this session made, from your own view. The block below is your response, relayed by muster.",
-			wakeResponseMarker, "response:", w.OperatorText)
+		return fenced("you responded on "+at+", which this session made, from your own view. The block below is your response, relayed by muster.",
+			wakeResponseMarker, "response:", w.OperatorText, readPage)
 	case sessionwake.KindPageResponses:
 		n := "1 new response"
 		if w.Count != 1 {
 			n = strconv.Itoa(w.Count) + " new responses"
 		}
-		return "muster: " + page + ", which this session made, got " + n + " from its viewers — read them with page_responses{page_id: " +
-			strconv.FormatInt(w.PageID, 10) + "}."
+		return "muster: " + page + ", which this session made, got " + n + " from its viewers — read them with " + readPage + "."
 	}
 	return ""
 }
 
-// fenced is preface, then the owner's words under head, fenced with marker.
-func fenced(preface, marker, head, text string) string {
-	lines := []string{head}
-	for _, l := range strings.Split(text, "\n") {
-		lines = append(lines, "  "+fence.Sanitize(l))
+// wakeViaFrom names, for text written OUTSIDE the fence in muster's voice, the
+// mirrored session w's decision was made from: "<host>/<session>" when both
+// have the mirror wire's shapes, "a mirrored Claude Code session" when they do
+// not (re-checked here although 0177's CHECKs hold them: mcpAnswerFrom's
+// reason), "" for a decision made on muster's own pages or the phone.
+func wakeViaFrom(w sessionwake.Wake) string {
+	if w.ViaHost == "" && w.ViaSession == "" {
+		return ""
 	}
-	return fence.Block{Preface: preface, Marker: marker, Count: 1, Lines: lines}.Render(fence.NewNonce())
+	if mirror.ValidHost(w.ViaHost) == nil && mirror.ValidClaudeSession(w.ViaSession) {
+		return w.ViaHost + "/" + w.ViaSession
+	}
+	return "a mirrored Claude Code session"
+}
+
+// wakeCutNote is the line a cut text ends with: where to read it whole, or
+// only that it was cut.
+func wakeCutNote(readWhole string) string {
+	if readWhole == "" {
+		return "(cut by muster to fit one message)"
+	}
+	return "(cut by muster to fit one message: read it whole with " + readWhole + ")"
+}
+
+// fenced is "muster: " + preface, then the owner's words under head, fenced
+// with marker. Line breaks of every kind (\r\n, a lone \r, \n) are one break,
+// so a form's \r\n never leaves a replacement character on each line. When
+// the whole would not fit one paste (mirror.MaxPaste), the words are cut, by
+// whole runes, and end with wakeCutNote(readWhole) — never dropped.
+func fenced(preface, marker, head, text, readWhole string) string {
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	render := func(t string, cut bool) string {
+		lines := []string{head}
+		for _, l := range strings.Split(t, "\n") {
+			lines = append(lines, "  "+fence.Sanitize(l))
+		}
+		if cut {
+			lines = append(lines, wakeCutNote(readWhole))
+		}
+		return fence.Block{Preface: "muster: " + preface, Marker: marker, Count: 1, Lines: lines}.Render(fence.NewNonce())
+	}
+	out := render(text, false)
+	if len(out) <= mirror.MaxPaste {
+		return out
+	}
+	r := []rune(text)
+	for len(r) > 0 {
+		over := len(out) - mirror.MaxPaste
+		// Drop at least the overflow's worth of runes (each at least a byte),
+		// then measure again: a sanitised rune can grow, never shrink.
+		n := max(over/4, 1)
+		if n > len(r) {
+			n = len(r)
+		}
+		r = r[:len(r)-n]
+		if out = render(string(r), true); len(out) <= mirror.MaxPaste {
+			return out
+		}
+	}
+	return render("", true)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +423,12 @@ func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
 	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
 		return
 	}
+	if !s.wakeHostHere(octx, n.Host) {
+		return
+	}
+	// The sign-in that decided it (its freshness is judged when the line is
+	// queued: wakeNeedsSignIn).
+	n.StepUpAt, _ = stepup.AuthTime(ctx)
 	w, fresh, err := s.ext.SessionWakes.Create(octx, n)
 	if err != nil {
 		s.logger.Printf("session wake: %s for owner %d: %v", n.Kind, owner, err)
@@ -344,6 +438,19 @@ func (s *Server) fileWake(ctx context.Context, owner int64, n sessionwake.New) {
 		s.wakeChanged(w)
 		s.startWakeDelivery(owner, w.ID)
 	}
+}
+
+// wakeHostHere reports whether host mirrors its sessions to THIS muster: it
+// holds one of the owner's unrevoked mirror tokens. A session mirrored to
+// another muster (its calls reach here as a remote caller, mirror_mcp.go) has
+// no window here, so a wake for it could never arrive: none is filed, and its
+// card keeps the old wording. A host list that cannot be read files none.
+func (s *Server) wakeHostHere(ctx context.Context, host string) bool {
+	hosts, err := s.ext.Mirror.LiveTokenHosts(ctx)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(hosts, host)
 }
 
 // wakeAnswered files the wake an answered ask owes (answerRecorded).
@@ -376,7 +483,7 @@ func (s *Server) draftRoute(ctx context.Context, d plugins.Draft) (plugins.Route
 
 // wakeDraftDecided files the wake the owner's decision on draft d owes
 // (decideDraftAs).
-func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft) {
+func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft, via plugins.DraftDecisionSource) {
 	if !s.wakesOn() {
 		return
 	}
@@ -386,6 +493,11 @@ func (s *Server) wakeDraftDecided(ctx context.Context, d plugins.Draft) {
 		return
 	}
 	if n, ok := wakeForDraftDecision(d, r); ok {
+		if via.Via == plugins.DraftViaMCP {
+			// Decided through plugin_draft_decide from a mirrored session:
+			// the line says where (renderWake), never "you approved".
+			n.ViaHost, n.ViaSession = via.Host, via.Session
+		}
 		s.fileWake(ctx, d.OwnerID, n)
 	}
 }
@@ -402,7 +514,8 @@ func (s *Server) wakeDraftOutcome(ctx context.Context, d plugins.Draft) {
 	if err != nil {
 		return
 	}
-	if w, ok := decided[d.ID]; !ok || w.Kind != sessionwake.KindDraftDecided || w.Decision != sessionwake.DecisionApproved {
+	w, ok := decided[d.ID]
+	if !ok || w.Kind != sessionwake.KindDraftDecided || w.Decision != sessionwake.DecisionApproved {
 		return
 	}
 	r, ok := s.draftRoute(octx, d)
@@ -410,6 +523,8 @@ func (s *Server) wakeDraftOutcome(ctx context.Context, d plugins.Draft) {
 		return
 	}
 	if n, ok := wakeForDraftOutcome(d, r); ok {
+		// Where the approval was made is the outcome line's too.
+		n.ViaHost, n.ViaSession = w.ViaHost, w.ViaSession
 		s.fileWake(ctx, d.OwnerID, n)
 	}
 }
@@ -435,6 +550,9 @@ func (s *Server) wakePageResponse(ctx context.Context, owner, id int64, r pages.
 		return
 	}
 	if team, err := s.sendQueueOwnerIsTeam(octx, owner); err != nil || team {
+		return
+	}
+	if !s.wakeHostHere(octx, n.Host) {
 		return
 	}
 	w, err := s.ext.SessionWakes.AddPageResponses(octx, pg.ID, n.Host, n.Session, 1)
@@ -532,6 +650,21 @@ func (s *Server) deliverWake(parent context.Context, owner, id int64) string {
 	return wakeNothing
 }
 
+// wakeCarriesOwnerText reports whether w's line carries the owner's own words
+// (an answer, a rejection's reason, their own page response): THE predicate
+// for which lines need the owner's fresh sign-in. A dismissal, an approval
+// without a reason, an outcome and a count are muster's sentence alone.
+func wakeCarriesOwnerText(w sessionwake.Wake) bool { return strings.TrimSpace(w.OperatorText) != "" }
+
+// wakeNeedsSignIn reports whether w may not be queued now for want of a fresh
+// sign-in: it carries the owner's words and the sign-in that decided it (or
+// their later Send to session) is none or older than the step-up window — the
+// send queue's rule for the owner's own message (sendQueueAuthorization's
+// "fresh when queued"), measured at the moment it would be queued.
+func wakeNeedsSignIn(w sessionwake.Wake, now time.Time) bool {
+	return wakeCarriesOwnerText(w) && (w.StepUpAt.IsZero() || now.Sub(w.StepUpAt) > stepup.Window())
+}
+
 // handWake hands queued wake w to its window's send queue.
 func (s *Server) handWake(ctx context.Context, w sessionwake.Wake) string {
 	st := s.ext.SessionWakes
@@ -552,6 +685,17 @@ func (s *Server) handWake(ctx context.Context, w sessionwake.Wake) string {
 		}
 		return wakeGaveUp
 	}
+	if wakeNeedsSignIn(w, s.sendQueueNow()) {
+		// 🔴 THE OWNER'S OWN WORDS NEED THE OWNER'S FRESH SIGN-IN, as their own
+		// queued message does: held until their "Send to session" from a fresh
+		// sign-in records one (retryWake). Nothing is queued meanwhile.
+		if w.Detail != sessionwake.HeldForSignIn {
+			if err := st.Hold(ctx, w.ID, sessionwake.HeldForSignIn); err == nil {
+				s.wakeChanged(w)
+			}
+		}
+		return wakeWaiting
+	}
 	win, why := s.wakeWindow(ctx, w)
 	if why != "" {
 		if why != w.Detail {
@@ -565,10 +709,16 @@ func (s *Server) handWake(ctx context.Context, w sessionwake.Wake) string {
 	as := s.ext.Mirror.AgentState(ctx, w.Host, win.Session, win.Window)
 	// 🔴 A ROW OF ITS OWN ORIGIN, PINNED TO THE SESSION: gated on the wake at
 	// the paste (sendQueueWakeGate), refused by the host if the window no
-	// longer holds w.Session (AgentSession), a server-stamped sign-in time
-	// (the wake, not a browser session, is what authorises it), never edited
-	// or retried as a person's.
-	it, err := s.ext.SendQueue.Enqueue(ctx, sendqueue.Item{Target: target, Body: renderWake(w), StepUpAt: s.sendQueueNow(),
+	// longer holds w.Session (AgentSession), never edited or retried as a
+	// person's. Its sign-in time is the DECIDING request's for a line that
+	// carries the owner's words (checked again at the paste, the send queue's
+	// own rule: sendQueueAuthorization), and the server's for one that carries
+	// none (muster's sentence alone: nothing of the owner's to authorise).
+	stepUpAt := s.sendQueueNow()
+	if wakeCarriesOwnerText(w) {
+		stepUpAt = w.StepUpAt
+	}
+	it, err := s.ext.SendQueue.Enqueue(ctx, sendqueue.Item{Target: target, Body: renderWake(w), StepUpAt: stepUpAt,
 		AfterSince: as.Pasted, AgentSession: w.Session, SessionWakeID: w.ID})
 	if err != nil {
 		var pe *pgconn.PgError
@@ -659,8 +809,11 @@ func (s *Server) deliverDueWakes(ctx context.Context) {
 }
 
 // wakeDraftOutcomesDue files the outcome wake every approved draft that has
-// settled since owes its session (the sweep's catch-all, beside the plugin
-// result route's own call).
+// settled since owes its session: the ONE writer of an outcome line, whichever
+// way the draft settled (the plugin's result, a lease that lapsed). Its delay
+// is the attention sweep's (30 s). A reply draft is never retried (only an
+// officer's outbound draft has a retry chain, plugins.RetryDraft and FinishDraft
+// refuse a reply draft one), so the draft that settles is the decided one.
 func (s *Server) wakeDraftOutcomesDue(ctx context.Context) {
 	if !s.wakesOn() || s.ext.Plugins == nil {
 		return
@@ -712,6 +865,13 @@ func (s *Server) sendQueueWakeGate(ctx context.Context, it sendqueue.Item) strin
 	}
 	if w.State != sessionwake.Delivering || w.SendQueueID != it.ID {
 		return SendQueueWakeClosed + " (" + string(w.State) + ")."
+	}
+	if wakeCarriesOwnerText(w) {
+		// The owner's words: the row's sign-in (the deciding request's) must
+		// have been fresh when it was queued, as for their own message.
+		if why := sendQueueAuthorization(it, s.sendQueueNow()); why != "" {
+			return why
+		}
 	}
 	if w.AskID > 0 && s.ext.Attention != nil {
 		// 🔴 THE ASK'S OWN RECORD, READ AGAIN AT THE PASTE: attention_wait
@@ -774,7 +934,18 @@ func (s *Server) wakeRead(ctx context.Context, a attention.Ask) {
 	if s.ext.SessionWakes == nil {
 		return
 	}
-	moved, err := s.ext.SessionWakes.MarkWaited(context.WithoutCancel(ctx), a.ID)
+	// 🔴 READ, WHETHER OR NOT THE WAKE EXISTS YET: a dismissal's wake is filed
+	// after the Dismiss settled the ask (and woke this wait), so a missing one
+	// is written as read and the wake filed after it finds it so (MarkRead).
+	var moved []sessionwake.Wake
+	var err error
+	if n, ok := wakeForAnswer(a); ok {
+		moved, err = s.ext.SessionWakes.MarkRead(context.WithoutCancel(ctx), n)
+	} else if n, ok := wakeForDismiss(a); ok {
+		moved, err = s.ext.SessionWakes.MarkRead(context.WithoutCancel(ctx), n)
+	} else {
+		moved, err = s.ext.SessionWakes.MarkWaited(context.WithoutCancel(ctx), a.ID)
+	}
 	if err != nil {
 		s.logger.Printf("session wake: ask %d: record that its session read it: %v", a.ID, err)
 		return
@@ -802,35 +973,67 @@ func (s *Server) wakeChanged(w sessionwake.Wake) {
 
 // --- what the owner reads ----------------------------------------------------------
 
+// wakeAction is what a wake's line offers the owner: Label "" for nothing,
+// else a button posting to sessionWakeRetryPath — "Retry delivery" for a line
+// that did not arrive, "Send to the session" for one held for a fresh sign-in.
+// StepUp: the post needs the owner's fresh sign-in (the line carries their
+// words), so its form is a step-up form (data-step-up-form).
+type wakeAction struct {
+	Label  string
+	StepUp bool
+}
+
 // wakeDeliveryText is where wake w went, as the owner reads it — who is the
-// session in words — and whether it offers Retry.
-func wakeDeliveryText(w sessionwake.Wake, who string) (string, bool) {
+// session in words — and what it offers.
+func wakeDeliveryText(w sessionwake.Wake, who string) (string, wakeAction) {
 	switch w.State {
 	case sessionwake.Queued:
-		if w.Detail != "" {
-			return "Waiting to send it to " + who + ": " + w.Detail + ".", false
+		if w.Detail == sessionwake.HeldForSignIn {
+			return "Sign in again to send to " + who + ".", wakeAction{Label: "Send to the session", StepUp: true}
 		}
-		return "Waiting for " + who + " to be idle.", false
+		if w.Detail != "" {
+			return "Waiting to send it to " + who + ": " + w.Detail + ".", wakeAction{}
+		}
+		return "Waiting for " + who + " to be idle.", wakeAction{}
 	case sessionwake.Delivering:
-		return "Waiting for " + who + " to be idle: queued in its window.", false
+		return "Waiting for " + who + " to be idle: queued in its window.", wakeAction{}
 	case sessionwake.Delivered:
-		return "Sent to " + who + ".", false
+		return "Sent to " + who + ".", wakeAction{}
 	case sessionwake.Waited:
-		return who + " read it while waiting for it.", false
+		return who + " read it while waiting for it.", wakeAction{}
 	case sessionwake.Unconfirmed:
 		d := strings.TrimSuffix(firstNonBlank(w.Detail, "Not delivered"), ".")
 		if !strings.HasPrefix(d, "Not delivered") && !strings.HasPrefix(d, "May have been sent") {
 			d = "Not confirmed: " + d
 		}
-		return d + ".", true
+		return d + ".", wakeAction{Label: "Retry delivery", StepUp: wakeCarriesOwnerText(w)}
 	}
-	return "", false
+	return "", wakeAction{}
+}
+
+// wakeActionFormHTML is wake id's action as a form ("" for none), with attrs
+// on its button: THE one form the Answered card, the ask page and the draft
+// card draw.
+func wakeActionFormHTML(id int64, a wakeAction, class, attrs string) string {
+	if a.Label == "" {
+		return ""
+	}
+	step := ""
+	if a.StepUp {
+		step = " data-step-up-form"
+	}
+	return `<form method="POST" action="` + sessionWakeRetryPath(id) + `"` + step + ` data-asks-controls><button type="submit" class="` + class + `"` + attrs + `>` +
+		html.EscapeString(a.Label) + `</button></form>
+`
 }
 
 // wakeDeliveryPill is wakeDeliveryText in a pill's few words.
 func wakeDeliveryPill(w sessionwake.Wake) string {
 	switch w.State {
 	case sessionwake.Queued, sessionwake.Delivering:
+		if w.Detail == sessionwake.HeldForSignIn {
+			return "Sign in again to send"
+		}
 		return "Waiting for the session"
 	case sessionwake.Delivered:
 		return "Sent to the session"
@@ -891,10 +1094,10 @@ func (s *Server) withWakeLines(ctx context.Context, cards []plugins.DraftCard) {
 			continue
 		}
 		who := firstNonBlank(strings.TrimSpace(cards[i].Route.Label), "the session that wrote it")
-		text, retry := wakeDeliveryText(w, who)
+		text, act := wakeDeliveryText(w, who)
 		cards[i].WakeLine = text
-		if retry {
-			cards[i].WakeRetryID = w.ID
+		if act.Label != "" {
+			cards[i].WakeRetryID, cards[i].WakeRetryLabel, cards[i].WakeStepUp = w.ID, act.Label, act.StepUp
 		}
 	}
 }
@@ -906,10 +1109,43 @@ func sessionWakeRetryPath(id int64) string {
 	return attentionPath + "/wakes/" + strconv.FormatInt(id, 10) + "/retry"
 }
 
-// retryWake queues the principal's unconfirmed wake id once more and starts
-// its delivery.
-func (s *Server) retryWake(ctx context.Context, id int64) (sessionwake.Wake, error) {
-	w, err := s.ext.SessionWakes.Retry(ctx, id)
+// WakeStepUpRequired is what a stale "Send to the session" or Retry delivery
+// of a line carrying the owner's words is refused with.
+const WakeStepUpRequired = "Confirm it's you first: muster types your own words into a session only with a recent sign-in."
+
+// wakeRetryStale refuses, and reports true, when the request asking to send
+// (or retry) wake cur may not: cur carries the owner's words and the request's
+// sign-in is not fresh — the one rule the owner's own Send is held to
+// (stepup.Fresh). A document navigation gets the Asks page with the dialog's
+// marker (the form is a data-step-up-form, so the page's script asks first);
+// any other request the plain 403 the script reads.
+func (s *Server) wakeRetryStale(w http.ResponseWriter, r *http.Request, cur sessionwake.Wake) bool {
+	if !wakeCarriesOwnerText(cur) || stepup.Fresh(r.Context(), s.stepUpNow()) {
+		return false
+	}
+	if isDocumentNavigation(r) {
+		w.Header().Set("X-Muster-Step-Up", "required")
+		tab := asksTabAnswered
+		if cur.DraftID > 0 {
+			tab = asksTabDrafts
+		}
+		s.renderAsksPage(w, r, http.StatusForbidden, WakeStepUpRequired, tab, 0)
+		return true
+	}
+	refuseStale(w)
+	return true
+}
+
+// retryWake queues the principal's wake id once more — unconfirmed, or held
+// for a fresh sign-in — recording the request's sign-in for a line carrying
+// the owner's words (the caller checked it is fresh: wakeRetryStale), and
+// starts its delivery.
+func (s *Server) retryWake(ctx context.Context, cur sessionwake.Wake) (sessionwake.Wake, error) {
+	var at time.Time
+	if wakeCarriesOwnerText(cur) {
+		at, _ = stepup.AuthTime(ctx)
+	}
+	w, err := s.ext.SessionWakes.Retry(ctx, cur.ID, at)
 	if err != nil {
 		return w, err
 	}
@@ -918,8 +1154,9 @@ func (s *Server) retryWake(ctx context.Context, id int64) (sessionwake.Wake, err
 	return w, nil
 }
 
-// handleSessionWakeRetry is POST /attention/wakes/{id}/retry: an unconfirmed
-// wake's Retry delivery (a draft card's), back to the Asks page it was on.
+// handleSessionWakeRetry is POST /attention/wakes/{id}/retry: a wake's Retry
+// delivery, or its Send to the session after a fresh sign-in, back to the
+// Asks page it was on.
 func (s *Server) handleSessionWakeRetry(w http.ResponseWriter, r *http.Request) {
 	if s.ext.SessionWakes == nil {
 		http.NotFound(w, r)
@@ -930,14 +1167,22 @@ func (s *Server) handleSessionWakeRetry(w http.ResponseWriter, r *http.Request) 
 		s.renderAsksPage(w, r, http.StatusNotFound, "No such delivery.", asksTabDrafts, 0)
 		return
 	}
-	wk, err := s.retryWake(r.Context(), id)
+	cur, err := s.ext.SessionWakes.Get(r.Context(), id)
+	if err != nil {
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such delivery.", asksTabDrafts, 0)
+		return
+	}
+	if s.wakeRetryStale(w, r, cur) {
+		return
+	}
+	wk, err := s.retryWake(r.Context(), cur)
 	switch {
 	case err == nil:
 	case errors.Is(err, sessionwake.ErrNotFound):
 		s.renderAsksPage(w, r, http.StatusNotFound, "No such delivery.", asksTabDrafts, 0)
 		return
 	case errors.Is(err, sessionwake.ErrNotRetryable):
-		s.renderAsksPage(w, r, http.StatusConflict, "That delivery has not failed, so there is nothing to retry.", asksTabDrafts, 0)
+		s.renderAsksPage(w, r, http.StatusConflict, "That delivery is not waiting for you, so there is nothing to send again.", asksTabDrafts, 0)
 		return
 	default:
 		s.logger.Printf("session wake %d: retry: %v", id, err)
