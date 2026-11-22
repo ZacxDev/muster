@@ -67,6 +67,7 @@ var tabSwipeScriptSrc = staticJS("tab-swipe", `(function () {
   }
   function selIndex(ts) { for (var i = 0; i < ts.length; i++) if (ts[i].getAttribute('aria-selected') === 'true') return i; return -1; }
   document.addEventListener('touchstart', function (e) {
+    unbind(sw);
     sw = null;
     if (!e.touches || e.touches.length !== 1) return;
     var t = e.target, area = t && t.closest && t.closest('[`+TabSwipeAttr+`]');
@@ -81,18 +82,43 @@ var tabSwipeScriptSrc = staticJS("tab-swipe", `(function () {
     if (ownsSideways(t)) return;
     var s = window.getSelection && String(window.getSelection());
     if (s) return;
-    sw = { x: x, y: y, lock: '', area: area };
+    sw = { x: x, y: y, lock: '', area: area, t: t };
+    // 🔴 THE GESTURE IS FOLLOWED ON ITS TARGET TOO. A touch's later events go
+    // to the element it started on even once that element has left the
+    // document — and a detached element's events never bubble to document. A
+    // list re-read while the finger is down (the Open panel's Pages tab reads
+    // its list each time it is shown, and replaces the rows) left the swipe
+    // with no touchmove and no touchend: it went nowhere (measured on
+    // session-open.spec's list swipe: lost exactly when the list was replaced
+    // mid-gesture). So the target hears them as well; seen marks an event the
+    // document already handled on its way up, so none is counted twice.
+    t.addEventListener('touchmove', onMove, { passive: true });
+    t.addEventListener('touchend', onEnd, { passive: true });
+    t.addEventListener('touchcancel', onCancel, { passive: true });
   }, { passive: true });
-  document.addEventListener('touchmove', function (e) {
+  var seen = null;
+  function unbind(s) {
+    if (!s || !s.t) return;
+    s.t.removeEventListener('touchmove', onMove);
+    s.t.removeEventListener('touchend', onEnd);
+    s.t.removeEventListener('touchcancel', onCancel);
+  }
+  function onMove(e) {
+    if (seen === e) return;
+    seen = e;
     if (!sw || !e.touches || !e.touches.length) return;
     var dx = e.touches[0].clientX - sw.x, dy = e.touches[0].clientY - sw.y;
     if (!sw.lock && (Math.abs(dx) > `+strconv.Itoa(TabSwipeLockPx)+` || Math.abs(dy) > `+strconv.Itoa(TabSwipeLockPx)+`)) {
       sw.lock = Math.abs(dx) > Math.abs(dy) * `+strconv.FormatFloat(TabSwipeRatio, 'f', -1, 64)+` ? 'x' : 'y';
     }
     sw.dx = dx;
-  }, { passive: true });
-  function endSwipe() {
+  }
+  document.addEventListener('touchmove', onMove, { passive: true });
+  function onEnd(e) {
+    if (seen === e) return;
+    seen = e;
     var s = sw; sw = null;
+    unbind(s);
     if (!s || s.lock !== 'x') return;
     var w = s.area.clientWidth || window.innerWidth;
     if (Math.abs(s.dx || 0) < Math.max(`+strconv.Itoa(TabSwipeMinPx)+`, w * `+strconv.FormatFloat(TabSwipeMinFrac, 'f', -1, 64)+`)) return;
@@ -100,8 +126,9 @@ var tabSwipeScriptSrc = staticJS("tab-swipe", `(function () {
     if (i < 0 || n < 0 || n >= ts.length) return;
     ts[n].click();
   }
-  document.addEventListener('touchend', endSwipe, { passive: true });
-  document.addEventListener('touchcancel', function () { sw = null; }, { passive: true });
+  function onCancel() { unbind(sw); sw = null; }
+  document.addEventListener('touchend', onEnd, { passive: true });
+  document.addEventListener('touchcancel', onCancel, { passive: true });
 })();
 `)
 

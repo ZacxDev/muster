@@ -485,9 +485,9 @@ test.describe.serial('the Open button and its panel', () => {
     await swipe('left', 'header');
     await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
     await expect(page.locator('#preview-panel [data-session-page]').first()).toBeVisible();
-    // Leftwards again, on the header: the Asks tab, the last; there a
+    // Leftwards again, on the list: the Asks tab, the last; there a
     // leftwards swipe on its list goes nowhere.
-    await swipe('left', 'header');
+    await swipe('left', 'list');
     await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
     // @1 has asked nothing: its Asks tab says so.
     await expect(page.locator('#preview-panel [data-open-empty="asks"]')).toBeVisible();
@@ -495,6 +495,53 @@ test.describe.serial('the Open button and its panel', () => {
     await expect(selected(page)).toHaveAttribute('data-tab', 'asks');
     // And the tab chosen by swiping is remembered, as a tap's is.
     expect(await page.evaluate(() => localStorage.getItem('muster:tabs:session-open:1'))).toBe('asks');
+  });
+
+  // 🔴 A SWIPE THAT STARTS ON THE PAGES LIST SURVIVES THE LIST BEING RE-READ
+  // UNDER THE FINGER. The tab re-reads its list each time it is shown and
+  // replaces the rows; a touch's later events go to the row it started on,
+  // and a row no longer in the document never bubbles them to the swipe's
+  // document listener, so the swipe went nowhere (measured: 2 of 12 list
+  // swipes made right after showing the tab were lost, each exactly when the
+  // list was replaced mid-gesture). Here the re-read is held until the finger
+  // is down and let land under it (touchDrag's held), so the race is the
+  // test's, every time. REGRESSION TEST: red before tab_swipe.go followed the
+  // gesture on its target, green after.
+  test('a swipe that starts on the Pages list switches tabs even when the list is re-read under the finger (touch, 390×844)', async ({ page }) => {
+    await ready(page);
+    await page.goto(origin + viewOf('@1'));
+    await page.evaluate(() => localStorage.setItem('muster:tabs:session-open:1', 'pages'));
+    await toggle(page).click();
+    await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
+    await expect(page.locator('#preview-panel [data-session-page]').first()).toBeVisible();
+    // Hold the next read of the list.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    await page.route('**/ui/mirror/session-pages?**', async (route) => {
+      await held;
+      await route.continue();
+    });
+    // Showing Pages again re-reads it; the old rows stay until it lands.
+    await tab(page, 'previews').click();
+    await tab(page, 'pages').click();
+    await expect(selected(page)).toHaveAttribute('data-tab', 'pages');
+    const row = page.locator('#preview-panel [data-session-page]').first();
+    await expect(row).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as unknown as { __replaced: boolean };
+      w.__replaced = false;
+      const list = document.querySelector('#preview-panel [data-session-pages-list]')!;
+      new MutationObserver(() => (w.__replaced = true)).observe(list, { childList: true });
+    });
+    const b = (await row.boundingBox())!;
+    const y = b.y + b.height / 2, a = (await page.locator('#preview-panel [data-tab-swipe]').nth(1).boundingBox())!;
+    await touchDrag(page, { x: a.x + a.width * 0.85, y }, { x: a.x + a.width * 0.15, y: y + 6 }, 12, async () => {
+      // The finger is down on a row: the read lands, and the rows are new.
+      release();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __replaced: boolean }).__replaced), { message: 'the list was replaced under the finger' }).toBe(true);
+    });
+    await expect(selected(page), 'the swipe that began on a replaced row still switched the tab').toHaveAttribute('data-tab', 'asks');
+    await page.unroute('**/ui/mirror/session-pages?**');
   });
 });
 
