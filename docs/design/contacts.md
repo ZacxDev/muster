@@ -221,7 +221,9 @@ muster-server app list            # gains a "linked with" column
 
 - `link` names a **source** (the app whose subjects are kept: meetings) and
   an **adopter** (the app that takes them: contacts). It prints
-  `linked <adopter> to <source>: <n> people already known by <source>`.
+  `linked <adopter> (app <id>) to <source> (app <id>): <n> people already
+  known by <source>` (as built: the ids were added, so the line can be
+  checked against `app list`).
 - **No page form and no bearer API** in this PR: linking changes what two
   apps may join, it is done once per install, and the CLI already needs the
   shell and database access only an operator has. `/admin/apps` shows
@@ -268,7 +270,7 @@ muster-server app list            # gains a "linked with" column
   transaction (beside the grant and ledger deletes it already does). A
   reinstalled app is a new id with no pair until an admin links it again.
 
-### Schema: the next free migration (`0178` at the time of writing)
+### Schema: the next free migration (`0178`, as built)
 
 ```sql
 -- A LINKED PAIR of server apps: both know each person by one subject.
@@ -284,8 +286,9 @@ CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_low  ON public.plugin_server_pairs (low_id);
 CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_server_pairs (high_id);
--- plus a trigger (or the store's check, under the same lock) refusing an id
--- that already appears in the OTHER column of another row.
+-- plus a trigger, plugin_server_pairs_one_pair (as built), refusing an id
+-- that already appears in the OTHER column of another row; links are
+-- serialised by the server-app advisory lock, so its read cannot race.
 ```
 
 - **No owner column, so no row-level security arm admits it:** like a
@@ -309,8 +312,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS plugin_server_pairs_high ON public.plugin_serv
   caller, `subjectFor`, so a third writer cannot skip the pair.
 - **The race.** Two first redeems for one person, one per app of a pair, at
   the same moment, would each find no partner row and draw two subjects.
-  `subjectFor` takes `pg_advisory_xact_lock` on (pair, owner) before it
-  reads, so the second waits and finds the first's row.
+  `subjectFor` takes `pg_advisory_xact_lock` before it reads, so the second
+  waits and finds the first's row. **As built, the lock is keyed on the
+  person alone and taken on every draw, linked or not**, rather than on
+  (pair, owner): keying it on the pair would need a read of the pair before
+  the lock and a separate path for an unlinked app, while this way "is the
+  app paired, and does the partner know the person" is one statement made
+  under the lock. Its only cost is that one person's concurrent first opens
+  of two apps wait for each other for a few milliseconds. **Hide also holds
+  the app row `FOR SHARE`** now, as the redeem already did, so a link racing
+  a Hide waits for it (or wins, and the Hide's `subjectFor` sees the pair).
 - **Link and unlink** in `internal/plugins/server.go` beside
   `InstallServerApp`/`UninstallServerApp` (`server.go:395`, `:513`):
   `LinkServerApps(ctx, source, adopter, by)` and `UnlinkServerApp(ctx, id,
