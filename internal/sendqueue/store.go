@@ -196,6 +196,14 @@ type Item struct {
 	// stop, idle streak and pull-request head it was proposed on), with a
 	// server-stamped StepUpAt, and never edited or retried.
 	FleetActionID int64
+	// SessionWakeID marks a message a SESSION WAKE became (migration 0177;
+	// internal/api's session_wake.go, its only writer): muster's line telling
+	// a mirrored session what its owner decided — an ask answered or
+	// dismissed, a draft decided or sent, a page responded to. 0 for any
+	// other row. Gated on that wake at delivery (sendQueueWakeGate: still
+	// delivering on THIS row), with a server-stamped StepUpAt, and never
+	// edited or retried here (the owner's Retry is the wake's own).
+	SessionWakeID int64
 	// RetriedAs is, on a failed row that was retried, the row its Retry queued
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
@@ -294,7 +302,7 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
 	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(agent_session, ''),
-	coalesce(queued_by, 0), coalesce(fleet_action_id, 0)`
+	coalesce(queued_by, 0), coalesce(fleet_action_id, 0), coalesce(session_wake_id, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
@@ -302,7 +310,7 @@ func itemDests(it *Item, state *string) []any {
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
 		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID, &it.ChiefForwardDispatch, &it.AgentSession,
-		&it.QueuedBy, &it.FleetActionID}
+		&it.QueuedBy, &it.FleetActionID, &it.SessionWakeID}
 }
 
 // Queuer is who queued it: QueuedBy, or — a row the system scope wrote, or
@@ -392,9 +400,12 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		coalesce(`+ownerSQL(1)+`, 0)::int)`, it.Target.Owner); err != nil {
 		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
 	}
-	var nudge, forward, fleet any
+	var nudge, forward, fleet, wake any
 	if it.FleetActionID > 0 {
 		fleet = it.FleetActionID
+	}
+	if it.SessionWakeID > 0 {
+		wake = it.SessionWakeID
 	}
 	if it.ChiefNudgeID > 0 {
 		nudge = it.ChiefNudgeID
@@ -403,7 +414,7 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		forward = it.ChiefForwardDispatch
 	}
 	if it.MusterOrigins() > 1 {
-		return Item{}, errors.New("sendqueue: a row has at most one origin (a route, a chief nudge, a chief forward or a fleet action)")
+		return Item{}, errors.New("sendqueue: a row has at most one origin (a route, a chief nudge, a chief forward, a fleet action or a session wake)")
 	}
 	if it.AgentSession != "" && !mirror.ValidAgentSession(it.AgentSession) {
 		return Item{}, errors.New("sendqueue: not an agent session id")
@@ -411,9 +422,9 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 	// owner_id: the target's owner (a team the caller operates: row-level
 	// security's insert arm refuses any other), else the caller's own.
 	// queued_by is the caller whatever this writes (0127's actor trigger).
-	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch, agent_session, fleet_action_id)
-		VALUES (`+ownerSQL(11)+`, $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, nullif($10, ''), $12) RETURNING `+cols,
-		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward, it.AgentSession, it.Target.Owner, fleet))
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch, agent_session, fleet_action_id, session_wake_id)
+		VALUES (`+ownerSQL(11)+`, $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, nullif($10, ''), $12, $13) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward, it.AgentSession, it.Target.Owner, fleet, wake))
 	if err != nil {
 		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
 	}
@@ -650,6 +661,9 @@ type SentBody struct {
 	ChiefForwardDispatch int64
 	// FleetActionID is the fleet action that sent it (an approved card).
 	FleetActionID int64
+	// SessionWakeID is the session wake it carried (muster's line telling
+	// the session what its owner decided).
+	SessionWakeID int64
 }
 
 // SentBodies is every message the caller's send queue SENT into window t (or
@@ -661,7 +675,7 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 	if err := t.Valid(); err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(fleet_action_id, 0) FROM send_queue
+	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(fleet_action_id, 0), coalesce(session_wake_id, 0) FROM send_queue
 		WHERE state = 'sent' AND mirror_host = $1 AND mirror_session = $2 AND (mirror_window = $3 OR mirror_window = '')
 		AND created_at >= $4 AND owner_id = `+ownerSQL(6)+` ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit, t.Owner)
 	if err != nil {
@@ -671,7 +685,7 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 	var out []SentBody
 	for rows.Next() {
 		var b SentBody
-		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID, &b.ChiefForwardDispatch, &b.FleetActionID); err != nil {
+		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID, &b.ChiefForwardDispatch, &b.FleetActionID, &b.SessionWakeID); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -1053,7 +1067,7 @@ func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
 // musterOriginSQL is MusterOrigin in SQL: a row of muster's own (a route, a
 // chief nudge, a chief forward). THE one SQL statement of it, for every query
 // that tells muster's messages from a person's.
-const musterOriginSQL = `(route_id IS NOT NULL OR chief_nudge_id IS NOT NULL OR chief_forward_dispatch IS NOT NULL OR fleet_action_id IS NOT NULL)`
+const musterOriginSQL = `(route_id IS NOT NULL OR chief_nudge_id IS NOT NULL OR chief_forward_dispatch IS NOT NULL OR fleet_action_id IS NOT NULL OR session_wake_id IS NOT NULL)`
 
 // MusterOrigins is how many of muster's own origins it carries (a route, a
 // chief nudge, a chief forward): 0 for a person's message. THE predicate every
@@ -1071,6 +1085,9 @@ func (it Item) MusterOrigins() int {
 		n++
 	}
 	if it.FleetActionID != 0 {
+		n++
+	}
+	if it.SessionWakeID != 0 {
 		n++
 	}
 	return n

@@ -406,6 +406,13 @@ type DraftCard struct {
 	// UNTRUSTED — set by the reader for display only (internal/api
 	// withBatches); nil when there is no record or it could not be read.
 	Person *OutreachPerson
+	// WakeLine is where the owner's decision on a draft a mirrored session
+	// wrote — or its send outcome — went to that session ("Sent to …",
+	// "Waiting for … to be idle", "Not delivered: …"), set by the reader for
+	// display only (internal/api withWakeLines); "" draws nothing.
+	// WakeRetryID is the wake whose Retry delivery the card offers (0: none).
+	WakeLine    string
+	WakeRetryID int64
 }
 
 // OutreachPerson is an outreach draft's person as its card draws them: what

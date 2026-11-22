@@ -373,11 +373,26 @@ func (p pageResponder) slotKey() int64 {
 }
 
 // record records one response as the responder.
+//
+// A response on a page a mirrored session made wakes that session
+// (session_wake.go): the owner's own response with its content, anyone
+// else's as one more in a count, never their words.
 func (s *Server) recordPageResponse(ctx context.Context, p pageResponder, v int, component string, kind pages.ResponseKind, data []byte, uploadID string) (pages.Response, error) {
+	var r pages.Response
+	var err error
+	owner := p.link.OwnerID
 	if p.owner {
-		return s.ext.Pages.AddOwnerResponse(ctx, p.page, v, component, kind, data, uploadID)
+		r, err = s.ext.Pages.AddOwnerResponse(ctx, p.page, v, component, kind, data, uploadID)
+		if pg, perr := s.ext.Pages.Page(ctx, p.page); err == nil && perr == nil {
+			owner = pg.OwnerID
+		}
+	} else {
+		r, err = s.ext.Pages.AddResponse(ctx, p.link, v, component, kind, data, uploadID)
 	}
-	return s.ext.Pages.AddResponse(ctx, p.link, v, component, kind, data, uploadID)
+	if err == nil {
+		s.wakePageResponse(ctx, owner, p.page, r)
+	}
+	return r, err
 }
 
 // handlePageSubmit is POST /s/{token}/submit: {component, data}, checked

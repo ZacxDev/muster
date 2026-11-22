@@ -212,6 +212,11 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		if fresh && d.Status == plugins.DraftSent {
 			s.outboundSettled(r.Context(), messagesOwner(p), d, settledByPlugin, nil)
 		}
+		if fresh && (d.Status == plugins.DraftSent || (d.Status == plugins.DraftFailed && d.Retry.Next == nil)) {
+			// The session that wrote it hears how its approved reply went
+			// (session_wake.go; the sweep catches every other path).
+			s.wakeDraftOutcome(r.Context(), d)
+		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -737,6 +742,9 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	// it leaves the Open feed saying what was decided and where, and a Confirm
 	// on the phone afterwards is refused as not open.
 	s.settleDraftStepUps(ctx, d, dec.Via.Via)
+	// A draft a mirrored session wrote (a route's answer): the session is
+	// told what the owner decided (session_wake.go).
+	s.wakeDraftDecided(ctx, d)
 	return d, nil
 }
 
@@ -1070,6 +1078,17 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		// The owner's own words with a rejection (0123), on the card's history.
 		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + stepUpHiddenHTML(*d.DecisionReason) + `</span>
 `)
+	}
+	if c.WakeLine != "" {
+		// Where the owner's decision — or its send outcome — went to the
+		// mirrored session that wrote it (session_wake.go).
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-wake>` + esc(c.WakeLine) + `</span>
+`)
+		if c.WakeRetryID > 0 {
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + sessionWakeRetryPath(c.WakeRetryID) + `" class="flex flex-wrap items-center gap-2">` +
+				`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-wake-retry>Retry delivery</button></form></div>
+`)
+		}
 	}
 	b.WriteString(draftDecisionHTML(c, now, p))
 	b.WriteString("</li>\n")

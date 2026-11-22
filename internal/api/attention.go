@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/redact"
+	"github.com/ZacxDev/muster/internal/sessionwake"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -188,6 +189,10 @@ type attentionItem struct {
 	// proposalCard: the ask page's ask is a chief proposal's card
 	// (isProposalCard), whose answer is recorded and never delivered.
 	proposalCard bool
+	// wake is a mirrored session's ask's session wake (session_wake.go):
+	// where the owner's answer or dismissal went to the session. Set for the
+	// owner's Answered cards and ask page only; nil everywhere else.
+	wake *sessionwake.Wake
 	// noActions: its notification offers no chips and no signed answer
 	// actions (a chief proposal's card, proposalCardFiled). Not serialised.
 	noActions bool
@@ -1706,6 +1711,9 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 		// A dispatch card whose hold lapsed is withdrawn with it (hold_lapse.go).
 		s.withdrawLapsedHoldCards(ctx)
 		s.deliverDueAnswers(ctx)
+		// The lines owed to mirrored sessions (session_wake.go).
+		s.wakeDraftOutcomesDue(ctx)
+		s.deliverDueWakes(ctx)
 		s.putDueQuestions(ctx)
 		s.expireDraftNotes(ctx)
 		s.lapseDraftChecks(ctx)
@@ -1750,6 +1758,8 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
+	// A session wake's Retry delivery (session_wake.go): a draft card's.
+	mux.HandleFunc("POST "+attentionPath+"/wakes/{id}/retry", s.requireOperatorWrite(s.handleSessionWakeRetry))
 	mux.HandleFunc("POST "+attentionOpenCodePath, s.requireOperatorWrite(s.handleAttentionOpenCodeAnswer))
 }
 
@@ -2508,6 +2518,10 @@ func (s *Server) answerRecorded(ctx context.Context, a attention.Ask) {
 	if a.Delivery == attention.DeliveryQueued {
 		s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
 	}
+	// A MIRRORED session's ask: its answer is queued for the session's window
+	// too (session_wake.go), unless the session reads it in attention_wait
+	// first.
+	s.wakeAnswered(ctx, a)
 	// An ask raised for a plugin message the chief did not act on
 	// (unrouted.go): the answer settles that message.
 	s.settleAnsweredMessage(ctx, a)
@@ -2642,6 +2656,9 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 		s.attentionFormFailed(w, r, err, a)
 		return
 	}
+	// The owner's Dismiss: a mirrored session that asked is told no answer is
+	// coming (session_wake.go).
+	s.wakeDismissed(r.Context(), a)
 	if asksCardRequest(r) {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2664,6 +2681,19 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 	if !ok {
 		s.renderAttentionPage(w, r, http.StatusNotFound, "No such question.")
 		return
+	}
+	// A MIRRORED session's answer: its delivery is its wake's
+	// (session_wake.go), retried through the same Retry delivery.
+	if s.ext.SessionWakes != nil {
+		if ws, err := s.ext.SessionWakes.ForAsks(r.Context(), []int64{id}); err == nil {
+			if wk, ok := ws[id]; ok && wk.State == sessionwake.Unconfirmed {
+				if _, err := s.retryWake(r.Context(), wk.ID); err != nil && !errors.Is(err, sessionwake.ErrNotRetryable) {
+					s.logger.Printf("attention: retry the session wake of %d: %v", id, err)
+				}
+				http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
+				return
+			}
+		}
 	}
 	a, err := s.ext.Attention.RetryDelivery(r.Context(), id)
 	switch {

@@ -401,5 +401,10 @@ func (s *Server) handleDeviceAskCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := s.cancelAsk(r.Context(), id)
+	if err == nil {
+		// The owner's Dismiss from their phone: as the Asks page's
+		// (session_wake.go).
+		s.wakeDismissed(r.Context(), a)
+	}
 	s.askActionResult(w, r, c, a, err)
 }

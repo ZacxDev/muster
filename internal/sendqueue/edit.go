@@ -111,7 +111,7 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 		return Item{}, gerr
 	case cur.RouteID != "":
 		return cur, ErrRoutedNotEditable
-	case cur.ChiefNudgeID != 0 || cur.ChiefForwardDispatch != 0 || cur.FleetActionID != 0:
+	case cur.ChiefNudgeID != 0 || cur.ChiefForwardDispatch != 0 || cur.FleetActionID != 0 || cur.SessionWakeID != 0:
 		return cur, ErrNudgeNotEditable
 	case cur.State == Sending:
 		return cur, ErrEditSending
