@@ -239,6 +239,15 @@ muster-server app list                        # gains a "linked with <id>" colum
   name a `scope = 'server'` app that is not revoked and is in no pair. An
   app is in at most one pair. Personal plugins are never linked. A refused
   link installs nothing.
+- 🔴 **A source whose subjects are already shared is refused** (round 1's
+  Y1). After an unlink, the former pair still share the subjects of the
+  people both knew; a new app linked to either would share them with the
+  other too, an app it was never linked to and that Account → Apps would
+  not name. So `--link-to` is refused while any of the source's subjects is
+  held by another live server app: "install the new app without
+  `--link-to` instead". Uninstalling the former partner clears it (its rows
+  go with it). A person's subject is shared only between the two apps of
+  one link, which keeps "pairwise unless linked" literally true.
 - **The source keeps every subject it has.** The link writes no
   `plugin_server_users` row and changes none. Meetings' owners, sessions and
   meetings, keyed on its current subjects (`internal/store/store.go:99-125`
@@ -261,8 +270,8 @@ muster-server app list                        # gains a "linked with <id>" colum
   orphan their data). People who first open either app after the unlink get
   independent subjects again. The command says so when it runs.
 - **Uninstall of either app ends the pair** in the uninstall's own
-  transaction. A reinstalled app is a new id, linked only if installed
-  `--link-to` again.
+  transaction, and its audit row names the partner (`unlinked_from`). A
+  reinstalled app is a new id, linked only if installed `--link-to` again.
 
 ### Schema: migration `0178`
 
@@ -351,7 +360,10 @@ CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
   the install, answers meetings' existing subject, and every row of the
   source is byte-for-byte what it was.
 - **Refusals, each installing nothing:** an unknown id; a personal plugin;
-  an uninstalled app; an app already paired (either side of a pair). Each
+  an uninstalled app; an app already paired (either side of a pair); an
+  app whose subjects are shared from an earlier pair (unlink, then
+  `--link-to` either former side: refused; once the former partner is
+  uninstalled: links). Each
   with its own error text, and no app row left by the refused install's
   name (**install `--link-to` is atomic**).
 - **Hide on an adopter before first open** makes a row with the partner's
@@ -363,7 +375,8 @@ CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
   gets two.
 - **Uninstall** of either deletes the pair.
 - **The ledgers:** `newSubject` has one caller; `linkAtInstall` one caller
-  (the install); the pairs table is spelled only in System functions; no
+  (the install); `ServerAppIn.LinkTo` is set and `UnlinkServerApp` called
+  only by the CLI; the pairs table is spelled only in System functions; no
   SQL sets `plugin_server_users.subject`.
 - **CLI:** `install --link-to`, `unlink`, `list` output and exit codes;
   audit rows. The migration's constraints, each by name.
@@ -382,6 +395,8 @@ CREATE TABLE IF NOT EXISTS public.plugin_server_pairs (
 | act-for per app | resolve the act-for grant by subject alone | "cross-app acting is still refused" |
 | uninstall | leave the pair on uninstall | "uninstall deletes the pair" |
 | atomic install | a refused link does not fail the install | "refusals: install `--link-to` is atomic" |
+| no third app | drop the shared-subjects check | "a link to an app whose subjects are shared is refused" |
+| CLI only | set `LinkTo` from the `/admin/apps` handler | the CLI-only ledger |
 
 ## Data model (the plugin's SQLite)
 
