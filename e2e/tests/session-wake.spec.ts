@@ -138,7 +138,8 @@ for (const vp of [
       const item = page.locator(`#ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(question);
       await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: answer }).click()]);
-      await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+      // The card settles in place (internal/api asks_done.go).
+      await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '');
 
       // The window's Claude Code pane receives muster's line and the answer,
       // fenced — once.
@@ -154,7 +155,7 @@ for (const vp of [
       writeFileAtomic(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() }));
 
       // Where it went, on the Answered tab.
-      await page.getByRole('tab', { name: 'Answered', exact: true }).click();
+      await page.getByRole('tab', { name: 'Done', exact: true }).click();
       const answered = page.locator(`#answered-${id}`);
       await expect(answered).toHaveAttribute('data-delivery', 'wake-delivered', { timeout: 30_000 });
       await expect(answered.locator('[data-attention-delivery-pill]')).toHaveText('Sent to the session');

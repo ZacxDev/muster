@@ -719,9 +719,10 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
  *   context line unclamp, the chevron turns. Collapsed, the more region is
  *   visibility:hidden, so its links are out of the tab order and the
  *   accessibility tree.
- * - .asks-leave fades a card out (the feed's script then takes it off the
- *   page), .asks-enter brings one in, [data-asks-slide] slides a tab's panel
- *   in from the side it came from.
+ * - A card whose answer is in flight (aria-busy) dims and takes no taps;
+ *   it is never faded off the page: the feed's script settles it IN PLACE
+ *   (internal/api asks_done.go). .asks-enter brings one in,
+ *   [data-asks-slide] slides a tab's panel in from the side it came from.
  * - THE MOTION IS OPACITY AND TRANSFORM ONLY, 180-200ms on the standard
  *   easing (cubic-bezier(0.2, 0, 0, 1)): no height, padding or margin is
  *   animated (a layout animation repaints the whole feed every frame).
@@ -826,11 +827,10 @@ details[data-stepup-details]:not([open]) > summary .asks-chevron {
 details[data-stepup-details][open] > summary .asks-chevron {
   transform: rotate(180deg);
 }
-.asks-leave {
-  opacity: 0;
-  transform: scale(0.98);
+.asks-card[aria-busy="true"] {
+  opacity: 0.6;
   pointer-events: none;
-  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1), transform 180ms cubic-bezier(0.2, 0, 0, 1) !important;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1) !important;
 }
 .asks-enter {
   animation: card-in 200ms cubic-bezier(0.2, 0, 0, 1) both;
@@ -882,7 +882,7 @@ details[data-stepup-details][open] > summary .asks-chevron {
   .asks-card *,
   .asks-more,
   .asks-more > *,
-  .asks-leave,
+  .asks-card[aria-busy="true"],
   .asks-enter,
   [data-asks-slide] {
     transition: none !important;

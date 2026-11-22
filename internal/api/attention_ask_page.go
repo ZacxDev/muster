@@ -116,6 +116,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	if a.Status == attention.Open && a.StepUp != nil {
 		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
+		// The draft's reason box carries the microphone (draftReasonFieldHTML).
+		it.dictate, it.dictateOff = s.dictatePath(), s.dictateOff()
 	}
 	// The options the answer form offers: a proposal's less its accept buttons,
 	// as the feed's card offers them (withAskBoxes).
@@ -261,6 +263,10 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// document, so a form the live region draws later is covered).
 	if strings.Contains(b.String(), "data-step-up-form") || a.Status == attention.Open && a.Asker.MirrorSession != "" {
 		b.WriteString(s.draftStepUpHTML(r))
+		// The reason box's mic (draftReasonFieldHTML): a step-up card's page
+		// has no composer, whose script it would otherwise share. Its live
+		// region's refresh shows the mics it redraws (DictateRevealEvent).
+		b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	}
 	// The header's id chip (ui/ask_id.go): plain text until this runs.
 	b.WriteString(ui.IDCopyScriptHTML())
@@ -410,7 +416,8 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		if it.stepUpDraft != nil {
 			review = draftTabLink(it.stepUpDraft.Draft.ID)
 		}
-		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now()); d != "" {
+		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now(),
+			cardPlace{card: a.ID, dictate: it.dictate, dictateOff: it.dictateOff}); d != "" {
 			return d
 		}
 		return askStepUpPhoneHTML("text-base")

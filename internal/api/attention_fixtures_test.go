@@ -52,3 +52,6 @@ func (emptyAttention) SessionAsks(context.Context, attention.SessionAsksQuery) (
 func (emptyAttention) SessionAskCounts(context.Context, attention.SessionAsksQuery) (int, int, error) {
 	return 0, 0, nil
 }
+func (emptyAttention) Closed(context.Context, attention.ClosedPage) ([]attention.Ask, error) {
+	return nil, nil
+}

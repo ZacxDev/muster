@@ -11,13 +11,15 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// TestACardPostIsAnsweredWithNoContentOrItsRefusalFragment (round 0 of #768,
-// D4): the Asks page's card forms post by htmx to the queue's OWN routes with
-// asksCardHeader. Recorded: 204, nothing to draw. Refused: the error's status
+// TestACardPostIsAnsweredWithTheSettledCardOrItsRefusalFragment (round 0 of
+// #768, D4): the Asks page's card forms post by htmx to the queue's OWN routes
+// with asksCardHeader. Recorded: 200 and the card SETTLED — its id the open
+// card's, so the feed's script puts it in the card's place (asks_done.go; it
+// was a 204 and the card vanished). Refused: the error's status
 // and one fragment (ui.AsksCardErrorHTML) with the queue's own sentence —
 // never the whole page. Every other caller of the same routes is unchanged:
 // without the header (a boosted form; a session page's form) the 303 back.
-func TestACardPostIsAnsweredWithNoContentOrItsRefusalFragment(t *testing.T) {
+func TestACardPostIsAnsweredWithTheSettledCardOrItsRefusalFragment(t *testing.T) {
 	f := newAttnFixture(t)
 	card := map[string]string{"HX-Request": "true", asksCardHeader: "1"}
 	post := func(id int64, verb string, v url.Values, hdr map[string]string) (int, string, string) {
@@ -27,10 +29,29 @@ func TestACardPostIsAnsweredWithNoContentOrItsRefusalFragment(t *testing.T) {
 		return w.Code, w.Body.String(), w.Header().Get("Location")
 	}
 
-	// Answered from a card: 204, empty, and it IS recorded.
+	// settledCard asserts body is ask id's card settled: its own id, closed
+	// as status, its outcome.
+	settledCard := func(what string, id int64, body, status, state string) {
+		t.Helper()
+		open := `<li id="ask-` + strconv.FormatInt(id, 10) + `" `
+		if !strings.HasPrefix(body, open) || strings.Count(body, "<li ") != 1 || !strings.Contains(body, " data-asks-settled") ||
+			!strings.Contains(body, `data-status="`+status+`"`) || !strings.Contains(body, `data-asks-outcome-state>`+state+`</p>`) {
+			t.Fatalf("%s: not the settled card (%s, %q): %s", what, status, state, body)
+		}
+		// Nothing to answer on it any more.
+		if strings.Contains(body, "<form") && strings.Contains(body, "/answer") {
+			t.Fatalf("%s: the settled card still draws an answer form: %s", what, body)
+		}
+	}
+	// Answered from a card: 200, the settled card, and it IS recorded.
 	a := f.ask(t, f.opTok, "Ship it?", "ship", "wait")
-	if code, body, _ := post(a, "answer", url.Values{"option": {"ship"}}, card); code != http.StatusNoContent || body != "" {
-		t.Fatalf("a card's answer: %d %q, want 204 and nothing", code, body)
+	code0, body0, _ := post(a, "answer", url.Values{"option": {"ship"}}, card)
+	if code0 != http.StatusOK {
+		t.Fatalf("a card's answer: %d %q, want 200 and the settled card", code0, body0)
+	}
+	settledCard("a card's answer", a, body0, "answered", "Answered")
+	if !strings.Contains(body0, `data-attention-answer-text>Your answer: ship</div>`) || !strings.Contains(body0, `data-asks-ask-link`) {
+		t.Fatalf("the settled card lacks its answer or its page's link: %s", body0)
 	}
 	if got := f.askStatus(t, a); got.Status != attention.Answered || got.Answer != "ship" {
 		t.Fatalf("the card's answer was not recorded: %+v", got)
@@ -45,24 +66,28 @@ func TestACardPostIsAnsweredWithNoContentOrItsRefusalFragment(t *testing.T) {
 		t.Fatalf("a card dismissal of no ask: %d %q", code, body)
 	}
 
-	// Dismissed from a card: 204 and cancelled.
+	// Dismissed from a card: 200, the settled card, and cancelled.
 	d := f.ask(t, f.opTok, "Rotate it?")
-	if code, body, _ := post(d, "cancel", url.Values{"x": {""}}, card); code != http.StatusNoContent || body != "" {
-		t.Fatalf("a card's dismissal: %d %q", code, body)
+	code1, body1, _ := post(d, "cancel", url.Values{"x": {""}}, card)
+	if code1 != http.StatusOK {
+		t.Fatalf("a card's dismissal: %d %q", code1, body1)
 	}
+	settledCard("a card's dismissal", d, body1, "cancelled", "Dismissed")
 	if got := f.askStatus(t, d); got.Status != attention.Cancelled {
 		t.Fatalf("the card's dismissal was not recorded: %+v", got)
 	}
 
 	// Every other caller keeps its redirect: htmx without the card header,
-	// a boosted form with it, a session page's form with it.
+	// a boosted form with it, a session page's form with it — on the Asks
+	// page, to the ask drawn settled in its old spot (settledLink).
 	for name, hdr := range map[string]map[string]string{
 		"no card header": {"HX-Request": "true"},
 		"boosted":        {"HX-Request": "true", "HX-Boosted": "true", asksCardHeader: "1"},
 	} {
 		id := f.ask(t, f.opTok, "Plain? "+name)
-		if code, _, loc := post(id, "answer", url.Values{"answer": {"yes"}}, hdr); code != http.StatusSeeOther || loc != attentionPath {
-			t.Errorf("%s: %d -> %q, want 303 to %s", name, code, loc, attentionPath)
+		want := "/attention?settled=" + strconv.FormatInt(id, 10) + "#ask-" + strconv.FormatInt(id, 10)
+		if code, _, loc := post(id, "answer", url.Values{"answer": {"yes"}}, hdr); code != http.StatusSeeOther || loc != want {
+			t.Errorf("%s: %d -> %q, want 303 to %s", name, code, loc, want)
 		}
 	}
 	id := f.ask(t, f.opTok, "From a session page?")

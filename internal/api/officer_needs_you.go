@@ -67,14 +67,39 @@ type cardPlace struct {
 	// draftDecisionHTML draws a "Review and approve" link to it in place of
 	// the Approve form (Reject stays).
 	reviewHref string
+	// card is the step-up card this place is (its ask id), 0 for none: its
+	// decision forms carry it (`card`), so a decision made on it lands on the
+	// card settled in place (decideDraft, asks_done.go settledLink), and its
+	// fields' ids are the card's own (draftReasonFieldHTML) — the same draft
+	// is drawn on the Drafts tab of the same page.
+	card int64
+	// dictate is the microphone path the reason box carries (dictatePath),
+	// "" for no mic; dictateOff draws the muted mic in its place (answerMic).
+	dictate    string
+	dictateOff bool
 }
 
-// backField is the place's hidden `return` field ("" on the Asks page).
+// backField is the place's hidden `return` field ("" on the Asks page), and
+// the step-up card it is drawn on (card), if any.
 func (p cardPlace) backField() string {
-	if p.back == "" {
-		return ""
+	out := ""
+	if p.back != "" {
+		out = `<input type="hidden" name="return" value="` + html.EscapeString(p.back) + `">`
 	}
-	return `<input type="hidden" name="return" value="` + html.EscapeString(p.back) + `">`
+	if p.card > 0 {
+		out += `<input type="hidden" name="` + draftCardField + `" value="` + strconv.FormatInt(p.card, 10) + `">`
+	}
+	return out
+}
+
+// draftCardField is a decision form's step-up card (cardPlace.card).
+const draftCardField = "card"
+
+// withDictation is p with the server's microphone (dictatePath, dictateOff):
+// every place that draws a draft's reason box is drawn through it.
+func (s *Server) withDictation(p cardPlace) cardPlace {
+	p.dictate, p.dictateOff = s.dictatePath(), s.dictateOff()
+	return p
 }
 
 // officerNeedsYouID is the officer page's Needs-you section, which every
@@ -206,7 +231,7 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 	if len(n.drafts) > 0 {
 		// THE Asks page's cards and their routes (draftListHTMLIn): a
 		// decision posts where it does there, and comes back here.
-		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + draftListHTMLIn(n.drafts, "", cardPlace{back: back}) + `</ul>`)
+		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + draftListHTMLIn(n.drafts, "", s.withDictation(cardPlace{back: back})) + `</ul>`)
 	}
 	if len(n.asks) > 0 {
 		items := make([]attentionItem, 0, len(n.asks))

@@ -706,6 +706,11 @@ type Store interface {
 	// SessionAskCounts is how many of those asks are open, and how many
 	// there are in all, uncapped (session_asks.go).
 	SessionAskCounts(ctx context.Context, q SessionAsksQuery) (open, total int, err error)
+
+	// Closed is one page of the caller's OWN closed asks (closed.go): every
+	// ask and notice no longer open — answered, answered in session,
+	// dismissed, expired — newest closed first, keyset-paged.
+	Closed(ctx context.Context, q ClosedPage) ([]Ask, error)
 }
 
 // PGStore is Store on Postgres.

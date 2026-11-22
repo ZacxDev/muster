@@ -650,7 +650,13 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	}
 	if back, onAsks := asksReturn(r); onAsks {
 		// A step-up card's draft controls (stepup_draft_actions.go): back to
-		// the Asks page or the card's page, never the Drafts tab.
+		// the Asks page or the card's page, never the Drafts tab. On the
+		// Asks page the card the decision settled (settleDraftStepUps) is
+		// drawn settled in its old spot (asks_done.go settledLink); the page
+		// checks it is the reader's and closed, so a forged id draws nothing.
+		if card, err := strconv.ParseInt(r.PostForm.Get(draftCardField), 10, 64); err == nil && card > 0 && back == attentionPath {
+			back = settledLink(card)
+		}
 		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
@@ -1121,7 +1127,7 @@ func draftDecisionHTML(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		rejectClass = ui.AsksPrimaryButtonClass
 	}
 	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
-		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + rejectClass + `" data-draft-reject>Reject</button></form>`
+		draftReasonFieldHTML(d.ID, p) + `<button type="submit" class="` + rejectClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
@@ -1130,7 +1136,7 @@ func draftDecisionHTML(c plugins.DraftCard, now time.Time, p cardPlace) string {
 				withdraw = "Stop retrying"
 			}
 			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
-				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>` + withdraw + `</button></form></div>
+				draftReasonFieldHTML(d.ID, p) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>` + withdraw + `</button></form></div>
 `)
 		}
 	case plugins.DraftFailed:
@@ -1272,13 +1278,43 @@ func draftDetailsHTML(c plugins.DraftCard) string {
 	return `<ul class="flex min-w-0 flex-col gap-1 pb-2" data-draft-details>` + strings.Join(lines, "") + `</ul>`
 }
 
-// draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:
-// plain text, bounded as the store bounds it (plugins.ScreenDecisionReason).
-// For an officer's outbound draft the officer is told it.
-func draftReasonFieldHTML(id int64) string {
-	return `<label class="sr-only" for="draft-reason-` + strconv.FormatInt(id, 10) + `">Reason for rejecting (optional)</label>` +
-		`<input id="draft-reason-` + strconv.FormatInt(id, 10) + `" name="reason" maxlength="` + strconv.Itoa(plugins.MaxDecisionReasonRunes) +
-		`" placeholder="Reason (optional)" autocomplete="off" class="min-w-0 flex-1 ` + flowsInputClass + `" data-draft-reason-input>`
+// draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason
+// for draft id, drawn in place p: plain text, bounded as the store bounds it
+// (plugins.ScreenDecisionReason). For an officer's outbound draft the officer
+// is told it.
+//
+// 🔴 ONE FIELD, EVERY FACE (the Drafts tab, a step-up card on the Open feed
+// and its ask page, an officer's page all draw it from here): a TEXTAREA that
+// starts one line and grows with what is typed up to the answer box's cap
+// (ui.AskFormInputClass: ui.AskFormFitClass, web/css/input.css), with the
+// answer boxes' microphone beside it — the one control and script
+// (ui/dictate.go): its ✓ puts the transcript in the box, nothing is sent
+// before Reject. No ↑: the mic only fills the reason. With dictation off,
+// the muted mic (answerMic), as every answer box draws it.
+//
+// 🔴 ITS IDS ARE THE PLACE'S (draftReasonID): the Asks page draws the same
+// draft twice — its step-up card on Open, its card on Drafts — and the mic
+// finds its box by id.
+func draftReasonFieldHTML(id int64, p cardPlace) string {
+	box := draftReasonID(id, p)
+	mic, note := "", ""
+	if p.dictate != "" || p.dictateOff {
+		mic = ui.DictateWaveHTML(p.dictate, box+"-dictate") + answerMic(p.dictate, p.dictateOff, box, box+"-dictate-note", box+"-dictate")
+		note = ui.DictateNoteHTML(p.dictate, box+"-dictate-note", "w-full")
+	}
+	return `<label class="sr-only" for="` + box + `">Reason for rejecting (optional)</label>` +
+		`<div class="` + ui.AskFormBoxRowClass + ` min-w-0 flex-1" data-draft-reason-row><textarea id="` + box + `" name="reason" rows="1" maxlength="` + strconv.Itoa(plugins.MaxDecisionReasonRunes) +
+		`" placeholder="Reason (optional)" autocomplete="off" class="` + ui.AskFormInputClass + `" data-draft-reason-input></textarea>` + mic + `</div>` + note
+}
+
+// draftReasonID is draft id's reason box's id in place p: the draft's own on
+// the Drafts tab and an officer's page, the step-up card's (cardPlace.card)
+// on that card.
+func draftReasonID(id int64, p cardPlace) string {
+	if p.card > 0 {
+		return "draft-reason-" + strconv.FormatInt(id, 10) + "-ask-" + strconv.FormatInt(p.card, 10)
+	}
+	return "draft-reason-" + strconv.FormatInt(id, 10)
 }
 
 // draftStepUpHTML is the Asks page's confirm dialog and its form script

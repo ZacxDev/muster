@@ -236,8 +236,8 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	if strings.Contains(page, "Reply drafts") || strings.Contains(page, `id="asks-drafts-archived-toggle"`) {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
 	}
-	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != "open" || got[1][1] != "answered" {
-		t.Fatalf("with plugins off the page's tabs are %v; want open and answered", got)
+	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != "open" || got[1][1] != "done" {
+		t.Fatalf("with plugins off the page's tabs are %v; want open and done", got)
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 )
 
 // THE ASKS PAGE'S TABS: "Ask" (everything /attention listed before, its
-// Answered section included) and, with plugins served, "Reply drafts" — the
+// Answered section — now the Done tab — included) and, with plugins served, "Reply drafts" — the
 // drafts that used to sit at the bottom of /plugins, decided here.
 //
 // 🔴 THE ROUTE STAYS /attention, AND THAT IS THE DESIGN, NOT AN OVERSIGHT. A
@@ -92,12 +92,16 @@ func asksFocus(r *http.Request) int64 {
 }
 
 // asksTab is the tab a request names (asks_feed.go's mapping): drafts,
-// archived, answered, nudges and log as named; asksTabOpen for none, for
-// "ask" (the Open tab's old name), for "open" and for anything unknown.
+// archived, done, nudges and log as named; asksTabDone for "answered" (the
+// Done tab's old name: a link already on a phone still lands there);
+// asksTabOpen for none, for "ask" (the Open tab's old name), for "open" and
+// for anything unknown.
 func asksTab(r *http.Request) string {
 	switch v := r.URL.Query().Get(asksTabParam); v {
-	case asksTabDrafts, asksTabArchived, asksTabAnswered, asksTabNudges, asksTabLog:
+	case asksTabDrafts, asksTabArchived, asksTabDone, asksTabNudges, asksTabLog:
 		return v
+	case asksTabAnswered:
+		return asksTabDone
 	}
 	return asksTabOpen
 }
@@ -164,7 +168,8 @@ func splitDraftCards(cards []plugins.DraftCard, now time.Time) (pending, archive
 	return pending, archived
 }
 
-// draftListHTML is one view's <li>s, or its empty line.
+// draftListHTML is one view's <li>s, or its empty line, in the zero place
+// (no microphone: a page draws its cards with draftListHTMLIn).
 func draftListHTML(cards []plugins.DraftCard, empty string) string {
 	return draftListHTMLIn(cards, empty, cardPlace{})
 }
@@ -289,14 +294,17 @@ func draftIDs(cards []plugins.DraftCard) string {
 // asksTabArchived (?tab=archived, where a decision lands: draftDecidedLink)
 // draws it with the archived list shown; the page's script keeps ?tab= in
 // step with the toggle and opens it for a #draft-<id> inside it.
-func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
+//
+// p is the place the cards are drawn in (the Asks page's, its microphone
+// set: Server.withDictation).
+func draftsPanel(pending, archived []plugins.DraftCard, sub string, p cardPlace) g.Node {
 	// No intro prose (the design pass): each pending card's reply box says
 	// what approving sends, and an approved card's Withdraw is its own offer.
 	pendingList := `<p id="asks-drafts-changed" role="status" class="flex flex-wrap items-center gap-2 rounded-md bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="drafts-changed" hidden>
 <span>Drafts changed since you opened this list. The cards below are as you saw them.</span>
 <button type="button" class="` + ui.AsksSecondaryButtonClass + `" data-drafts-show-latest>Show the latest</button></p>
 <ul id="asks-drafts-pending" class="flex flex-col gap-2" data-testid="drafts-pending" data-draft-ids="` + draftIDs(pending) + `">` +
-		draftListHTML(pending, draftsPendingEmpty) + `</ul>`
+		draftListHTMLIn(pending, draftsPendingEmpty, p) + `</ul>`
 	open := sub == asksTabArchived
 	expanded, hidden, label := "false", " hidden", draftsShowArchived
 	if open {
@@ -306,7 +314,7 @@ func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 		`" aria-controls="asks-drafts-archived-section" data-drafts-show-archived>` + label + `</button>`
 	archivedSection := `<section id="asks-drafts-archived-section" class="flex flex-col gap-2" aria-labelledby="asks-drafts-archived-label" data-drafts-archived-section` + hidden + `>` +
 		ui.AsksGroupLabel("asks-drafts-archived-label", "Archived", len(archived)) +
-		`<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul></section>`
+		`<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTMLIn(archived, draftsArchivedEmpty, p) + `</ul></section>`
 	return g.Raw(`<div class="flex flex-col gap-2 pt-3">` + pendingList + toggle + archivedSection + `</div>`)
 }
 
@@ -317,7 +325,7 @@ const (
 )
 
 // asksTabsHTML is the page's tabs (asks_feed.go): Open (askList, its feed's
-// <ul>), Answered (answered, its feed's <ul>), Drafts when drafts (plugins are
+// <ul>), Done (answered, its feed's <ul>: asks_done.go), Drafts when drafts (plugins are
 // served), Nudges when nudges is not "" (its panel: the feature is on), and
 // always Log (logPanel: the ask log's panel, or its placeholder —
 // ask_log_read.go), the tab the request named selected (asksTab) — Open when
@@ -327,7 +335,7 @@ const (
 func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
 	top := asksTabOpen
 	switch {
-	case tab == asksTabAnswered, tab == asksTabLog && logPanel != "":
+	case tab == asksTabDone, tab == asksTabLog && logPanel != "":
 		top = tab
 	case tab == asksTabNudges && nudges != "":
 		top = asksTabNudges
@@ -337,10 +345,10 @@ func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, ar
 	panel := func(inner string) g.Node { return g.Raw(`<div class="flex flex-col gap-2 pt-2">` + inner + `</div>`) }
 	tabs := []ui.Tab{
 		{ID: asksTabOpen, Label: "Open", Panel: panel(askList)},
-		{ID: asksTabAnswered, Label: "Answered", Panel: panel(answered)},
+		{ID: asksTabDone, Label: "Done", Panel: panel(answered)},
 	}
 	if drafts {
-		tabs = append(tabs, ui.Tab{ID: asksTabDrafts, Label: draftsTabLabel(len(pending)), Panel: draftsPanel(pending, archived, tab)})
+		tabs = append(tabs, ui.Tab{ID: asksTabDrafts, Label: draftsTabLabel(len(pending)), Panel: draftsPanel(pending, archived, tab, s.withDictation(cardPlace{}))})
 	}
 	if nudges != "" {
 		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Nudges",
@@ -381,9 +389,9 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"pending":     draftListHTML(pending, draftsPendingEmpty),
+		"pending":     draftListHTMLIn(pending, draftsPendingEmpty, s.withDictation(cardPlace{})),
 		"pending_ids": draftIDs(pending),
-		"archived":    draftListHTML(archived, draftsArchivedEmpty),
+		"archived":    draftListHTMLIn(archived, draftsArchivedEmpty, s.withDictation(cardPlace{})),
 		"label":       draftsTabLabel(len(pending)),
 	})
 }
@@ -433,13 +441,15 @@ const asksPageScript = `<script>
   var shown = selected('asks-tabs');
   function syncURL() {
     var arch = document.getElementById('asks-drafts-archived-section');
-    var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabAnswered + `' ? top : (arch && !arch.hidden ? '` + asksTabArchived + `' : '` + asksTabDrafts + `'));
+    var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabDone + `' ? top : (arch && !arch.hidden ? '` + asksTabArchived + `' : '` + asksTabDrafts + `'));
     var moved = top !== shown;
     shown = top;
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
       if (v) u.searchParams.set('` + asksTabParam + `', v); else u.searchParams.delete('` + asksTabParam + `');
+      // The Done tab's page (?before=) is that tab's: another tab drops it.
+      if (top !== '` + asksTabDone + `') u.searchParams.delete('` + asksBeforeParam + `');
       // 🔴 A TAB CHANGE DROPS THE FRAGMENT: it named a card of the tab left
       // (#draft-12, where a decision landed), and kept it re-opened THAT tab
       // and scrolled to that card on the next reload, whatever tab was chosen.
@@ -527,12 +537,34 @@ const asksPageScript = `<script>
     syncURL();
     el.scrollIntoView({ block: 'start' });
   }
+  // A CARD A DECISION JUST CLOSED (?settled=, internal/api asks_done.go) is
+  // drawn settled in its old spot: the page lands on it — with or without
+  // its #ask-<id> (a boosted form's redirect loses the fragment) — and the
+  // address drops ?settled=, so the next reload is the one that lets it go.
+  (function () {
+    try {
+      var u = new URL(window.location.href);
+      if (u.searchParams.has('` + asksSettledParam + `')) {
+        u.searchParams.delete('` + asksSettledParam + `');
+        history.replaceState(history.state, '', u.href);
+      }
+    } catch (e) {}
+    var c = document.querySelector('#attention-items > [data-asks-landing]');
+    if (!c) return;
+    c.removeAttribute('data-asks-landing');
+    if (window.location.hash) return;
+    c.scrollIntoView({ block: 'center' });
+    try { c.focus({ preventScroll: true }); } catch (e) {}
+  })();
   reveal();
   window.addEventListener('hashchange', reveal);
-  // The Answered feed follows the queue's event too (it has no field to keep).
+  // The Done feed follows the queue's event too (it has no field to keep),
+  // on the page the address names (?before=).
   var answered = document.getElementById('attention-answered');
   if (answered) document.addEventListener('asks:changed', function () {
-    fetch('` + attentionPath + `/items?part=answered' + filterQuery('&'), { credentials: 'same-origin' }).then(function (r) {
+    var before = '';
+    try { var bv = new URL(window.location.href).searchParams.get('` + asksBeforeParam + `'); if (bv) before = '&` + asksBeforeParam + `=' + encodeURIComponent(bv); } catch (e) {}
+    fetch('` + attentionPath + `/items?part=` + asksTabDone + `' + before + filterQuery('&'), { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.text() : null;
     }).then(function (h) {
       if (h === null) return;
@@ -547,20 +579,39 @@ const asksPageScript = `<script>
   var changed = document.getElementById('asks-drafts-changed');
   var draftsTab = document.getElementById('asks-tabs-tab-drafts');
   if (!pendingList || !archivedList) return;
+  // reasonBusy: the owner is writing a reason in list — a reason box focused
+  // or holding text, or its mic recording (the answer boxes' rule,
+  // ui.AttentionLiveScript's busy) — so a re-draw would eat it.
+  function reasonBusy(list) {
+    var a = document.activeElement;
+    if (a && list.contains(a) && a.tagName === 'TEXTAREA') return true;
+    if (list.querySelector('[data-dictate][data-state="opening"], [data-dictate][data-state="recording"], [data-dictate][data-state="busy"]')) return true;
+    var fields = list.querySelectorAll('textarea');
+    for (var i = 0; i < fields.length; i++) if (fields[i].value.trim() !== '') return true;
+    return false;
+  }
+  // revealMics: the mics a re-draw drew (innerHTML: no htmx:load).
+  function revealMics(list) { try { list.dispatchEvent(new Event('` + ui.DictateRevealEvent + `', { bubbles: true })); } catch (e) {} }
   function apply(j, latest) {
     if (latest || j.pending_ids === (pendingList.getAttribute('data-draft-ids') || '')) {
-      pendingList.innerHTML = j.pending;
-      pendingList.setAttribute('data-draft-ids', j.pending_ids);
+      if (!reasonBusy(pendingList)) {
+        pendingList.innerHTML = j.pending;
+        pendingList.setAttribute('data-draft-ids', j.pending_ids);
+        revealMics(pendingList);
+      }
       if (changed) changed.hidden = true;
     } else if (changed) {
       changed.hidden = false;
     }
-    var t = document.createElement('template');
-    t.innerHTML = j.archived;
-    Array.prototype.forEach.call(t.content.querySelectorAll('li[id]'), function (li) {
-      if (pendingList.querySelector('[id="' + li.id + '"]')) li.remove();
-    });
-    archivedList.replaceChildren(t.content);
+    if (!reasonBusy(archivedList)) {
+      var t = document.createElement('template');
+      t.innerHTML = j.archived;
+      Array.prototype.forEach.call(t.content.querySelectorAll('li[id]'), function (li) {
+        if (pendingList.querySelector('[id="' + li.id + '"]')) li.remove();
+      });
+      archivedList.replaceChildren(t.content);
+      revealMics(archivedList);
+    }
     if (draftsTab) draftsTab.textContent = j.label;
   }
   function load(latest) {

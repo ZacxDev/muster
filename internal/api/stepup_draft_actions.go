@@ -167,12 +167,16 @@ func draftTabLink(id int64) string {
 // review is where the whole draft can be read when this face does not show
 // all of it (stepUpShowsWholeDraft false): its Approve becomes a "Review and
 // approve" link there.
-func askStepUpDraftHTML(c *attention.StepUpCard, dc *plugins.DraftCard, back, review, size string, feed bool, now time.Time) string {
+//
+// at is the card's own place — its ask id, and the reason box's microphone
+// (cardPlace.card, dictate, dictateOff) — which the decision forms carry.
+func askStepUpDraftHTML(c *attention.StepUpCard, dc *plugins.DraftCard, back, review, size string, feed bool, now time.Time, at cardPlace) string {
 	if dc == nil {
 		return ""
 	}
 	rejects := stepUpRejects(c)
-	place := cardPlace{back: back, rejectLead: rejects}
+	place := at
+	place.back, place.rejectLead = back, rejects
 	if !stepUpShowsWholeDraft(c, dc, feed) {
 		place.reviewHref = review
 	}

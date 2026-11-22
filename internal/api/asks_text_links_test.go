@@ -50,7 +50,7 @@ func TestAskTextIsLinkedOnEveryAsksSurface(t *testing.T) {
 		answer           string
 	}{
 		{"open card", askFeedCardHTML(askItem(open), now), "data-attention-text", ""},
-		{"answered card", answeredFeedHTML([]attention.Ask{answered}, []attentionItem{askItem(answered)}, now, nil), "data-attention-text", "data-attention-answer-text"},
+		{"answered card", closedFeedHTML(closedCardsOf([]attention.Ask{answered}, []attentionItem{askItem(answered)}, nil), now), "data-attention-text", "data-attention-answer-text"},
 		{"ask page", askQuestionHTML(open), "data-ask-question", ""},
 		{"ask page answered", askLiveHTML(answered, askItem(answered)), "", "data-ask-answer"},
 		{"log row", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: askLinkFixture, AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL, ""), "data-asklog-question", ""},
@@ -224,7 +224,7 @@ func TestACardWithAPageIsOneLinkToIt(t *testing.T) {
 		toggle           bool
 	}{
 		{"open", askFeedCardHTML(paged(askItem(open))[0], now), "/attention/asks/41", true},
-		{"answered", answeredFeedHTML([]attention.Ask{answered}, paged(askItem(answered)), now, nil), "/attention/asks/42", true},
+		{"answered", closedFeedHTML(closedCardsOf([]attention.Ask{answered}, paged(askItem(answered)), nil), now), "/attention/asks/42", true},
 		{"log", askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, SourceRef: "41", Question: "Ship it?", AskedAt: now}, now, asklog.DefaultTextTTL, askPagePath(41)), "/attention/asks/41", false},
 		{"search", askSearchCardHTML(answered, now), "/attention/asks/42", false},
 	}
@@ -289,7 +289,7 @@ func TestACardWithAPageIsOneLinkToIt(t *testing.T) {
 	watched := paged(askItem(team))[0]
 	watched.watchOnly = TeamAskViewerNote
 	without := map[string]string{
-		"to the chief": answeredFeedHTML([]attention.Ask{toChief}, paged(askItem(toChief)), now, nil),
+		"to the chief": closedFeedHTML(closedCardsOf([]attention.Ask{toChief}, paged(askItem(toChief)), nil), now),
 		"watched":      askFeedCardHTML(watched, now),
 		"session":      askFeedCardHTML(attentionItem{Kind: attentionKindSession, Key: "s-1", Text: "Continue?", Since: now}, now),
 		"log in chat":  askLogCardHTML(asklog.Ask{ID: 10, Kind: asklog.KindPlainText, Question: "Go?", AskedAt: now}, now, asklog.DefaultTextTTL, ""),

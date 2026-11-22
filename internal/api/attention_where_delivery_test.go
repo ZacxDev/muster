@@ -31,6 +31,11 @@ func (w whereAnswered) Answered(context.Context, time.Time, int) ([]attention.As
 	return w.answered, nil
 }
 
+// Closed is the Done tab's read: the same answers, one page.
+func (w whereAnswered) Closed(context.Context, attention.ClosedPage) ([]attention.Ask, error) {
+	return w.answered, nil
+}
+
 func whereAnsweredAsks() []attention.Ask {
 	at := time.Now().Add(-time.Minute)
 	ans := func(id int64, sid, label string, d attention.Delivery, detail string) attention.Ask {

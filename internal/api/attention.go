@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -378,6 +377,10 @@ type attentionItem struct {
 	// taskID is the task an ask is about (attention.Ask.TaskID), 0 for none:
 	// its card's footer links to it (askFeedCardHTML). Set by askItem.
 	taskID int64
+	// settledHTML, when set, is this ask closed by a decision just made,
+	// drawn settled in its old spot on the Open feed (asks_done.go
+	// settledFeedItem) in place of its open card, and not counted.
+	settledHTML string
 }
 
 // attentionCard is the entry an attention item belongs to: an agent's (an
@@ -1083,6 +1086,12 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			if d, ok := read[id]; ok {
 				src := draftCardSource(d)
 				items[i].stepUpDraftSrc = &src
+				// A step-up card names no session of its own (muster raised
+				// it): its "View in session" is its draft's (asks_done.go
+				// draftSessionPath), as its card settled and on Done says.
+				if links && items[i].sessionLink == "" {
+					items[i].sessionLink = s.draftSessionPath(ctx, owner, d.Draft)
+				}
 			}
 		}
 	}
@@ -1829,33 +1838,44 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	if s.ext.Plugins != nil {
 		pending, archived, draftsOK = s.readDraftViews(r.Context(), focus)
 	}
-	answeredAsks, answeredItems, proposals := s.recentAnswerItems(r.Context())
+	// THE DONE TAB's page (asks_done.go): ?before= names it, the filter
+	// narrows it.
+	done := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt)
 	var searchItems []attentionItem
 	for _, a := range found.asks {
 		searchItems = append(searchItems, searchItem(a))
 	}
 	seen := make([]plugins.DraftCard, 0, len(pending)+len(archived)+len(found.drafts))
 	seen = append(append(append(seen, pending...), archived...), found.drafts...)
-	x := s.readAskSources(r.Context(), seen, items, answeredItems, searchItems)
+	x := s.readAskSources(r.Context(), seen, items, done.read, searchItems)
 	var feed string
 	var open int
 	// The Open feed's items (askFeedNow's): read once, for the feed and the
 	// chips.
 	page, rows, rowsN := s.asksPage(r.Context(), items, rd, now)
+	// A card a decision just closed (?settled=, asks_done.go): drawn settled
+	// in its old spot, never counted, whatever the filter.
+	settled, isSettled := s.settledFeedItem(r)
 	if flt.on() {
 		// The count is THE ONE OPEN COUNT's rule over the filtered list
 		// (asksPendingOf: what waits on the reader — a team's ask a viewer
 		// watches is listed, not counted); no stalled rows here.
 		mine := flt.items(x, page)
+		open = asksPendingOf(r.Context(), mine, 0)
+		if isSettled {
+			mine = withSettled(mine, settled)
+		}
 		feed, _ = askFeedHTML(mine, "", 0, now)
 		if len(mine) == 0 {
 			feed = asksFilterEmptyHTML("") + ui.AsksDraftsMarkerHTML(0)
 		}
-		open = asksPendingOf(r.Context(), mine, 0)
 	} else {
 		// askFeedNow over the page read above.
-		feed, _ = askFeedHTML(page, rows, rowsN, now)
 		open = asksPendingOf(r.Context(), page, rowsN)
+		if isSettled {
+			page = withSettled(page, settled)
+		}
+		feed, _ = askFeedHTML(page, rows, rowsN, now)
 	}
 	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
 	// tabs, each a feed of cards.
@@ -1868,14 +1888,14 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 `)
 	// THE CHIPS (asks_filter.go), under the search box: counted over what the
 	// page shows — the search's results while it searches, else the Open,
-	// Answered and Drafts tabs.
+	// Done (the page of it read) and Drafts tabs.
 	counts := newAsksChipCounts(flt)
 	if searching {
 		counts.addItems(x, searchItems)
 		counts.addDrafts(x, found.drafts)
 	} else {
-		counts.addItems(x, askTabItems(page))
-		counts.addItems(x, answeredItems)
+		counts.addItems(x, askTabItems(withoutSettled(page)))
+		counts.addItems(x, done.read)
 		counts.addDrafts(x, pending)
 		counts.addDrafts(x, archived)
 	}
@@ -1900,8 +1920,9 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// The feed's notice: a card post refused after the card left the page.
 	b.WriteString(ui.AsksFeedNoticeHTML)
 	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
-	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + answeredFiltered(answeredAsks, answeredItems, flt, x, now, proposals) + `</ul>`
-	// ALWAYS TABS (Open and Answered at least). The Log tab
+	// The Done feed keeps its old id (#attention-answered): asks_done.go.
+	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + doneFeedHTML(done, flt, r.URL.Query(), now) + `</ul>`
+	// ALWAYS TABS (Open and Done at least). The Log tab
 	// (ask_log_read.go) is drawn only with the ask log on.
 	if !draftsOK && problem == "" {
 		b.WriteString(problemNode("The reply drafts could not be read."))
@@ -1970,8 +1991,10 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.URL.Query().Get("part") == "answered" {
-		s.handleAttentionAnswered(w, r)
+	// ?part=done, and ?part=answered (its old name, still answered for a page
+	// already open): the Done tab's feed.
+	if p := r.URL.Query().Get("part"); p == asksTabDone || p == asksTabAnswered {
+		s.handleAttentionDone(w, r)
 		return
 	}
 	rd := s.readAsks(r.Context()) // the refresh's one hub read (asksRead)
@@ -2000,19 +2023,15 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, rd, now)))
 }
 
-// handleAttentionAnswered is GET /attention/items?part=answered: the Answered
-// tab's feed, for the page's live refresh (asksPageScript).
-func (s *Server) handleAttentionAnswered(w http.ResponseWriter, r *http.Request) {
+// handleAttentionDone is GET /attention/items?part=done[&before=…]: the Done
+// tab's feed, its filter and page kept, for the page's live refresh
+// (asksPageScript).
+func (s *Server) handleAttentionDone(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	flt := s.requestAsksFilter(r, nil)
-	if !flt.on() {
-		_, _ = w.Write([]byte(s.answeredAsksNow(r.Context(), s.now())))
-		return
-	}
-	asks, items, proposals := s.recentAnswerItems(r.Context())
-	x := s.readAskSources(r.Context(), nil, items)
-	_, _ = w.Write([]byte(answeredFiltered(asks, items, flt, x, s.now(), proposals)))
+	p := s.readDone(r.Context(), parseDoneCursor(r.URL.Query().Get(asksBeforeParam)), flt)
+	_, _ = w.Write([]byte(doneFeedHTML(p, flt, r.URL.Query(), s.now())))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -2633,12 +2652,22 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if asksCardRequest(r) {
-		// The Asks page's card (asks_feed.go): nothing to draw; its script
-		// settles the card.
-		w.WriteHeader(http.StatusNoContent)
+		// The Asks page's card (asks_feed.go): the card, settled, for its
+		// script to put in its place (asks_done.go).
+		s.writeSettledCard(w, r.Context(), a)
 		return
 	}
-	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
+	http.Redirect(w, r, settledReturn(r, a), http.StatusSeeOther)
+}
+
+// settledReturn is where an answer or a dismissal posted as a plain form
+// lands: the page it named (attentionReturn), or — the Asks page itself —
+// the page with the ask drawn settled in its old spot (settledLink).
+func settledReturn(r *http.Request, a attention.Ask) string {
+	if v, ok := attentionReturnPage(r); ok {
+		return v
+	}
+	return settledLink(a.ID)
 }
 
 func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Request) {
@@ -2660,15 +2689,11 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	// coming (session_wake.go).
 	s.wakeDismissed(r.Context(), a)
 	if asksCardRequest(r) {
-		w.WriteHeader(http.StatusNoContent)
+		s.writeSettledCard(w, r.Context(), a)
 		return
 	}
-	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
+	http.Redirect(w, r, settledReturn(r, a), http.StatusSeeOther)
 }
-
-// attentionAnsweredPath is the Asks page on its Answered tab: where a Retry
-// lands, and where its refusal is drawn.
-const attentionAnsweredPath = attentionPath + "?" + asksTabParam + "=" + asksTabAnswered
 
 // handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to
 // queued (the caller's own ask only — row-level security), then delivered now.
@@ -2693,7 +2718,7 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 				if _, err := s.retryWake(r.Context(), wk); err != nil && !errors.Is(err, sessionwake.ErrNotRetryable) {
 					s.logger.Printf("attention: retry the session wake of %d: %v", id, err)
 				}
-				http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
+				http.Redirect(w, r, attentionDonePath, http.StatusSeeOther)
 				return
 			}
 		}
@@ -2702,38 +2727,19 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrNotRetryable):
-		s.renderAsksPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.", asksTabAnswered, 0)
+		s.renderAsksPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.", asksTabDone, 0)
 		return
 	default:
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: retry the delivery of %d: %v", id, err)
 		}
-		s.renderAsksPage(w, r, attentionErrCode(err), attentionErrText(err, a), asksTabAnswered, 0)
+		s.renderAsksPage(w, r, attentionErrCode(err), attentionErrText(err, a), asksTabDone, 0)
 		return
 	}
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	s.startAnswerDelivery(a.Owner, a.ID, 0)
-	// Back to the Answered tab, where the Retry was (and its card's new state).
-	http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
-}
-
-// attentionAnsweredWindow / attentionAnsweredShown bound the "Answered" list:
-// the answers of the last day, at most this many.
-const (
-	attentionAnsweredWindow = 24 * time.Hour
-	attentionAnsweredShown  = 20
-)
-
-// recentAnswers is ctx's principal's recent answers with a delivery to show.
-func (s *Server) recentAnswers(ctx context.Context) []attention.Ask {
-	if s.ext.Attention == nil {
-		return nil
-	}
-	out, err := s.ext.Attention.Answered(ctx, time.Now().Add(-attentionAnsweredWindow), attentionAnsweredShown)
-	if err != nil {
-		s.logger.Printf("attention: recent answers: %v", err)
-	}
-	return out
+	// Back to the Done tab, where the Retry was (and its card's new state).
+	http.Redirect(w, r, attentionDonePath, http.StatusSeeOther)
 }
 
 // answerDeliveryText is where an answer went, as the owner reads it, and
@@ -2777,31 +2783,7 @@ func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, boo
 	return "Not delivered.", false
 }
 
-// answeredAsksNow is answeredAsksHTML over ctx's principal's recent answers
-// and, when one of them is a mirrored session's, its windows (askSource).
-func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
-	asks, items, proposals := s.recentAnswerItems(ctx)
-	return answeredFeedHTML(asks, items, now, proposals)
-}
-
-// recentAnswerItems is the Answered tab's asks, each as a named item
-// (answeredItems), and which of them are chief proposal cards.
-func (s *Server) recentAnswerItems(ctx context.Context) ([]attention.Ask, []attentionItem, map[int64]bool) {
-	asks := s.recentAnswers(ctx)
-	var hosts []mirror.HostView
-	if s.ext.Mirror != nil && slices.ContainsFunc(asks, askNeedsHosts) {
-		hosts = s.ext.Mirror.Hosts(ctx)
-	}
-	proposals := map[int64]bool{}
-	for _, a := range asks {
-		if s.isProposalCard(ctx, a) {
-			proposals[a.ID] = true
-		}
-	}
-	return asks, s.answeredItems(ctx, asks, hosts), proposals
-}
-
-// answerLabel names who gave an answer on the Answered tab: the owner, or —
+// answerLabel names who gave an answer on the Done tab: the owner, or —
 // for a session's question to the chief (chief_ask_tool.go) — the chief.
 func answerLabel(a attention.Ask) string {
 	if a.AnsweredBy == attention.ByChief {

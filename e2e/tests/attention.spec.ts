@@ -195,7 +195,7 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await page.goto(origin + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
   await expect(page).toHaveTitle('Asks · muster');
-  await expect(page.getByRole('tab'), 'no plugins, no ask log: Open and Answered only').toHaveText(['Open', 'Answered']);
+  await expect(page.getByRole('tab'), 'no plugins, no ask log: Open and Done only').toHaveText(['Open', 'Done']);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
@@ -246,7 +246,8 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
   const answer = await waited;
   expect(JSON.parse(answer.text)).toMatchObject({ id, status: 'answered', answer: 'wait until Monday' });
-  await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+  // The card settles in place (internal/api asks_done.go).
+  await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '');
   await expect(page.locator('[data-attention-item][data-kind="session"]')).toHaveCount(1);
 
   // A second ask while the page is open arrives live, without a reload.
@@ -532,19 +533,19 @@ for (const vp of [
       await expect(page.locator(`#ask-${agentAsk}`), 'not the agent\'s ask').toHaveCount(0);
       await expect(page.locator('[data-asks-open-count]')).toHaveText('2 open');
 
-      // Answer by an option, from the filtered page: the session's wait gets it, the card leaves.
+      // Answer by an option, from the filtered page: the session's wait gets it, the card settles in place.
       const item = page.locator(`#attention-items #ask-${id}`);
       const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
       await item.getByRole('button', { name: 'hold', exact: true }).click();
       const got = (await waited) as { result: { content: { text: string }[] } };
       expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered', answer: 'hold' });
-      await expect(page.locator(`#ask-${id}`)).toHaveCount(0, { timeout: 15_000 });
+      await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '', { timeout: 15_000 });
 
-      // Free text on the second: it leaves too.
+      // Free text on the second: it settles too.
       const second = page.locator(`#attention-items #ask-${id2}`);
       await second.locator('textarea[name="answer"]').fill('yes, add it');
       await second.getByRole('button', { name: 'Answer', exact: true }).click();
-      await expect(page.locator(`#ask-${id2}`)).toHaveCount(0, { timeout: 15_000 });
+      await expect(page.locator(`#ask-${id2}`)).toHaveAttribute('data-asks-settled', '', { timeout: 15_000 });
       const w2 = (await (await localCall('attention_wait', { id: id2, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
       expect(JSON.parse(w2.result.content[0].text)).toMatchObject({ status: 'answered', answer: 'yes, add it' });
 

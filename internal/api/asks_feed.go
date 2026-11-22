@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"html"
 	"net/http"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/attention"
-	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -24,14 +22,16 @@ import (
 //	Open      questions, then notices, then waiting sessions (and session
 //	          state's stalled rows), then tasks to route — askGroups' order,
 //	          each card carrying its old group's name as a kind badge;
-//	Answered  the recent answers (answeredAsksHTML), moved off the Open tab;
+//	Done      everything closed, newest first, paged (asks_done.go) — the
+//	          tab that was "Answered";
 //	Drafts    the reply drafts (plugins on), with its own Awaiting decision /
 //	          Archived views;
 //	Nudges    the chief's nudge decisions (the feature on);
 //	Log       the ask log.
 //
 // 🔴 EVERY OLD ?tab= STILL OPENS WHERE IT DID (asksTab): "ask" — the Open
-// tab's old name — and anything unknown open the Open tab; "drafts" the
+// tab's old name — and anything unknown open the Open tab; "answered" — the
+// Done tab's old name — opens Done; "drafts" the
 // Drafts tab on Awaiting decision; "archived" the Drafts tab on its Archived
 // view (the view a decided draft lands on: draftDecidedLink); "nudges" and
 // "log" their tabs. A tab that is not drawn (Drafts with plugins off, Nudges
@@ -39,12 +39,9 @@ import (
 // #ask-<id>, #answered-<id>) is followed by the page's script to whichever
 // panel holds it (asksPageScript reveal).
 
-const (
-	// asksTabOpen is the Open tab: what is waiting on the owner now.
-	asksTabOpen = "open"
-	// asksTabAnswered is the Answered tab: the recent answers.
-	asksTabAnswered = "answered"
-)
+// asksTabOpen is the Open tab: what is waiting on the owner now. (The Done
+// tab's names are asks_done.go's.)
+const asksTabOpen = "open"
 
 // asksCardID is the id of a card's more region.
 func asksCardMoreID(key string) string { return key + "-more" }
@@ -301,7 +298,8 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		// A card about a draft the reader may decide draws the DRAFT's own
 		// decision controls (askStepUpDraftHTML, the Drafts tab's), returning
 		// here; the card itself stays answerable only from the phone.
-		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, askPagePath(it.AskID), "text-sm", true, now)
+		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, askPagePath(it.AskID), "text-sm", true, now,
+			cardPlace{card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff})
 		if line == "" {
 			line = askStepUpPhoneHTML("text-sm")
 		}
@@ -350,7 +348,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 }
 
 // askCardQuestionHTML is THE body of an ask's card — what it asks, or what a
-// waiting session waits on — on the Open feed and the Answered tab alike (the
+// waiting session waits on — on the Open feed and the Done tab alike (the
 // one body: an answered card drew its question as one muted block of text, a
 // step-up card's included, while the Open card drew the post's preview).
 // text is the question's own HTML (askTextHTML of it, or of a task's label).
@@ -639,12 +637,21 @@ func askFeedHTML(items []attentionItem, episodes string, n int, now time.Time) (
 	items = askTabItems(items)
 	var b strings.Builder
 	count := n
+	settled := ""
 	for _, g := range askGroups {
 		for _, it := range items {
-			if slices.Contains(g.kinds, it.Kind) {
-				b.WriteString(askFeedCardHTML(it, now))
-				count++
+			if !slices.Contains(g.kinds, it.Kind) {
+				continue
 			}
+			if it.settledHTML != "" {
+				// A card a decision just closed, drawn settled in its old
+				// spot (asks_done.go): on the feed, never counted.
+				b.WriteString(it.settledHTML)
+				settled += it.settledHTML
+				continue
+			}
+			b.WriteString(askFeedCardHTML(it, now))
+			count++
 		}
 		if g.key == "waiting" && episodes != "" {
 			// Session state's rows (episodeRowsHTML: a labelled <ul>), in the
@@ -655,82 +662,11 @@ func askFeedHTML(items []attentionItem, episodes string, n int, now time.Time) (
 	marker := ui.AsksDraftsMarkerHTML(drafts)
 	switch {
 	case count == 0 && drafts == 0:
-		return ui.AsksAllClearHTML + marker, 0
+		return settled + ui.AsksAllClearHTML + marker, 0
 	case count == 0:
-		return ui.AsksDraftsWaitHTML(drafts) + marker, 0
+		return settled + ui.AsksDraftsWaitHTML(drafts) + marker, 0
 	}
 	return b.String() + marker, count
-}
-
-// answeredCardHTML is one recent answer's card on the Answered tab: who asked
-// and when, the question, the answer, where it went — and Retry on a failed
-// delivery. Its more region holds where the answer came from when it was not
-// this view.
-//
-// 🔴 IT IS TITLED BY THE ONE NAMING RULE (attentionTitle over it, the ask as an
-// attention item with its stored name: answeredItems) — the session's human
-// name, its tmux target small under it — exactly as its card was titled on
-// the Open tab. It used to be titled by its window's place ("tmux fern:1 @
-// atlas"), so a session was "Rate-limit the public API" until answered and a
-// tmux address after.
-func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal bool) string {
-	esc := html.EscapeString
-	id := strconv.FormatInt(a.ID, 10)
-	who, src, srcIsTitle := attentionTitle(it)
-	// The delivery line names the session as the card's title does (who: in
-	// words, never a tmux target); the exact target — where a queued or
-	// waiting delivery sends the owner — is the card's ⓘ, beside the line.
-	text, retry := answerDeliveryText(a, who, proposal)
-	pill := answerDeliveryPill(a, proposal)
-	delivery := firstNonBlank(string(a.Delivery), "none")
-	wakeForm := ""
-	if it.wake != nil {
-		// A mirrored session's answer: where its session wake went
-		// (session_wake.go), with the wake's own action in place of Retry.
-		var act wakeAction
-		text, act = wakeDeliveryText(*it.wake, who)
-		retry = false
-		pill, delivery = wakeDeliveryPill(*it.wake), "wake-"+string(it.wake.State)
-		wakeForm = wakeActionFormHTML(it.wake.ID, act, ui.AsksSecondaryButtonClass, ` data-attention-redeliver`)
-	}
-	var sub []string
-	if !a.ResolvedAt.IsZero() {
-		sub = append(sub, `<time datetime="`+a.ResolvedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.ResolvedAt)))+`</time>`)
-	}
-	if !srcIsTitle && src != "" && src != who {
-		sub = append(sub, `<span class="`+ui.AsksTargetClass+`" data-attention-source>`+esc(src)+`</span>`)
-	}
-	age := ""
-	if len(sub) > 0 {
-		age = `<span class="` + ui.AsksSubClass + `">` + strings.Join(sub, ` · `) + `</span>`
-	}
-	titleAttrs := ` data-attention-title`
-	if srcIsTitle || src == "" || src == who {
-		titleAttrs += ` data-attention-source`
-	}
-	key := "answered-" + id
-	var b strings.Builder
-	// THE QUESTION is drawn ONCE, whole, clamped while collapsed (it was a
-	// one-line cut here and the full text again in the more region). WHERE
-	// THE ANSWER WENT is a pill (answerDeliveryPill); the sentence that says
-	// it in full is the expanded card's.
-	// THE OPEN CARD'S HEAD AND BODY (ui.AsksHeadHTML, askCardQuestionHTML):
-	// a step-up card answered is still drawn as its post's preview.
-	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(delivery) + `">
-` + ui.AsksHeadHTML(ui.AsksHead{ID: key, Who: `<span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age, Toggle: true, More: asksCardMoreID(key), Chip: ui.AskIDChipHTML(a.ID), Href: it.page}) + `
-` + askCardQuestionHTML(it, askTextHTML(a.Question)) + `<div class="` + ui.AsksAnswerTextClass + `" data-attention-answer-text>` + answerLabel(a) + askTextHTML(a.Answer) + `</div>
-` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(pill)+`</span></div>`) + `
-`)
-	b.WriteString(wakeForm)
-	if retry {
-		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
-`)
-	}
-	b.WriteString(`<div id="` + asksCardMoreID(key) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` +
-		`<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>` + answeredViaHTML(a) + `</div></div>
-</li>
-`)
-	return b.String()
 }
 
 // answerDeliveryPill is where an answer went, in a pill's few words
@@ -757,40 +693,6 @@ func answerDeliveryPill(a attention.Ask, proposal bool) string {
 		return "Recorded"
 	}
 	return "Not delivered"
-}
-
-// answeredFeedHTML is the Answered tab's feed: one card per recent answer, or
-// its empty line.
-// items[i] is asks[i] as an attention item, named (answeredItems).
-func answeredFeedHTML(asks []attention.Ask, items []attentionItem, now time.Time, proposals map[int64]bool) string {
-	if len(asks) == 0 {
-		return ui.AsksEmptyHTML(` data-asks-empty="answered" data-asks-answered-empty`, "", "", "No answers in the last day.", "")
-	}
-	var b strings.Builder
-	for i, a := range asks {
-		b.WriteString(answeredCardHTML(a, items[i], now, proposals[a.ID]))
-	}
-	return b.String()
-}
-
-// answeredItems is asks as attention items (askItem over hosts: the source,
-// target and place an Open card has) — named, as an Open card is, by
-// withNames — for the Answered cards' titles.
-func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts []mirror.HostView) []attentionItem {
-	items := make([]attentionItem, len(asks))
-	for i, a := range asks {
-		items[i] = askItem(a, hosts...)
-	}
-	s.withNames(ctx, items)
-	withAskPages(ctx, items)
-	if ws := s.wakesForAsks(ctx, asks); len(ws) > 0 {
-		for i, a := range asks {
-			if w, ok := ws[a.ID]; ok {
-				items[i].wake = &w
-			}
-		}
-	}
-	return items
 }
 
 // answeredDeliveryRowHTML is an Answered card's delivery line and, when the

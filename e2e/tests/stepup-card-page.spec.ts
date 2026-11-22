@@ -292,7 +292,7 @@ for (const vp of [
   { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1440×900', use: { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false } },
 ]) {
-  test.describe(`the Answered tab, ${vp.name}`, () => {
+  test.describe(`the Done tab, ${vp.name}`, () => {
     test.use(vp.use);
     test('an answered step-up card is drawn as the Open card: its head, the post preview, the answer', async ({ page }) => {
       const id = fix('answered', '1');

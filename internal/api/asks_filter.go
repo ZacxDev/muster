@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -24,7 +23,7 @@ import (
 // on the active chip clears it, Clear clears both. The state is the address:
 // ?type=<type>&from=<source key>, beside ?q= and ?tab=, so a filter is a
 // bookmark, Back undoes it, and it works without a script. It applies to the
-// Open, Answered and Drafts tabs and to search results; the Log has its own.
+// Open, Done and Drafts tabs and to search results; the Log has its own.
 //
 // 🔴 ONE SOURCE RULE, ONE PLACE: askSources.sourceFor. What a chip is called,
 // what it counts and what it keeps are all that function's answer — over an
@@ -154,7 +153,7 @@ func agentAskOf(it attentionItem) int64 {
 	return it.card.agentID
 }
 
-// ofItem is an Open or Answered item's source: a draft's (a draft item, a
+// ofItem is an Open or Done item's source: a draft's (a draft item, a
 // step-up card on a draft the reader can read), else the item's officer, the
 // agent whose ask it is, or the session its head names.
 func (x askSources) ofItem(it attentionItem) askOrigin {
@@ -464,7 +463,7 @@ func (c *asksChipCounts) add(typ string, src askOrigin, typeOK, sourceOK bool) {
 	c.sources[src.key]++
 }
 
-// addItems counts items (the Open and Answered tabs', search results').
+// addItems counts items (the Open and Done tabs', search results').
 func (c *asksChipCounts) addItems(x askSources, items []attentionItem) {
 	bs, bt := c.bySource(), c.byType()
 	for _, it := range items {
@@ -566,25 +565,6 @@ const asksFilterEmptyLine = "Nothing here matches this filter."
 // clear, which would say nothing waits anywhere).
 func asksFilterEmptyHTML(attrs string) string {
 	return ui.AsksEmptyHTML(` data-asks-filter-empty`+attrs, "", "", asksFilterEmptyLine, "")
-}
-
-// answeredFiltered is the Answered tab's feed over asks, f applied (items[i]
-// is asks[i] as an item).
-func answeredFiltered(asks []attention.Ask, items []attentionItem, f asksFilter, x askSources, now time.Time, proposals map[int64]bool) string {
-	if !f.on() {
-		return answeredFeedHTML(asks, items, now, proposals)
-	}
-	var ka []attention.Ask
-	var ki []attentionItem
-	for i, a := range asks {
-		if f.keepItem(x, items[i]) {
-			ka, ki = append(ka, a), append(ki, items[i])
-		}
-	}
-	if len(ka) == 0 {
-		return asksFilterEmptyHTML(` data-asks-empty="answered"`)
-	}
-	return answeredFeedHTML(ka, ki, now, proposals)
 }
 
 // searchFiltered is res with f applied (its asks as items to name their

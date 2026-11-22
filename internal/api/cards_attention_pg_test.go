@@ -114,7 +114,7 @@ func TestTheCardBadgesAreTheQueuesItems(t *testing.T) {
 	if after == nil || after.Count != 2 || slices.Contains(after.Keys, attentionAskKey(opNew)) || after.Href != "/attention#"+attentionAskKey(opOld) {
 		t.Fatalf("after answering %d, op's badge = %+v, want 2 (the older ask and the draft)", opNew, after)
 	}
-	if !slices.ContainsFunc(f.srv.recentAnswers(ctx), func(a attention.Ask) bool { return a.ID == opNew }) {
+	if !slices.ContainsFunc(f.srv.doneAsks(ctx), func(a attention.Ask) bool { return a.ID == opNew }) {
 		t.Fatal("instrument check: the answered ask is not in the Answered listing")
 	}
 

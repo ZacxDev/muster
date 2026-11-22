@@ -1247,7 +1247,7 @@ func (s *Server) wakeRetryStale(w http.ResponseWriter, r *http.Request, cur sess
 	}
 	if isDocumentNavigation(r) {
 		w.Header().Set("X-Muster-Step-Up", "required")
-		tab := asksTabAnswered
+		tab := asksTabDone
 		if cur.DraftID > 0 {
 			tab = asksTabDrafts
 		}
@@ -1318,7 +1318,7 @@ func (s *Server) handleSessionWakeRetry(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, draftDecidedLink(wk.DraftID), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
+	http.Redirect(w, r, attentionDonePath, http.StatusSeeOther)
 }
 
 // wakeStepUpNow is the auth time a wake row's paste is checked against: the
