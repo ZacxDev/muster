@@ -263,14 +263,20 @@ for (const vp of [
       // and not the dispatched agent's open one.
       const asks = page.locator('#attention-items [data-attention-item]');
       await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + NAME), press(page, 'header [data-asker-asks-link]')]);
-      await expect(page.locator('[data-testid="asks-filter"]')).toContainText('Showing asks from chief');
+      // Whose asks these are: the agent's chip, active, leading the row.
+      const chip = page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]');
+      await expect(chip).toHaveCount(1);
+      await expect(chip).toContainText('chief');
+      await expect(page.locator('[data-asks-chips] a[data-asks-chip]').first()).toHaveAttribute('aria-current', 'true');
       await expect(asks).toHaveCount(ASKS);
+      // ONE predicate: the badge's number is the number of cards its tap lists.
+      expect(await asks.count(), 'the badge counts what the filter lists').toBe(ASKS);
       for (let i = 0; i < ASKS; i++) await expect(asks.filter({ hasText: `Fold question ${i + 1}:` })).toHaveCount(1);
       await expect(page.locator('#attention-items').getByText('Dispatched question'), 'not another session\'s ask').toHaveCount(0);
       await expect(page.locator('[data-asks-open-count]')).toHaveText(`${ASKS} open`);
-      // "Show all" is the whole queue: the other session's ask is there (the
+      // Clear is the whole queue: the other session's ask is there (the
       // control that it was open and listable).
-      await press(page, '[data-asks-filter-all]');
+      await press(page, '[data-asks-chips-clear]');
       await page.waitForURL((u) => u.pathname === '/attention' && !u.searchParams.has('from'));
       await expect(page.locator('#attention-items [data-attention-item]').filter({ hasText: 'Dispatched question' })).toHaveCount(1);
 
@@ -279,6 +285,7 @@ for (const vp of [
       await expect(badge(page)).toHaveText('1');
       await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + DISPATCHED), press(page, 'header [data-asker-asks-link]')]);
       await expect(asks).toHaveCount(1);
+      await expect(page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]')).toHaveCount(1);
       await expect(asks.first()).toContainText('Dispatched question: retry the flaky job?');
       await expect(page.locator('#attention-items').getByText('Fold question'), 'not the chief\'s asks').toHaveCount(0);
     });

@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -65,9 +65,19 @@ var askTypeChips = []struct{ key, label string }{
 	{askTypeNotice, "Notices"},
 }
 
-// The source keys' prefixes beside attention_asker.go's agent: and window:.
+// The source keys (?from=) beside attention_asker.go's agent:<name> and
+// window:… (a session page's badge links with those). 🔴 EACH NAMES ONE
+// THING, NEVER TWO THAT SHARE A NAME (round 1 of the audit, G1): an officer's
+// id is unique only within its owner, and a reader sees a team's officers
+// beside their own, so its key carries the owner; an agent is its row's id; a
+// session its host and its name.
+//
+//	officer:<owner id>:<officer id>
+//	agentid:<agent id>
+//	session:<host>:<name>
 const (
 	askSourceOfficer = "officer:"
+	askSourceAgentID = "agentid:"
 	askSourceSession = "session:"
 )
 
@@ -81,19 +91,38 @@ type askOrigin struct {
 	agentID    int64
 }
 
-// askSources is what one render reads to name sources: the reader's agents
-// by id, the drafts it can see by id (the Drafts tab's, and each step-up
-// card's), and the officer's display name (officerDisplayName).
+// draftSource is who raised a draft: its owner, its officer ("" for none), its
+// drafting agent and that agent's name as the draft's card shows it.
+type draftSource struct {
+	owner, agentID int64
+	officer, agent string
+}
+
+// draftCardSource is card's draftSource.
+func draftCardSource(c plugins.DraftCard) draftSource {
+	d := draftSource{owner: c.Draft.OwnerID, agent: firstNonBlank(c.AgentDisplay, c.Draft.AgentName)}
+	if c.Draft.Officer != nil {
+		d.officer = *c.Draft.Officer
+	}
+	if c.Draft.AgentID != nil {
+		d.agentID = *c.Draft.AgentID
+	}
+	return d
+}
+
+// askSources is what one render knows to name sources: the drafts it can see
+// by id (the Drafts tab's, the search's, and each step-up card's) and the
+// officers' display names (officerDisplayName). It reads no agent: an agent's
+// name is the one its card already shows.
 type askSources struct {
-	agents      map[int64]agents.Agent
-	drafts      map[int64]plugins.Draft
+	drafts      map[int64]draftSource
 	officerName func(owner int64, id string) string
 }
 
-// sourceFor is THE SOURCE RULE: the officer when there is one, else the agent
-// (a row the reader can read), else the session as the card head names it.
-// The zero askOrigin for none of them.
-func (x askSources) sourceFor(owner int64, officer string, agentID int64, session string) askOrigin {
+// sourceFor is THE SOURCE RULE: the officer when there is one, else the agent,
+// else the session as its card head names it, on host. The zero askOrigin for
+// none of them.
+func (x askSources) sourceFor(owner int64, officer string, agentID int64, agentName, host, session string) askOrigin {
 	if officer = strings.TrimSpace(officer); officer != "" {
 		label := ""
 		if x.officerName != nil {
@@ -102,28 +131,43 @@ func (x askSources) sourceFor(owner int64, officer string, agentID int64, sessio
 		if label == "" {
 			label = ui.OfficerPlainName("", officer)
 		}
-		return askOrigin{key: askSourceOfficer + officer, label: label}
+		return askOrigin{key: askSourceOfficer + strconv.FormatInt(owner, 10) + ":" + officer, label: label}
 	}
-	if a, ok := x.agents[agentID]; ok && agentID > 0 && a.Name != "" {
-		return askOrigin{key: askerKeyAgent + a.Name, label: firstNonBlank(a.DisplayName, a.Name), agentID: agentID}
+	if agentID > 0 {
+		return askOrigin{key: askSourceAgentID + strconv.FormatInt(agentID, 10), label: firstNonBlank(strings.TrimSpace(agentName), "Agent"), agentID: agentID}
 	}
 	if session = strings.TrimSpace(session); session != "" {
-		return askOrigin{key: askSourceSession + session, label: session}
+		return askOrigin{key: askSourceSession + host + ":" + session, label: session}
 	}
 	return askOrigin{}
 }
 
+// agentAskOf is THE AGENT PREDICATE, the one a session page's asks badge
+// counts by (askerOf.has) and an agent's chip keeps by: the agent whose OWN
+// ask item it is (an ask an agent raised), 0 for any other item — a notice,
+// a waiting session, a step-up card (muster raises those). So the badge's
+// number is the number of cards its tap lists.
+func agentAskOf(it attentionItem) int64 {
+	if it.Kind != attentionKindAsk || it.stepUp != nil {
+		return 0
+	}
+	return it.card.agentID
+}
+
 // ofItem is an Open or Answered item's source: a draft's (a draft item, a
-// step-up card on a draft the reader can read), else the item's officer,
-// agent, or the name its head shows.
+// step-up card on a draft the reader can read), else the item's officer, the
+// agent whose ask it is, or the session its head names.
 func (x askSources) ofItem(it attentionItem) askOrigin {
 	if id := draftItemID(it); id > 0 {
 		if d, ok := x.drafts[id]; ok {
 			return x.ofDraft(d)
 		}
 	}
+	// A step-up card is its draft's OFFICER'S (it confirms the officer's
+	// post, whoever filed it); a card on an agent's reply draft is muster's
+	// own, not one of the agent's asks (agentAskOf), and is named by its head.
 	if it.stepUp != nil && it.stepUp.DraftID > 0 {
-		if d, ok := x.drafts[it.stepUp.DraftID]; ok {
+		if d, ok := x.drafts[it.stepUp.DraftID]; ok && d.officer != "" {
 			return x.ofDraft(d)
 		}
 	}
@@ -131,21 +175,17 @@ func (x askSources) ofItem(it attentionItem) askOrigin {
 	// about where it is now (it is the same session either way).
 	who, _, _ := attentionTitle(it)
 	who = strings.TrimSuffix(strings.TrimSuffix(who, askNotShown), whereHostOffline)
-	return x.sourceFor(it.owner, it.OfficerID, it.card.agentID, who)
+	if it.card.agentID > 0 && agentAskOf(it) == 0 {
+		// An agent's notice, its waiting window: not one of its asks (the
+		// agent predicate), so no chip of its own.
+		return askOrigin{}
+	}
+	return x.sourceFor(it.owner, it.OfficerID, agentAskOf(it), who, firstNonBlank(it.card.ref.Host, attentionPlaceHost(it)), who)
 }
 
-// ofDraft is a draft's source: its officer, else its drafting agent, else
-// the agent name it stored.
-func (x askSources) ofDraft(d plugins.Draft) askOrigin {
-	officer := ""
-	if d.Officer != nil {
-		officer = *d.Officer
-	}
-	var agent int64
-	if d.AgentID != nil {
-		agent = *d.AgentID
-	}
-	return x.sourceFor(d.OwnerID, officer, agent, d.AgentName)
+// ofDraft is a draft's source: its officer, else its drafting agent.
+func (x askSources) ofDraft(d draftSource) askOrigin {
+	return x.sourceFor(d.owner, d.officer, d.agentID, d.agent, "", d.agent)
 }
 
 // draftItemID is the draft a Drafts-tab item (draftKey) is, 0 for any other.
@@ -179,20 +219,21 @@ func itemType(it attentionItem) string {
 
 // asksFilter is the filter a request names: its type, its source key, and
 // how that key resolved — an agent's id, a window (a session page's badge,
-// legacy: only its asks, attention_asker.go), and the source's name.
+// legacy: only its asks, attention_asker.go), the source's name — and the
+// reader's windows, read only for a window key.
 type asksFilter struct {
 	typ, from string
 	agentID   int64
 	window    *askerOf
 	label     string
+	hosts     func() []mirror.HostView
 }
 
 // on reports whether any filter is set.
 func (f asksFilter) on() bool { return f.typ != "" || f.from != "" }
 
-// keepItem reports whether f keeps item it (hosts: the render's windows, read
-// for a window key).
-func (f asksFilter) keepItem(x askSources, it attentionItem, hosts func() []mirror.HostView) bool {
+// keepItem reports whether f keeps item it.
+func (f asksFilter) keepItem(x askSources, it attentionItem) bool {
 	if f.typ != "" && itemType(it) != f.typ {
 		return false
 	}
@@ -200,15 +241,17 @@ func (f asksFilter) keepItem(x askSources, it attentionItem, hosts func() []mirr
 	case f.from == "":
 		return true
 	case f.window != nil:
+		hosts := f.hosts
+		if hosts == nil {
+			hosts = func() []mirror.HostView { return nil }
+		}
 		return f.window.has(it, hosts)
-	case f.agentID > 0:
-		return x.ofItem(it).agentID == f.agentID
 	}
 	return x.ofItem(it).key == f.from
 }
 
-// keepDraft reports whether f keeps draft d.
-func (f asksFilter) keepDraft(x askSources, d plugins.Draft) bool {
+// keepDraft reports whether f keeps the draft d is the source of.
+func (f asksFilter) keepDraft(x askSources, d draftSource) bool {
 	if f.typ != "" && f.typ != askTypeDraft {
 		return false
 	}
@@ -217,21 +260,18 @@ func (f asksFilter) keepDraft(x askSources, d plugins.Draft) bool {
 		return true
 	case f.window != nil:
 		return false
-	case f.agentID > 0:
-		return x.ofDraft(d).agentID == f.agentID
 	}
 	return x.ofDraft(d).key == f.from
 }
 
 // items is items f keeps.
-func (f asksFilter) items(x askSources, items []attentionItem, hosts []mirror.HostView) []attentionItem {
+func (f asksFilter) items(x askSources, items []attentionItem) []attentionItem {
 	if !f.on() {
 		return items
 	}
-	hs := func() []mirror.HostView { return hosts }
 	out := items[:0:0]
 	for _, it := range items {
-		if f.keepItem(x, it, hs) {
+		if f.keepItem(x, it) {
 			out = append(out, it)
 		}
 	}
@@ -245,7 +285,7 @@ func (f asksFilter) draftCards(x askSources, cards []plugins.DraftCard) []plugin
 	}
 	out := cards[:0:0]
 	for _, c := range cards {
-		if f.keepDraft(x, c.Draft) {
+		if f.keepDraft(x, draftCardSource(c)) {
 			out = append(out, c)
 		}
 	}
@@ -255,21 +295,45 @@ func (f asksFilter) draftCards(x askSources, cards []plugins.DraftCard) []plugin
 // query is f as the query its live lists re-read with ("" for none).
 func (f asksFilter) query() string {
 	v := url.Values{}
+	f.into(v)
+	return v.Encode()
+}
+
+// into sets f's parameters on v.
+func (f asksFilter) into(v url.Values) {
 	if f.typ != "" {
 		v.Set(asksTypeParam, f.typ)
 	}
 	if f.from != "" {
 		v.Set(askerFromParam, f.from)
 	}
-	return v.Encode()
+}
+
+// requestAsksFilter is THE filter of request r, for the page and for every
+// live endpoint alike (round 1, Y1: the live ones parsed with no windows, so a
+// window key resolved to nothing and was silently dropped). hosts is the
+// reader's windows when the caller has read them; nil, and they are read here
+// — once, and only for a window key.
+func (s *Server) requestAsksFilter(r *http.Request, hosts func() []mirror.HostView) asksFilter {
+	if hosts == nil {
+		var hs []mirror.HostView
+		read := false
+		hosts = func() []mirror.HostView {
+			if !read && s.ext.Mirror != nil {
+				hs, read = s.ext.Mirror.Hosts(r.Context()), true
+			}
+			return hs
+		}
+	}
+	return s.parseAsksFilter(r.Context(), r.URL.Query(), hosts)
 }
 
 // parseAsksFilter is the filter q names, as ctx's principal: a known type, and
 // a source key — an agent's or a window's resolved as the viewer (an
 // unresolvable one is ignored: resolveAsker), an officer's or a session's
 // taken as written (it only ever narrows the reader's own items).
-func (s *Server) parseAsksFilter(ctx context.Context, q url.Values, hosts []mirror.HostView) asksFilter {
-	var f asksFilter
+func (s *Server) parseAsksFilter(ctx context.Context, q url.Values, hosts func() []mirror.HostView) asksFilter {
+	f := asksFilter{hosts: hosts}
 	switch t := q.Get(asksTypeParam); t {
 	case askTypeQuestion, askTypeConfirm, askTypeDraft, askTypeNotice:
 		f.typ = t
@@ -282,73 +346,70 @@ func (s *Server) parseAsksFilter(ctx context.Context, q url.Values, hosts []mirr
 		if !ok {
 			break
 		}
-		k, ok := s.resolveAsker(ctx, ref, func() []mirror.HostView { return hosts })
+		k, ok := s.resolveAsker(ctx, ref, hosts)
 		if !ok {
 			break
 		}
-		f.from, f.label = ref.key(), k.label
 		if ref.agent != "" {
-			f.agentID = k.agentID
+			// A session page's agent badge: the agent's chip (its id key).
+			f.from, f.label, f.agentID = askSourceAgentID+strconv.FormatInt(k.agentID, 10), k.label, k.agentID
 		} else {
-			f.window = &k
+			f.from, f.label, f.window = ref.key(), k.label, &k
 		}
-	case strings.HasPrefix(from, askSourceOfficer) && len(from) > len(askSourceOfficer):
-		f.from, f.label = from, ui.OfficerPlainName("", strings.TrimPrefix(from, askSourceOfficer))
-	case strings.HasPrefix(from, askSourceSession) && len(from) > len(askSourceSession):
-		f.from, f.label = from, strings.TrimPrefix(from, askSourceSession)
+	case strings.HasPrefix(from, askSourceOfficer):
+		owner, id, ok := strings.Cut(strings.TrimPrefix(from, askSourceOfficer), ":")
+		if n, err := strconv.ParseInt(owner, 10, 64); ok && err == nil && n > 0 && id != "" {
+			f.from, f.label = from, ui.OfficerPlainName("", id)
+		}
+	case strings.HasPrefix(from, askSourceAgentID):
+		if n, err := strconv.ParseInt(strings.TrimPrefix(from, askSourceAgentID), 10, 64); err == nil && n > 0 {
+			f.from, f.label, f.agentID = from, "Agent", n
+		}
+	case strings.HasPrefix(from, askSourceSession):
+		if _, name, ok := strings.Cut(strings.TrimPrefix(from, askSourceSession), ":"); ok && name != "" {
+			f.from, f.label = from, name
+		}
 	}
 	return f
 }
 
-// readAskSources is the render's askSources: the drafts given and each
-// step-up card's in items that is not among them, then the agents all of
-// them name — every read as the reader (row-level security: another
-// person's draft or agent is not found, and names nothing) — and officers'
-// names.
+// readAskSources is the render's askSources: the drafts given, and — in ONE
+// reader-scoped read that does not sweep (round 1, Y2: a DraftCard per draft
+// was a sweep, a write transaction, per draft per render) — the sources of
+// the drafts the items name that are not among them (a step-up card's, a
+// draft item's). Row-level security: another person's draft is absent, and
+// its card is then named by its own head.
 func (s *Server) readAskSources(ctx context.Context, drafts []plugins.DraftCard, items ...[]attentionItem) askSources {
-	x := askSources{agents: map[int64]agents.Agent{}, drafts: map[int64]plugins.Draft{}, officerName: s.officerDisplayName}
+	x := askSources{drafts: map[int64]draftSource{}, officerName: s.officerDisplayName}
 	for _, c := range drafts {
-		x.drafts[c.Draft.ID] = c.Draft
+		x.drafts[c.Draft.ID] = draftCardSource(c)
 	}
-	if s.ext.Plugins != nil {
-		missing := map[int64]bool{}
-		for _, list := range items {
-			for _, it := range list {
-				id := draftItemID(it)
-				if it.stepUp != nil && it.stepUp.DraftID > 0 {
-					id = it.stepUp.DraftID
-				}
-				if _, ok := x.drafts[id]; id > 0 && !ok && len(missing) < asksFilterDraftReads {
-					missing[id] = true
-				}
-			}
-		}
-		for id := range missing {
-			if c, err := s.ext.Plugins.DraftCard(ctx, id); err == nil {
-				x.drafts[id] = c.Draft
-			}
-		}
-	}
-	if s.ext.Agents == nil {
+	if s.ext.Plugins == nil {
 		return x
 	}
-	ids := map[int64]bool{}
-	for _, d := range x.drafts {
-		if d.AgentID != nil && *d.AgentID > 0 && d.Officer == nil {
-			ids[*d.AgentID] = true
-		}
-	}
+	var missing []int64
+	seen := map[int64]bool{}
 	for _, list := range items {
 		for _, it := range list {
-			if it.card.agentID > 0 {
-				ids[it.card.agentID] = true
+			id := draftItemID(it)
+			if it.stepUp != nil && it.stepUp.DraftID > 0 {
+				id = it.stepUp.DraftID
+			}
+			if _, ok := x.drafts[id]; id > 0 && !ok && !seen[id] && len(missing) < asksFilterDraftReads {
+				seen[id] = true
+				missing = append(missing, id)
 			}
 		}
 	}
-	for id := range ids {
-		if a, err := s.ext.Agents.Get(ctx, id); err == nil {
-			x.agents[id] = a
-		}
+	if len(missing) == 0 {
+		return x
+	}
+	got, err := s.ext.Plugins.DraftSources(ctx, missing)
+	if err != nil {
+		s.logger.Printf("asks: the filter's drafts: %v", err)
+	}
+	for _, d := range got {
+		x.drafts[d.ID] = draftSource{owner: d.OwnerID, officer: d.Officer, agentID: d.AgentID, agent: d.AgentName}
 	}
 	return x
 }
@@ -362,16 +423,14 @@ const asksFilterDraftReads = 50
 // Marketing's questions: what a tap on it would list.
 type asksChipCounts struct {
 	f       asksFilter
-	hosts   func() []mirror.HostView
 	types   map[string]int
 	sources map[string]int
 	labels  map[string]string
 	order   []string
 }
 
-func newAsksChipCounts(f asksFilter, hosts []mirror.HostView) *asksChipCounts {
-	return &asksChipCounts{f: f, hosts: func() []mirror.HostView { return hosts },
-		types: map[string]int{}, sources: map[string]int{}, labels: map[string]string{}}
+func newAsksChipCounts(f asksFilter) *asksChipCounts {
+	return &asksChipCounts{f: f, types: map[string]int{}, sources: map[string]int{}, labels: map[string]string{}}
 }
 
 // bySource is c's filter without its type; byType without its source.
@@ -396,7 +455,7 @@ func (c *asksChipCounts) add(typ string, src askOrigin, typeOK, sourceOK bool) {
 func (c *asksChipCounts) addItems(x askSources, items []attentionItem) {
 	bs, bt := c.bySource(), c.byType()
 	for _, it := range items {
-		c.add(itemType(it), x.ofItem(it), bs.keepItem(x, it, c.hosts), bt.keepItem(x, it, c.hosts))
+		c.add(itemType(it), x.ofItem(it), bs.keepItem(x, it), bt.keepItem(x, it))
 	}
 }
 
@@ -404,7 +463,8 @@ func (c *asksChipCounts) addItems(x askSources, items []attentionItem) {
 func (c *asksChipCounts) addDrafts(x askSources, cards []plugins.DraftCard) {
 	bs, bt := c.bySource(), c.byType()
 	for _, d := range cards {
-		c.add(askTypeDraft, x.ofDraft(d.Draft), bs.keepDraft(x, d.Draft), bt.keepDraft(x, d.Draft))
+		src := draftCardSource(d)
+		c.add(askTypeDraft, x.ofDraft(src), bs.keepDraft(x, src), bt.keepDraft(x, src))
 	}
 }
 
@@ -497,15 +557,14 @@ func asksFilterEmptyHTML(attrs string) string {
 
 // answeredFiltered is the Answered tab's feed over asks, f applied (items[i]
 // is asks[i] as an item).
-func answeredFiltered(asks []attention.Ask, items []attentionItem, f asksFilter, x askSources, hosts []mirror.HostView, now time.Time, proposals map[int64]bool) string {
+func answeredFiltered(asks []attention.Ask, items []attentionItem, f asksFilter, x askSources, now time.Time, proposals map[int64]bool) string {
 	if !f.on() {
 		return answeredFeedHTML(asks, items, now, proposals)
 	}
-	hs := func() []mirror.HostView { return hosts }
 	var ka []attention.Ask
 	var ki []attentionItem
 	for i, a := range asks {
-		if f.keepItem(x, items[i], hs) {
+		if f.keepItem(x, items[i]) {
 			ka, ki = append(ka, a), append(ki, items[i])
 		}
 	}
@@ -524,7 +583,7 @@ func searchFiltered(res asksSearchResult, f asksFilter, x askSources) asksSearch
 	out := res
 	out.asks = nil
 	for _, a := range res.asks {
-		if f.keepItem(x, searchItem(a), func() []mirror.HostView { return nil }) {
+		if f.keepItem(x, searchItem(a)) {
 			out.asks = append(out.asks, a)
 		}
 	}
@@ -541,17 +600,6 @@ func searchItem(a attention.Ask) attentionItem {
 		it.Kind = attentionKindNotice
 	}
 	return it
-}
-
-// draftsForFilter is the reader's drafts as the Drafts tab reads them (both
-// views), for naming the sources of a live list's items; nil without plugins
-// or on a read error (logged by readDraftViews).
-func (s *Server) draftsForFilter(ctx context.Context) []plugins.DraftCard {
-	if s.ext.Plugins == nil {
-		return nil
-	}
-	pending, archived, _ := s.readDraftViews(ctx, 0)
-	return append(pending, archived...)
 }
 
 // filteredSearch is res with f applied, its sources read as ctx's principal;

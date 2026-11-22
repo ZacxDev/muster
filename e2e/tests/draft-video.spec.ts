@@ -128,6 +128,9 @@ for (const vp of [
       else await thumb.click();
       await expect(page).toHaveURL(`${origin}/attention/asks/${card.ask}`);
       await expect(page.locator('[data-stepup-card] video[data-stepup-video]')).toBeVisible();
+      // The card's page opens at its top.
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => Math.round(window.scrollY)), 'the card page opened scrolled').toBe(0);
     });
   });
 }

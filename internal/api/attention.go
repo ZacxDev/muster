@@ -1749,7 +1749,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	rd := s.readAsks(r.Context()) // the render's one hub read (asksRead)
 	// THE FILTER (asks_filter.go): ?type= and ?from=, over every list below.
-	flt := s.parseAsksFilter(r.Context(), r.URL.Query(), rd.hosts)
+	flt := s.requestAsksFilter(r, func() []mirror.HostView { return rd.hosts })
 	if searching {
 		// Not when htmx restores a history entry it holds no copy of (Back to
 		// an address the typing set): Back draws the list it left, not the ask.
@@ -1793,7 +1793,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		// The count is THE ONE OPEN COUNT's rule over the filtered list
 		// (asksPendingOf: what waits on the reader — a team's ask a viewer
 		// watches is listed, not counted); no stalled rows here.
-		mine := flt.items(x, page, rd.hosts)
+		mine := flt.items(x, page)
 		feed, _ = askFeedHTML(mine, "", 0, now)
 		if len(mine) == 0 {
 			feed = asksFilterEmptyHTML("") + ui.AsksDraftsMarkerHTML(0)
@@ -1816,7 +1816,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// THE CHIPS (asks_filter.go), under the search box: counted over what the
 	// page shows — the search's results while it searches, else the Open,
 	// Answered and Drafts tabs.
-	counts := newAsksChipCounts(flt, rd.hosts)
+	counts := newAsksChipCounts(flt)
 	if searching {
 		counts.addItems(x, searchItems)
 		counts.addDrafts(x, found.drafts)
@@ -1847,7 +1847,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// The feed's notice: a card post refused after the card left the page.
 	b.WriteString(ui.AsksFeedNoticeHTML)
 	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
-	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + answeredFiltered(answeredAsks, answeredItems, flt, x, rd.hosts, now, proposals) + `</ul>`
+	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + answeredFiltered(answeredAsks, answeredItems, flt, x, now, proposals) + `</ul>`
 	// ALWAYS TABS (Open and Answered at least). The Log tab
 	// (ask_log_read.go) is drawn only with the ask log on.
 	if !draftsOK && problem == "" {
@@ -1933,10 +1933,10 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	now := s.now() // as renderAsksPage
 	// The filtered page's live list (?type=, ?from=, renderAsksPage): the
 	// same filter.
-	if flt := s.parseAsksFilter(r.Context(), r.URL.Query(), rd.hosts); flt.on() {
+	if flt := s.requestAsksFilter(r, func() []mirror.HostView { return rd.hosts }); flt.on() {
 		page, _, _ := s.asksPage(r.Context(), items, rd, now)
-		x := s.readAskSources(r.Context(), s.draftsForFilter(r.Context()), page)
-		mine := flt.items(x, page, rd.hosts)
+		x := s.readAskSources(r.Context(), nil, page)
+		mine := flt.items(x, page)
 		feed, _ := askFeedHTML(mine, "", 0, now)
 		if len(mine) == 0 {
 			feed = asksFilterEmptyHTML("") + ui.AsksDraftsMarkerHTML(0)
@@ -1952,14 +1952,14 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAttentionAnswered(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	flt := s.parseAsksFilter(r.Context(), r.URL.Query(), nil)
+	flt := s.requestAsksFilter(r, nil)
 	if !flt.on() {
 		_, _ = w.Write([]byte(s.answeredAsksNow(r.Context(), s.now())))
 		return
 	}
 	asks, items, proposals := s.recentAnswerItems(r.Context())
-	x := s.readAskSources(r.Context(), s.draftsForFilter(r.Context()), items)
-	_, _ = w.Write([]byte(answeredFiltered(asks, items, flt, x, nil, s.now(), proposals)))
+	x := s.readAskSources(r.Context(), nil, items)
+	_, _ = w.Write([]byte(answeredFiltered(asks, items, flt, x, s.now(), proposals)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {

@@ -371,7 +371,7 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The page's filter (asks_filter.go): the same lists it drew.
-	if flt := s.parseAsksFilter(r.Context(), r.URL.Query(), nil); flt.on() {
+	if flt := s.requestAsksFilter(r, nil); flt.on() {
 		x := s.readAskSources(r.Context(), append(append([]plugins.DraftCard{}, pending...), archived...))
 		pending, archived = flt.draftCards(x, pending), flt.draftCards(x, archived)
 	}
@@ -515,6 +515,12 @@ const asksPageScript = `<script>
         if (tab) window.muTabs.select(tab.closest('[data-tabs]'), tab, {});
       }
     }
+    // The tab the jump opened is the tab on screen now (shown), as a tap
+    // would make it: a later tap on the tab it left is a tab CHANGE (top of
+    // the page, the fragment dropped). The address names the tab; the jump
+    // keeps its fragment.
+    shown = selected('asks-tabs');
+    syncURL();
     el.scrollIntoView({ block: 'start' });
   }
   reveal();

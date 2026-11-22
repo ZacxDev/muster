@@ -63,7 +63,7 @@ const OWN = ['mkt_ask', 'mkt_ask2', 'mkt_stepup', 'mkt_answered', 'mkt_draft', '
   'session_ask', 'notice', 'other_mkt_ask', 'other_sales_ask', 'other_draft'];
 const mine = (got: number[]) => got.filter((id) => OWN.some((k) => ids[k] === id)).sort((a, b) => a - b);
 const sorted = (...n: number[]) => n.slice().sort((a, b) => a - b);
-const marketingChip = (page: Page) => page.locator('[data-asks-chips] a[data-asks-chip="from"][data-asks-chip-key="officer:marketing:acme"]');
+const marketingChip = (page: Page) => page.locator('[data-asks-chips] a[data-asks-chip="from"][data-asks-chip-key="officer:1:marketing:acme"]');
 
 for (const vp of [
   { name: 'phone 390×844', js: true, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
@@ -88,10 +88,10 @@ for (const vp of [
       await expect(chip.locator('span').first()).toHaveText('Marketing — Acme');
       // The busiest source comes first: the session whose release notes fill
       // the feed; the marketing officer is inline too, not under More.
-      await expect(row.locator('a[data-asks-chip="from"]').first()).toHaveAttribute('data-asks-chip-key', 'session:Release notes');
-      await expect(row.locator('[data-asks-chips-more] [data-asks-chip-key="officer:marketing:acme"]')).toHaveCount(0);
+      await expect(row.locator('a[data-asks-chip="from"]').first()).toHaveAttribute('data-asks-chip-key', 'session:ws-filters:Release notes');
+      await expect(row.locator('[data-asks-chips-more] [data-asks-chip-key="officer:1:marketing:acme"]')).toHaveCount(0);
       // No other owner's officer is a chip, anywhere on the page.
-      await expect(page.locator('[data-asks-chip-key="officer:sales:zeta"]')).toHaveCount(0);
+      await expect(page.locator('[data-asks-chip-key$=":sales:zeta"]')).toHaveCount(0);
       await expect(page.locator('body')).not.toContainText('OTHER OWNER');
       const allOpen = mine(await listed(page, '#attention-items', 'ask-'));
       expect(allOpen.length, 'control: the unfiltered Open tab lists the other sources too').toBeGreaterThan(3);
@@ -99,7 +99,7 @@ for (const vp of [
       // ONE TAP.
       if (vp.use.hasTouch) await chip.tap();
       else await chip.click();
-      await expect(page).toHaveURL(/[?&]from=officer%3Amarketing%3Aacme/);
+      await expect(page).toHaveURL(/[?&]from=officer%3A1%3Amarketing%3Aacme/);
       await expect(marketingChip(page)).toHaveAttribute('aria-current', 'true');
       expect(mine(await listed(page, '#attention-items', 'ask-')), 'Open').toEqual(sorted(ids.mkt_ask, ids.mkt_ask2, ids.mkt_stepup));
       expect(mine(await listed(page, '#attention-answered', 'answered-')), 'Answered').toEqual([ids.mkt_answered]);
@@ -113,18 +113,18 @@ for (const vp of [
       expect(mine(await listed(page, '#attention-items', 'ask-'))).toEqual(allOpen);
       // Back is the filtered page again.
       await page.goBack();
-      await expect(page).toHaveURL(/[?&]from=officer%3Amarketing%3Aacme/);
+      await expect(page).toHaveURL(/[?&]from=officer%3A1%3Amarketing%3Aacme/);
       expect(mine(await listed(page, '#attention-items', 'ask-')), 'Back').toEqual(sorted(ids.mkt_ask, ids.mkt_ask2, ids.mkt_stepup));
     });
 
     test('a type chip and a source chip together, and Clear', async ({ page }) => {
       await signIn(page, origin);
-      await page.goto(origin + '/attention?from=officer%3Amarketing%3Aacme');
+      await page.goto(origin + '/attention?from=officer%3A1%3Amarketing%3Aacme');
       const confirmations = page.locator('[data-asks-chips] a[data-asks-chip="type"][data-asks-chip-key="confirmation"]');
       if (vp.use.hasTouch) await confirmations.tap();
       else await confirmations.click();
       await expect(page).toHaveURL(/type=confirmation/);
-      await expect(page).toHaveURL(/from=officer%3Amarketing%3Aacme/);
+      await expect(page).toHaveURL(/from=officer%3A1%3Amarketing%3Aacme/);
       expect(mine(await listed(page, '#attention-items', 'ask-'))).toEqual([ids.mkt_stepup]);
       await page.locator('[data-asks-chips-clear]').click();
       await expect(page).toHaveURL(origin + '/attention');

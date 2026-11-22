@@ -212,10 +212,13 @@ func TestTheAsksPageFilterListsOnlyTheNamedSessionsAsks(t *testing.T) {
 		key   string
 		label string
 		want  []int64
+		// live is the key the page's live list re-reads with: an agent's
+		// badge key lands on its chip's own (asks_filter.go, agentid:<id>).
+		live string
 	}{
-		{"agent:" + f.op.Name, f.op.Name, []int64{a1, a2}},
-		{"agent:" + f.op2.Name, f.op2.Name, []int64{b1}},
-		{"window:ws:@1:main", "", []int64{w1}},
+		{"agent:" + f.op.Name, f.op.Name, []int64{a1, a2}, "agentid:" + strconv.FormatInt(f.op.ID, 10)},
+		{"agent:" + f.op2.Name, f.op2.Name, []int64{b1}, "agentid:" + strconv.FormatInt(f.op2.ID, 10)},
+		{"window:ws:@1:main", "", []int64{w1}, "window:ws:@1:main"},
 	} {
 		q := "?from=" + url.QueryEscape(c.key)
 		page := f.page(t, "/attention"+q)
@@ -234,7 +237,7 @@ func TestTheAsksPageFilterListsOnlyTheNamedSessionsAsks(t *testing.T) {
 		// keeps the line saying so, with Show all.
 		if strings.HasPrefix(c.key, askerKeyAgent) {
 			chip := activeSourceChip(page)
-			if !strings.Contains(chip, `data-asks-chip-key="`+c.key+`"`) || !strings.Contains(chip, ">"+c.label+"</span>") || !strings.Contains(page, `href="/attention" class="`+ui.AsksChipsClearClass+`" data-asks-chips-clear>Clear</a>`) {
+			if !strings.Contains(chip, `data-asks-chip-key="`+c.live+`"`) || !strings.Contains(chip, ">"+c.label+"</span>") || !strings.Contains(page, `href="/attention" class="`+ui.AsksChipsClearClass+`" data-asks-chips-clear>Clear</a>`) {
 				t.Errorf("%s: the active source chip: %q", c.key, chip)
 			}
 		} else {
@@ -247,7 +250,7 @@ func TestTheAsksPageFilterListsOnlyTheNamedSessionsAsks(t *testing.T) {
 			}
 		}
 		// The page's live list re-reads the filtered list.
-		if !strings.Contains(page, strconv.Quote("/attention/items"+q)) {
+		if !strings.Contains(page, strconv.Quote("/attention/items?from="+url.QueryEscape(c.live))) {
 			t.Errorf("%s: the live list does not keep the filter", c.key)
 		}
 		// The open count is the filtered list's.

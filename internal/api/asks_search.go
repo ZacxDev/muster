@@ -329,17 +329,12 @@ func asksSearchLive(r *http.Request) bool {
 func (s *Server) writeAsksSearchLive(w http.ResponseWriter, r *http.Request) {
 	raw, q, ok := asksSearchRequest(r)
 	// The filter (asks_filter.go) narrows the results and stays in the address.
-	flt := s.parseAsksFilter(r.Context(), r.URL.Query(), nil)
+	flt := s.requestAsksFilter(r, nil)
 	v := url.Values{}
 	if ok {
 		v.Set(asksSearchParam, raw)
 	}
-	if flt.typ != "" {
-		v.Set(asksTypeParam, flt.typ)
-	}
-	if flt.from != "" {
-		v.Set(askerFromParam, flt.from)
-	}
+	flt.into(v)
 	to := attentionPath
 	if len(v) > 0 {
 		to += "?" + v.Encode()

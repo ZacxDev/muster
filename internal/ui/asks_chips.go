@@ -4,6 +4,8 @@ import (
 	"html"
 	"strconv"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // THE ASKS PAGE'S FILTER CHIPS (internal/api asks_filter.go): one row under
@@ -61,7 +63,8 @@ const (
 // AsksChipsMoreLabel is the disclosure's words.
 const AsksChipsMoreLabel = "More"
 
-// asksChipHTML is one chip as its link.
+// asksChipHTML is one chip as its link. Its label is a name — an officer's,
+// an agent's, a session's — so it is plained (textplain.Title) like every title.
 func asksChipHTML(c AsksChip, kind string) string {
 	esc := html.EscapeString
 	cls, cur := AsksChipClass+" "+AsksChipIdleClass, ""
@@ -73,7 +76,7 @@ func asksChipHTML(c AsksChip, kind string) string {
 		count = `<span class="` + AsksChipCountClass + `" data-asks-chip-count>` + strconv.Itoa(c.Count) + `</span>`
 	}
 	return `<a href="` + esc(c.Href) + `" class="` + cls + `"` + cur + ` data-asks-chip="` + kind + `" data-asks-chip-key="` + esc(c.Key) + `">` +
-		`<span class="` + AsksChipLabelClass + `">` + esc(c.Label) + `</span>` + count + `</a>`
+		`<span class="` + AsksChipLabelClass + `">` + esc(textplain.Title(c.Label)) + `</span>` + count + `</a>`
 }
 
 // AsksChipsHTML is the chip row, "" when it has no chip at all.

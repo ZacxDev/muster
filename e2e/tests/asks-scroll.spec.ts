@@ -162,6 +162,16 @@ for (const vp of [
       const top = await page.locator(`[id="${deep}"]`).evaluate((e) => Math.round(e.getBoundingClientRect().top));
       expect(top, 'the card is at the top of the screen').toBeGreaterThanOrEqual(0);
       expect(top, 'the card is at the top of the screen').toBeLessThan(160);
+      // A jump INTO another tab (#ask-N on ?tab=answered opens Open): the tab
+      // it opened is the tab on screen, so a tap back to Answered is a tab
+      // change — the top of the page, the fragment dropped.
+      await page.goto(origin + `/attention?tab=answered#${deep}`);
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
+      expect(await settledY(page), 'the jump scrolled to its card').toBeGreaterThan(400);
+      await page.locator('#asks-tabs-tab-answered').click();
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
+      expect(await settledY(page), 'the tap back landed part-way down').toBe(0);
+      expect(await page.evaluate(() => location.hash), 'the tap back kept the fragment').toBe('');
       // A search for a draft's id goes to its card on the Drafts tab (the
       // agent's reply draft: no step-up card names it, so the id finds one
       // thing).

@@ -783,6 +783,41 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
+// DraftSource is who raised a draft, as the Asks page's filter chips name
+// it: its owner, its officer ("" for none), its drafting agent and the agent
+// name it stored.
+type DraftSource struct {
+	ID, OwnerID int64
+	Officer     string
+	AgentID     int64
+	AgentName   string
+}
+
+// DraftSources reads the sources of the drafts ids names, as ctx's principal
+// (row-level security: another owner's draft is simply absent), in ONE
+// SELECT. 🔴 IT DOES NOT SWEEP: the Asks page calls it on every render, and a
+// sweep is a write transaction.
+func (s *PGStore) DraftSources(ctx context.Context, ids []int64) ([]DraftSource, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, owner_id, coalesce(officer, ''), coalesce(agent_id, 0), agent_name
+		  FROM plugin_reply_drafts WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DraftSource
+	for rows.Next() {
+		var d DraftSource
+		if err := rows.Scan(&d.ID, &d.OwnerID, &d.Officer, &d.AgentID, &d.AgentName); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // SearchDraftCards is the Asks page's search box over drafts: the draft with
 // id draftID (0: none), or the caller's OWN drafts whose text contains text
 // ("" none: case-insensitive, a plain substring — % _ and \ are themselves)
