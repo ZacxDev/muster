@@ -181,6 +181,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		SignInRequests:  stubSignInRequests{},
 		AllowPINKeys:    true,
 		AssetLinks:      []byte(`[]`),
+		AndroidPackage:  "org.example.musterapp",
 		SSOOrigins:      []string{"https://auth.example.test"},
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
