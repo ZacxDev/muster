@@ -206,8 +206,8 @@ var tablesWithNoIdentityColumn = []string{
 	// instance_branding is keyed by `singleton` (always true): one row for the
 	// whole server (0105), so there is nothing for an identity to number.
 	"instance_branding",
-	// plugin_server_pairs is keyed by (low_id, high_id): one row per linked
-	// pair of server apps (0178), for the agent_retired_names reason.
+	// plugin_server_pairs is keyed by plugin_id: one row per linked server
+	// app, naming its partner (0178), for the push_preferences reason.
 	"plugin_server_pairs",
 	// plugin_threads is keyed by (owner_id, thread): a thread is bound once
 	// (0054), for the agent_retired_names reason.

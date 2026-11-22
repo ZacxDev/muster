@@ -43,13 +43,17 @@ func TestOneFunctionChoosesASubject(t *testing.T) {
 // TestThePairsTableIsReadOnlyUnderTheSystem: every SQL literal naming
 // plugin_server_pairs is in one of the listed functions, and each of those
 // either calls authz.System itself or is handed a System transaction by a
-// caller that does (subjectFor by the redeem and Hide, alreadyPaired by
-// LinkServerApps). The table's only policy is scope_all, so a read under any
+// caller that does (subjectFor by the redeem and Hide, linkAtInstall by
+// InstallServerApp). The table's only policy is scope_all, so a read under any
 // other principal sees nothing (TestLinkRefusals reads it as a person).
 func TestThePairsTableIsReadOnlyUnderTheSystem(t *testing.T) {
-	sites, system := map[string]bool{}, map[string]bool{}
+	sites, system, linkers := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	moduleFuncs(t, func(site string, n ast.Node) {
 		switch x := n.(type) {
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "linkAtInstall" {
+				linkers[site] = true
+			}
 		case *ast.BasicLit:
 			if x.Kind == token.STRING && strings.Contains(x.Value, "plugin_server_pairs") {
 				sites[site] = true
@@ -61,18 +65,22 @@ func TestThePairsTableIsReadOnlyUnderTheSystem(t *testing.T) {
 		}
 	})
 	want := []string{
-		"internal/plugins PGStore.LinkServerApps",
 		"internal/plugins PGStore.UninstallServerApp",
 		"internal/plugins PGStore.UnlinkServerApp",
-		"internal/plugins PGStore.alreadyPaired",
 		"internal/plugins PGStore.serverPairs",
+		"internal/plugins linkAtInstall",
 		"internal/plugins subjectFor",
 	}
 	got := setOf(sites)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("functions spelling plugin_server_pairs:\n got %v\nwant %v", got, want)
 	}
-	handed := map[string]bool{"internal/plugins subjectFor": true, "internal/plugins PGStore.alreadyPaired": true}
+	handed := map[string]bool{"internal/plugins subjectFor": true, "internal/plugins linkAtInstall": true}
+	// linkAtInstall is handed the install's System transaction, by the
+	// install alone: a pair is made nowhere else.
+	if got := setOf(linkers); strings.Join(got, ",") != "internal/plugins PGStore.InstallServerApp" {
+		t.Errorf("callers of linkAtInstall: %v; want only internal/plugins PGStore.InstallServerApp", got)
+	}
 	for _, s := range got {
 		if !system[s] && !handed[s] {
 			t.Errorf("%s spells plugin_server_pairs but never calls authz.System", s)

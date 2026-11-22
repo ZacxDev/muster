@@ -387,9 +387,11 @@ var wantForeignKeys = []string{
 	"plugin_server_tasks|plugin_server_tasks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"plugin_server_tasks|plugin_server_tasks_plugin_id_fkey|FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE",
 	"plugin_server_tasks|plugin_server_tasks_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
-	// 0178: a linked pair of server apps names its two apps (no owner).
-	"plugin_server_pairs|plugin_server_pairs_high_id_fkey|FOREIGN KEY (high_id) REFERENCES plugins(id) ON DELETE CASCADE",
-	"plugin_server_pairs|plugin_server_pairs_low_id_fkey|FOREIGN KEY (low_id) REFERENCES plugins(id) ON DELETE CASCADE",
+	// 0178: a linked pair of server apps, one row per app (no owner): each
+	// app, its partner, and the row's mirror.
+	"plugin_server_pairs|plugin_server_pairs_mutual|FOREIGN KEY (partner_id, plugin_id) REFERENCES plugin_server_pairs(plugin_id, partner_id) ON DELETE CASCADE",
+	"plugin_server_pairs|plugin_server_pairs_partner_id_fkey|FOREIGN KEY (partner_id) REFERENCES plugins(id) ON DELETE CASCADE",
+	"plugin_server_pairs|plugin_server_pairs_plugin_id_fkey|FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE",
 	"plugin_chief_instructions|plugin_chief_instructions_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	// 0107: a rule is its owner's, for one of their plugins; the telemetry
 	// rows name nothing but their owner (a row outlives what it counted).

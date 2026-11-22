@@ -377,6 +377,11 @@ type ServerAppIn struct {
 	// Tasks adds CapTasks ("Files tasks"). No other capability is offered: a
 	// server app has no person's chief to act on.
 	Tasks bool
+	// LinkTo, when not 0, is a live server app the new one is LINKED to
+	// (server_pairs.go linkAtInstall), in the install's own transaction: the
+	// two then know each person by one subject. The command line's
+	// `app install --link-to` only.
+	LinkTo int64
 }
 
 // serverAppActor is the audit actor and installed_by of a server-app write:
@@ -393,9 +398,11 @@ func serverAppActor(by users.Actor) (installedBy *int64, via string) {
 
 // InstallServerApp installs a server app and returns its token ONCE. Under
 // authz.System (the row has no owner), serialised by an advisory lock so two
-// installs cannot both see MaxServerApps-1. Audited plugin.server.installed
-// as by. The caller gates who may install (an admin with a fresh step-up, or
-// the command line).
+// installs cannot both see MaxServerApps-1. With in.LinkTo the new app is
+// linked to that app in the same transaction (linkAtInstall): a refused link
+// installs nothing. Audited plugin.server.installed as by (with linked_to).
+// The caller gates who may install (an admin with a fresh step-up, or the
+// command line).
 func (s *PGStore) InstallServerApp(ctx context.Context, in ServerAppIn, by users.Actor) (string, Plugin, error) {
 	label := strings.TrimSpace(in.AppLabel)
 	if err := ValidName(in.Name); err != nil {
@@ -453,7 +460,14 @@ func (s *PGStore) InstallServerApp(ctx context.Context, in ServerAppIn, by users
 		if err := sp.Commit(sys); err != nil {
 			return err
 		}
-		return users.AuditTx(sys, tx, by, "plugin.server.installed", Object(p.ID), serverAppDetail(p))
+		detail := serverAppDetail(p)
+		if in.LinkTo != 0 {
+			if err := linkAtInstall(sys, tx, p.ID, in.LinkTo); err != nil {
+				return err
+			}
+			detail["linked_to"] = in.LinkTo
+		}
+		return users.AuditTx(sys, tx, by, "plugin.server.installed", Object(p.ID), detail)
 	})
 	if err != nil {
 		return "", Plugin{}, err
@@ -508,8 +522,9 @@ func (s *PGStore) RotateServerApp(ctx context.Context, id int64, by users.Actor)
 // TRANSACTION, deletes its grants (plugin_server_users), its task ledger
 // (plugin_server_tasks: the tasks themselves stay in each person's list, with
 // the comments the app wrote), its unspent codes and its linked pair
-// (plugin_server_pairs: the partner keeps its subjects and is linked to
-// nothing; a reinstall is a new id with no pair until an admin links it). Revocation is an UPDATE,
+// (plugin_server_pairs: one DELETE, the mutual key cascading to the mirror;
+// the partner keeps its subjects and is linked to nothing, and a reinstall
+// is a new id, linked only if installed --link-to). Revocation is an UPDATE,
 // so these deletes are explicit: the ON DELETE CASCADE foreign keys fire only
 // if the row itself is ever deleted. From then on the token is 401 on every
 // route. Uninstall is FINAL (fork 7): a reinstall is a new row with new
@@ -533,7 +548,7 @@ func (s *PGStore) UninstallServerApp(ctx context.Context, id int64, by users.Act
 			`DELETE FROM plugin_server_users WHERE plugin_id = $1`,
 			`DELETE FROM plugin_server_tasks WHERE plugin_id = $1`,
 			`DELETE FROM plugin_handoffs WHERE server_plugin_id = $1 AND redeemed_at IS NULL`,
-			`DELETE FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`,
+			`DELETE FROM plugin_server_pairs WHERE plugin_id = $1`,
 		} {
 			if _, err := tx.Exec(sys, q, id); err != nil {
 				return err
@@ -565,16 +580,13 @@ func (s *PGStore) SetServerAppHidden(ctx context.Context, id int64, hidden bool,
 	sys := authz.System(ctx)
 	changed := false
 	err := s.inTx(sys, func(tx pgx.Tx) error {
-		// The app row is held FOR SHARE, as the redeem holds it, so a link
-		// (FOR UPDATE) racing this Hide waits for it, or wins first and this
-		// Hide's subjectFor sees the pair.
-		var held int64
-		switch err := tx.QueryRow(sys, `SELECT id FROM plugins WHERE id = $1 AND scope = 'server' AND revoked_at IS NULL FOR SHARE`,
-			id).Scan(&held); {
-		case errors.Is(err, pgx.ErrNoRows):
-			return ErrNotFound
-		case err != nil:
+		var live bool
+		if err := tx.QueryRow(sys, `SELECT EXISTS (SELECT 1 FROM plugins WHERE id = $1 AND scope = 'server' AND revoked_at IS NULL)`,
+			id).Scan(&live); err != nil {
 			return err
+		}
+		if !live {
+			return ErrNotFound
 		}
 		var tag pgconn.CommandTag
 		var err error

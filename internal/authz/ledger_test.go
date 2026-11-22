@@ -356,10 +356,9 @@ var (
 		"internal/plugins.(*PGStore).VisibleServerApps",
 		"internal/plugins.(*PGStore).AccountServerApps",
 		// LINKED SERVER APPS (migration 0178): plugin_server_pairs has no
-		// owner either (forced RLS, scope_all only). The command line's link
-		// and unlink (both plugins rows held FOR UPDATE, audited as the
-		// actor), and the pairs read the two lists above show.
-		"internal/plugins.(*PGStore).LinkServerApps",
+		// owner either (forced RLS, scope_all only). The command line's
+		// unlink (audited as the actor; the link itself is made inside
+		// InstallServerApp), and the pairs read the two lists above show.
 		"internal/plugins.(*PGStore).UnlinkServerApp",
 		"internal/plugins.(*PGStore).serverPairs",
 		// The machine job API (migration 0037): the reaper that fails every

@@ -304,9 +304,9 @@ gone.
   same as the admin page. A running server notices within 10 seconds for open
   streams and within 30 seconds for new requests. `muster-server app
   install|rotate|uninstall|list` is the counterpart of `/admin/apps` for the
-  server-installed apps ([plugins.md](plugins.md#server-apps)), and `muster-server app
-  link|unlink` [links two of them](plugins.md#linked-server-apps), which only
-  the command line can do.
+  server-installed apps ([plugins.md](plugins.md#server-apps)), and `app install
+  --link-to` and `app unlink` [link two of them](plugins.md#linked-server-apps),
+  which only the command line can do.
 - **Data is per user.** Every user-data row has an `owner_id`, enforced by
   Postgres row-level security (see [schema.md](schema.md)). Each user has their
   own tasks, agents and tokens, and on Kubernetes their own chief (the Compose
@@ -927,8 +927,9 @@ routing-rule writes) holds for it too (`authz.IsPluginVia`).
   rotate ends it at once.
 - **A linked pair** ([plugins.md](plugins.md#linked-server-apps)) shares one
   subject per person between two server apps, so the two can join their own
-  records. Only an admin can make one, with `muster-server app link` (there
-  is no route for it, so no token or person can make or undo one), and each
+  records. Only an admin can make one, by installing an app with `muster-server
+  app install --link-to` (there is no route for it, so no token or person can
+  make or undo one), and only for an app that knows nobody yet, and each
   person it affects is told so on **Account → Apps**. It widens nothing a
   token can do: the grant, the act-for door, `owners/check`, the knock caps
   and the task ledger stay keyed on the token's own app, so a token acting

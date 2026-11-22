@@ -332,7 +332,7 @@ muster asks log --kind plain_text --answered-by owner --since 7d | jq -r '.asks[
 
 | binary | what it is |
 |---|---|
-| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token create <host> --team <id>` (a team host token, audited in the team's log; [mirroring.md](mirroring.md#team-hosts)), `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`, `app install|rotate|uninstall|list` ([server apps](plugins.md#server-apps)), `app link <source id> <adopter id>` and `app unlink <id>` ([linked server apps](plugins.md#linked-server-apps)). |
+| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token create <host> --team <id>` (a team host token, audited in the team's log; [mirroring.md](mirroring.md#team-hosts)), `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`, `app install|rotate|uninstall|list` ([server apps](plugins.md#server-apps)), `app install … --link-to <id>` and `app unlink <id>` ([linked server apps](plugins.md#linked-server-apps)). |
 | `muster-migrate` | Applies the schema to `DATABASE_URL`. The server also migrates itself at boot. `--rls-off` and `--rls-on` are the row-level-security rollback tools ([schema.md](schema.md)). |
 | `muster-mirror` | The host agent for [mirrored sessions](mirroring.md). |
 | `ccd` | The supervisor inside the `claude-code` agent image ([provisioner.md](provisioner.md)). |

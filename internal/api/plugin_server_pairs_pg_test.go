@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -26,30 +25,31 @@ import (
 // srvLabel and from every other.
 
 // installLabelled installs a server app named name (+ the fixture's suffix)
-// with tab label label: no Files tasks.
+// with tab label label: no Files tasks, linked to nothing.
 func (f *srvFix) installLabelled(name, label string) (string, plugins.Plugin) {
 	f.t.Helper()
-	tok, p, err := f.store.InstallServerApp(f.sys(), plugins.ServerAppIn{Name: name + "-" + f.suffix, AppLabel: label, AppIcon: "book",
-		Origin: hoZone, EntryURL: hoEntry, Origins: f.pats}, users.Actor{UserID: f.admin, Via: authz.ViaSession})
+	return f.installLinked(name, label, 0)
+}
+
+// installLinked installs it LINKED to server app linkTo (0: to nothing), as
+// `app install --link-to` does, failing the test on an error.
+func (f *srvFix) installLinked(name, label string, linkTo int64) (string, plugins.Plugin) {
+	f.t.Helper()
+	tok, p, err := f.tryInstall(name, label, linkTo)
 	if err != nil {
 		f.t.Fatalf("install %s: %v", name, err)
 	}
-	f.appIDs = append(f.appIDs, p.ID)
 	return tok, p
 }
 
-// link links source to adopter as the command line does, failing the test on
-// an error.
-func (f *srvFix) link(source, adopter int64) plugins.ServerPair {
-	f.t.Helper()
-	pair, err := f.store.LinkServerApps(context.Background(), source, adopter, users.Actor{Via: "cli"})
-	if err != nil {
-		f.t.Fatalf("link %d -> %d: %v", source, adopter, err)
+func (f *srvFix) tryInstall(name, label string, linkTo int64) (string, plugins.Plugin, error) {
+	tok, p, err := f.store.InstallServerApp(f.sys(), plugins.ServerAppIn{Name: name + "-" + f.suffix, AppLabel: label, AppIcon: "book",
+		Origin: hoZone, EntryURL: hoEntry, Origins: f.pats, LinkTo: linkTo}, users.Actor{Via: "cli"})
+	if err == nil {
+		f.appIDs = append(f.appIDs, p.ID)
+		f.t.Cleanup(func() { _, _ = f.pool.Exec(f.sys(), `DELETE FROM plugin_server_pairs WHERE plugin_id = $1`, p.ID) })
 	}
-	f.t.Cleanup(func() {
-		_, _ = f.pool.Exec(f.sys(), `DELETE FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`, source)
-	})
-	return pair
+	return tok, p, err
 }
 
 // subjectOf is uid's plugin_server_users subject under app, or "" with none.
@@ -81,6 +81,20 @@ func (f *srvFix) grantRows(app int64) []string {
 	return out
 }
 
+// pairOf is app's partner in plugin_server_pairs, 0 with none.
+func (f *srvFix) pairOf(app int64) int64 {
+	f.t.Helper()
+	var partner int64
+	err := f.pool.QueryRow(f.sys(), `SELECT partner_id FROM plugin_server_pairs WHERE plugin_id = $1`, app).Scan(&partner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0
+	}
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return partner
+}
+
 // TestUnlinkedServerAppsStayPairwise is an INVARIANT GUARD (it pins today's
 // behaviour; no bug ever violated it): two unlinked server apps, three people
 // who each open both, in both orders, and each person has a different subject
@@ -109,15 +123,18 @@ func TestUnlinkedServerAppsStayPairwise(t *testing.T) {
 	}
 }
 
-// TestALinkedPairKnowsEachPersonByOneSubject: A opens the source first and
-// then the adopter; B opens the adopter first and then the source (the
-// subject the ADOPTER drew is what the source gets); C opens only the
-// adopter, then the source. Each person has one subject under both apps, and
-// the three people's subjects are pairwise distinct.
+// TestALinkedPairKnowsEachPersonByOneSubject: the adopter is installed
+// --link-to the source. A opens the source first and then the adopter; B
+// opens the adopter first and then the source (the subject the ADOPTER drew
+// is what the source gets); C likewise. Each person has one subject under
+// both apps, and the three people's subjects are pairwise distinct.
 func TestALinkedPairKnowsEachPersonByOneSubject(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, contacts.ID)
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
+	if f.pairOf(contacts.ID) != f.app.ID || f.pairOf(f.app.ID) != contacts.ID {
+		t.Fatalf("install --link-to: pairs %d -> %d and %d -> %d; want each the other",
+			contacts.ID, f.pairOf(contacts.ID), f.app.ID, f.pairOf(f.app.ID))
+	}
 	c := f.person("Cyra Tamsin", "member", "")
 
 	aSrc := f.open(f.a, f.app.ID, f.tok)
@@ -137,123 +154,95 @@ func TestALinkedPairKnowsEachPersonByOneSubject(t *testing.T) {
 	if aSrc == bSrc || aSrc == cSrc || bSrc == cSrc {
 		t.Errorf("linked: three people's subjects %s %s %s are not pairwise distinct", aSrc, bSrc, cSrc)
 	}
-	// A second open keeps the subject (the row is there; the upsert keeps it).
 	if again := f.open(f.b, contacts.ID, tokC); again != bAdo {
 		t.Errorf("linked: B's second open of the adopter answered %s; want %s", again, bAdo)
 	}
 }
 
-// TestALinkKeepsTheSourcesSubjects: A and B are known to the source before the
-// link. The link writes no plugin_server_users row (the adopter has none right
-// after it), and after a redeem on the adopter the adopter answers A the
-// source's existing subject, while every one of the source's rows is
-// BYTE FOR BYTE what it was before the link (rows compared, not counted).
+// TestALinkKeepsTheSourcesSubjects: A and B are known to the source before an
+// app is installed linked to it. The install writes no plugin_server_users
+// row for the new app, and after a redeem on it the new app answers A the
+// source's existing subject, while every one of the source's rows is BYTE FOR
+// BYTE what it was before (rows compared, not counted).
 func TestALinkKeepsTheSourcesSubjects(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
 	aSrc := f.open(f.a, f.app.ID, f.tok)
 	f.open(f.b, f.app.ID, f.tok)
 	before := f.grantRows(f.app.ID)
 	if len(before) != 2 {
 		t.Fatalf("control: the source has %d rows; want A's and B's", len(before))
 	}
-	pair := f.link(f.app.ID, contacts.ID)
-	if pair.Known != 2 || pair.Source.ID != f.app.ID || pair.Adopter.ID != contacts.ID {
-		t.Errorf("the link answered %d known, source %d, adopter %d; want 2, %d, %d", pair.Known, pair.Source.ID, pair.Adopter.ID, f.app.ID, contacts.ID)
-	}
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	if rows := f.grantRows(contacts.ID); len(rows) != 0 {
-		t.Errorf("the source's subjects are kept: right after the link the adopter has rows %v; want none (a link writes no grant)", rows)
+		t.Errorf("the source's subjects are kept: right after the install the new app has rows %v; want none", rows)
 	}
 	if got := f.open(f.a, contacts.ID, tokC); got != aSrc {
-		t.Errorf("the source's subjects are kept: the adopter answered A %s; want the source's existing %s", got, aSrc)
+		t.Errorf("the source's subjects are kept: the new app answered A %s; want the source's existing %s", got, aSrc)
 	}
 	if after := f.grantRows(f.app.ID); strings.Join(after, "\n") != strings.Join(before, "\n") {
-		t.Errorf("the source's subjects are kept: the source's rows changed across the link and an adopter redeem:\nbefore %v\nafter  %v", before, after)
+		t.Errorf("the source's subjects are kept: the source's rows changed across the install and a redeem:\nbefore %v\nafter  %v", before, after)
 	}
 }
 
-// TestLinkRefusals: each refusal with its own words, and nothing linked by
-// any of them: the adopter already knows someone; the source, then the
-// adopter, uninstalled; a personal plugin on either side; an app linked to
-// itself; an unknown id; and an app already in a pair, in every column it can
-// collide in (the low index, the high index, and the other column of another
-// row, the trigger).
-func TestLinkRefusals(t *testing.T) {
+// TestInstallLinkToRefusalsInstallNothing: install --link-to is refused, each
+// with its own words, for an unknown id, a personal plugin, an uninstalled
+// app, and an app already in a pair; and 🔴 EACH REFUSAL IS ATOMIC: neither
+// the new app's row (by its name, revoked or not) nor any pair row is left.
+// Then the table, under a person's principal, shows nothing.
+func TestInstallLinkToRefusalsInstallNothing(t *testing.T) {
 	f := newSrvFix(t)
-	// Ids in install order: f.app < p1 < p2 < p3.
-	_, p1 := f.installLabelled("srv-one", "Quartz Ledger")
-	_, p2 := f.installLabelled("srv-two", "Cobalt Atlas")
-	_, p3 := f.installLabelled("srv-three", "Ember Index")
-	refuse := func(name string, source, adopter int64, want string) {
+	refuse := func(name string, linkTo int64, want string) {
 		t.Helper()
-		_, err := f.store.LinkServerApps(context.Background(), source, adopter, users.Actor{Via: "cli"})
+		_, _, err := f.tryInstall("srv-refused", "Ember Index", linkTo)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("refusals: %s: %v; want %q", name, err, want)
 		}
+		if n := f.count(`SELECT count(*) FROM plugins WHERE name = $1`, "srv-refused-"+f.suffix); n != 0 {
+			t.Errorf("install --link-to is atomic: %s left %d app row(s)", name, n)
+		}
 	}
 	pairs := func() int {
-		return f.count(`SELECT count(*) FROM plugin_server_pairs WHERE low_id = ANY($1) OR high_id = ANY($1)`, f.appIDs)
+		return f.count(`SELECT count(*) FROM plugin_server_pairs WHERE plugin_id = ANY($1) OR partner_id = ANY($1)`, f.appIDs)
 	}
 
-	// The adopter already knows someone: a hidden-only row counts too.
-	if _, err := f.store.SetServerAppHidden(srvAs(f.b), p1.ID, true, f.now); err != nil {
-		t.Fatal(err)
-	}
-	refuse("adopter already knows someone", f.app.ID, p1.ID,
-		"Quartz Ledger already knows 1 people; uninstall and reinstall it, or link it before anyone opens it")
-	f.exec(`DELETE FROM plugin_server_users WHERE plugin_id = $1`, p1.ID)
-
-	refuse("self-link", p1.ID, p1.ID, "an app cannot be linked to itself")
-	refuse("an unknown id", f.app.ID, 999999999, "there is no app 999999999")
-
+	refuse("an unknown id", 999999999, "there is no app 999999999 to link to")
 	_, personal, err := f.store.Create(srvAs(f.a), "srv-personal-"+f.suffix, "Example inbox", "example-inbox")
 	if err != nil {
 		t.Fatal(err)
 	}
-	refuse("personal plugin as the adopter", f.app.ID, personal.ID, fmt.Sprintf("app %d is a personal plugin; only server apps can be linked", personal.ID))
-	refuse("personal plugin as the source", personal.ID, p1.ID, fmt.Sprintf("app %d is a personal plugin; only server apps can be linked", personal.ID))
-
+	refuse("a personal plugin", personal.ID, fmt.Sprintf("app %d is a personal plugin; only server apps can be linked", personal.ID))
 	_, gone := f.installLabelled("srv-gone", "Basalt Tide")
 	if _, err := f.store.UninstallServerApp(f.sys(), gone.ID, users.Actor{Via: "cli"}); err != nil {
 		t.Fatal(err)
 	}
-	refuse("the source uninstalled", gone.ID, p1.ID, fmt.Sprintf("app %d (%s) is uninstalled", gone.ID, gone.Name))
-	refuse("the adopter uninstalled", f.app.ID, gone.ID, fmt.Sprintf("app %d (%s) is uninstalled", gone.ID, gone.Name))
+	refuse("an uninstalled app", gone.ID, fmt.Sprintf("app %d is uninstalled", gone.ID))
 	if n := pairs(); n != 0 {
-		t.Fatalf("refusals linked %d pair(s)", n)
+		t.Fatalf("refusals linked %d pair row(s)", n)
 	}
-
-	// Already paired: the pair (p1, p2), so p1 is a low and p2 a high; f.app
-	// is the lowest id of all, p3 the highest.
-	f.link(p1.ID, p2.ID)
-	already := func(id, partner int64) string {
-		return fmt.Sprintf("app %d is already linked with app %d; unlink it first", id, partner)
+	_, linked := f.installLinked("srv-first", "Quartz Ledger", f.app.ID)
+	refuse("the source already paired", f.app.ID, fmt.Sprintf("app %d is already linked with app %d; unlink it first", f.app.ID, linked.ID))
+	refuse("the source already paired (as the new one)", linked.ID, fmt.Sprintf("app %d is already linked with app %d; unlink it first", linked.ID, f.app.ID))
+	if n := pairs(); n != 2 {
+		t.Errorf("after every refusal: %d pair rows; want the one pair's two", n)
 	}
-	refuse("already paired: a low again (the low index)", p1.ID, p3.ID, already(p1.ID, p2.ID))
-	refuse("already paired: a high again (the high index)", f.app.ID, p2.ID, already(p2.ID, p1.ID))
-	refuse("already paired: a high as a low (the trigger)", p2.ID, p3.ID, already(p2.ID, p1.ID))
-	refuse("already paired: a low as a high (the trigger)", f.app.ID, p1.ID, already(p1.ID, p2.ID))
-	refuse("already paired: the same pair again", p2.ID, p1.ID, already(p2.ID, p1.ID))
-	if n := pairs(); n != 1 {
-		t.Errorf("after every refusal: %d pairs; want the one made", n)
-	}
-	// 🔴 The table, under a PERSON's principal, shows and admits nothing (its
-	// only policy is scope_all): every read is the System's.
+	// 🔴 Under a PERSON's principal the table shows nothing (its only policy
+	// is scope_all): every read is the System's.
 	var seen int
 	if err := f.pool.QueryRow(srvAs(f.a), `SELECT count(*) FROM plugin_server_pairs`).Scan(&seen); err != nil || seen != 0 {
 		t.Errorf("a person's principal reads %d pair rows (%v); want none", seen, err)
 	}
 }
 
-// TestHideOnAnAdopterBeforeFirstOpen: A knows the source; after the link A
-// hides the adopter without ever opening it, and the row Hide makes (Hide is
-// the second subject writer) carries the source's subject for A. Show and
-// open, and the adopter answers that same subject.
+// TestHideOnAnAdopterBeforeFirstOpen: A knows the source; an app is installed
+// linked to it, and A hides it without ever opening it: the row Hide makes
+// (Hide is the second subject writer) carries the source's subject for A.
+// Show and open, and the new app answers that same subject. The other way: B
+// hides the SOURCE before opening either, and the adopter then answers the
+// subject that Hide drew.
 func TestHideOnAnAdopterBeforeFirstOpen(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
 	aSrc := f.open(f.a, f.app.ID, f.tok)
-	f.link(f.app.ID, contacts.ID)
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	if changed, err := f.store.SetServerAppHidden(srvAs(f.a), contacts.ID, true, f.now); err != nil || !changed {
 		t.Fatalf("hide: %v %v", changed, err)
 	}
@@ -266,8 +255,6 @@ func TestHideOnAnAdopterBeforeFirstOpen(t *testing.T) {
 	if got := f.open(f.a, contacts.ID, tokC); got != aSrc {
 		t.Errorf("hide on an adopter: after Show, the adopter answered %s; want %s", got, aSrc)
 	}
-	// And the other way: B hides the SOURCE before opening either; the
-	// adopter then answers the subject that Hide drew.
 	if _, err := f.store.SetServerAppHidden(srvAs(f.b), f.app.ID, true, f.now); err != nil {
 		t.Fatal(err)
 	}
@@ -283,8 +270,7 @@ func TestHideOnAnAdopterBeforeFirstOpen(t *testing.T) {
 // person ends with one subject under both apps.
 func TestTwoConcurrentFirstOpensOfAPairGiveOneSubject(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, contacts.ID)
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	split := 0
 	for i := range 50 {
 		uid := f.person("Race Person "+strconv.Itoa(i), "member", "")
@@ -363,8 +349,7 @@ func TestTwoConcurrentFirstOpensOfAPairGiveOneSubject(t *testing.T) {
 // refused for B's subject while the adopter's knock is 202.
 func TestCrossAppActingIsStillRefused(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, contacts.ID)
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	aSub := f.open(f.a, f.app.ID, f.tok)
 	if rec := f.knock(f.tok, aSub, "pair-src-a"); rec.Code != 202 {
 		t.Fatalf("control: the source knocks for A: %d %s; want 202", rec.Code, rec.Body.String())
@@ -387,11 +372,12 @@ func TestCrossAppActingIsStillRefused(t *testing.T) {
 
 // TestUnlinkKeepsWhatWasSharedAndSplitsNewPeople: A, known to both apps
 // before the unlink, keeps one subject under both after it; B, who first
-// opens either after it, gets two. Unlinking an app in no pair is refused.
+// opens either after it, gets two. Unlink deletes BOTH rows of the pair (one
+// DELETE; the mutual key cascades to the mirror). Unlinking an app in no pair
+// is refused.
 func TestUnlinkKeepsWhatWasSharedAndSplitsNewPeople(t *testing.T) {
 	f := newSrvFix(t)
-	tokC, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, contacts.ID)
+	tokC, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	aSub := f.open(f.a, f.app.ID, f.tok)
 	if got := f.open(f.a, contacts.ID, tokC); got != aSub {
 		t.Fatalf("control: linked, A has %s and %s", aSub, got)
@@ -400,8 +386,8 @@ func TestUnlinkKeepsWhatWasSharedAndSplitsNewPeople(t *testing.T) {
 	if err != nil || partner != f.app.ID {
 		t.Fatalf("unlink: partner %d, %v; want %d", partner, err, f.app.ID)
 	}
-	if n := f.count(`SELECT count(*) FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`, f.app.ID); n != 0 {
-		t.Errorf("unlink: the pair row is still there (%d)", n)
+	if p, q := f.pairOf(contacts.ID), f.pairOf(f.app.ID); p != 0 || q != 0 {
+		t.Errorf("unlink: pair rows left: %d -> %d, %d -> %d; want neither", contacts.ID, p, f.app.ID, q)
 	}
 	if x, y := f.open(f.a, f.app.ID, f.tok), f.open(f.a, contacts.ID, tokC); x != aSub || y != aSub {
 		t.Errorf("unlink: A, known to both, has %s and %s; want %s under both", x, y, aSub)
@@ -416,92 +402,77 @@ func TestUnlinkKeepsWhatWasSharedAndSplitsNewPeople(t *testing.T) {
 }
 
 // TestUninstallDeletesThePair: an uninstall of either app of a pair deletes
-// the pair row (in the uninstall's own transaction: no other write of the
-// store could), so the survivor is linked to nothing and may be linked again
-// at once. Uninstalling the adopter: a fresh install linked to the surviving
-// source adopts the subjects the old adopter shared. Uninstalling the source:
-// the surviving adopter may become the source of a new pair.
+// both pair rows (in the uninstall's own transaction: no other write of the
+// store could), so the survivor is linked to nothing. Uninstalling the
+// adopter: a fresh install linked to the surviving source adopts the subjects
+// the old adopter shared. Uninstalling the source: the survivor may be the
+// source of a new pair at once.
 func TestUninstallDeletesThePair(t *testing.T) {
 	f := newSrvFix(t)
-	none := func(which string, ids ...int64) {
-		t.Helper()
-		if n := f.count(`SELECT count(*) FROM plugin_server_pairs WHERE low_id = ANY ($1) OR high_id = ANY ($1)`, ids); n != 0 {
-			t.Errorf("uninstall deletes the pair: uninstalling %s left %d pair row(s)", which, n)
-		}
-	}
 	uninstall := func(id int64) {
 		t.Helper()
 		if _, err := f.store.UninstallServerApp(f.sys(), id, users.Actor{Via: "cli"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	none := func(which string, ids ...int64) {
+		t.Helper()
+		if n := f.count(`SELECT count(*) FROM plugin_server_pairs WHERE plugin_id = ANY ($1) OR partner_id = ANY ($1)`, ids); n != 0 {
+			t.Errorf("uninstall deletes the pair: uninstalling %s left %d pair row(s)", which, n)
+		}
+	}
 
-	_, old := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, old.ID)
+	_, old := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	aSub := f.open(f.a, f.app.ID, f.tok)
 	uninstall(old.ID)
 	none("the adopter", old.ID, f.app.ID)
-	tokR, again := f.installLabelled("srv-cards-again", "Quartz Ledger")
-	f.link(f.app.ID, again.ID)
+	tokR, again := f.installLinked("srv-cards-again", "Quartz Ledger", f.app.ID)
 	if got := f.open(f.a, again.ID, tokR); got != aSub {
 		t.Errorf("a reinstall linked to the surviving source answered A %s; want the survivor's %s", got, aSub)
 	}
 	uninstall(again.ID)
 
 	_, src := f.installLabelled("srv-src", "Cobalt Atlas")
-	_, ado := f.installLabelled("srv-ado", "Ember Index")
-	f.link(src.ID, ado.ID)
+	_, ado := f.installLinked("srv-ado", "Ember Index", src.ID)
 	uninstall(src.ID)
 	none("the source", src.ID, ado.ID)
-	_, next := f.installLabelled("srv-next", "Basalt Tide")
-	if _, err := f.store.LinkServerApps(context.Background(), ado.ID, next.ID, users.Actor{Via: "cli"}); err != nil {
-		t.Errorf("the surviving adopter as the source of a new pair: %v", err)
+	if _, _, err := f.tryInstall("srv-next", "Basalt Tide", ado.ID); err != nil {
+		t.Errorf("the survivor as the source of a new pair: %v", err)
 	}
-	_, _ = f.pool.Exec(f.sys(), `DELETE FROM plugin_server_pairs WHERE $1 IN (low_id, high_id)`, ado.ID)
 }
 
-// TestLinkAndUnlinkAreAudited: plugin.server.linked on the adopter with both
-// ids, and plugin.server.unlinked on the unlinked app with both, each as the
+// TestLinkAndUnlinkAreAudited: the install's plugin.server.installed row
+// records linked_to; plugin.server.unlinked records the partner; each as the
 // command line (no user, via cli).
 func TestLinkAndUnlinkAreAudited(t *testing.T) {
 	f := newSrvFix(t)
-	_, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
-	f.link(f.app.ID, contacts.ID)
+	_, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	if _, err := f.store.UnlinkServerApp(context.Background(), f.app.ID, users.Actor{Via: "cli"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []struct{ action, object, detail string }{
-		{"plugin.server.linked", plugins.Object(contacts.ID), fmt.Sprintf(`{"source": %d, "adopter": %d}`, f.app.ID, contacts.ID)},
-		{"plugin.server.unlinked", plugins.Object(f.app.ID), fmt.Sprintf(`{"apps": [%d, %d], "source": %d}`, f.app.ID, contacts.ID, f.app.ID)},
+	for _, c := range []struct{ action, object, key, want string }{
+		{"plugin.server.installed", plugins.Object(contacts.ID), "linked_to", strconv.FormatInt(f.app.ID, 10)},
+		{"plugin.server.unlinked", plugins.Object(f.app.ID), "partner", strconv.FormatInt(contacts.ID, 10)},
 	} {
-		var detail, via string
+		var got, via string
 		var user *int64
-		err := f.pool.QueryRow(f.sys(), `SELECT detail::text, via, user_id FROM audit_log WHERE action = $1 AND object = $2`, c.action, c.object).Scan(&detail, &via, &user)
-		if err != nil || detail != c.detail || via != "cli" || user != nil {
-			t.Errorf("%s on %s: detail %s via %q user %v (%v); want %s via cli, no user", c.action, c.object, detail, via, user, err, c.detail)
+		err := f.pool.QueryRow(f.sys(), `SELECT coalesce(detail->>$3, ''), via, user_id FROM audit_log WHERE action = $1 AND object = $2`,
+			c.action, c.object, c.key).Scan(&got, &via, &user)
+		if err != nil || got != c.want || via != "cli" || user != nil {
+			t.Errorf("%s on %s: %s %q via %q user %v (%v); want %s, via cli, no user", c.action, c.object, c.key, got, via, user, err, c.want)
 		}
 	}
 }
 
-// TestTheLinkedLinesOnAdminAppsAndAccountApps: /admin/apps says "Linked with
-// <the other's label>." on each app of a pair, and Account → Apps adds "<this>
-// and <the other> know you as the same person." to each; an unlinked app has
-// neither. Labels are distinct from each other and from every constant.
-func TestTheLinkedLinesOnAdminAppsAndAccountApps(t *testing.T) {
+// TestTheLinkedLineOnAccountApps: Account → Apps adds "<this> and <the other>
+// know you as the same person." to each app of a pair, and an unlinked app has
+// none. /admin/apps shows no linked line (`app list` is where an operator
+// reads the pair). Labels are distinct from each other and every constant.
+func TestTheLinkedLineOnAccountApps(t *testing.T) {
 	f := newSrvFix(t)
-	_, contacts := f.installLabelled("srv-cards", "Quartz Ledger")
+	_, contacts := f.installLinked("srv-cards", "Quartz Ledger", f.app.ID)
 	_, lone := f.installLabelled("srv-lone", "Cobalt Atlas")
-	f.link(f.app.ID, contacts.ID)
-	admin := f.get(f.admin, adminAppsPath).Body.String()
 	account := f.get(f.a, accountAppsPath).Body.String()
-	for _, want := range []string{
-		`data-linked-with="` + strconv.FormatInt(contacts.ID, 10) + `">` + html.EscapeString("Linked with Quartz Ledger.") + `</span>`,
-		`data-linked-with="` + strconv.FormatInt(f.app.ID, 10) + `">` + html.EscapeString("Linked with "+srvLabel+".") + `</span>`,
-	} {
-		if !strings.Contains(admin, want) {
-			t.Errorf("/admin/apps lacks %s", want)
-		}
-	}
 	for _, want := range []string{
 		`data-app-linked="` + strconv.FormatInt(contacts.ID, 10) + `">` + html.EscapeString(srvLabel+" and Quartz Ledger know you as the same person.") + `</span>`,
 		`data-app-linked="` + strconv.FormatInt(f.app.ID, 10) + `">` + html.EscapeString("Quartz Ledger and "+srvLabel+" know you as the same person.") + `</span>`,
@@ -510,13 +481,10 @@ func TestTheLinkedLinesOnAdminAppsAndAccountApps(t *testing.T) {
 			t.Errorf("Account → Apps lacks %s", want)
 		}
 	}
-	if n := strings.Count(admin, "data-linked-with="); n != 2 {
-		t.Errorf("/admin/apps has %d linked lines; want 2 (the pair, not %s)", n, lone.Name)
-	}
 	if n := strings.Count(account, "data-app-linked="); n != 2 {
 		t.Errorf("Account → Apps has %d linked lines; want 2 (the pair, not %s)", n, lone.Name)
 	}
-	if strings.Contains(account, "Cobalt Atlas and") || strings.Contains(account, "and Cobalt Atlas") {
-		t.Error("Account → Apps names the unlinked app in a linked line")
+	if admin := f.get(f.admin, adminAppsPath).Body.String(); strings.Contains(admin, "Linked with") || !strings.Contains(admin, "Quartz Ledger") {
+		t.Error("/admin/apps draws a linked line, or not the linked app at all")
 	}
 }
