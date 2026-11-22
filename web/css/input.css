@@ -562,7 +562,8 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
  * out of flow), so their opening moves nothing on the page. They ANIMATE open
  * and closed: the view menu grows up out of the view button at the bar's left
  * (the bar is at the screen's bottom), the ⋯ menu out of the ⋯ at its right, the palette
- * drops in from above. display and overlay transition discretely, so the
+ * drops in from above (on a phone, where it sits at the bottom, it rises from
+ * below). display and overlay transition discretely, so the
  * close plays before the box leaves the top layer; @starting-style is where an
  * opening starts. Reduced motion: at once, both ways.
  */
@@ -603,6 +604,20 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
   #switcher-search:popover-open {
     opacity: 0;
     transform: translateY(-8px) scale(0.98);
+  }
+}
+/* Below sm the palette sits on the screen's bottom edge (palette.go): it rises
+ * from below instead. */
+@media (max-width: 639.98px) {
+  #switcher-search {
+    transform: translateY(8px) scale(0.98);
+    transform-origin: bottom center;
+  }
+  @starting-style {
+    #switcher-search:popover-open {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
   }
 }
 @media (prefers-reduced-motion: reduce) {

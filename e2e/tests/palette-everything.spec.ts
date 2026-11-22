@@ -208,6 +208,9 @@ for (const vp of [
       // "a": many sessions and screens, so the list has several rows.
       await input(page).pressSequentially('a');
       await expect(options(page).nth(1)).toBeVisible();
+      // Measured once the opening animation (input.css) has settled.
+      await expect(pal(page)).toHaveCSS('transform', 'none');
+      await expect(pal(page)).toHaveCSS('opacity', '1');
       const vh = vp.use.viewport.height;
       // The input and the results first: they are on the page at any build.
       const inp = (await input(page).boundingBox())!;
