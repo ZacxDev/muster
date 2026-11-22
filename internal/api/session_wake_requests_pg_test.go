@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -700,5 +701,42 @@ func TestRenderWakeRequestKindsReadOnlyTheirParts(t *testing.T) {
 		if got := renderWake(w); strings.Contains(got, "owner-words-31") || strings.Contains(got, "host-37") || strings.Contains(got, "session-41") || got == "" {
 			t.Errorf("%s carries text that is not its own (or none):\n%s", k, got)
 		}
+	}
+}
+
+// TestAnExpectSessionMismatchFilesNoStepUpCard (round-2 audit of #998): on a
+// step-up machine, an officer_item_enqueue whose expect_session is not the
+// bound caller is refused at once — no card the owner could only see fail —
+// so its CLI falls back as on an uncovered machine. Naming the bound session,
+// the call is a card as before.
+func TestAnExpectSessionMismatchFilesNoStepUpCard(t *testing.T) {
+	s := newStepUpWorld(t)
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: s.f.owner, Role: authz.RoleMember, Via: authz.ViaMirrorHost})
+	cards := func() int {
+		var n int
+		if err := s.f.pool.QueryRow(authz.System(ctx), `SELECT count(*) FROM attention_asks WHERE owner_id = $1 AND step_up IS NOT NULL`, s.f.owner).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	args := func(expect string) string {
+		return `{"officer":"marketing:a","kind":"owner.plan","subject_key":"plan-expect","expect_session":"` + expect + `"}`
+	}
+	out, gated := s.f.srv.hostStepUpGate(ctx, "tower", windowCaller(), officerItemEnqueueTool, args(wakeOtherSID))
+	want := toolErr("this call is bound to Claude Code session %s (the one muster-mirror lists in the calling pane), not to %s, "+
+		"the one expect_session names: nothing was queued or recorded", routeSID, strconv.Quote(wakeOtherSID))
+	if !gated || out != want {
+		t.Fatalf("a mismatched expect_session on a step-up machine: gated %v, %s; want refused %s", gated, out, want)
+	}
+	if n := cards(); n != 0 {
+		t.Fatalf("%d step-up cards filed for a call that could only be refused", n)
+	}
+	out, gated = s.f.srv.hostStepUpGate(ctx, "tower", windowCaller(), officerItemEnqueueTool, args(routeSID))
+	if !gated {
+		t.Fatal("fixture: the step-up gate does not cover tower")
+	}
+	stepUpCardOf(t, out)
+	if n := cards(); n != 1 {
+		t.Fatalf("%d step-up cards for the matching call; want 1", n)
 	}
 }

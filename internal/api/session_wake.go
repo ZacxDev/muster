@@ -1125,6 +1125,9 @@ func wakeDeliveryText(w sessionwake.Wake, who string) (string, wakeAction) {
 		if !strings.HasPrefix(d, "Not delivered") && !strings.HasPrefix(d, "May have been sent") {
 			d = "Not confirmed: " + d
 		}
+		if wakeWentToOfficer(w) {
+			return d + ". The rejection went back to the officer instead.", wakeAction{}
+		}
 		return d + ".", wakeAction{Label: "Retry delivery", StepUp: wakeCarriesOwnerText(w)}
 	}
 	return "", wakeAction{}
@@ -1260,6 +1263,9 @@ func (s *Server) wakeRetryStale(w http.ResponseWriter, r *http.Request, cur sess
 // the owner's words (the caller checked it is fresh: wakeRetryStale), and
 // starts its delivery.
 func (s *Server) retryWake(ctx context.Context, cur sessionwake.Wake) (sessionwake.Wake, error) {
+	if wakeWentToOfficer(cur) {
+		return cur, sessionwake.ErrNotRetryable
+	}
 	var at time.Time
 	if wakeCarriesOwnerText(cur) {
 		at, _ = stepup.AuthTime(ctx)

@@ -145,6 +145,16 @@ func (s *Server) wakeNotDelivered(ctx context.Context, w sessionwake.Wake) {
 		w.ID, d.ID, *d.Officer, draftRefusedKind, res.FollowUp, res.Held)
 }
 
+// wakeWentToOfficer reports whether wake w is an officer draft's rejection
+// that settled "Not delivered" — the wake wakeNotDelivered handed back to the
+// officer (every "Not delivered" settle calls it). Its line says so and offers
+// no Retry, and retryWake refuses one: a retried line would tell the session
+// the officer will not redraft what the officer now has.
+func wakeWentToOfficer(w sessionwake.Wake) bool {
+	return w.Kind == sessionwake.KindOfficerDraftDecided && w.Decision == sessionwake.DecisionRejected &&
+		w.State == sessionwake.Unconfirmed && strings.HasPrefix(w.Detail, "Not delivered")
+}
+
 // officerOutcomeDecision is the outcome word of an attempt that ENDED its
 // chain in status st, "" for one that did not end it.
 func officerOutcomeDecision(st string) string {

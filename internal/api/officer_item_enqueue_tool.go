@@ -89,6 +89,20 @@ func officerItemEnqueueToolDef() agents.ToolDef {
 		}, "officer", "kind", "subject_key")}
 }
 
+// expectSessionRefusal is officer_item_enqueue's refusal of an expect_session
+// that is not caller c's bound session, "" when it is (or names none) —
+// compare-only, before anything is written (here, and in hostStepUpGate before
+// any card): the caller is not the session it believes it is (an environment
+// inherited from another session, a pane that changed hands), so nothing is
+// queued and nothing recorded.
+func expectSessionRefusal(c toolCaller, expect string) string {
+	if expect == "" || expect == c.asker.MirrorSession {
+		return ""
+	}
+	return toolErr("this call is bound to Claude Code session %s (the one muster-mirror lists in the calling pane), not to %s, "+
+		"the one expect_session names: nothing was queued or recorded", orNoneSession(c.asker.MirrorSession), strconv.Quote(expect))
+}
+
 // toolOfficerItemEnqueue is officer_item_enqueue (see the header).
 func (s *Server) toolOfficerItemEnqueue(ctx context.Context, c toolCaller, arguments string) string {
 	if why := s.ownersOwnSession(ctx, c); why != "" {
@@ -115,12 +129,8 @@ func (s *Server) toolOfficerItemEnqueue(ctx context.Context, c toolCaller, argum
 	if len(in.Payload) > 0 && (in.Payload[0] != '{' || !json.Valid(in.Payload)) {
 		return toolErr("payload is a JSON object")
 	}
-	if in.Expect != "" && in.Expect != c.asker.MirrorSession {
-		// Before anything is written: the caller is not the session it
-		// believes it is (an environment inherited from another session, a
-		// pane that changed hands), so nothing is queued and nothing recorded.
-		return toolErr("this call is bound to Claude Code session %s (the one muster-mirror lists in the calling pane), not to %s, "+
-			"the one expect_session names: nothing was queued or recorded", orNoneSession(c.asker.MirrorSession), strconv.Quote(in.Expect))
+	if why := expectSessionRefusal(c, in.Expect); why != "" {
+		return why
 	}
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 || p.All() || s.officerStore == nil {

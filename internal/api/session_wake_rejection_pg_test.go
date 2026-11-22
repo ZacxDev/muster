@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sessionwake"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // A REJECTION OF WORK A SESSION ASKED FOR IS NEVER DROPPED (round-1 audit of
@@ -237,5 +239,122 @@ func TestAnExpectedSessionOnlyRefuses(t *testing.T) {
 	}
 	if h, s := w.itemRequester(item); h != "tower" || s != routeSID {
 		t.Fatalf("the requester is %q/%q; want the bound caller tower/%s", h, s, routeSID)
+	}
+}
+
+// officerWakeOf is draft id's one officer_draft_decided wake, read whole as
+// the owner.
+func (w *officerWakeWorld) officerWakeOf(id int64) sessionwake.Wake {
+	w.t.Helper()
+	var wid int64
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT id FROM session_wakes WHERE owner_id = 1 AND kind = 'officer_draft_decided' AND draft_id = $1`,
+		id).Scan(&wid); err != nil {
+		w.t.Fatal(err)
+	}
+	wk, err := w.srv.ext.SessionWakes.Get(asUser(1), wid)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return wk
+}
+
+// refusedCount is the number of draft.refused items for draft id.
+func (w *officerWakeWorld) refusedCount(id int64) int {
+	w.t.Helper()
+	var n int
+	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM officer_items WHERE owner_id = 1 AND kind = $1 AND subject_key = $2`,
+		draftRefusedKind, "draft:"+itoa(id)).Scan(&n); err != nil {
+		w.t.Fatal(err)
+	}
+	return n
+}
+
+// TestARejectionHandedBackToTheOfficerIsNotRetried (round-2 audit of #998): a
+// rejection wake that settled "Not delivered" went to the officer, so its line
+// says so and offers no Retry delivery, and a Retry posted anyway is refused —
+// the session is never told "the officer will not redraft it" about work the
+// officer now has.
+func TestARejectionHandedBackToTheOfficerIsNotRetried(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-reject-then-retry")
+	id := w.draftForItem(item, "A post whose rejection went back.")
+	w.host.set(func(m *wakeMirror) { m.gone = true })
+	if rec := w.rejectForm(id, "Wrong venue."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	w.srv.sendQueueClock = func() time.Time { return time.Now().Add(wakeGiveUp + time.Minute) }
+	w.tick()
+	w.srv.sendQueueClock = nil
+	if n := w.refusedCount(id); n != 1 {
+		t.Fatalf("fixture: %d draft.refused items; want the rejection handed back once", n)
+	}
+	wk := w.officerWakeOf(id)
+	text, act := wakeDeliveryText(wk, "the session")
+	if want := "Not delivered: no window showed the session within a day (" + wakeWaitNoWindow + "). The rejection went back to the officer instead."; text != want || act != (wakeAction{}) {
+		t.Fatalf("the owner reads %q offering %+v; want %q offering nothing", text, act, want)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, sessionWakeRetryPath(wk.ID), nil).WithContext(stepup.WithAuthTime(asUser(1), time.Now()))
+	req.SetPathValue("id", itoa(wk.ID))
+	w.srv.handleSessionWakeRetry(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("Retry of a rejection the officer has: %d; want 409", rec.Code)
+	}
+	w.host.set(func(m *wakeMirror) { m.gone = false })
+	w.tick()
+	if got := w.pastes(); len(got) != 0 {
+		t.Fatalf("the session was told %q after its rejection went to the officer", got)
+	}
+	if st := w.officerWakeOf(id).State; st != sessionwake.Unconfirmed {
+		t.Fatalf("the wake is %s; want it left unconfirmed", st)
+	}
+	// Controls: a rejection that MAY have been sent, and an approval that was
+	// not delivered, never went to the officer — both still offer Retry.
+	for _, c := range []sessionwake.Wake{
+		{Kind: sessionwake.KindOfficerDraftDecided, Decision: sessionwake.DecisionRejected, State: sessionwake.Unconfirmed, Detail: "May have been sent: the host did not confirm it"},
+		{Kind: sessionwake.KindOfficerDraftDecided, Decision: sessionwake.DecisionApproved, State: sessionwake.Unconfirmed, Detail: "Not delivered: it was cancelled in the session's queue"},
+	} {
+		if _, a := wakeDeliveryText(c, "the session"); a.Label != "Retry delivery" {
+			t.Fatalf("%s/%q offers %+v; want Retry delivery", c.Decision, c.Detail, a)
+		}
+	}
+}
+
+// TestARejectionWhosePasteIsCancelledGoesBackToTheOfficerOnce: the rejection's
+// wake is queued in a busy window, and the owner cancels that row in the
+// session's queue. It settles "Not delivered" (settleWakeRow) and the
+// rejection goes back to the officer — once, however many passes follow.
+func TestARejectionWhosePasteIsCancelledGoesBackToTheOfficerOnce(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-reject-paste-cancelled")
+	const body = "A post whose rejection's paste was cancelled."
+	id := w.draftForItem(item, body)
+	w.host.set(func(m *wakeMirror) { m.busy = true })
+	if rec := w.rejectForm(id, "Not now."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	wk := w.officerWakeOf(id)
+	if wk.State != sessionwake.Delivering || wk.SendQueueID <= 0 {
+		t.Fatalf("fixture: in a busy window the rejection's wake is %s (row %d); want delivering on a queued row", wk.State, wk.SendQueueID)
+	}
+	if _, err := w.queue.Cancel(asUser(1), wk.SendQueueID, time.Now()); err != nil {
+		t.Fatalf("cancel the row: %v", err)
+	}
+	w.tick()
+	if got := w.officerWakeOf(id); got.State != sessionwake.Unconfirmed || got.Detail != "Not delivered: it was cancelled in the session's queue" {
+		t.Fatalf("after the cancel the wake is %s %q; want unconfirmed, cancelled", got.State, got.Detail)
+	}
+	_, p, ok := w.refusedItemOf(id)
+	if !ok || p["detail"] != "Not now." || p["by"] != "owner" || p["body"] != body {
+		t.Fatalf("the cancelled rejection did not go back to the officer (follow-up %v, payload %v)", ok, p)
+	}
+	w.tick()
+	if n := w.refusedCount(id); n != 1 {
+		t.Fatalf("%d draft.refused items for the draft; want exactly 1", n)
+	}
+	if got := w.pastes(); len(got) != 0 {
+		t.Fatalf("the session took %q; its row was cancelled", got)
 	}
 }

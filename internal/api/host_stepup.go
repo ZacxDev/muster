@@ -350,6 +350,18 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	if why := s.ownersOwnSession(ctx, c); why == ownerAuthoritySpawned {
 		return toolErr("%s", why), true
 	}
+	// Nor for an officer_item_enqueue whose expect_session is not the bound
+	// caller: refused at once, so its CLI falls back as on an uncovered machine.
+	if name == officerItemEnqueueTool {
+		var in struct {
+			Expect string `json:"expect_session"`
+		}
+		if json.Unmarshal([]byte(orEmptyJSON(args)), &in) == nil {
+			if why := expectSessionRefusal(c, in.Expect); why != "" {
+				return why, true
+			}
+		}
+	}
 	ids, spawn, covered := s.stepUpCoverage(ctx, host, c)
 	if !covered {
 		return "", false
