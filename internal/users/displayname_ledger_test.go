@@ -49,6 +49,7 @@ var displayNameWriterLedger = map[string]string{
 	// *_e2e database only. It calls the check as users.CreateTeam does.
 	"e2e/mkteam/main.go:create":     "FIXTURE: a spec's fixed team name, e2e only",
 	"e2e/mkteampage/main.go:create": "FIXTURE: team-pages.spec.ts's team and its page's creator, e2e only",
+	"e2e/asksfiltfix/main.go:seed":  "FIXTURE: asks-filters.spec.ts's second owner, a fixed name, e2e only",
 }
 
 func TestEveryDisplayNameWriterIsChecked(t *testing.T) {

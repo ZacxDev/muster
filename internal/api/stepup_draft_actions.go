@@ -38,30 +38,73 @@ import (
 // ---------------------------------------------------------------------------
 
 // stepUpDraftFor is the draft step-up card c is about, as ctx's principal may
-// decide it — nil for a card about no draft, a draft the principal cannot
-// read (row-level security: another owner's reads as missing), or one it may
-// not decide (draftDeciderRefusal, officerDeciderRefusal: decideDraftAs's own
-// refusals, so no control is drawn that the tap would refuse).
+// decide it (stepUpDraftsFor over c alone), nil for none.
 func (s *Server) stepUpDraftFor(ctx context.Context, c *attention.StepUpCard) *plugins.DraftCard {
-	if c == nil || c.DraftID <= 0 || s.ext.Plugins == nil {
+	if c == nil {
 		return nil
+	}
+	decide, _ := s.stepUpDraftsFor(ctx, []int64{c.DraftID})
+	return decide[c.DraftID]
+}
+
+// stepUpDraftsFor is, by draft id, the drafts the step-up cards naming ids
+// are about, as ctx's principal may decide them — absent for a draft the
+// principal cannot read (row-level security: another owner's reads as
+// missing), one it may not decide (draftDeciderRefusal, officerDeciderRefusal:
+// decideDraftAs's own refusals, so no control is drawn that the tap would
+// refuse), and one time has decided (plugins.DraftTimeDecided: expired, which
+// no sweep has settled yet).
+//
+// 🔴 ONE BATCH READ, NO SWEEP (plugins.DraftCardsByID): the Open feed draws a
+// card per draft, and a DraftCard per card was a sweep — a write transaction —
+// per card per render, live refreshes included.
+//
+// read is every draft the batch read could see, decidable or not: who raised
+// it is still what the card's filter chip names (readAskSources), with no
+// second read.
+func (s *Server) stepUpDraftsFor(ctx context.Context, ids []int64) (decide map[int64]*plugins.DraftCard, read map[int64]plugins.DraftCard) {
+	out := map[int64]*plugins.DraftCard{}
+	read = map[int64]plugins.DraftCard{}
+	if s.ext.Plugins == nil {
+		return out, read
 	}
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return nil
+		return out, read
 	}
-	dc, err := s.ext.Plugins.DraftCard(ctx, c.DraftID)
+	var want []int64
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			want = append(want, id)
+		}
+	}
+	if len(want) == 0 {
+		return out, read
+	}
+	cards, err := s.ext.Plugins.DraftCardsByID(ctx, want)
 	if err != nil {
-		return nil
+		s.logger.Printf("step-up: the cards' drafts: %v", err)
+		return out, read
 	}
-	if draftDeciderRefusal(p, dc.Draft, false) != "" || officerDeciderRefusal(ctx) != "" {
-		return nil
+	now := time.Now()
+	refused := officerDeciderRefusal(ctx) != ""
+	var keep []plugins.DraftCard
+	for _, dc := range cards {
+		read[dc.Draft.ID] = dc
+		if refused || draftDeciderRefusal(p, dc.Draft, false) != "" || plugins.DraftTimeDecided(dc.Draft, now) {
+			continue
+		}
+		keep = append(keep, dc)
 	}
-	// As the Drafts tab reads its focused card (readDraftViews): whether a
-	// manual retry is open is the server's, not the row's.
-	one := []plugins.DraftCard{dc}
-	s.withRetryOpen(ctx, one)
-	return &one[0]
+	// As the Drafts tab reads its cards (readDraftViews): whether a manual
+	// retry is open is the server's, not the row's.
+	s.withRetryOpen(ctx, keep)
+	for i := range keep {
+		out[keep[i].Draft.ID] = &keep[i]
+	}
+	return out, read
 }
 
 // stepUpRejects reports whether step-up card c asks to REJECT its draft (its

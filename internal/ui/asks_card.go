@@ -794,7 +794,18 @@ var asksFeedJS = `(function () {
     // The refresh is innerHTML, not an htmx swap: the new cards' hx-post forms
     // are processed here.
     if (window.htmx) try { window.htmx.process(list); } catch (err) {}
-    if (focusId) { var f = document.getElementById(focusId); if (f && list.contains(f)) focusCard(f); }
+    // 🔴 FOCUS COMES BACK, THE VIEWPORT NEVER MOVES. data-asks-focus outlives
+    // the focus it records (a tapped card, the card an answer moved focus to:
+    // nothing clears it when focus simply leaves), and every refresh — the
+    // queue's event, the 60 s backstop, the app coming back to the foreground
+    // — re-ran focusCard here, whose scrollIntoView pulled the page down to
+    // that card wherever the reader had scrolled: the Asks page "opened
+    // partially scrolled down". So the card takes focus back only when the
+    // refresh took it (focus is on nothing now), and with preventScroll.
+    if (focusId) {
+      var f = document.getElementById(focusId), a = document.activeElement;
+      if (f && list.contains(f) && (!a || a === document.body)) { try { f.focus({ preventScroll: true }); } catch (err) {} }
+    }
     if (open) count();
     markMore(list);
   });

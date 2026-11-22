@@ -91,14 +91,28 @@ const asksSearchIcons = `<svg class="h-4 w-4 transition-opacity group-[.htmx-req
 // owner's asks into the browser's storage. Its presence anywhere in the
 // document turns that off; Back to a typed address asks the server instead
 // (HX-History-Restore-Request, which lists rather than redirects).
-func AsksSearchFormHTML(action, q string) string {
+//
+// keep are fields the search carries along (the Asks filter's ?type= and
+// ?from=): hidden fields the submit sends, and the live request includes
+// (hx-include). None given, the form is exactly what it was.
+func AsksSearchFormHTML(action, q string, keep ...AsksKeep) string {
 	esc := html.EscapeString
-	return `<form role="search" method="get" action="` + esc(action) + `" hx-boost="false" hx-history="false" class="` + AsksSearchFormClass + `" data-asks-search>` +
+	hidden, include := "", ""
+	for _, k := range keep {
+		hidden += `<input type="hidden" name="` + esc(k.Name) + `" value="` + esc(k.Value) + `" data-asks-search-keep>`
+	}
+	if hidden != "" {
+		include = ` hx-include="closest form"`
+	}
+	return `<form role="search" method="get" action="` + esc(action) + `" hx-boost="false" hx-history="false" class="` + AsksSearchFormClass + `" data-asks-search>` + hidden +
 		`<label for="asks-search-q" class="sr-only">Search asks by id or text</label>` +
 		`<span id="asks-search-busy" class="` + AsksSearchIconClass + `" aria-hidden="true" data-asks-search-busy>` + asksSearchIcons + `</span>` +
 		`<input type="search" id="asks-search-q" name="q" value="` + esc(q) + `" placeholder="` + AsksSearchPlaceholder + `" maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" class="` + AsksSearchInputClass + `"` +
-		` hx-get="` + esc(action) + `" hx-trigger="input changed delay:` + AsksSearchDebounce + `" hx-target="#` + AsksSearchRegionID + `" hx-swap="innerHTML" hx-sync="this:replace" hx-indicator="#asks-search-busy" aria-controls="` + AsksSearchRegionID + `" data-asks-search-input></form>`
+		` hx-get="` + esc(action) + `" hx-trigger="input changed delay:` + AsksSearchDebounce + `" hx-target="#` + AsksSearchRegionID + `" hx-swap="innerHTML" hx-sync="this:replace" hx-indicator="#asks-search-busy"` + include + ` aria-controls="` + AsksSearchRegionID + `" data-asks-search-input></form>`
 }
+
+// AsksKeep is one field a search carries along (AsksSearchFormHTML).
+type AsksKeep struct{ Name, Value string }
 
 // AsksSearchRegionHTML is the results region, holding results (the server's
 // search results; "" for none) — and NOTHING between its tags when empty,

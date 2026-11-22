@@ -135,6 +135,10 @@ type Store interface {
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
 	// DraftCard is one of the principal's drafts as a card.
 	DraftCard(ctx context.Context, id int64) (DraftCard, error)
+	// DraftCardsByID is the drafts ids names that the principal can read
+	// (row-level security), as cards, in a fixed number of reads: no sweep,
+	// no write. A draft it cannot read is absent.
+	DraftCardsByID(ctx context.Context, ids []int64) ([]DraftCard, error)
 	// SearchDraftCards is the Asks page's search over drafts: by id, any the
 	// principal can open (row-level security); by text, its OWN; newest first.
 	SearchDraftCards(ctx context.Context, draftID int64, text string, limit int) ([]DraftCard, error)

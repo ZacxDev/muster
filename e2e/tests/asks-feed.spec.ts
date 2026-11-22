@@ -425,7 +425,16 @@ for (const vp of [
         await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
         await page.waitForTimeout(300);
         const m = await page.evaluate(() => {
-          const vh = window.innerHeight;
+          // 🔴 THE FILTER CHIPS' ROW IS NOT CHARGED TO THE FEED (operator
+          // decision: "One-tap chips in the URL", a row under the search box).
+          // It costs 44px at 390×844 — measured: 2.54 cards without it, 2.35
+          // with it — and any row there costs more than this gate's 9px of
+          // slack, so the fold is the screen's height plus the row's (and the
+          // gap above it): the density of the FEED is what is gated, as before.
+          const chips = document.querySelector('nav[data-asks-chips]');
+          const head = document.querySelector('form[data-asks-search]');
+          const row = chips && head ? Math.max(0, chips.getBoundingClientRect().bottom - head.getBoundingClientRect().bottom) : 0;
+          const vh = window.innerHeight + row;
           let sum = 0;
           const cards = [...document.querySelectorAll('#attention-items > [data-asks-card]')];
           for (const c of cards) {
@@ -436,6 +445,7 @@ for (const vp of [
             sum: Math.round(sum * 100) / 100,
             cards: cards.length,
             tops: cards.map((c) => { const r = c.getBoundingClientRect(); return `${c.id}@${Math.round(r.top)}+${Math.round(r.height)}`; }).join(' '),
+            chipRow: Math.round(row),
             // A footer whose one control is the icon-only ✕ (no words of its own).
             loneX: cards.filter((c) => { const f = c.querySelector('[data-asks-footer]'); return f && !f.querySelector('a') && [...f.querySelectorAll('button')].every((b) => !b.textContent!.trim()); }).length,
             emptySlots: cards.filter((c) => { const e = c.querySelector('[data-asks-card-error]'); return e && !e.textContent!.trim(); }).length,

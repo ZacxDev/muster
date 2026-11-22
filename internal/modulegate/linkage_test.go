@@ -114,6 +114,9 @@ var notLinkedLedger = map[string]string{
 		"and clears an owner's asks, a task, a plugin, a draft and a nudge decision for any user id it " +
 		"is given, so it must never be reachable from a shipped binary; it refuses any database not " +
 		"ending in _e2e.",
+	"e2e/asksfiltfix": "the Asks page's filter-chip, scroll and video fixture (`go run ./e2e/asksfiltfix`): " +
+		"it writes and clears asks, agents, plugins, drafts and a member user for any user id it is " +
+		"given, so it must never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/stepupfix": "the step-up card page spec's fixture (`go run ./e2e/stepupfix`): it writes and " +
 		"clears a step-up confirmation card for any user id it is given, so it must never be reachable " +
 		"from a shipped binary; it refuses any database not ending in _e2e.",

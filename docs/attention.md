@@ -83,6 +83,33 @@ opts in to skipping them
 does wait, you answer it in the session's Terminal view; muster never types
 into it ([sending-and-step-up.md](sending-and-step-up.md)).
 
+### Filter chips
+
+A row of chips under the search box filters the page. **Type** chips —
+Questions, Confirmations (step-up cards), Drafts, Notices — and **source**
+chips: each officer, agent or session with items on the page, called by its
+name, busiest first, the rest under **More**. One tap filters; a tap on the
+active chip clears it, and **Clear** clears both. One type and one source at a
+time, alone or together. The row is one line that scrolls sideways; an active
+chip and Clear lead it.
+
+- The filter is the address: `?type=question|confirmation|draft|notice` and
+  `?from=<source>`, beside `?q=` and `?tab=`, so a filtered page is a bookmark,
+  Back undoes a tap, every chip is a plain link (no script needed), and a
+  search keeps the filter (and the filter the search).
+- It applies to the Open, Answered and Drafts tabs and to search results; the
+  Log keeps its own filters. Each chip counts what a tap on it would list: the
+  type chips over the active source, the source chips over the active type.
+- **A source is who raised the item.** An officer's chip (`officer:<id>`) holds
+  its questions and notices, its drafts, **and the step-up card that confirms
+  one of its drafts**, whoever filed the card: a session does, and the card
+  goes to the draft's officer. An agent's chip (`agent:<name>`) holds its
+  questions, notices and reply drafts; anything else is grouped by the session
+  name its card shows (`session:<name>`). The rule is one function
+  (`askSources.sourceFor` in `internal/api/asks_filter.go`).
+- Only your own items make chips: every list is read as you, so another
+  person's officer — even one with the same id — is never a chip or a result.
+
 ### The card feed
 
 Every tab is a feed of cards, one per item, scrolling vertically. The feed
@@ -126,7 +153,12 @@ taller than the screen still scrolls through).
   the box and then collapses the card.
 - **Live**: the Open feed and the Answered feed follow the queue as it changes,
   without a reload; an answer you are typing (or dictating) is never replaced,
-  and an expanded card stays expanded.
+  an expanded card stays expanded, and the page never scrolls (a card that
+  had focus gets it back, where you left it).
+- **It opens at its top**: a load lands at the top of the page and a tab change
+  at the top of the new tab (it drops a `#card` the address carried, so a
+  reload opens the tab you chose). A link to a card (`#ask-12`, a search for
+  a draft's id) still scrolls to that card.
 - **Motion** (cards entering and leaving, expanding, the tab sliding in from
   the swipe's side, a button's press) is all off under the system's
   *reduce motion* setting.
@@ -592,14 +624,16 @@ every other card. The count follows the queue live (an ask answered anywhere,
 or a new one, moves it without a reload), and with nothing open the badge is
 not drawn (`internal/api/attention_asker.go`).
 
-**The filtered Asks page** lists, on its Open tab, that asker's open questions
-alone (no notices, waiting sessions or drafts), with a line above the tabs —
-`Showing asks from <name> · Show all` — and its *N open* counts those that wait on you (no drafts or stalled sessions); **Show all**
-is the unfiltered page. The filter is `from=agent:<name>` for an agent, or
-`from=window:<host>:<window id>:<tmux session>` for a mirrored window; the
-other tabs are unfiltered. It is read as you: a `from` naming an agent you
-cannot read or a window that is not one of yours is ignored, and the page
-lists what it lists without it.
+**The filtered Asks page** is the page under that asker's **filter chip**
+(see [Filter chips](#filter-chips)). For an agent, `from=agent:<name>`, every
+tab lists what that agent raised, its chip drawn active with **Clear**. For a
+mirrored window, `from=window:<host>:<window id>:<tmux session>` (no chip names
+a window), the Open tab lists that window's sessions' open questions alone,
+with a line above the tabs — `Showing asks from <name> · Show all`. Either
+way *N open* counts what the filtered Open tab holds that waits on you (no
+stalled sessions). It is read as you: a `from` naming an agent you cannot read
+or a window that is not one of yours is ignored, and the page lists what it
+lists without it.
 
 A session is not re-notified:
 

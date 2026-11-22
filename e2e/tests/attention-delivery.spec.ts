@@ -230,7 +230,10 @@ for (const vp of [
         page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
         vp.use.hasTouch ? count.tap() : count.click(),
       ]);
-      await expect(page.locator('[data-testid="asks-filter"]')).toBeVisible();
+      // Whose asks these are: the chief's chip, active; and ONE predicate —
+      // the badge's last number (1) is the number of cards the tap lists.
+      await expect(page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]')).toHaveCount(1);
+      await expect(page.locator('#attention-items > li[data-asks-card]')).toHaveCount(1);
       const item = page.locator(`#attention-items #ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
       await item.getByRole('button', { name: 'dispatch a new agent' }).click();

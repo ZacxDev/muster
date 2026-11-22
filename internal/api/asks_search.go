@@ -329,9 +329,16 @@ func asksSearchLive(r *http.Request) bool {
 // open ask 12); only a real submit (Enter) goes straight to the one ask.
 func (s *Server) writeAsksSearchLive(w http.ResponseWriter, r *http.Request) {
 	raw, q, ok := asksSearchRequest(r)
-	to := attentionPath
+	// The filter (asks_filter.go) narrows the results and stays in the address.
+	flt := s.requestAsksFilter(r, nil)
+	v := url.Values{}
 	if ok {
-		to += "?" + asksSearchParam + "=" + url.QueryEscape(raw)
+		v.Set(asksSearchParam, raw)
+	}
+	flt.into(v)
+	to := attentionPath
+	if len(v) > 0 {
+		to += "?" + v.Encode()
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
@@ -341,7 +348,7 @@ func (s *Server) writeAsksSearchLive(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, _ = io.WriteString(w, asksSearchHTML(raw, s.searchAsks(r.Context(), q), s.now()))
+	_, _ = io.WriteString(w, asksSearchHTML(raw, s.filteredSearch(r.Context(), s.searchAsks(r.Context(), q), flt), s.now()))
 }
 
 // asksSearchRequest is the page request's search, ok false for none (no ?q=,
