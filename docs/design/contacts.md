@@ -273,7 +273,7 @@ muster-server app list                        # gains a "linked with <id>" colum
   transaction, and its audit row names the partner (`unlinked_from`). A
   reinstalled app is a new id, linked only if installed `--link-to` again.
 
-### Schema: migration `0178`
+### Schema: migration `0179`
 
 One row per app, two per pair, so "each app in at most one pair" is
 constraints alone (round 0's simplification; it replaced a `low_id`/`high_id`
