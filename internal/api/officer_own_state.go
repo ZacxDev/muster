@@ -191,15 +191,24 @@ func (s *Server) officerOwnStateTool(ctx context.Context, a agents.Agent, o offi
 // chatPersonPrincipal is ctx acting as person uid, the person in an operator
 // chat with officer o, through the officer door — ok only while uid may
 // decide o's work: o's owner, or a MANAGER of o's team (read now, from uid's
-// own memberships). Row-level security confines what it writes to uid's rows
-// (a card) and the rows uid may write (the officer's queue).
+// own memberships). The principal is uid's on the officer door, with NO team
+// scope (teamVias): row-level security confines what it writes to uid's own
+// rows — the person's officer_chat_cards row — and it writes nothing of the
+// officer's or the team's (a card's decision, made later by the person's own
+// click, is what acts).
+//
+// 🔴 THE ROLE IS READ FROM Teams, NOT TeamScope(): the principal is minted on
+// the officer door, which carries no team scope into the database (teamVias),
+// so TeamScope() is always empty here and refused every team manager — a team
+// officer's chat could never put a confirm card in front of its manager. The
+// memberships are the person's own, read now by principalFor.
 func (s *Server) chatPersonPrincipal(ctx context.Context, o officers.Officer, uid int64) (context.Context, bool) {
 	p := s.principalFor(ctx, uid, authz.ViaOfficer)
 	if p.Team || p.UserID != uid {
 		return ctx, false
 	}
 	if uid != o.Owner {
-		if role, in := p.TeamScope().RoleIn(o.Owner); !in || role != authz.TeamManager {
+		if role, in := p.Teams.RoleIn(o.Owner); !in || role != authz.TeamManager {
 			return ctx, false
 		}
 	}
