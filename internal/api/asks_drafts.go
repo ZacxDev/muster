@@ -440,6 +440,10 @@ func askMergedDraftCardHTML(it attentionItem, now time.Time) string {
 	}
 	place := cardPlace{back: attentionPath, card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff, feedKey: it.Key}
 	place.requestContext, place.requestFooter = askRequestPartsHTML(it, now)
+	// THE FEED'S FACE: its head links to the request's page (where the video
+	// plays full size), and its media are the feed's thumbnails; its text is
+	// whole, and its Approve binds the body and media it is drawn from.
+	place.headHref, place.feedMedia = firstNonBlank(it.page, askPagePath(it.AskID)), true
 	return draftCardHTMLIn(c, now, place)
 }
 

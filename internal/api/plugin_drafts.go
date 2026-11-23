@@ -1043,7 +1043,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	}
 	b.WriteString(`<li id="` + esc(anchor) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + feed + ` tabindex="-1" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-` + ui.AsksHeadHTML(ui.AsksHead{Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+stepUpHiddenHTML(who)+`</span>`, age), Chip: ui.DraftIDChipHTML(d.ID)}) + `
+` + ui.AsksHeadHTML(ui.AsksHead{ID: anchor, Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+stepUpHiddenHTML(who)+`</span>`, age), Chip: ui.DraftIDChipHTML(d.ID), Href: p.headHref}) + `
 `)
 	// Its confirm asks, under the id chip (draftConfirmAsksHTML): the asks
 	// whose step-up card is bound to this draft, each a link to its page.
@@ -1077,7 +1077,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	// point a visible flag and every look-alike word marked
 	// (stepUp{Hidden,Marked}HTML), never cut to an excerpt.
 	b.WriteString(`<div class="flex min-w-0 flex-col gap-2" data-draft-text data-runes="` + runes + `">
-` + stepUpPostHTML(draftPostCard(c), false) + `</div>
+` + stepUpPostHTMLWith(draftPostCard(c), false, p.feedMedia) + `</div>
 `)
 	for _, ref := range d.MediaRefs {
 		if _, ok := d.MediaFor(ref); !ok {

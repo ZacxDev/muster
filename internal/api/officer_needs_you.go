@@ -86,6 +86,11 @@ type cardPlace struct {
 	// request's own context row (its why, its ⓘ) and footer (View in
 	// session, Dismiss and its form): askRequestPartsHTML.
 	requestContext, requestFooter string
+	// headHref is that card's head link (the request's page: a tap on the
+	// card, its media thumbnails included, opens it), and feedMedia draws
+	// its media as the feed's thumbnails (stepUpPostHTMLWith).
+	headHref  string
+	feedMedia bool
 }
 
 // backField is the place's hidden `return` field ("" on the Asks page), and

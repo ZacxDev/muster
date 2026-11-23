@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // TestADraftsRequestsFoldIntoOneItemCountedOnce: two open requests for one
@@ -80,5 +81,49 @@ func TestAnExpiredUnsweptRequestIsNotADraftsRequest(t *testing.T) {
 	a.ExpiresAt = time.Now().Add(time.Hour)
 	if r := draftRequestOf(a); r == nil {
 		t.Error("control: an unexpired open ask is not a request")
+	}
+}
+
+// TestTheOpenDraftCardDrawsMediaAsTheFeedDoes (CI: draft-video.spec): on the
+// Open feed a request drawn as its draft's card draws its media as the feed
+// did — a video as a muted thumbnail under a play mark (no native player in a
+// thumbnail's box: the operator's "the embedded video player is showing
+// broken videos"), an image as a feed thumbnail — while its text stays whole,
+// its Approve stays bound to the body and media, and its head is the link to
+// the request's page (a tap on the thumbnail opens it, where the video plays).
+// The Drafts tab's card keeps the full-size player.
+//
+// RED AT 0b9ac3c: the merged card drew <video controls> full size.
+func TestTheOpenDraftCardDrawsMediaAsTheFeedDoes(t *testing.T) {
+	now := time.Now()
+	body := strings.Repeat("A long launch post, every word of it shown. ", 20)
+	d := plugins.Draft{ID: 52, Status: plugins.DraftPending, Body: body, CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+	}
+	plugin := int64(9)
+	d.PluginID = &plugin // an outbound post: its Approve binds its media too
+	d.MediaRefs = []string{"launch/film", "launch/hero"}
+	d.Media = []plugins.DraftMedia{{Ref: "launch/film", ContentType: "video/mp4", SHA256: strings.Repeat("1", 64)}, {Ref: "launch/hero", ContentType: "image/png", SHA256: strings.Repeat("2", 64)}}
+	dc := &plugins.DraftCard{Draft: d, PluginLabel: "Inbox"}
+	it := attentionItem{Kind: attentionKindAsk, Key: attentionAskKey(8107), AskID: 8107, systemAsk: true, page: askPagePath(8107), stepUpDraft: dc,
+		stepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post it? · Draft #52", Why: "W", DraftID: 52}}
+	card := askMergedDraftCardHTML(it, now)
+	if card == "" {
+		t.Fatal("the request is not drawn as its draft's card")
+	}
+	for _, want := range []string{"data-stepup-video-thumb", `data-stepup-image`, `href="/attention/asks/8107"`, "data-asks-card-link",
+		`<li id="ask-8107"`, strings.TrimSpace(body[:60])} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the Open card lacks %q", want)
+		}
+	}
+	if strings.Contains(card, "<video controls") {
+		t.Error("the Open card draws a full-size video player")
+	}
+	if !strings.Contains(card, strings.Repeat("1", 64)+","+strings.Repeat("2", 64)) {
+		t.Error("the Open card's Approve is not bound to the media")
+	}
+	tab := draftCardHTMLAt(*dc, now)
+	if !strings.Contains(tab, "<video controls") || strings.Contains(tab, "data-stepup-video-thumb") {
+		t.Error("the Drafts tab's card lost its full-size player")
 	}
 }
