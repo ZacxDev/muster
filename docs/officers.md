@@ -1569,6 +1569,25 @@ instance gets the tool error "this HQ has no claim-next; call officer_items
 and officer_claim{item_id}" — muster does not pick an item itself. With an
 `item_id` the claim is exactly as before.
 
+**A builtin officer's claim carries its drafts' current state.** When a
+[builtin](officers-builtin.md) officer whose type grants `outbound_drafts`
+claims an item (claim-next or by id), the answer also has `draft_state`:
+muster's record of that officer's outbound drafts, read at the claim
+(`read_at`). An instance can resume one long conversation across many
+wakes, so what it remembers about an earlier draft can be out of date: its
+`about` says this record overrides that memory.
+
+| field | what |
+|---|---|
+| `live` | every draft that can still go out: `pending`, or `approved` (`claimed: true` while its plugin posts it; a retry's queued attempt carries `retry_of` and `attempt`), newest first |
+| `ended` | the drafts that ended in the last 24 hours (`ended_window_hours`), at most 20 (`ended_max`), newest first: refused by its plugin's check (`refused_by_check`), rejected by the owner, failed, expired, superseded, unconfirmed or sent, with `ended_at` |
+| each draft | `draft_id`, `item_id`, `venue`, `target`, `status`, `check_state`, `decided_at`, `created_at` and `body_sha256` (the SHA-256 of its exact text: never the text itself, to keep the claim small; `officer_my_state` shows a pending draft's text). An ended one also has `detail` (its plugin's words) and `owner_reason`, each fenced as outside words |
+| `live_truncated`, `ended_truncated` | more drafts matched than are listed |
+
+Only that officer's drafts of that owner are listed (the query's officer and
+owner filters, and row-level security as the owner). If they cannot be read,
+`draft_state` is `{read_at, error}` and the claim still succeeds.
+
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
 conflict: HQ refuses a claim on any live lease, the caller's own included, and
