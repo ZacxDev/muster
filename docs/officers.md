@@ -1588,7 +1588,8 @@ they carry the same `draft_state`.
 | `live_truncated`, `ended_truncated` | more drafts matched than are listed |
 
 Only that officer's drafts of that owner are listed (the query's officer and
-owner filters, and row-level security as the owner). If they cannot be read,
+owner filters, and row-level security as the owner). If the drafts or the
+type's grant cannot be read, or the reads take longer than 3 seconds,
 `draft_state` is `{read_at, error}` and the list or claim still succeeds.
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is

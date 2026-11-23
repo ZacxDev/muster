@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // FRESH DRAFT STATE WITH THE WORK (officer_draft_state.go): a builtin
@@ -458,4 +461,101 @@ func TestAClaimsEndedDraftsAreBoundedByTimeAndCount(t *testing.T) {
 			t.Fatalf("ended[%d] is draft %d; want %d (newest first): %v", i, d.DraftID, want, stateIDs(st.Ended))
 		}
 	}
+}
+
+// wantUnreadableState asserts out (officer_items' or officer_claim's answer,
+// what) succeeded and its draft_state is exactly {read_at, error}: read_at
+// this answer's, error muster's words for an unreadable state.
+func wantUnreadableState(t *testing.T, what, out string) {
+	t.Helper()
+	var got struct {
+		Items json.RawMessage            `json:"items"`
+		Item  json.RawMessage            `json:"item"`
+		State map[string]json.RawMessage `json:"draft_state"`
+	}
+	if isToolErr(out) || json.Unmarshal([]byte(out), &got) != nil {
+		t.Fatalf("%s did not succeed: %s", what, out)
+	}
+	if what == "the claim" && (len(got.Item) == 0 || string(got.Item) == "null") || what == "the list" && len(got.Items) == 0 {
+		t.Fatalf("%s carries no item(s): %s", what, out)
+	}
+	if len(got.State) != 2 || got.State["read_at"] == nil || got.State["error"] == nil {
+		t.Fatalf("%s's draft_state is not {read_at, error}: %s", what, out)
+	}
+	var msg string
+	var at time.Time
+	_ = json.Unmarshal(got.State["error"], &msg)
+	if err := json.Unmarshal(got.State["read_at"], &at); err != nil || time.Since(at) < 0 || time.Since(at) > time.Minute {
+		t.Fatalf("%s's read_at %s (%v) is not this answer's", what, got.State["read_at"], err)
+	}
+	if msg != "muster could not read your drafts just now: call officer_my_state before deciding anything about an earlier draft, and do not decide it from memory" {
+		t.Fatalf("%s's error: %q", what, msg)
+	}
+}
+
+// listAndClaimWith lists the world's items and claims a fresh one, both with
+// ctx's draft_state reads: the two raw answers.
+func (w *outboundWorld) listAndClaimWith(r draftStateReads, subject string) (string, string) {
+	w.t.Helper()
+	item, _, err := w.store.Enqueue(w.ctx, 1, builtin.NewItem{Officer: builtinOfficerID, Kind: "plugin.post", SubjectKey: subject}, time.Now())
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	ctx := withDraftStateReads(w.ctx, r)
+	list := w.srv.dispatchAgentTool(ctx, w.agent, officers.ToolItems, `{}`)
+	claim := w.srv.dispatchAgentTool(ctx, w.agent, officers.ToolClaim, `{"item_id":"`+strconv.FormatInt(item, 10)+`"}`)
+	return list, claim
+}
+
+// TestAnUnreadableDraftStateStillListsAndClaims: when the drafts cannot be
+// read, the list and the claim still succeed — the claim claims its item —
+// and each says draft_state could not be read, as {read_at, error}.
+func TestAnUnreadableDraftStateStillListsAndClaims(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	w.filePost("A draft that is out.")
+	list, claim := w.listAndClaimWith(draftStateReads{state: func(context.Context, officers.Officer, time.Time) (plugins.DraftState, error) {
+		return plugins.DraftState{}, errors.New("the database went away")
+	}}, "x:unreadable")
+	wantUnreadableState(t, "the list", list)
+	wantUnreadableState(t, "the claim", claim)
+}
+
+// TestAnUnreadableGrantSaysSoRatherThanDroppingDraftState: when the type's
+// outbound_drafts grant cannot be read, draft_state is {read_at, error} on
+// the list and the claim — not missing, which would read as "no drafts". The
+// control: a grant read that answers false (no grant) leaves draft_state out.
+func TestAnUnreadableGrantSaysSoRatherThanDroppingDraftState(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	list, claim := w.listAndClaimWith(draftStateReads{grant: func(context.Context, officers.Officer) (bool, error) {
+		return false, errors.New("the type could not be read")
+	}}, "x:grant-unreadable")
+	wantUnreadableState(t, "the list", list)
+	wantUnreadableState(t, "the claim", claim)
+	list, claim = w.listAndClaimWith(draftStateReads{grant: func(context.Context, officers.Officer) (bool, error) { return false, nil }}, "x:no-grant")
+	for what, out := range map[string]string{"the list": list, "the claim": claim} {
+		if isToolErr(out) || strings.Contains(out, `"draft_state"`) {
+			t.Fatalf("control: %s without the grant: %s; want it to succeed with no draft_state", what, out)
+		}
+	}
+}
+
+// TestASlowDraftStateReadRunsOutOfTime: a drafts read that would take 10
+// seconds is cut at the reads' deadline (50ms here), and the claim answers
+// at once with draft_state {read_at, error}, its item claimed.
+func TestASlowDraftStateReadRunsOutOfTime(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	slow := func(ctx context.Context, _ officers.Officer, now time.Time) (plugins.DraftState, error) {
+		select {
+		case <-ctx.Done():
+			return plugins.DraftState{}, ctx.Err()
+		case <-time.After(10 * time.Second):
+			return plugins.DraftState{ReadAt: now}, nil
+		}
+	}
+	start := time.Now()
+	_, claim := w.listAndClaimWith(draftStateReads{state: slow, timeout: 50 * time.Millisecond}, "x:slow")
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the list and the claim took %v: the slow read held them", took)
+	}
+	wantUnreadableState(t, "the claim", claim)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -95,19 +96,83 @@ func draftStateOf(d plugins.Draft, ended bool, nonce string) draftStateEntry {
 	return e
 }
 
-// officerDraftState is officer o's draft_state, read now as its owner.
-// Unreadable, it says so (and where to look) rather than failing the list or the claim.
+// draftStateTimeout bounds draft_state's reads (the type's grant and the
+// drafts): a slow database answers {read_at, error} rather than holding the
+// list or the claim answer.
+const draftStateTimeout = 3 * time.Second
+
+// draftStateReads are the reads draft_state takes — grant: whether o's type
+// grants outbound_drafts; state: o's drafts — and their deadline. A test can
+// swap any of them for one call (withDraftStateReads); a nil field is the
+// production read (Server.draftStateReadsFor).
+type draftStateReads struct {
+	grant   func(ctx context.Context, o officers.Officer) (bool, error)
+	state   func(ctx context.Context, o officers.Officer, now time.Time) (plugins.DraftState, error)
+	timeout time.Duration
+}
+
+type draftStateReadsKey struct{}
+
+// withDraftStateReads is ctx with r's non-nil reads replacing production's
+// for draft_state (tests only: nothing in production sets it).
+func withDraftStateReads(ctx context.Context, r draftStateReads) context.Context {
+	return context.WithValue(ctx, draftStateReadsKey{}, r)
+}
+
+// draftStateReadsFor is the reads draft_state takes for ctx: production's
+// (ps, the officer store, draftStateTimeout), with any a test set for ctx.
+func (s *Server) draftStateReadsFor(ctx context.Context, ps *plugins.PGStore) draftStateReads {
+	r, _ := ctx.Value(draftStateReadsKey{}).(draftStateReads)
+	if r.grant == nil {
+		// officerOutboundGranted's read, its error kept (that gate logs and
+		// answers false; here an unreadable grant is said, not dropped).
+		r.grant = func(ctx context.Context, o officers.Officer) (bool, error) {
+			return s.officerStore.TypeGrants(s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID, builtin.CapOutboundDrafts)
+		}
+	}
+	if r.state == nil {
+		r.state = func(ctx context.Context, o officers.Officer, now time.Time) (plugins.DraftState, error) {
+			return ps.OfficerDraftState(s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID, now)
+		}
+	}
+	if r.timeout <= 0 {
+		r.timeout = draftStateTimeout
+	}
+	return r
+}
+
+// draftStateUnreadable is draft_state when a read failed or ran out of time.
+func draftStateUnreadable(now time.Time) map[string]any {
+	return map[string]any{"read_at": now.UTC(), "error": "muster could not read your drafts just now: call " + officers.ToolMyState +
+		" before deciding anything about an earlier draft, and do not decide it from memory"}
+}
+
+// officerDraftState is builtin officer o's draft_state, read now as its
+// owner within the reads' deadline: nil when o's type does not grant
+// outbound_drafts (or plugins are not the Postgres store), and
+// draftStateUnreadable when the grant or the drafts could not be read —
+// never an error that fails the list or the claim.
 func (s *Server) officerDraftState(ctx context.Context, o officers.Officer) map[string]any {
 	ps, ok := s.ext.Plugins.(*plugins.PGStore)
-	if !ok {
+	if !ok || s.officerStore == nil || !o.IsBuiltin() {
 		return nil
 	}
+	r := s.draftStateReadsFor(ctx, ps)
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
 	now := s.officerNow()
-	st, err := ps.OfficerDraftState(s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID, now)
+	granted, err := r.grant(ctx, o)
+	if err != nil {
+		s.logger.Printf("officers: %s: its type's outbound_drafts grant could not be read for its draft state: %v", o.ID, err)
+		return draftStateUnreadable(now)
+	}
+	if !granted {
+		return nil
+	}
+	st, err := r.state(ctx, o, now)
 	if err != nil {
 		s.logger.Printf("officers: %s: its draft state could not be read: %v", o.ID, err)
-		return map[string]any{"read_at": now.UTC(), "error": "muster could not read your drafts just now: call " + officers.ToolMyState +
-			" before deciding anything about an earlier draft, and do not decide it from memory"}
+		return draftStateUnreadable(now)
 	}
 	nonce := fence.NewNonce()
 	live, ended := []draftStateEntry{}, []draftStateEntry{}
@@ -124,10 +189,11 @@ func (s *Server) officerDraftState(ctx context.Context, o officers.Officer) map[
 
 // withDraftState is officer_items' or officer_claim's answer body (tool
 // name) for officer o with draft_state added (officerDraftState): only for a
-// builtin officer whose type grants outbound_drafts, and on a claim only when
-// an item was claimed. Any other body is returned unchanged.
+// builtin officer whose type grants outbound_drafts (or whose grant could
+// not be read: then draft_state says so), and on a claim only when an item
+// was claimed. Any other body is returned unchanged.
 func (s *Server) withDraftState(ctx context.Context, o officers.Officer, name string, body []byte) []byte {
-	if (name != officers.ToolItems && name != officers.ToolClaim) || !o.IsBuiltin() || !s.officerOutboundGranted(ctx, o) {
+	if (name != officers.ToolItems && name != officers.ToolClaim) || !o.IsBuiltin() {
 		return body
 	}
 	var m map[string]json.RawMessage
