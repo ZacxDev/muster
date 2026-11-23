@@ -303,6 +303,8 @@ var bannerLedger = []string{
 	envHookToken,
 	// The metrics listener: one line, both directions.
 	envMetricsPort,
+	// The public pages listener: one line, both directions, naming both.
+	envPagesPublicListen, envPagesPublicURL,
 	envServiceToken,
 	envRouterURL,
 	// The approval relay's own gate: its off-state is "every claude-code prompt
@@ -858,6 +860,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		UIPassword:          strings.Repeat("p", 40),
 		SecureCookies:       true,
 		MetricsPort:         18193,
+		PagesPublicListen:   ":18194",
+		PagesPublicPort:     18194,
+		PagesPublicURL:      "https://pages.example.invalid",
 		AndroidAllowPINKeys: true,
 		HookToken:           "hook",
 		ServiceToken:        strings.Repeat("s", 40),

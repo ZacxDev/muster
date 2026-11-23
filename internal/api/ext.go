@@ -205,6 +205,12 @@ type Extensions struct {
 	// (wsAllowedOrigins), for proxy setups that rewrite Host. "" accepts only
 	// the request's own Host.
 	PublicURL string
+	// PagesPublicURL is MUSTER_PAGES_PUBLIC_URL: the base of every share
+	// link's address (pageLinkURL) when the public pages listener is on
+	// (PagesPublicSurface). "" (the default): links are under PublicURL.
+	// Nothing else is: the owner's own view, sign-in and every other link
+	// stay under PublicURL.
+	PagesPublicURL string
 	// NotifyLinkHosts is MUSTER_NOTIFY_LINK_HOSTS, parsed (lower-case, exact
 	// host names): the only external hosts a notify_owner link may open
 	// (notify_owner.go, notifyLinkFor). Empty (the default): muster paths only.

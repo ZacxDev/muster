@@ -33,6 +33,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -348,6 +349,12 @@ const (
 	// The bytes one page's files may hold in all (pages.DefaultUploadBytesPerPage
 	// when unset), a byte count from 1 MiB to 100 GiB.
 	envPagesUploadBytes = "MUSTER_PAGES_UPLOAD_BYTES"
+	// The public pages listener (api.PagesPublicSurface): an address,
+	// `[host]:port`, on which ONLY share links are served, and the base URL
+	// the links handed on are written under. Both or neither, and only with
+	// MUSTER_PAGES=1.
+	envPagesPublicListen = "MUSTER_PAGES_PUBLIC_LISTEN"
+	envPagesPublicURL    = "MUSTER_PAGES_PUBLIC_URL"
 
 	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
 	// account usage"; ccusage_config.go parses them): its switch (off by
@@ -989,6 +996,13 @@ type config struct {
 	Pages bool
 	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES (0: the default).
 	PagesUploadBytes int64
+	// PagesPublicListen is MUSTER_PAGES_PUBLIC_LISTEN, the public pages
+	// listener's address ("" : none), and PagesPublicPort its port.
+	PagesPublicListen string
+	PagesPublicPort   int
+	// PagesPublicURL is MUSTER_PAGES_PUBLIC_URL without a trailing slash: the
+	// base of every share link's address while the listener is on.
+	PagesPublicURL string
 
 	// CCUsage is the Claude account usage poller's (ccusage_config.go).
 	CCUsage ccUsageConfig
@@ -2166,6 +2180,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.PagesUploadBytes = n
 	}
+	if v := strings.TrimSpace(getenv(envPagesPublicListen)); v != "" {
+		_, port, err := net.SplitHostPort(v)
+		p, perr := strconv.Atoi(port)
+		if err != nil || perr != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: want [host]:port with a numeric port 1-65535, e.g. :8108", envPagesPublicListen, v)
+		}
+		c.PagesPublicListen, c.PagesPublicPort = v, p
+	}
+	c.PagesPublicURL = strings.TrimRight(strings.TrimSpace(getenv(envPagesPublicURL)), "/")
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
 		return config{}, err
 	}
@@ -2726,6 +2749,40 @@ func isHexDigits(v string) bool {
 // than an inconsistency: the assembly path and the deployment policy are
 // separate claims, and the boot test needs the first without the second. The
 // policy is HERE, it is tested, and main() applies it.
+// validatePagesPublic checks the public pages listener's pair: both or
+// neither, only with pages on, a port of its own, and a link base a client
+// outside the owner's network can use (https, or http to this machine for a
+// local test), with no path, query or credentials.
+func (c config) validatePagesPublic() error {
+	if c.PagesPublicListen == "" && c.PagesPublicURL == "" {
+		return nil
+	}
+	if c.PagesPublicListen == "" || c.PagesPublicURL == "" {
+		return fmt.Errorf("%s and %s are a pair and only one is set (%s=%s, %s=%s): the listener serves the links "+
+			"only if they are written under its address, and the address works only if the listener is there. Set both or neither",
+			envPagesPublicListen, envPagesPublicURL, envPagesPublicListen, presence(c.PagesPublicListen), envPagesPublicURL, presence(c.PagesPublicURL))
+	}
+	if !c.Pages {
+		return fmt.Errorf("%s is set but %s is not: the public pages listener would serve only refusals. Set %s=1, or unset %s and %s",
+			envPagesPublicListen, envPages, envPages, envPagesPublicListen, envPagesPublicURL)
+	}
+	for _, o := range []struct {
+		env  string
+		port int
+	}{{envPort, c.Port}, {envBrowserPort, c.BrowserPort}, {envConnectPort, c.ConnectPort}, {envMetricsPort, c.MetricsPort}} {
+		if o.port != 0 && o.port == c.PagesPublicPort {
+			return fmt.Errorf("%s=%s collides with %s=%d: the public pages listener gets a port of its own", envPagesPublicListen, c.PagesPublicListen, o.env, o.port)
+		}
+	}
+	u, err := url.Parse(c.PagesPublicURL)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") ||
+		!(u.Scheme == "https" || u.Scheme == "http" && loopback.Host(u.Hostname())) {
+		return fmt.Errorf("invalid %s %q: want an https:// origin with no path, query or credentials, e.g. https://pages.example.com "+
+			"(http:// only to this machine)", envPagesPublicURL, c.PagesPublicURL)
+	}
+	return nil
+}
+
 func (c config) validate() error {
 	// Accounts PR 6: an `mst_` value on the machine tier is a personal API
 	// token or nothing, so neither shared secret may live in that namespace —
@@ -2856,6 +2913,9 @@ func (c config) validate() error {
 //
 // An EMPTY or blank value is unset: a Secret whose key holds "" arms nothing.
 func (c config) validateListeners() error {
+	if err := c.validatePagesPublic(); err != nil {
+		return err
+	}
 	if c.MetricsPort != 0 && (c.MetricsPort == c.Port || c.MetricsPort == c.BrowserPort || c.MetricsPort == c.ConnectPort) {
 		return fmt.Errorf("%s=%d collides with another listener's port: /metrics gets a listener of its own", envMetricsPort, c.MetricsPort)
 	}

@@ -44,6 +44,7 @@ flowchart LR
 | browser | `MUSTER_BROWSER_PORT` | Browser sessions in gotrue mode. The shared secrets are refused here. |
 | connect | `MUSTER_CONNECT_PORT` | Only the routes agents need: connectors, approvals, MCP and `/health`. |
 | metrics | `MUSTER_METRICS_PORT` | `GET /metrics` (Prometheus) and nothing else. Unset: `/metrics` is served nowhere. |
+| public pages | `MUSTER_PAGES_PUBLIC_LISTEN` | Only share links: a link's page, its files and a viewer's responses ([pages.md](pages.md#sharing-with-people-outside-your-network)). Only an allowlist of request headers reaches muster through it, never a cookie or a credential, and it has its own read, write and idle timeouts. Unset: there is none. |
 
 The server does not start without `MUSTER_HOOK_TOKEN`
 ([configuration.md](configuration.md#muster-server-sign-in-and-machine-credentials)).

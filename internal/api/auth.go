@@ -348,7 +348,7 @@ func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		s.logger.Printf("refused a cross-origin %s %s (Origin %q)", r.Method, r.URL.Path, r.Header.Get("Origin"))
+		s.logger.Printf("refused a cross-origin %s %s (Origin %q)", r.Method, accessLogPath(r.URL), r.Header.Get("Origin"))
 		s.refuseCrossOrigin(w, r)
 	}
 }
@@ -635,7 +635,7 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if isWriteRequest(r) {
-		s.logger.Printf(ServiceTierLogPrefix+"%s %s attributed to %q", r.Method, r.URL.Path, actor)
+		s.logger.Printf(ServiceTierLogPrefix+"%s %s attributed to %q", r.Method, accessLogPath(r.URL), actor)
 	}
 	s.admit(w, r.WithContext(context.WithValue(r.Context(), serviceActorCtxKey{}, actor)), next,
 		s.principalFor(r.Context(), machineUserID(), authz.ViaService))

@@ -91,7 +91,7 @@ func (s *Server) refusePluginOriginHosts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if plugins.AnyMatchesHost(s.ext.PluginOrigins, r.Host) {
 			metrics.PluginOriginRefusals.Inc()
-			s.logger.Printf("refused %s %s for Host %q: it is under MUSTER_PLUGIN_ORIGINS (421)", r.Method, r.URL.Path, r.Host)
+			s.logger.Printf("refused %s %s for Host %q: it is under MUSTER_PLUGIN_ORIGINS (421)", r.Method, accessLogPath(r.URL), r.Host)
 			h := w.Header()
 			h.Set("Content-Type", "text/plain; charset=utf-8")
 			h.Set("X-Content-Type-Options", "nosniff")
@@ -111,7 +111,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				metrics.Panics.WithLabelValues("http").Inc()
-				s.logger.Printf("PANIC %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				s.logger.Printf("PANIC %s %s: %v\n%s", r.Method, accessLogPath(r.URL), rec, debug.Stack())
 				// Best-effort 500; if the handler already wrote a header this is a no-op.
 				w.WriteHeader(http.StatusInternalServerError)
 			}
@@ -362,7 +362,10 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 //
 // The same holds for the invite and reset links (accounts PR 5): their tokens
 // ride in the fragment too, and a hand-made path form is cut the same way.
-// accessLogPath is a request's path as the access log writes it.
+// accessLogPath is a request's path as the access log writes it — and as
+// every other log line that names a request's path must (the 421 refusal, a
+// recovered panic, the refusals in auth.go and connectors.go): a share
+// link's token, a claim or an invite is a credential wherever it is logged.
 //
 // 🔴 REDACT ON THE DECODED PATH, THEN ESCAPE. Redaction must see the path the
 // mux routes on — the DECODED one — or `/auth/%63laim/<token>` (which reaches

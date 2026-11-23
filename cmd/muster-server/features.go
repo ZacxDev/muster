@@ -196,7 +196,7 @@ func featureCatalog() []features.Feature {
 			OneLine:     "Agents make pages for you, such as showcases and forms, that you can share with a link.",
 			Description: "Agents publish pages for you — showcases, questions, forms, uploads, custom script in a sandbox — and share them with a link anyone can open (asking you first, unless you let your agents share without asking on Account).",
 			Enable:      []features.Var{is(envPages, "1")},
-			Settings:    []string{envPublicURL, envPagesUploadBytes, envConnectorEncKey}},
+			Settings:    []string{envPublicURL, envPagesUploadBytes, envConnectorEncKey, envPagesPublicListen, envPagesPublicURL}},
 		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			PlainName:   "Plugins",
 			OneLine:     "Other apps send messages to your chief, which drafts replies for you to approve.",

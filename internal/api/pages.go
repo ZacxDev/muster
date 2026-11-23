@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -64,7 +65,9 @@ const pageLinkGone = "This link does not exist, or no longer works.\n"
 // a test can lower them.
 var (
 	// pageMissLimit: failed lookups per client address per pageLimitWindow,
-	// then 429 without touching the database.
+	// then 429. On the public pages listener the 429 comes BEFORE any lookup,
+	// so a guesser there cannot make the database work; on muster's own
+	// listeners the lookup comes first (requirePageLink says why).
 	pageMissLimit = 60
 	// pageSubmitLimit and pageUploadLimit: per link per pageLimitWindow.
 	pageSubmitLimit = 20
@@ -178,10 +181,16 @@ func pageRouteLabel(r *http.Request) string {
 // owner through authz.ViaPageLink, with the link on its context.
 //
 // 🔴 NO OTHER CREDENTIAL IS READ: not a session cookie, not a bearer. The
-// failure limit counts only failed lookups, per client address, and is
-// applied only to a token that does NOT resolve: the lookup comes first, so
-// an address that is throttled (a shared NAT, one guesser behind it) still
-// opens a live link, and only its misses are answered 429.
+// failure limit counts only failed lookups, per client address. WHERE it is
+// checked depends on the listener:
+//   - on the PUBLIC pages listener (PagesPublicSurface), which can face the
+//     internet, BEFORE the lookup: an address past it is answered 429 for the
+//     window without the database being asked anything, whatever token it
+//     sends. The cost, accepted there: a viewer behind the same address as a
+//     guesser (a shared NAT) cannot open even a live link until it passes.
+//   - on muster's own listeners, AFTER it, and only for a token that does not
+//     resolve: an address that is throttled still opens a live link, and only
+//     its misses are answered 429 (TestAThrottledAddressStillOpensALiveLink).
 func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		route := pageRouteLabel(r)
@@ -190,15 +199,24 @@ func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		key := clientIP(r)
+		throttled := func() bool {
+			if s.pageState.misses.count(key, s.now(), pageLimitWindow) < pageMissLimit {
+				return false
+			}
+			metrics.PageLinkRequests.WithLabelValues(route, "throttled").Inc()
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "Too many requests for links that do not exist. Wait a minute.", http.StatusTooManyRequests)
+			return true
+		}
+		if viaPagesPublic(r) && throttled() {
+			return
+		}
 		l, err := s.ext.Pages.LinkByToken(r.Context(), r.PathValue("token"))
 		if err != nil {
 			if !errors.Is(err, pages.ErrLinkNotFound) {
 				s.logger.Printf("pages: link lookup failed: %v", err)
 			}
-			if s.pageState.misses.count(key, s.now(), pageLimitWindow) >= pageMissLimit {
-				metrics.PageLinkRequests.WithLabelValues(route, "throttled").Inc()
-				w.Header().Set("Retry-After", "60")
-				http.Error(w, "Too many requests for links that do not exist. Wait a minute.", http.StatusTooManyRequests)
+			if throttled() {
 				return
 			}
 			s.pageState.misses.add(key, s.now(), pageLimitWindow)
@@ -459,6 +477,10 @@ func (s *Server) pageSubmit(w http.ResponseWriter, r *http.Request, p pageRespon
 		s.pageWriteError(w, http.StatusTooManyRequests, "Too many responses through this link for now. Try again in a minute.")
 		return
 	}
+	// 🔴 A BOUNDED READ: a body that trickles in is cut off at its deadline
+	// (408), on every listener, rather than holding this goroutine and its
+	// connection for as long as the sender likes.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(pageSubmitReadTimeout))
 	r.Body = http.MaxBytesReader(w, r.Body, pageSubmitBodyMax)
 	var in struct {
 		Component string          `json:"component"`
@@ -466,6 +488,10 @@ func (s *Server) pageSubmit(w http.ResponseWriter, r *http.Request, p pageRespon
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		metrics.PageResponses.WithLabelValues(string(pages.KindSubmit), "invalid").Inc()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			s.pageWriteError(w, http.StatusRequestTimeout, "The response took too long to arrive. Send it again.")
+			return
+		}
 		s.pageWriteError(w, http.StatusBadRequest, "The request is not {component, data}, or is too large.")
 		return
 	}
@@ -681,9 +707,16 @@ func pagePath(id int64) string { return pagesPath + "/" + strconv.FormatInt(id, 
 
 // pageLinkURL is a NEW link's address, the once it is shown (the link
 // CreateLink just returned holds its token; no stored link does): absolute
-// under MUSTER_PUBLIC_URL, else a path on this server.
+// under MUSTER_PAGES_PUBLIC_URL when the public pages listener is on, else
+// under MUSTER_PUBLIC_URL, else a path on this server. It is the one place a
+// link's address is made, so the owner's Share, an agent's tools and the
+// page's screen all hand on the same one.
 func (s *Server) pageLinkURL(l pages.Link) string {
-	return strings.TrimRight(s.ext.PublicURL, "/") + pages.LinkPath(l.Token)
+	base := s.ext.PublicURL
+	if s.ext.PagesPublicURL != "" {
+		base = s.ext.PagesPublicURL
+	}
+	return strings.TrimRight(base, "/") + pages.LinkPath(l.Token)
 }
 
 // pageViewPath is the owner's own view of page id (ui.PageViewPath).
@@ -1688,6 +1721,10 @@ type teamPageUploadRevoker interface {
 // pageUploadReadTimeout is how long a stranger's upload has to deliver its
 // whole body: shorter than the composer's (a var so a test can shorten it).
 var pageUploadReadTimeout = time.Minute
+
+// pageSubmitReadTimeout is how long a submit's body (at most
+// pageSubmitBodyMax) has to arrive. A var so a test can shorten it.
+var pageSubmitReadTimeout = 15 * time.Second
 
 // pageUploadQuota is the bytes one page's files may hold in all.
 func (s *Server) pageUploadQuota() int64 {

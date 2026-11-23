@@ -103,6 +103,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Outcomes:        agentoutcome.NewPG(nil),
 		AgentWatchdog:   agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
 		PublicURL:       "http://example.test",
+		PagesPublicURL:  "https://pages.example.test",
 		NotifyLinkHosts: []string{"docs.example.com"},
 		PluginOrigins:   []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
 		ClientAddr: func() *clientaddr.Policy {
