@@ -1561,7 +1561,8 @@ the plugin's words (marker `plugin-reason`, never called yours, and needing no
 sign-in since it carries nothing of yours); the officer gets no
 `draft.refused` item and the item is finished `no_action`. With no wake filed,
 or a line that settles **Not delivered**, the refusal goes back to the officer
-once, as the `draft.refused` item it would have had. A send that fails after
+once, as the `draft.refused` item it would have had (after a line that was not
+delivered, that item names no session: the officer owns the redraft). A send that fails after
 your approval is unchanged: the session is told it could not be sent, and the
 officer gets its `draft.refused` item, which names the same session.
 

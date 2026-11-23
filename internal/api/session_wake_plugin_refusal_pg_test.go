@@ -99,7 +99,12 @@ func TestAPluginRefusalTheSessionNeverReceivesGoesBackToTheOfficerOnce(t *testin
 	w.srv.sendQueueClock = func() time.Time { return time.Now().Add(wakeGiveUp + time.Minute) }
 	t.Cleanup(func() { w.srv.sendQueueClock = nil })
 	w.tick()
-	_, p, ok := w.refusedItemOf(id)
+	follow, p, ok := w.refusedItemOf(id)
+	if ok {
+		if h, s := w.itemRequester(follow); h != "" || s != "" {
+			t.Fatalf("the handed-back follow-up %d names %q/%q; want no session (it was not reached)", follow, h, s)
+		}
+	}
 	if !ok || p["by"] != "plugin" || p["detail"] != pluginRefusalReason || p["body"] != body || p["status"] != "rejected" {
 		t.Fatalf("the undelivered refusal did not go back to the officer as a plugin refusal (follow-up %v, payload %v)", ok, p)
 	}
