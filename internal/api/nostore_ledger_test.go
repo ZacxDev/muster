@@ -126,6 +126,7 @@ var noStoreLiterals = map[string]string{
 	"handleAgentHeader":         "an agent page's status strip, ⋯ menu and notices, live",
 	"handleSessionTagsList":     "a session's tags: the viewer's own, private, and changed by any tab",
 	"refusePageLink":            "a refused share link: one answer for unknown, revoked and expired alike",
+	"refusePagesPublic":         "the public pages listener's one 404 for every path off its allowlist: no shared proxy keeps it",
 	"handlePageLinkAsset":       "a link past its asset-read cap: the refusal (an asset itself is cached, page_assets.go)",
 	"handlePageShare":           "the Share button's answer: a page's live link, a bearer capability",
 	"handlePageShareRotate":     "New link's answer: a page's new live link, a bearer capability",
