@@ -300,8 +300,8 @@ func AsksFilterHTML(name, all string) string {
 // Answer to "Answe" in the queue's 286px card. Every target stays 44px (e2e layout.spec.ts).
 //
 // 🔴 THE ANSWER BOX HAS A LINE OF ITS OWN (operator: "put the
-// your answer text area on its own line … it's squished"). The box row
-// (AskFormBoxRowClass) is a COLUMN: the box, full width
+// your answer text area on its own line … it's squished"). The answer form's
+// box row (AskFormAnswerRowClass) is a COLUMN: the box, full width
 // (AskFormAnswerInputClass), and under it the actions row
 // (AskFormBoxActionsClass) with the mic, Answer and Dismiss. Before, the box
 // shared one row with all three and was left a sliver of a phone card.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"html"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -360,5 +361,109 @@ func TestThePageHasNoShadowButton(t *testing.T) {
 				t.Fatalf("the /mode route: %d", rec.Code)
 			}
 		}
+	}
+}
+
+// TestARefreshOutlivesItsRequest (Y1): the browser goes away (its request's
+// context is cancelled) right after the first instance is stopped — the
+// refresh runs detached from the request, so the briefs are still forgotten,
+// the instance is still started, and its first turn still asks for a new
+// conversation. On the request's context the forget and the start would
+// fail, leaving the instance stopped in its old conversation.
+func TestARefreshOutlivesItsRequest(t *testing.T) {
+	r := newPageRig(t, declRigOpts{pods: true})
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	o := r.officerFor(t, 1, declID)
+	r.enqueue(t, 1, declID, "first")
+	if res := r.pass(t, o); len(res.Decision.Start) != 1 {
+		t.Fatalf("control: the pass started %v", res.Decision.Start)
+	}
+	name := o.InstanceName(1)
+	a, _ := r.agentNamed(name)
+	r.ag.mu.Lock()
+	for i := range r.ag.rows {
+		if r.ag.rows[i].ID == a.ID {
+			r.ag.rows[i].KickedOff, r.ag.rows[i].PendingNote = true, ""
+		}
+	}
+	r.ag.mu.Unlock()
+	briefed(t, declID, map[string]int{name: 1})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.prov.mu.Lock()
+	r.prov.afterStop = cancel // the browser goes away mid-refresh
+	r.prov.mu.Unlock()
+	form := url.Values{"charter": {"Scan the queue; label it; never post."}, "refresh": {"1"}}
+	req := httptest.NewRequest(http.MethodPost, "/officers/"+declID+"/charter", strings.NewReader(form.Encode()))
+	req = req.WithContext(reqCtx)
+	req.Host = "muster.test"
+	req.Header.Set("Cookie", sessionCookieFor(r.s))
+	req.Header.Set("Origin", "http://muster.test")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set(pageUserHeader, "1")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	r.h.ServeHTTP(rec, req)
+	if reqCtx.Err() == nil {
+		t.Fatal("control: the request was never cancelled mid-refresh")
+	}
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/officers/"+declID+"?notice=refreshed" {
+		t.Fatalf("a refresh whose request went away: %d %q %.300s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	var raw string
+	if err := r.f.pool.QueryRow(authz.System(context.Background()), `SELECT charter_briefed::text FROM officer_defs WHERE owner_id = 1 AND officer = $1`, declID).Scan(&raw); err != nil || raw != "{}" {
+		t.Fatalf("charter_briefed = %q (%v); want {}", raw, err)
+	}
+	cur, _ := r.agentNamed(name)
+	rt, ok := agents.TurnRouteFrom(r.s.OfficerTurnContext(context.Background(), cur))
+	if cur.KickedOff || !ok || rt.Header.Get(agents.HeaderCCNewConversation) != "1" {
+		t.Fatalf("the instance is not restarted into a new conversation: kicked_off %v, route %v", cur.KickedOff, ok)
+	}
+}
+
+// TestAMultibyteCharterIsCountedInCharacters (Y2): the limit is 32768
+// CHARACTERS — what the database's length() checks and the editor's
+// maxlength says — so 32768 two-byte characters (65536 bytes) are saved
+// whole; one more is refused with the editor redrawn holding exactly what
+// was SUBMITTED and why, beside it — never the stored charter — and nothing
+// is written.
+func TestAMultibyteCharterIsCountedInCharacters(t *testing.T) {
+	r := rdRig(t)
+	ctx := dbtest.AsOperator(context.Background())
+	full := strings.Repeat("é", 32768)
+	if code, loc := postCharter(t, r, rdA, full, false); code != http.StatusSeeOther || loc != "/officers/"+rdA+"?notice=charter-saved" {
+		t.Fatalf("32768 two-byte characters: %d %q", code, loc)
+	}
+	ty, err := r.store.GetType(ctx, 1, "scout")
+	if err != nil || ty.Charter != full || ty.CharterVersion != 2 {
+		t.Fatalf("stored %d characters at version %d (%v); want all 32768 at version 2", len([]rune(ty.Charter)), ty.CharterVersion, err)
+	}
+	over := strings.Repeat("ü", 32769)
+	rec := r.page(t, 1, http.MethodPost, "/officers/"+rdA+"/charter", url.Values{"charter": {over}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("32769 characters: %d, want 400", rec.Code)
+	}
+	sec := charterSection(t, rec.Body.String())
+	box := regexp.MustCompile(`(?s)<textarea id="officer-charter-text"[^>]*>(.*?)</textarea>`).FindStringSubmatch(sec)
+	if box == nil || box[1] != over {
+		t.Fatalf("the refused Save's editor does not hold the submitted text (it holds %d characters)", len([]rune(func() string {
+			if box == nil {
+				return ""
+			}
+			return box[1]
+		}())))
+	}
+	if !strings.Contains(sec, `data-charter-error>the instructions are over 32768 characters; shorten them</p>`) || !strings.Contains(sec, `data-charter-body open`) {
+		t.Fatalf("the refused Save's editor lacks its problem, or is closed:\n%.600s", sec)
+	}
+	if ty, _ := r.store.GetType(ctx, 1, "scout"); ty.Charter != full || ty.CharterVersion != 2 {
+		t.Fatalf("a refused Save wrote: version %d", ty.CharterVersion)
+	}
+	if !strings.Contains(sec, `maxlength="32768"`) {
+		t.Fatal("the editor's limit is not the server's")
 	}
 }

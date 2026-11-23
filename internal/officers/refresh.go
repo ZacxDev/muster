@@ -2,8 +2,6 @@ package officers
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"sort"
 )
 
@@ -31,16 +29,29 @@ import (
 // as it was), but `between` still runs, so its next start is new too.
 // ---------------------------------------------------------------------------
 
-// RefreshResult is what Refresh did.
+// RefreshResult is what Refresh did, exactly: which instances it restarted,
+// and each thing that did not happen.
 type RefreshResult struct {
-	// Restarted are the names of the instances stopped and started again.
+	// Restarted are the instances stopped and started again.
 	Restarted []string
+	// NotStopped are up instances whose stop failed: still running, in the
+	// conversation they had, and not started again.
+	NotStopped []string
+	// NotStarted are instances stopped and then not started again (their
+	// start failed, or the briefs could not be forgotten): the next pass
+	// starts what the queue needs.
+	NotStarted []string
+	// Unreleased are items a stopped instance held whose release failed: they
+	// go back to the queue when their claim lapses.
+	Unreleased []ItemID
 }
 
 // Refresh stops every up instance of the officer keyed key, releases what
 // each held, runs between once, and starts each again with its first turn.
-// A stop that fails leaves that instance out (it is not started either); a
-// start that fails is reported, the others go ahead.
+// The error is only a read that stopped it before it did anything, or
+// between's failure (nothing stopped is then started); everything else that
+// did not happen is in the result, never folded into an error, so a caller
+// says exactly what failed.
 func (r *Reconciler) Refresh(ctx context.Context, key string, between func(context.Context) error) (RefreshResult, error) {
 	var res RefreshResult
 	o, err := r.reg.Get(key)
@@ -52,7 +63,6 @@ func (r *Reconciler) Refresh(ctx context.Context, key string, between func(conte
 		in   InstanceState
 	}
 	var stopped []up
-	var errs []error
 	claimed, err := r.hq.AllItems(ctx, o, StatusClaimed)
 	if err != nil {
 		return res, err
@@ -69,7 +79,7 @@ func (r *Reconciler) Refresh(ctx context.Context, key string, between func(conte
 			}
 			if err := r.fleet.Stop(ctx, p, in.N); err != nil {
 				r.log.Printf("officers: %s: refresh of instance %s: stop: %v (not restarted)", p.label(), p.InstanceLabel(in.N), err)
-				errs = append(errs, fmt.Errorf("stop %s: %w", in.Name, err))
+				res.NotStopped = append(res.NotStopped, in.Name)
 				continue
 			}
 			for _, it := range claimed {
@@ -78,7 +88,7 @@ func (r *Reconciler) Refresh(ctx context.Context, key string, between func(conte
 				}
 				if err := r.hq.Release(ctx, p, it.ID, it.ClaimedBy); err != nil {
 					r.log.Printf("officers: %s: refresh of instance %s: release item %s: %v", p.label(), p.InstanceLabel(in.N), it.ID, err)
-					errs = append(errs, err)
+					res.Unreleased = append(res.Unreleased, it.ID)
 					continue
 				}
 				r.log.Printf("officers: %s: released item %s: its holder %s is being refreshed", p.label(), it.ID, it.ClaimedBy)
@@ -89,14 +99,17 @@ func (r *Reconciler) Refresh(ctx context.Context, key string, between func(conte
 	if between != nil {
 		if err := between(ctx); err != nil {
 			r.log.Printf("officers: %s: refresh: %v (%d stopped instance(s) not started: the next pass starts what the queue needs)", o.label(), err, len(stopped))
+			for _, u := range stopped {
+				res.NotStarted = append(res.NotStarted, u.in.Name)
+			}
 			r.Due(key)
-			return res, errors.Join(append(errs, err)...)
+			return res, err
 		}
 	}
 	for _, u := range stopped {
 		if err := r.fleet.Start(ctx, u.pool, u.in.N, r.kickoff(ctx, u.pool, u.in.N)); err != nil {
 			r.log.Printf("officers: %s: refresh of instance %s: start: %v (it is stopped)", u.pool.label(), u.pool.InstanceLabel(u.in.N), err)
-			errs = append(errs, fmt.Errorf("start %s: %w", u.in.Name, err))
+			res.NotStarted = append(res.NotStarted, u.in.Name)
 			continue
 		}
 		r.prompted(u.pool, u.in.N)
@@ -104,5 +117,5 @@ func (r *Reconciler) Refresh(ctx context.Context, key string, between func(conte
 		r.log.Printf("officers: %s: REFRESHED instance %s: stopped and started with its first turn", u.pool.label(), u.pool.InstanceLabel(u.in.N))
 	}
 	r.Due(key)
-	return res, errors.Join(errs...)
+	return res, nil
 }

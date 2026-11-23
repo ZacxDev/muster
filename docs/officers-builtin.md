@@ -230,7 +230,13 @@ from version M*. **Read or change them** opens the editor, with two buttons:
   `/clear`; the old transcript is kept). Once it reads its charter again,
   later starts resume that new conversation. An officer that is not running
   is not started; its next start is a new conversation. A machine officer's
-  start is always a new window and conversation.
+  start is always a new window and conversation. The restart carries on if you close the page
+  mid-way. If a copy could not be stopped or started again, the page says
+  how many of each (the instructions are saved either way).
+
+Instructions are at most 32,768 characters (the editor stops there). A
+refused or failed save shows your text again with the reason, never the
+stored instructions.
 
 Each manager's save of a team officer's instructions is in the team's audit
 (`officer.charter.put`).

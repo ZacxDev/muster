@@ -186,6 +186,9 @@ type officerProv struct {
 	destroyed []int64
 	// stopErr, when set, is Stop's answer (nothing is stopped).
 	stopErr error
+	// afterStop, when set, runs after each successful Stop (outside the
+	// lock): a test's deterministic interleaving.
+	afterStop func()
 }
 
 func (p *officerProv) nameOf(id int64) string {
@@ -214,12 +217,17 @@ func (p *officerProv) Start(_ context.Context, id int64) error {
 func (p *officerProv) Stop(_ context.Context, id int64) error {
 	n := p.nameOf(id)
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stopErr != nil {
+		p.mu.Unlock()
 		return p.stopErr
 	}
 	p.stops = append(p.stops, id)
 	p.phase[n] = provision.PhaseStopped
+	after := p.afterStop
+	p.mu.Unlock()
+	if after != nil {
+		after()
+	}
 	return nil
 }
 

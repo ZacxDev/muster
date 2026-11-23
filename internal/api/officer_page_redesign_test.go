@@ -1,11 +1,13 @@
 package api
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -99,6 +101,35 @@ func TestTheAnswerBoxSitsOnALineOfItsOwn(t *testing.T) {
 		}
 		if !strings.Contains(actions, `>Answer</button>`) || strings.Contains(actions, "<textarea") {
 			t.Errorf("%s: Answer is not in the actions row under the box:\n%s", surface, actions)
+		}
+	}
+}
+
+// TestARefreshThatRestartedEverythingSaysSo (G1): what Save and refresh tells
+// the person, from exactly what happened. Every copy restarted and only a
+// piece of held work could not be handed back: a notice that it restarted —
+// never "could not be restarted". A copy not stopped, or not started: a
+// problem naming how many of each. A failure before anything: the retry line.
+func TestARefreshThatRestartedEverythingSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		res           officers.RefreshResult
+		err           error
+		notice, words string
+	}{
+		{"all restarted", officers.RefreshResult{Restarted: []string{"a", "b"}}, nil, "refreshed", ""},
+		{"none running", officers.RefreshResult{}, nil, "refreshed-idle", ""},
+		{"all restarted, work not handed back", officers.RefreshResult{Restarted: []string{"a", "b"}, Unreleased: []officers.ItemID{"7"}}, nil, "refreshed-unreleased", ""},
+		{"one not stopped", officers.RefreshResult{Restarted: []string{"a"}, NotStopped: []string{"b"}}, nil, "",
+			"Saved. 1 of its 2 running copies restarted in a new conversation. 1 could not be stopped and keep their old conversation. Try Save and refresh again to restart the rest."},
+		{"one not started", officers.RefreshResult{Restarted: []string{"a"}, NotStarted: []string{"b"}, Unreleased: []officers.ItemID{"7"}}, nil, "",
+			"Saved. 1 of its 2 running copies restarted in a new conversation. 1 stopped and did not start again; they start with their next work. 1 piece(s) of work they held go back to the queue in a few minutes. Try Save and refresh again to restart the rest."},
+		{"a failure before anything", officers.RefreshResult{}, errors.New("read"), "",
+			"Saved, but it could not be restarted just now: try Save and refresh again in a moment."},
+	} {
+		notice, problem := refreshOutcome(c.res, c.err)
+		if notice != c.notice || problem != c.words {
+			t.Errorf("%s: notice %q problem %q; want %q %q", c.name, notice, problem, c.notice, c.words)
 		}
 	}
 }

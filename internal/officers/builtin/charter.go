@@ -22,8 +22,11 @@ import (
 // are, and the page says so beside the editor.
 // ---------------------------------------------------------------------------
 
-// MaxCharterBytes bounds a charter (officer_types' CHECK, migration 0118).
-const MaxCharterBytes = 32768
+// MaxCharterRunes bounds a charter in CHARACTERS: officer_types' CHECK
+// (migration 0118) is length(charter) <= 32768, and Postgres's length() counts
+// characters, not bytes. The editor's maxlength is the same number (a
+// browser counts UTF-16 units there, so it is never looser).
+const MaxCharterRunes = 32768
 
 // Charter is one officer's type's charter as its page shows it.
 type Charter struct {
@@ -62,15 +65,15 @@ func (s *Store) CharterOf(ctx context.Context, owner int64, officer string) (Cha
 }
 
 // CheckCharter is the store's rule for a charter the page writes: not blank,
-// valid UTF-8, at most MaxCharterBytes. nil when it is one.
+// valid UTF-8, at most MaxCharterRunes characters. nil when it is one.
 func CheckCharter(text string) error {
 	switch {
 	case strings.TrimSpace(text) == "":
 		return fmt.Errorf("%w: write its instructions: they cannot be empty", ErrInvalid)
 	case !utf8.ValidString(text):
 		return fmt.Errorf("%w: the instructions are not valid text", ErrInvalid)
-	case len(text) > MaxCharterBytes:
-		return fmt.Errorf("%w: the instructions are over 32 KiB; shorten them", ErrInvalid)
+	case utf8.RuneCountInString(text) > MaxCharterRunes:
+		return fmt.Errorf("%w: the instructions are over %d characters; shorten them", ErrInvalid, MaxCharterRunes)
 	}
 	return nil
 }
