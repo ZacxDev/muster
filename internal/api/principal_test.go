@@ -457,6 +457,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/openrouter/models",
 		// The chief sessions' model search (chief_session_llm.go): requireSession.
 		"GET /api/chief/openrouter-models",
+		"GET /api/chief/openrouter-models/options",
 		"GET /connectors",
 		"GET /events",
 		// The browser telemetry relay (faro_relay.go): a session, same-origin.

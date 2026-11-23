@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -709,17 +707,3 @@ func TestNoMCPToolClashesWithAnOpencodeBuiltin(t *testing.T) {
 	}
 }
 
-// TestTheRealOpencodeBinaryRunsALane is `ccd opencode-check` (the image's
-// smoke) against the opencode on PATH. ⚠ SKIPPED where there is none, which
-// is CI's test job: the image smoke runs it on the pinned binary there.
-func TestTheRealOpencodeBinaryRunsALane(t *testing.T) {
-	bin, err := exec.LookPath("opencode")
-	if err != nil {
-		t.Skip("no opencode on PATH; cc-smoke runs this check on the image's pinned binary")
-	}
-	old := os.Getenv(envAgentToken)
-	t.Cleanup(func() { os.Setenv(envAgentToken, old) })
-	if err := runOpencodeCheck(bin, execLauncher, t.Logf); err != nil {
-		t.Fatal(err)
-	}
-}
