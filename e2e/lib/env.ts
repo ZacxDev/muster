@@ -610,6 +610,12 @@ export const sessionWakeMirrorMCPPort = port + 495;
 export const chiefOpenRouterPort = port + 620;
 export const chiefOpenRouterConnectPort = port + 621;
 export const chiefOpenRouterCatalogPort = port + 622;
+// tests/officer-page-redesign.spec.ts: an officer page's Instructions, spend
+// bar and answer box — its own password-mode server with a budgeted builtin
+// officer in MUSTER_OFFICERS, and the connect listener a pod officer needs.
+// +496 and +497: clear of the blocks above.
+export const officerPageRedesignPort = port + 496;
+export const officerPageRedesignConnectPort = port + 497;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

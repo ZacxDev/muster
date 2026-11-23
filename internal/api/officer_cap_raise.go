@@ -12,13 +12,16 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
 // "RAISE CAP FOR TODAY" (operator decision: "Yes, today only").
 //
-// On an officer's page, while its daily budget holds it, its OWNER sees one
-// button that raises that budget by one more day's worth (its declared
+// On an officer's page, once today's spend reaches spendNearShare (80%) of
+// its daily budget — and while that budget holds it — its OWNER sees one
+// button (operator decision: "From 80%, for today") that raises
+// that budget by one more day's worth (its declared
 // daily_budget_usd) for the current UTC day only (builtin.Store.RaiseCapToday:
 // a row keyed by the UTC day, so the raise ends at the next UTC midnight with
 // no cleanup job). The wake loop reads the raise on its next pass
@@ -45,8 +48,9 @@ func capRaiseAllowed(ctx context.Context, sc officerScope) bool {
 	return ok && !sc.Team && p.Via == authz.ViaSession && p.UserID == sc.Owner
 }
 
-// capRaiseFormHTML is the held officer's "Raise cap for today" button, for
-// its owner only; "" for anyone else, an officer with no budget, or one
+// capRaiseFormHTML is the "Raise today's limit" button the spend bar draws
+// from spendNearShare of today's limit on (officerRunHTML), for its owner
+// only; "" for anyone else, an officer with no budget, or one
 // already raised MaxCapRaisesPerDay times today.
 func (s *Server) capRaiseFormHTML(ctx context.Context, sc officerScope, id string) string {
 	if !capRaiseAllowed(ctx, sc) {
@@ -64,10 +68,10 @@ func (s *Server) capRaiseFormHTML(ctx context.Context, sc officerScope, id strin
 			html.EscapeString(capResetWords(now)) + `.</p>`
 	}
 	esc := html.EscapeString
-	label := "Raise cap for today: +" + navUSDWords(step) + ", to " + navUSDWords(current+step)
-	return `<form method="POST" action="` + esc(officersPagePath+"/"+url.PathEscape(id)+"/raise-cap") + `" class="flex flex-col gap-1" data-cap-raise>` +
-		`<button type="submit" class="` + adminButton + `" data-cap-raise-submit>` + esc(label) + `</button>` +
-		`<span class="text-xs text-fg2">One more day's worth, for today only: it goes back to ` + esc(navUSDWords(step)) + ` at ` + esc(capResetWords(now)) + `.</span></form>`
+	label := "Raise today's limit to " + navUSDWords(current+step)
+	return `<form method="POST" action="` + esc(officersPagePath+"/"+url.PathEscape(id)+"/raise-cap") + `" class="flex flex-col gap-1" data-cap-raise>` + sc.ownerField() +
+		`<button type="submit" class="` + adminButton + ` ` + ui.OfficerRowButtonClass + `" data-cap-raise-submit>` + esc(label) + `</button>` +
+		`<span class="text-xs text-fg2">+` + esc(navUSDWords(step)) + `, for today only: it goes back to ` + esc(navUSDWords(step)) + ` at ` + esc(capResetWords(now)) + `.</span></form>`
 }
 
 // capResetWords is when a raise made at now ends: the next UTC midnight.

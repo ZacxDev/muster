@@ -111,6 +111,13 @@ Names starting `officer-` are reserved. muster's name generator cannot produce
 one (its adjective-noun pool has no such word), and the officer runtime is the
 only code that creates an agent under a fixed name of that shape. An instance
 keeps its namespace, volume and Claude account across stops and starts.
+It keeps its conversation too — every start resumes it — with one exception:
+a builtin officer's instance whose brief muster has no record of
+(`officer_defs.charter_briefed` lacks its name: one never briefed, or one an
+officer page's **Save and refresh** reset) begins its first turn after the
+start in a NEW conversation (`X-Muster-CC-New-Conversation`, as in
+[One conversation per item](#tiers-and-the-llm-proxy); the old transcript is
+kept), so it reads its charter afresh ([An officer's page](officers-builtin.md#an-officers-page)).
 
 ### Account failover
 

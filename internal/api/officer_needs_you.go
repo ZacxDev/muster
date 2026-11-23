@@ -631,10 +631,147 @@ func (s *Server) officerSpentToday(ctx context.Context, owner int64, id string, 
 	return m[builtin.OfficerRef{Owner: owner, Officer: id}], true
 }
 
-// officerRunHTML is the Needs-you section's budget and run controls: today's
-// spend against the cap and "held" once the cap stops it (the cap's own
-// predicate, officers.Officer.OverBudget's rule over the same sum), and — for
-// a viewer who may write — Run now and Pause / Resume.
+// spendNearShare is the share of today's limit from which the spend bar
+// turns amber and offers Raise (operator decision: "From 80%, for
+// today"). THE one place the threshold is written: spendLevelOf reads it.
+const spendNearShare = 0.8
+
+// spendLevel is where today's spend stands against today's limit.
+type spendLevel int
+
+const (
+	// spendUnder: below spendNearShare of the limit, or no limit at all.
+	spendUnder spendLevel = iota
+	// spendNear: from spendNearShare of the limit, not yet held.
+	spendNear
+	// spendHeld: the limit is spent, so the wake loop holds it
+	// (officers.Officer.OverBudget, the cap's own predicate).
+	spendHeld
+)
+
+// spendLevelOf is spent's level against budget (0: no budget, never near).
+func spendLevelOf(spent, budget float64) spendLevel {
+	switch {
+	case budget <= 0:
+		return spendUnder
+	case (officers.Officer{Budget: officers.Budget{DailyUSD: budget}}).OverBudget(spent):
+		return spendHeld
+	case spent >= spendNearShare*budget:
+		return spendNear
+	}
+	return spendUnder
+}
+
+// officerSpend is what the spend bar draws.
+type officerSpend struct {
+	// read: today's spend was read (spent is it).
+	read   bool
+	spent  float64
+	budget float64
+	// raised: today's limit is its owner's raise (officerBudgetOf).
+	raised bool
+	// reset is when today's limit ends ("00:00 UTC").
+	reset string
+	// raise is the Raise form (capRaiseFormHTML), drawn from spendNear on.
+	raise string
+	// week is the last 7 days' usage, for the bar's details ("": none).
+	week string
+}
+
+// officerSpendHTML is the spend bar: "$X of $Y today", one bar amber from
+// spendNearShare and red once held, the Raise form from spendNear on, and the
+// details (raise, reset, the last 7 days) behind a disclosure.
+func officerSpendHTML(sp officerSpend) string {
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<div class="flex flex-col gap-2" id="officer-spend"`)
+	if !sp.read {
+		b.WriteString(` data-spend-level="unread"><p class="text-sm text-fg2" data-run-spend>Today's spend could not be read just now.</p>`)
+		b.WriteString(spendDetailsHTML(sp) + `</div>`)
+		return b.String()
+	}
+	if sp.budget <= 0 {
+		b.WriteString(` data-spend-level="none"><p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f", sp.spent)) + `">` +
+			esc(fmt.Sprintf("$%.2f spent today", sp.spent)) + ` · no daily limit</p>`)
+		b.WriteString(spendDetailsHTML(sp) + `</div>`)
+		return b.String()
+	}
+	level := spendLevelOf(sp.spent, sp.budget)
+	tone, name := ui.ProgressOK, "under"
+	switch level {
+	case spendNear:
+		tone, name = ui.ProgressWarn, "near"
+	case spendHeld:
+		tone, name = ui.ProgressFull, "held"
+	}
+	words := fmt.Sprintf("$%.2f of %s today", sp.spent, navUSDWords(sp.budget))
+	b.WriteString(` data-spend-level="` + name + `"><div class="` + ui.OfficerSpendWordsClass + `"><p class="text-sm font-medium text-fg" data-run-spend="` +
+		esc(fmt.Sprintf("%.2f/%.2f", sp.spent, sp.budget)) + `">` + esc(words) + `</p>` +
+		`<span class="text-xs text-fg2">` + strconv.Itoa(ui.ProgressPercent(sp.spent, sp.budget)) + `%</span></div>`)
+	b.WriteString(ui.ProgressBarHTML(ui.ProgressBar{ID: "officer-spend-bar", Label: "Spent today", Value: sp.spent, Max: sp.budget, ValueText: words, Tone: tone}))
+	switch level {
+	case spendHeld:
+		b.WriteString(`<p class="` + ui.OfficerSpendHeldClass + `" data-run-held>Today's limit is spent, so it is not woken for new work until ` + esc(sp.reset) +
+			`. Run now still wakes it.</p>`)
+	case spendNear:
+		b.WriteString(`<p class="` + ui.OfficerSpendNearClass + `" data-run-near>It is close to today's limit.</p>`)
+	}
+	if level != spendUnder {
+		b.WriteString(sp.raise)
+	}
+	b.WriteString(spendDetailsHTML(sp) + `</div>`)
+	return b.String()
+}
+
+// spendDetailsHTML is the spend bar's details: today's limit and when it
+// resets, a raise when there is one, and the last 7 days' usage (the card
+// that used to stand on its own, "Usage, last 7 days").
+func spendDetailsHTML(sp officerSpend) string {
+	esc := html.EscapeString
+	var lines []string
+	if sp.budget > 0 {
+		if sp.raised {
+			lines = append(lines, "Today's limit is "+navUSDWords(sp.budget)+": you raised it, and it goes back at "+sp.reset+".")
+		} else {
+			lines = append(lines, "Its daily limit is "+navUSDWords(sp.budget)+"; a new day starts at "+sp.reset+".")
+		}
+	}
+	if sp.week != "" {
+		lines = append(lines, sp.week)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<details data-spend-details><summary class="` + ui.OfficerDisclosureClass + `">Spending details</summary><div class="flex flex-col gap-1 pb-1">`)
+	for _, l := range lines {
+		b.WriteString(`<p class="text-sm text-fg2">` + esc(l) + `</p>`)
+	}
+	b.WriteString(`</div></details>`)
+	return b.String()
+}
+
+// officerUsageWeek is the last 7 days' usage in words ("" when none is
+// booked or it cannot be read): what the spend bar's details say.
+func (s *Server) officerUsageWeek(ctx context.Context, owner int64, id string) string {
+	days, err := s.officerStore.ListUsage(ctx, owner, id, 7, s.officerNow())
+	if err != nil || len(days) == 0 {
+		return ""
+	}
+	var cost float64
+	var reqs int64
+	for _, d := range days {
+		cost += d.CostUSD
+		reqs += d.Requests
+	}
+	return fmt.Sprintf("Last 7 days: %d requests · about $%.2f (an estimate at list price).", reqs, cost)
+}
+
+// officerRunHTML is the Needs-you section's spend bar and run controls:
+// today's spend against today's limit (officerSpendHTML), held once the cap
+// stops it (the cap's own predicate, officers.Officer.OverBudget's rule over
+// the same sum), and — for a viewer who may write — Run now and Pause /
+// Resume.
 func (s *Server) officerRunHTML(ctx context.Context, sc officerScope, v declaredOfficerView, controllable bool) string {
 	esc := html.EscapeString
 	if v.Backend != officers.BackendBuiltin {
@@ -643,32 +780,19 @@ func (s *Server) officerRunHTML(ctx context.Context, sc officerScope, v declared
 	now := s.officerNow()
 	budget, raised := s.officerBudgetOf(ctx, sc.Owner, v.ID, now)
 	spent, read := s.officerSpentToday(ctx, sc.Owner, v.ID, now)
-	var b strings.Builder
-	b.WriteString(`<div class="flex flex-col gap-2 rounded-xl bg-bg px-3 py-3 ring-1 ring-inset ring-edge" id="officer-run">`)
-	switch {
-	case !read:
-		b.WriteString(`<p class="text-sm text-fg2" data-run-spend>Today's spend could not be read just now.</p>`)
-	case budget > 0:
-		reset := officers.CapResetAt(now).UTC().Format("15:04 UTC")
-		which := " daily budget."
-		if raised {
-			which = " budget for today (you raised it; it goes back at " + reset + ")."
-		}
-		b.WriteString(`<p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f/%.2f", spent, budget)) + `">Spent today: ` + esc(fmt.Sprintf("$%.2f", spent)) + ` of its ` + esc(navUSDWords(budget)) + esc(which) + `</p>`)
-		if spent >= budget {
-			b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" data-run-held>Held: today's budget is spent, so muster does not wake it for new work until ` +
-				esc(reset) + `. Run now still wakes it: work you give it yourself gets past the cap.</p>`)
-			b.WriteString(s.capRaiseFormHTML(ctx, sc, v.ID))
-		}
-	default:
-		b.WriteString(`<p class="text-sm text-fg" data-run-spend="` + esc(fmt.Sprintf("%.2f", spent)) + `">Spent today: ` + esc(fmt.Sprintf("$%.2f", spent)) + ` (it has no daily budget).</p>`)
+	sp := officerSpend{read: read, spent: spent, budget: budget, raised: raised, reset: capResetWords(now), week: s.officerUsageWeek(ctx, sc.Owner, v.ID)}
+	if read && spendLevelOf(spent, budget) != spendUnder {
+		sp.raise = s.capRaiseFormHTML(ctx, sc, v.ID)
 	}
+	var b strings.Builder
+	b.WriteString(`<div class="flex flex-col gap-3 rounded-xl bg-bg px-3 py-3 ring-1 ring-inset ring-edge" id="officer-run">`)
+	b.WriteString(officerSpendHTML(sp))
 	if controllable {
 		form := func(suffix, label, cls string) string {
 			return `<form method="POST" action="` + esc(officersPagePath+"/"+url.PathEscape(v.ID)+suffix) + `">` + sc.ownerField() +
-				`<button type="submit" class="` + cls + `">` + label + `</button></form>`
+				`<button type="submit" class="` + cls + ` ` + ui.OfficerRowButtonClass + `">` + label + `</button></form>`
 		}
-		b.WriteString(`<div class="flex flex-wrap gap-2" data-run-actions>`)
+		b.WriteString(`<div class="` + ui.OfficerButtonRowClass + `" data-run-actions>`)
 		b.WriteString(form("/run", "Run now", adminButton))
 		if v.Paused != nil && *v.Paused {
 			b.WriteString(form("/resume", "Resume", adminQuiet))

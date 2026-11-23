@@ -101,7 +101,9 @@ for (const size of sizes) {
       await page.waitForURL((u) => u.pathname === `/officers/${id}` && u.searchParams.get('notice') === 'created');
       await expect(page.locator('#officer-notice')).toBeVisible();
       await expect(page.locator('#officer-head h1')).toHaveText(name);
-      await expect(page.locator('#officer-actions button', { hasText: 'Switch to Live' })).toBeVisible();
+      // No Shadow / Live button (the operator): Shadow is a setting.
+      await expect(page.locator('form[action$="/mode"]')).toHaveCount(0);
+      await expect(page.locator('#officer-edit')).toBeVisible();
       await expect(page.locator('#officer-schedules-none')).toBeVisible();
       await noSidewaysScroll(page);
 

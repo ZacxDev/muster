@@ -191,7 +191,8 @@ for (const size of sizes) {
       expect(t0.caps, 'the permission ticked').toEqual(['contacts']);
       const s0 = await schedules(id);
       expect(s0.map((s) => [s.name, s.cron, s.enabled]), 'the schedule chosen').toEqual([['pass', '0 9 * * *', true]]);
-      await expect(page.locator('#officer-actions form[action$="/mode"] input[name=mode]')).toHaveValue('live');
+      // No Shadow / Live button on the page (the operator).
+      await expect(page.locator('form[action$="/mode"]')).toHaveCount(0);
       await expect(page.locator('#officer-schedules [data-schedule="pass"]')).toBeVisible();
       // The raw queue is in the closed Technical details (attached, not shown).
       await expect(page.locator('#officer-queue-empty')).toBeAttached();
@@ -211,11 +212,14 @@ for (const size of sizes) {
       await expect.poll(() => notice(page)).toBe('already-queued');
       await expect(page.locator('#officer-queue [data-item]')).toHaveCount(1);
 
-      // 5. Live; then pause (still Live) and resume.
-      await submitTo(page, '#officer-actions', '/mode');
-      expect((await declared(id)).mode, 'Switch to Live makes it live on the server').toBe('live');
-      await expect.poll(() => notice(page)).toBe('mode-live');
-      await expect(page.locator('#officer-actions form[action$="/mode"] input[name=mode]')).toHaveValue('shadow');
+      // 5. Live — Shadow is a setting now, not a button on the page; its
+      // route still takes it — then pause (still Live) and resume.
+      const live = await page.evaluate(async (path) => (await fetch(path, { method: 'POST', body: new URLSearchParams({ mode: 'live' }), redirect: 'manual' })).type,
+        `/officers/${encodeURIComponent(id)}/mode`);
+      expect(live, 'the /mode route redirects').toBe('opaqueredirect');
+      expect((await declared(id)).mode, '/mode makes it live on the server').toBe('live');
+      await page.reload();
+      await expect(page.locator('form[action$="/mode"]')).toHaveCount(0);
       await submitTo(page, '#officer-run', '/pause');
       const paused = await declared(id);
       expect(paused.paused, 'Pause switches it off on the server').toBe(true);

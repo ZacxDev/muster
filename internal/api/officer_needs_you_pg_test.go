@@ -430,7 +430,8 @@ func TestATeamViewerSeesButCannotDecideARefusal(t *testing.T) {
 // officer's instance (or its host window) holds — its own agent token, as
 // X-Muster-Token and as a bearer, and the shared hook token — is refused by
 // every route the Needs-you section posts to: approve, reject, the batch, the
-// refusal's re-file and drop, Run now, Pause and Raise cap for today.
+// refusal's re-file and drop, Run now, Pause, Raise today's limit and the
+// Instructions section's Save and refresh.
 // Nothing is decided. CONTROL:
 // the owner's own signed-in session approves the same draft.
 func TestTheOfficerCannotDecideItsOwnWork(t *testing.T) {
@@ -451,6 +452,7 @@ func TestTheOfficerCannotDecideItsOwnWork(t *testing.T) {
 		{tOfficerBack + "/run", url.Values{}},
 		{tOfficerBack + "/pause", url.Values{}},
 		{tOfficerBack + "/raise-cap", url.Values{}},
+		{tOfficerBack + "/charter", url.Values{"charter": {"the officer rewrites its own charter"}, "refresh": {"1"}}},
 	}
 	creds := map[string]func(*http.Request){
 		"the instance's token as X-Muster-Token": func(r *http.Request) { r.Header.Set("X-Muster-Token", w.agent.HooksToken) },

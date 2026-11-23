@@ -117,7 +117,7 @@ func TestTheWizardCreatesAnOfficerTheNextWakeRuns(t *testing.T) {
 	}
 	detail := r.page(t, 1, http.MethodGet, "/officers/"+declID, nil)
 	db := detail.Body.String()
-	for _, want := range []string{`id="officer-actions"`, `data-schedule="pass"`, `data-item-status="open"`, "Switch to Live"} {
+	for _, want := range []string{`id="officer-actions"`, `data-schedule="pass"`, `data-item-status="open"`} {
 		if !strings.Contains(db, want) {
 			t.Errorf("the officer's page lacks %q", want)
 		}
@@ -214,6 +214,9 @@ func TestAnotherOwnerCannotReadOrChangeAnOfficer(t *testing.T) {
 		{http.MethodPost, "/delete", url.Values{"confirm": {declID}}},
 		{http.MethodPost, "/schedules", url.Values{"schedule_preset": {"hourly"}, "name": {"x"}}},
 		{http.MethodPost, "/schedules/pass/delete", url.Values{}},
+		// The Instructions section's Save and Save and refresh.
+		{http.MethodPost, "/charter", url.Values{"charter": {"another owner's words"}}},
+		{http.MethodPost, "/charter", url.Values{"charter": {"another owner's words"}, "refresh": {"1"}}},
 	}
 	for _, c := range routes {
 		for _, q := range []string{"", "?owner=1"} {
@@ -236,6 +239,9 @@ func TestAnotherOwnerCannotReadOrChangeAnOfficer(t *testing.T) {
 	}
 	if items, _ := r.store.ListItems(sys, 1, declID, "", 10); len(items) != 0 {
 		t.Fatalf("another owner's Run now queued %d items", len(items))
+	}
+	if c, err := r.store.CharterOf(sys, 1, declID); err != nil || c.Text != "owner one's secret charter" || c.Version != 1 {
+		t.Fatalf("after another owner's Saves owner 1's charter is %q v%d (%v)", c.Text, c.Version, err)
 	}
 	if rec := r.page(t, 1, http.MethodPost, "/officers/"+declID+"/pause", url.Values{}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("control: the owner's pause: %d", rec.Code)

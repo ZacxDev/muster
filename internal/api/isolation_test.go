@@ -881,6 +881,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/{officer}/mode":                    classParam,
 	"POST /officers/{officer}/run":                     classParam,
 	"POST /officers/{officer}/raise-cap":               classParam,
+	"POST /officers/{officer}/charter":                 classParam,
 	"POST /officers/{officer}/delete":                  classParam,
 	"POST /officers/{officer}/schedules":               classParam,
 	"POST /officers/{officer}/schedules/{name}/delete": classParam,

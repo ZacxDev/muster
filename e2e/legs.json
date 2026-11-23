@@ -241,6 +241,7 @@
       "tests/mirror-duplicate-labels.spec.ts",
       "tests/mirror-windows.spec.ts",
       "tests/officer-needs-you.spec.ts",
+      "tests/officer-page-redesign.spec.ts",
       "tests/officers.spec.ts",
       "tests/onboarding.spec.ts",
       "tests/opencode-send.spec.ts",
