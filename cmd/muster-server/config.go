@@ -3310,11 +3310,28 @@ func (c config) validateSessionRuntimes() error {
 		}
 		seen[rt] = true
 	}
-	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
-		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
-			envChiefSessionRuntimes, agents.SessionRuntimeClaudeCode, envAgentKinds)
+	for _, rt := range []string{agents.SessionRuntimeClaudeCode, agents.SessionRuntimeOpencode} {
+		// ccd runs both: an opencode session is a server beside the Claude
+		// Code CLIs in a claude-code chief's pod.
+		if seen[rt] && !c.claudeCodeEnabled() {
+			return fmt.Errorf("invalid %s: it names %s, but %s does not enable %s, so no chief could run such a session",
+				envChiefSessionRuntimes, rt, envAgentKinds, agents.KindClaudeCode)
+		}
 	}
 	return nil
+}
+
+// opencodeSessionsInert is why MUSTER_CHIEF_SESSION_RUNTIMES's opencode
+// cannot be offered — "" when it can, or is not named. ⚠ NOT A BOOT REFUSAL:
+// the picker simply leaves OpenRouter out (internal/api opencodeOffered, the
+// same predicate) and the boot banner says why, so a deployment can name the
+// runtime before its key exists.
+func (c config) opencodeSessionsInert() string {
+	if !slices.Contains(c.ChiefSessionRuntimes, agents.SessionRuntimeOpencode) || c.ChiefSessions.On {
+		return ""
+	}
+	return envChiefSessionsOpenRouter + " is not 1 (the chief sessions' OpenRouter spend door, with its own key " +
+		envChiefSessionsKey + "), which every opencode session's model call goes through"
 }
 
 func (c config) validateKinds() error {

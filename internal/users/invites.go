@@ -105,6 +105,18 @@ func auditInsertFor(ctx context.Context, tx pgx.Tx, by Actor, owner int64, actio
 	if detail == nil {
 		detail = map[string]any{}
 	}
+	// 🔴 A WRITE AN OPENROUTER SESSION MADE NAMES ITS MODEL (WithSessionModel):
+	// every audit_log row written under such a call carries session_model,
+	// whichever package writes it, so a weaker model's writes can be told
+	// from the chief's own. A copy: the caller's map is not changed.
+	if sm, ok := SessionModelFrom(ctx); ok {
+		d := make(map[string]any, len(detail)+2)
+		for k, v := range detail {
+			d[k] = v
+		}
+		d[AuditSessionModelKey], d[AuditSessionKeyKey] = sm.Model, sm.SessionKey
+		detail = d
+	}
 	b, err := json.Marshal(detail)
 	if err != nil {
 		return err

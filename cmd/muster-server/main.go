@@ -2312,6 +2312,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if rts := ext.SessionRuntimes; len(rts) > 0 {
 		l.Printf("chief session runtimes: ON (%s=%s) — a chief chat session may be started on %s, with a model of its own",
 			envChiefSessionRuntimes, strings.Join(rts, ","), strings.Join(rts, " or "))
+		if why := a.cfg.opencodeSessionsInert(); why != "" {
+			l.Printf("chief session runtimes: opencode is NOT offered — %s; the picker shows Claude Code only", why)
+		} else if slices.Contains(rts, agents.SessionRuntimeOpencode) {
+			l.Printf("chief session runtimes: opencode is offered to the admin's chief — any OpenRouter model, through the "+
+				"chief sessions' spend door (%s); the chief's image must carry opencode (ccd says so on /healthz)", envChiefSessionsKey)
+		}
 	} else {
 		l.Printf("chief session runtimes: OFF — %s is unset, so every chief session is on the chief's own runtime and no picker is drawn",
 			envChiefSessionRuntimes)

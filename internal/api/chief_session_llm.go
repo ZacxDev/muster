@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/searchrank"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -657,13 +658,25 @@ func (s *Server) handleChiefSessionModels(w http.ResponseWriter, r *http.Request
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the owner whose chief runs OpenRouter sessions may search their models"})
 		return
 	}
-	cat, err := s.chiefSessionCatalog(r.Context())
+	out, err := s.chiefSessionModelSearch(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
-		s.logger.Printf("chief sessions: model search: %v", err)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": ChiefSessionCatalogUnreadable})
 		return
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// chiefSessionModelSearch is THE picker search (both answers: the JSON route
+// above and the picker's HTML, handleChiefSessionModelOptions): the top
+// chiefSessionModelsMax catalogue models matching q, best first.
+func (s *Server) chiefSessionModelSearch(ctx context.Context, q string) ([]chiefSessionModelHit, error) {
+	cat, err := s.chiefSessionCatalog(ctx)
+	if err != nil {
+		s.logger.Printf("chief sessions: model search: %v", err)
+		return nil, err
+	}
+	q = strings.TrimSpace(q)
 	hits := rankCatalog(strings.TrimPrefix(q, agents.OpenRouterModelPrefix), cat, 3)
 	out := make([]chiefSessionModelHit, 0, chiefSessionModelsMax)
 	for _, m := range hits {
@@ -672,6 +685,41 @@ func (s *Server) handleChiefSessionModels(w http.ResponseWriter, r *http.Request
 		}
 		out = append(out, chiefSessionModelHit{ID: catalogSlug(m.ID), Name: m.Name, ContextLength: m.ContextLength, Pricing: m.Pricing})
 	}
-	w.Header().Set("Cache-Control", "private, max-age=300")
-	s.writeJSON(w, http.StatusOK, out)
+	return out, nil
+}
+
+// handleChiefSessionModelOptions serves GET ui.OpenRouterModelsOptionsPath:
+// chiefSessionModelSearch as the picker's buttons (ui.OpenRouterModelOptions),
+// for the text the model field holds (its own `model` value, as htmx sends
+// it; `q` too). The same door as the JSON search: the admin signed in, the
+// spend door on. An empty query answers nothing.
+func (s *Server) handleChiefSessionModelOptions(w http.ResponseWriter, r *http.Request) {
+	if s.chiefSessions == nil {
+		http.NotFound(w, r)
+		return
+	}
+	p, ok := authz.From(r.Context())
+	if !ok || p.UserID <= 0 || !ChiefLLMOwner(p.UserID) {
+		http.Error(w, "only the owner whose chief runs OpenRouter sessions may search their models", http.StatusForbidden)
+		return
+	}
+	q := r.URL.Query().Get("model")
+	if q == "" {
+		q = r.URL.Query().Get("q")
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if strings.TrimSpace(q) == "" {
+		return
+	}
+	out, err := s.chiefSessionModelSearch(r.Context(), q)
+	if err != nil {
+		_ = ui.OpenRouterModelUnavailable(ChiefSessionCatalogUnreadable).Render(w)
+		return
+	}
+	hits := make([]ui.OpenRouterModelHit, 0, len(out))
+	for _, h := range out {
+		hits = append(hits, ui.OpenRouterModelHit{ID: h.ID, Name: h.Name, ContextLength: h.ContextLength,
+			PromptUSD: h.Pricing.Prompt, CompletionUSD: h.Pricing.Completion})
+	}
+	_ = ui.OpenRouterModelOptions(hits, q).Render(w)
 }

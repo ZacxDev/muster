@@ -103,7 +103,17 @@ func sideChatRuntime(a agents.Agent) string {
 // made, so a pick quietly dropped would open, for good, a chat on a model the
 // caller did not ask for. "+" offers no menu there, so only a hand-made request
 // meets the refusal.
-func (s *Server) sideChatModel(ctx context.Context, a agents.Agent, model string) (string, error) {
+//
+// runtime is the "+" menu's runtime: "" or claude-code for a Claude model (or
+// the chief's own), opencode for an OpenRouter one — which always names its
+// model, checked against the catalogue by the same runtimeSessionModel.
+func (s *Server) sideChatModel(ctx context.Context, a agents.Agent, runtime, model string) (string, error) {
+	if runtime == agents.SessionRuntimeOpencode {
+		return s.runtimeSessionModel(ctx, a, runtime, model)
+	}
+	if runtime != "" && runtime != agents.SessionRuntimeClaudeCode {
+		return "", errRuntimeNotOffered
+	}
 	if strings.TrimSpace(model) == "" {
 		return "", nil
 	}
@@ -119,7 +129,12 @@ func (s *Server) sideChatModel(ctx context.Context, a agents.Agent, model string
 // Only on the same runtime AND model: both are fixed for a chat's life, so an
 // empty chat on another model is not what was picked.
 func (s *Server) openSideChat(ctx context.Context, a agents.Agent, model string) (agents.ChatSession, error) {
-	runtime := sideChatRuntime(a)
+	return s.openSideChatOn(ctx, a, sideChatRuntime(a), model)
+}
+
+// openSideChatOn is openSideChat on runtime: sideChatRuntime's, or opencode
+// for the "+" menu's OpenRouter pick (sideChatModel checked it).
+func (s *Server) openSideChatOn(ctx context.Context, a agents.Agent, runtime, model string) (agents.ChatSession, error) {
 	if cs, ok := s.chiefChatStore(); ok {
 		if list, err := cs.ListChats(ctx, a.ID); err == nil {
 			sw := agents.SwitcherOrder(list)
@@ -149,10 +164,15 @@ func (s *Server) handleChiefSideChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	model, err := s.sideChatModel(ctx, a, r.FormValue("model"))
+	runtime := strings.TrimSpace(r.FormValue("runtime"))
+	model, err := s.sideChatModel(ctx, a, runtime, r.FormValue("model"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	open := sideChatRuntime(a)
+	if runtime == agents.SessionRuntimeOpencode {
+		open = runtime
 	}
 	// The primary is elected first, so the new chat can never be taken for it.
 	if _, err := s.primarySession(ctx, a); err != nil {
@@ -160,7 +180,7 @@ func (s *Server) handleChiefSideChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not open the primary chat", http.StatusInternalServerError)
 		return
 	}
-	sess, err := s.openSideChat(ctx, a, model)
+	sess, err := s.openSideChatOn(ctx, a, open, model)
 	if err != nil {
 		s.logger.Printf("chief chats: side chat of %d: %v", a.ID, err)
 		http.Error(w, "could not open a side chat", http.StatusInternalServerError)
@@ -492,9 +512,11 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
 	b := &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
 		Primary: sess.IsDefault, Archived: sess.ArchivedAt != nil, SharedRoom: memberOnTeamAgent(ctx, a)}
-	if slices.Contains(s.sessionRuntimesFor(ctx, a), agents.SessionRuntimeClaudeCode) {
+	rts := s.sessionRuntimesFor(ctx, a)
+	if slices.Contains(rts, agents.SessionRuntimeClaudeCode) {
 		b.NewChatModels = agents.ClaudeCodeModels
 	}
+	b.OpenRouter = slices.Contains(rts, agents.SessionRuntimeOpencode)
 	return b
 }
 

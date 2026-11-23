@@ -162,7 +162,7 @@ func laneOf(h http.Header) string {
 	return h.Get(HeaderOCSession)
 }
 
-// TurnLane is laneOf for a turn's route: the lane its requests run in.
+// TurnLane is laneOf for a turn's route: the lane every call of the turn runs in.
 func TurnLane(ctx context.Context) string {
 	if r, ok := TurnRouteFrom(ctx); ok && r.Header != nil {
 		return laneOf(r.Header)

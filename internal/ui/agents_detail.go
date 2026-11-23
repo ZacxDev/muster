@@ -1586,6 +1586,14 @@ func chatLogInner(v AgentDetailView) g.Node {
 			// Defensive: an unpaired result still renders as its own chip.
 			r := m
 			items = append(items, logItem{chatToolChip(ChatLine{Kind: "tool_call", ToolID: m.ToolID, ToolName: m.ToolName}, &r), toolChipState(&r)})
+		case ChatKindSpendCap:
+			// An OpenRouter session's budget card (spend_cap.go): a card,
+			// never a bubble, and never folded into a run of rows.
+			var models []string
+			if v.ChiefChat != nil {
+				models = v.ChiefChat.NewChatModels
+			}
+			items = append(items, logItem{node: spendCapCard(m.Content, v.ChiefChat, models)})
 		default:
 			// Skip an assistant "no reply" sentinel (or an empty bubble): the agent
 			// gateway emits a marker (e.g. NO_REPLY) when the turn finished via tool

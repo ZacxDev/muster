@@ -168,6 +168,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	// an officer CHAT lane's key means anything here (withChatLaneCall,
 	// officer_chat.go) — its ccd starts it with an MCP config that sends it.
 	session, secret := r.Header.Get(agents.HeaderCCSession), r.Header.Get(agents.HeaderCCLaneSecret)
+	// An opencode lane's calls name its session (agents.HeaderOCSession, in
+	// the MCP config ccd generates): what they write is stamped with the
+	// session's model (mcpOpencodeSession).
+	ocSession := r.Header.Get(agents.HeaderOCSession)
 	s.serveMCP(w, r, mcpSurface{
 		tools: func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call: func(ctx context.Context, name, args string) string {
@@ -177,6 +181,15 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			ctx, refusal := s.verifyChatLaneCall(ctx, a, session, secret)
 			if refusal != "" {
 				return refusal
+			}
+			if ocSession != "" {
+				sctx, sm, refusal := s.mcpOpencodeSession(ctx, a, ocSession)
+				if refusal != "" {
+					return refusal
+				}
+				out := s.dispatchAgentTool(sctx, a, name, args)
+				s.auditOpencodeToolCall(sctx, a, sm, name, out)
+				return out
 			}
 			return s.dispatchAgentTool(ctx, a, name, args)
 		},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -321,13 +322,28 @@ func TestAnOpencodeTurnRoundTripsThroughMustersClient(t *testing.T) {
 // its own, so a ccd that does not serve it answers 404 and runs nothing. An
 // INVARIANT GUARD of the mux (the request is the one muster sends).
 func TestAnOldCcdAnswers404ToTheOpencodePath(t *testing.T) {
-	srv, cli := newScripted(t, cliScript{})
+	srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", srv.handleResponses) // a ccd from before opencode lanes
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, ocTurnReq(srv, ocTestKey, ocTestModel, "hi"))
 	if rec.Code != http.StatusNotFound || len(cli.pasted) != 0 {
 		t.Fatalf("an old mux answered %d and pasted %q", rec.Code, cli.pasted)
+	}
+	// Through muster's own client: the 404 is ErrOpencodeUnsupported, and no
+	// fallback (toolless /v1/responses, chat-completions) reaches the CLI.
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	gw := mustersGateway(t, ts.URL)
+	h := http.Header{}
+	h.Set(agents.HeaderOCSession, ocTestKey)
+	h.Set(agents.HeaderOCModel, ocTestModel)
+	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Runtime: agents.SessionRuntimeOpencode, Header: h})
+	if _, err := gw.Chat(ctx, contractAgent, ocTestKey, "hi", nil); !errors.Is(err, agents.ErrOpencodeUnsupported) {
+		t.Fatalf("muster's client on an old ccd: %v, want ErrOpencodeUnsupported", err)
+	}
+	if len(cli.pasted) != 0 {
+		t.Fatalf("the primary Claude CLI was typed into: %q", cli.pasted)
 	}
 }
 

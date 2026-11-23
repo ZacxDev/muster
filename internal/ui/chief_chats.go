@@ -74,6 +74,10 @@ type ChiefChatBar struct {
 	// claude-code session runtime to this chief (MUSTER_CHIEF_SESSION_RUNTIMES,
 	// internal/api chiefChatBarFor). None: no menu, "+" opens a chat at once.
 	NewChatModels []string
+	// OpenRouter: the "+" menu also offers a side chat on any OpenRouter model
+	// (the opencode runtime, found by search: openRouterModelField), where the
+	// deployment offers it to this chief (internal/api opencodeOffered).
+	OpenRouter bool
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -102,6 +106,8 @@ const (
 	// entries, valued with the model it opens a chat on ("" for Default).
 	chiefNewChatMenuAttr  = "data-chief-new-chat-menu"
 	chiefNewChatModelAttr = "data-chief-new-chat-model"
+	// chiefNewChatOpenRouterAttr marks the "+" menu's OpenRouter form.
+	chiefNewChatOpenRouterAttr = "data-chief-new-chat-openrouter"
 	// chiefChipModelAttr marks a chip's model tag, valued with the model.
 	chiefChipModelAttr = "data-chief-chip-model"
 	chiefContextID     = "chief-context"
@@ -414,6 +420,12 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind, label string, surfac
 // the top layer, placed beside its popovertarget by floatingMenuScript, closed
 // by Escape and a tap outside (the browser's). attr marks it.
 func chiefPopoverMenu(id, attr, name string, items []g.Node) g.Node {
+	return chiefPopoverMenuWidth(id, attr, name, "w-48", items)
+}
+
+// chiefPopoverMenuWidth is chiefPopoverMenu at width class width (the "+"
+// menu with its OpenRouter search is wider).
+func chiefPopoverMenuWidth(id, attr, name, width string, items []g.Node) g.Node {
 	return Div(
 		ID(id),
 		g.Attr(attr, ""),
@@ -421,7 +433,7 @@ func chiefPopoverMenu(id, attr, name string, items []g.Node) g.Node {
 		g.Attr("role", "menu"),
 		g.Attr("aria-label", name),
 		g.Attr("data-floating-menu", ""),
-		Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+		Class("invisible hidden [&:popover-open]:flex m-0 "+width+" flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 		g.Group(items),
 	)
 }
@@ -436,10 +448,21 @@ func chiefChipModelTag(sess SessionView) g.Node {
 	}
 	return Span(
 		g.Attr(chiefChipModelAttr, sess.Model),
-		g.Attr("title", "Model: "+sess.Model),
+		g.Attr("title", "Model: "+strings.TrimPrefix(sess.Model, OpenRouterModelPrefix)),
 		Class("max-w-[5.5rem] shrink-0 truncate rounded px-1 text-[10px] font-medium leading-4 text-muted ring-1 ring-inset ring-line"),
-		g.Text(sess.Model),
+		g.Text(chipModelText(sess.Model)),
 	)
+}
+
+// chipModelText is a chip's model tag text: an OpenRouter model's own name,
+// the catalogue id's last part ("openrouter/deepseek/deepseek-v4.1-flash" →
+// "deepseek-v4.1-flash"), so the narrow tag shows the model rather than the
+// route prefix; any other model as it is.
+func chipModelText(model string) string {
+	if rest, ok := strings.CutPrefix(model, OpenRouterModelPrefix); ok && rest != "" {
+		return rest[strings.LastIndex(rest, "/")+1:]
+	}
+	return model
 }
 
 // chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
@@ -457,7 +480,7 @@ func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 	post := chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(b.AgentID)))
 	cls := "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	plus := Span(g.Attr("aria-hidden", "true"), g.Text("+"))
-	if len(b.NewChatModels) == 0 {
+	if len(b.NewChatModels) == 0 && !b.OpenRouter {
 		return Form(
 			post,
 			Class("contents"),
@@ -489,6 +512,26 @@ func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 	for _, m := range b.NewChatModels {
 		items = append(items, entry(m, chiefModelLabel(m)))
 	}
+	menu := chiefPopoverMenu(id, chiefNewChatMenuAttr, "New side chat on", items)
+	if b.OpenRouter {
+		// Any OpenRouter model: a search field and Start, posting the opencode
+		// runtime and the picked model to the same route.
+		items = append(items,
+			Div(Class("my-1 border-t border-line")),
+			Form(
+				post,
+				g.Attr(chiefNewChatOpenRouterAttr, ""),
+				Class("flex flex-col gap-1.5 px-1 pb-1"),
+				Input(Type("hidden"), Name("runtime"), Value(OpenRouterRuntime)),
+				Span(Class("px-1 text-xs font-semibold text-fg2"), g.Text("OpenRouter model")),
+				openRouterModelField(id+"-or"),
+				Button(Type("submit"),
+					Class("press min-h-[40px] rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90 disabled:opacity-60"),
+					g.Text("Start")),
+			),
+		)
+		menu = chiefPopoverMenuWidth(id, chiefNewChatMenuAttr, "New side chat on", "w-80", items)
+	}
 	return g.Group{
 		Button(
 			Type("button"),
@@ -501,7 +544,7 @@ func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 			Class(cls),
 			plus,
 		),
-		chiefPopoverMenu(id, chiefNewChatMenuAttr, "New side chat on", items),
+		menu,
 	}
 }
 
