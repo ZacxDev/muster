@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -8,7 +9,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/procstat"
 )
 
@@ -177,9 +180,96 @@ func (s *server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized, Message: "missing or wrong bearer"})
 		return
 	}
+	clis := liveCLIs(s.cfg.ConfigDir, procRoot, s.knownCLIs(), s.cliBin())
+	// 🔴 AND EVERY OPENCODE PROCESS (opencode.go): each lane's server with its
+	// busy state, and any other opencode process as Unaccounted. Left out, a
+	// busy opencode lane would read as idle and owner_asked would fail OPEN.
+	clis = append(clis, s.opencodeCLIs(r.Context(), procRoot)...)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(cliActivity{Version: cliActivityVersion,
-		CLIs: liveCLIs(s.cfg.ConfigDir, procRoot, s.knownCLIs(), s.cliBin())})
+	_ = json.NewEncoder(w).Encode(cliActivity{Version: cliActivityVersion, CLIs: clis})
+}
+
+// cliStatusBusy is an opencode lane's status while it works: anything but
+// agents.CLIStatusIdle counts as working.
+const cliStatusBusy = "busy"
+
+// opencodeBin is the program name opencode servers run as.
+func (s *server) opencodeBin() string {
+	if s.lanes != nil && s.lanes.ocCfg != nil && s.lanes.ocCfg.bin != "" {
+		return s.lanes.ocCfg.bin
+	}
+	return "opencode"
+}
+
+// opencodeCLIs is the opencode part of GET /v1/clis (root is /proc):
+//
+//   - every opencode lane, by its session key (Lane, Known), with status
+//     busy while ccd drives a turn in it OR its server says the session is
+//     running (opencode's own account, GET /api/session/active), idle only
+//     when both say idle — and Unaccounted when its server cannot be asked;
+//   - every live opencode PROCESS that is not exactly a lane's server — one
+//     a tool call started, a lane's server ccd no longer holds — Unaccounted.
+//
+// 🔴 BOTH HALVES FAIL CLOSED: what cannot be shown idle counts as working.
+func (s *server) opencodeCLIs(ctx context.Context, root string) []cliEntry {
+	out := []cliEntry{}
+	own := map[int]bool{}
+	if s.lanes != nil {
+		s.lanes.mu.Lock()
+		list := make([]*ocLane, 0, len(s.lanes.oc))
+		for _, ln := range s.lanes.oc {
+			list = append(list, ln)
+		}
+		s.lanes.mu.Unlock()
+		for _, ln := range list {
+			e := cliEntry{Lane: ln.key, Known: true, SessionID: ocSessionID(ln.key), Status: agents.CLIStatusIdle}
+			if ln.proc != nil {
+				e.PID = ln.proc.PID()
+				own[e.PID] = true
+			}
+			if ln.busy() {
+				e.Status = cliStatusBusy
+			}
+			if ln.client == nil {
+				e.Status, e.Unaccounted = cliStatusUnaccounted, true
+			} else if e.Status == agents.CLIStatusIdle {
+				qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				running, err := ln.client.Running(qctx)
+				cancel()
+				switch {
+				case err != nil:
+					e.Status, e.Unaccounted = cliStatusUnaccounted, true
+				case running[e.SessionID]:
+					e.Status = cliStatusBusy
+				}
+			}
+			out = append(out, e)
+		}
+	}
+	bin := s.opencodeBin()
+	ents, _ := os.ReadDir(root)
+	for _, d := range ents {
+		pid, err := strconv.Atoi(d.Name())
+		if err != nil || pid <= 1 || own[pid] {
+			continue
+		}
+		stat, err := os.ReadFile(filepath.Join(root, d.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		st, ok := procstat.Parse(stat)
+		if !ok || st.State == "Z" {
+			continue
+		}
+		argv0 := ""
+		if cmd, err := os.ReadFile(filepath.Join(root, d.Name(), "cmdline")); err == nil {
+			argv0, _, _ = strings.Cut(string(cmd), "\x00")
+		}
+		if isCLIProcess(argv0, st.Comm, bin) {
+			out = append(out, cliEntry{PID: pid, Status: cliStatusUnaccounted, Unaccounted: true})
+		}
+	}
+	return out
 }
 
 // cliBin is the program ccd starts its CLIs as: the primary's supervisor's,

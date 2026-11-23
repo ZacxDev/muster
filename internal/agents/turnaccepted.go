@@ -22,7 +22,8 @@ import (
 // pasted, and only when the request asked for it (the same header, "1", on the
 // request — wantsTurnAccepted). Before that ccd can still refuse (409 busy, 503
 // not_ready) and the text never reached the model. The lane is the request's
-// own HeaderCCSession ("" = ccd's primary CLI). A runtime that is not ccd, or a
+// own lane (laneOf: HeaderCCSession, else HeaderOCSession; "" = ccd's primary
+// CLI). A runtime that is not ccd, or a
 // ccd that predates the header, never sends it, so its turns never mark — fail
 // closed.
 //
@@ -39,7 +40,7 @@ import (
 const HeaderCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
 
 // TurnAcceptance is what MarkTurnAccepted reports: the ccd lane the accepted
-// text runs in — the request's HeaderCCSession, "" for ccd's primary CLI.
+// text runs in — the request's lane (laneOf), "" for ccd's primary CLI.
 type TurnAcceptance struct {
 	Lane string
 	// NewConversation is the session ccd's 103 names in
@@ -83,7 +84,7 @@ func traceTurnAccepted(req *http.Request) *http.Request {
 		return req
 	}
 	req.Header.Set(HeaderCCPromptAccepted, "1")
-	lane := req.Header.Get(HeaderCCSession)
+	lane := laneOf(req.Header)
 	return req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
 			if code == http.StatusEarlyHints && h.Get(HeaderCCPromptAccepted) == "1" {

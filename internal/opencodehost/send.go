@@ -252,6 +252,38 @@ func (c *Client) GetSession(ctx context.Context, id string) (Session, error) {
 	return out.Data, nil
 }
 
+// MCPServerStatus is one MCP server's state as GET /api/mcp reports it:
+// Status "connected", "failed" (with Error), or another state on the way.
+type MCPServerStatus struct {
+	Status string
+	Error  string
+}
+
+// MCPStatus is GET /api/mcp for directory: each configured MCP server's
+// state, by name. Measured on v2.3.2: the list is empty until a session in
+// that directory exists (its servers start then), then {name, status:
+// {status, error?}}.
+func (c *Client) MCPStatus(ctx context.Context, directory string) (map[string]MCPServerStatus, error) {
+	var out struct {
+		Data []struct {
+			Name   string `json:"name"`
+			Status struct {
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	q := url.Values{"location[directory]": {directory}}
+	if err := c.get(ctx, "/api/mcp", q, &out); err != nil {
+		return nil, err
+	}
+	m := make(map[string]MCPServerStatus, len(out.Data))
+	for _, s := range out.Data {
+		m[s.Name] = MCPServerStatus{Status: s.Status.Status, Error: s.Status.Error}
+	}
+	return m, nil
+}
+
 // Command is one slash command the server lists (GET /api/command).
 type Command struct {
 	Name        string `json:"name"`

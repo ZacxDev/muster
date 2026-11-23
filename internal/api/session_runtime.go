@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -138,6 +139,15 @@ func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, che
 			// every delivery would then queue behind the owner's side chats.
 			h.Set(agents.HeaderCCPinned, "1")
 		}
+	case agents.SessionRuntimeOpencode:
+		// An opencode session: its own headers and its own ccd path
+		// (agents.OpencodeResponsesPath), so a ccd that predates opencode
+		// lanes answers 404 and runs nothing. Never a check's (a stall check
+		// is always a claude-code route, nudgeRoute) and never pinned: the
+		// primary chat is never an opencode session (the spend door refuses
+		// it too, chiefSessionFor).
+		h.Set(agents.HeaderOCSession, sess.SessionKey)
+		h.Set(agents.HeaderOCModel, sess.Model)
 	default:
 		return ctx
 	}
@@ -146,8 +156,9 @@ func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, che
 
 // sessionRuntimesFor is the explicit runtimes a NEW session of a may be started
 // on: the deployment's (MUSTER_CHIEF_SESSION_RUNTIMES), for the chief only, and
-// claude-code only for a claude-code chief (ccd is what runs it). Empty: no
-// picker.
+// claude-code only for a claude-code chief (ccd is what runs it). opencode
+// needs a claude-code chief too (ccd runs it as well), AND the spend door it
+// reaches its model through (opencodeOffered). Empty: no picker.
 func (s *Server) sessionRuntimesFor(ctx context.Context, a agents.Agent) []string {
 	if len(s.ext.SessionRuntimes) == 0 {
 		return nil
@@ -160,12 +171,25 @@ func (s *Server) sessionRuntimesFor(ctx context.Context, a agents.Agent) []strin
 		if !slices.Contains(s.ext.SessionRuntimes, rt) {
 			continue
 		}
-		if rt == agents.SessionRuntimeClaudeCode && agents.ResolveKind(a.Kind) != agents.KindClaudeCode {
+		if agents.ResolveKind(a.Kind) != agents.KindClaudeCode {
+			continue
+		}
+		if rt == agents.SessionRuntimeOpencode && !s.opencodeOffered(a) {
 			continue
 		}
 		out = append(out, rt)
 	}
 	return out
+}
+
+// opencodeOffered reports whether chief a may start an opencode session: the
+// spend door is on (EnableChiefSessionsLLM; MUSTER_CHIEF_SESSIONS_OPENROUTER=1
+// with its key) and a is the admin's, the one owner the door serves
+// (ChiefLLMOwner). 🔴 THE SAME PREDICATES AS THE DOOR (serveChiefSessionLLM),
+// so the picker never offers a session whose every model call the door would
+// refuse. The boot banner names which one is missing (cmd/muster-server).
+func (s *Server) opencodeOffered(a agents.Agent) bool {
+	return s.chiefSessions != nil && ChiefLLMOwner(agentOwnerID(a))
 }
 
 // createRuntimeSession opens a's new session on (runtime, model) after checking
@@ -191,6 +215,21 @@ func (s *Server) createRuntimeSession(ctx context.Context, a agents.Agent, runti
 func (s *Server) runtimeSessionModel(ctx context.Context, a agents.Agent, runtime, model string) (string, error) {
 	if !slices.Contains(s.sessionRuntimesFor(ctx, a), runtime) {
 		return "", errRuntimeNotOffered
+	}
+	if runtime == agents.SessionRuntimeOpencode {
+		// 🔴 THE CATALOGUE CHECK (ResolveChiefSessionModel): a stored model is
+		// spent on, so it must be an exact OpenRouter catalogue id (or a case
+		// or name variant of exactly one), never a guess; then the shape check
+		// below, the store's.
+		m := s.ResolveChiefSessionModel(ctx, model)
+		if m.Refusal != "" {
+			msg := m.Refusal
+			if len(m.Suggestions) > 0 {
+				msg += " (closest: " + strings.Join(m.Suggestions, ", ") + ")"
+			}
+			return "", errors.New(msg)
+		}
+		model = m.Model
 	}
 	return agents.ValidateSessionRuntime(runtime, model)
 }

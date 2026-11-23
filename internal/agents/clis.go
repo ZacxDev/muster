@@ -48,3 +48,46 @@ type CLIActivity struct {
 
 // CLIStatusIdle is the one sessions-file status that means "not working".
 const CLIStatusIdle = "idle"
+
+// LaneVerdict is OnlyTheOwnersLaneWorks's answer.
+type LaneVerdict string
+
+// The verdicts: LaneVerdictOK passes; each other one is a refusal.
+const (
+	LaneVerdictOK LaneVerdict = ""
+	// LaneVerdictUnaccounted: a live CLI (or opencode) process ccd cannot
+	// account for may be working.
+	LaneVerdictUnaccounted LaneVerdict = "unaccounted"
+	// LaneVerdictOtherBusy: another CLI or opencode lane is working.
+	LaneVerdictOtherBusy LaneVerdict = "other_busy"
+	// LaneVerdictOwnerMissing: the owner's own lane is not in the answer, so
+	// nothing the answer says about the others is trusted.
+	LaneVerdictOwnerMissing LaneVerdict = "owner_missing"
+)
+
+// OnlyTheOwnersLaneWorks is THE check behind owner_asked's "only the owner's
+// turn is running in the pod" (internal/api chief_owner_release.go): of the
+// CLIs in act, the owner's lane — lane, "" for ccd's primary CLI — must be
+// listed, and every OTHER entry idle and accounted for. An opencode lane is
+// an entry like any other (ccd lists it, cmd/ccd opencode.go), so a busy one
+// refuses a call from any other lane.
+func OnlyTheOwnersLaneWorks(act CLIActivity, lane string) LaneVerdict {
+	found := false
+	for _, c := range act.CLIs {
+		own := c.Known && ((lane == "" && c.Primary) || (lane != "" && !c.Primary && c.Lane == lane))
+		if own {
+			found = true
+			continue
+		}
+		if c.Unaccounted {
+			return LaneVerdictUnaccounted
+		}
+		if c.Status != CLIStatusIdle {
+			return LaneVerdictOtherBusy
+		}
+	}
+	if !found {
+		return LaneVerdictOwnerMissing
+	}
+	return LaneVerdictOK
+}

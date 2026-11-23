@@ -2,7 +2,10 @@ package agents
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 )
 
 // A TURN'S ROUTE INSIDE THE POD: which CLI, and which model, one turn goes to
@@ -97,7 +100,75 @@ const (
 	// tells a stale image from a current one (internal/api
 	// OfficerTurnContext).
 	HeaderCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
+	// HeaderOCSession is the session key of an OPENCODE session
+	// (SessionRuntimeOpencode): ccd runs it in an opencode server of its own.
+	// It is sent only on OpencodeResponsesPath, never on /v1/responses, so a
+	// ccd that predates opencode lanes answers 404 and runs nothing
+	// (ErrOpencodeUnsupported) — it never reaches a Claude CLI.
+	HeaderOCSession = "X-Muster-OC-Session"
+	// HeaderOCModel is that session's stored model ("openrouter/<id>"),
+	// fixed for its life like HeaderCCModel.
+	HeaderOCModel = "X-Muster-OC-Model"
 )
+
+// OpencodeResponsesPath is ccd's turn path for an opencode session. A
+// DIFFERENT PATH, not only different headers: a ccd from before opencode
+// lanes ignores headers it does not know and would run the turn in its
+// primary Claude CLI (the pattern every X-Muster-CC-* header above
+// documents); an unknown path is a 404 instead, which fails closed.
+const OpencodeResponsesPath = "/v1/opencode/responses"
+
+// ErrOpencodeUnsupported is the 404 a ccd that predates opencode lanes
+// answers OpencodeResponsesPath with. 🔴 IT IS NOT ErrResponsesUnsupported:
+// that one makes its callers retry the turn toolless over
+// /v1/chat/completions (runTurnWithTools, agentkickoff), which on this path
+// would hand an OpenRouter session's turn to the chief's Claude CLI.
+var ErrOpencodeUnsupported = errors.New("the chief's image runs no opencode sessions (its ccd answered 404 to " +
+	OpencodeResponsesPath + "): restart the chief on an image that has them; nothing was sent")
+
+// opencodeRoute reports whether ctx's turn is an opencode session's.
+func opencodeRoute(ctx context.Context) bool {
+	r, ok := TurnRouteFrom(ctx)
+	return ok && r.Runtime == SessionRuntimeOpencode
+}
+
+// IsOpencodeTurn reports whether ctx's turn is an opencode session's: a
+// failure of such a turn says nothing about the chief's Claude account
+// (internal/agentgateway noteFailure marks none).
+func IsOpencodeTurn(ctx context.Context) bool { return opencodeRoute(ctx) }
+
+// routedResponsesURL is url (an agent's /v1/responses) as ctx's turn sends
+// it: OpencodeResponsesPath for an opencode session's turn, url otherwise.
+// An opencode turn on a URL that is not a /v1/responses one is refused: no
+// path it could take there is known to be opencode's.
+func routedResponsesURL(ctx context.Context, url string) (string, error) {
+	if !opencodeRoute(ctx) {
+		return url, nil
+	}
+	if base, ok := strings.CutSuffix(url, "/v1/responses"); ok {
+		return base + OpencodeResponsesPath, nil
+	}
+	return "", fmt.Errorf("an opencode session's turn needs the agent's /v1/responses URL, not %q; nothing was sent", url)
+}
+
+// laneOf is the ccd lane a request runs in: its explicit Claude Code
+// session (HeaderCCSession), else its opencode session (HeaderOCSession),
+// "" for ccd's primary CLI. ccd's /v1/clis names an opencode lane by the
+// same key (agents.CLIState.Lane).
+func laneOf(h http.Header) string {
+	if k := h.Get(HeaderCCSession); k != "" {
+		return k
+	}
+	return h.Get(HeaderOCSession)
+}
+
+// TurnLane is laneOf for a turn's route: the lane its requests run in.
+func TurnLane(ctx context.Context) string {
+	if r, ok := TurnRouteFrom(ctx); ok && r.Header != nil {
+		return laneOf(r.Header)
+	}
+	return ""
+}
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
 // an explicit session (HeaderCCSession) whose CLI is not running while every
@@ -145,7 +216,8 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCPinned, HeaderCCNewConversation} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCPinned, HeaderCCNewConversation,
+		HeaderOCSession, HeaderOCModel} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

@@ -78,6 +78,7 @@ func testLanes(t *testing.T, max int) *lanes {
 // later test.
 func stopAll(t *testing.T, l *lanes) {
 	t.Helper()
+	l.stopAllOC()
 	l.mu.Lock()
 	list := make([]*lane, 0, len(l.set))
 	for _, ln := range l.set {

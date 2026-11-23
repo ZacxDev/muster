@@ -133,8 +133,10 @@ func run(args []string) int {
 		return runComposeEpoch(args, os.Stderr)
 	case "gh":
 		return runGH(args, os.Stdout, os.Stderr)
+	case "opencode-check":
+		return runOpencodeCheckCmd(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | ask-attach <path> | compose | compose-epoch <dir> <epoch> | gh <read-only gh>)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | ask-attach <path> | compose | compose-epoch <dir> <epoch> | gh <read-only gh> | opencode-check)\n", cmd)
 		return 2
 	}
 }
@@ -362,6 +364,15 @@ func serve() error {
 			return err
 		}
 		if ls != nil {
+			// opencode sessions (opencode.go): on when the image carries the
+			// binary and the pod is offered muster's connector store.
+			ls.ocCfg, ls.ocOff = newOCConfig(os.Getenv, configDir, durs[1])
+			if ls.ocCfg != nil {
+				log.Printf("ccd: opencode sessions on (%s)", ls.ocCfg.bin)
+			} else {
+				log.Printf("ccd: opencode sessions off: %s", ls.ocOff)
+			}
+			defer ls.stopAllOC()
 			srv.runLanes(ls)
 		}
 	}

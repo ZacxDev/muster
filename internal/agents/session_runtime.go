@@ -19,6 +19,11 @@ import (
 //	                                       Every session that existed before 0030.
 //	SessionRuntimeClaudeCode "claude-code" a CLI of its own in ccd, started with
 //	                                       --model when Model is set.
+//	SessionRuntimeOpencode   "opencode"    an opencode server of its own in ccd
+//	                                       (migration 0183) on an OpenRouter
+//	                                       model ("openrouter/<id>", always set),
+//	                                       reached through muster's LLM proxy:
+//	                                       no provider key enters the pod.
 //
 // ⚠ THE COLUMN STILL ADMITS "gateway": a second runtime, run beside ccd in the
 // chief's pod, was offered here until it was removed with no session ever
@@ -26,17 +31,31 @@ import (
 const (
 	SessionRuntimeLegacy     = ""
 	SessionRuntimeClaudeCode = KindClaudeCode
+	SessionRuntimeOpencode   = "opencode"
 )
 
 // SessionRuntimes is every explicit runtime, in the order a picker shows them.
-var SessionRuntimes = []string{SessionRuntimeClaudeCode}
+var SessionRuntimes = []string{SessionRuntimeClaudeCode, SessionRuntimeOpencode}
 
 // SessionRuntimeLabel is what the session list and the picker show.
 func SessionRuntimeLabel(runtime string) string {
-	if runtime == SessionRuntimeClaudeCode {
+	switch runtime {
+	case SessionRuntimeClaudeCode:
 		return "Claude Code"
+	case SessionRuntimeOpencode:
+		return "OpenRouter"
 	}
 	return "Default"
+}
+
+// SessionModelLabel is how a session's stored model is shown on the session
+// strip and list: an OpenRouter model's catalogue id without the route
+// prefix ("deepseek/deepseek-v4.1-flash"), any other model as stored.
+func SessionModelLabel(model string) string {
+	if SessionOnOpenRouter(model) {
+		return strings.TrimPrefix(model, OpenRouterModelPrefix)
+	}
+	return model
 }
 
 // claudeModelPattern is what a Claude Code session's model may be: an alias
@@ -86,11 +105,33 @@ func ValidateSessionRuntime(runtime, model string) (string, error) {
 		if model != "" && !claudeModelPattern.MatchString(model) {
 			return "", fmt.Errorf("%q is not a Claude model (an alias such as opus, sonnet or haiku, or a model id)", model)
 		}
+	case SessionRuntimeOpencode:
+		// 🔴 SHAPE ONLY. That the model is in OpenRouter's catalogue is the API
+		// door's check (internal/api ResolveChiefSessionModel), made before
+		// this one; this is the store's last word, and ccd checks the same set
+		// again (cmd/ccd opencodeModelPattern) before the model reaches the
+		// config it generates.
+		if !openRouterModelPattern.MatchString(model) {
+			return "", fmt.Errorf("%q is not an OpenRouter model as muster stores one (openrouter/<catalogue id>); "+
+				"an opencode session always names its model", model)
+		}
 	default:
 		return "", fmt.Errorf("runtime %q is not one a session can be started on (want %s)", runtime, strings.Join(SessionRuntimes, " or "))
 	}
 	return model, nil
 }
+
+// openRouterModelPattern is what an opencode session's stored model may be:
+// "openrouter/" and a catalogue id of one to three path segments in a closed
+// character set (OpenRouter's ids are vendor/model[:variant]; an id
+// OpenRouter owns, "openrouter/auto", is stored as itself). It ends up in a
+// JSON config ccd generates, so it is a closed set rather than "anything
+// with the prefix". cmd/ccd compiles the same source (opencodeModelPattern).
+var openRouterModelPattern = regexp.MustCompile(OpenRouterModelPatternSource)
+
+// OpenRouterModelPatternSource is openRouterModelPattern's source, exported
+// for the test that pins ccd's copy to it.
+const OpenRouterModelPatternSource = `^openrouter/[A-Za-z0-9][A-Za-z0-9._:~-]{0,99}(/[A-Za-z0-9][A-Za-z0-9._:~-]{0,99}){0,2}$`
 
 // OpenRouterModelPrefix is the route prefix of a model muster reaches through
 // OpenRouter: "openrouter/<catalogue id>" (the form every model check stores).
