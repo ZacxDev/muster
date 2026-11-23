@@ -311,9 +311,15 @@ for (const vp of [
       await input(page).pressSequentially('a');
       await expect(options(page).nth(1)).toBeVisible();
       await input(page).press(vp.phone ? 'ArrowUp' : 'ArrowDown');
-      await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true');
-      const href = await options(page).nth(1).getAttribute('data-href');
-      expect(href, 'the second row has a target').toBeTruthy();
+      // The highlighted row read as whichever it is, not as nth(1): the arrow
+      // moves it one on from where typing left it, and THAT is the property
+      // this test's last step pins — asserted here, it would hide that step.
+      const sel = page.locator('#switcher-search-results [role="option"][aria-selected="true"]');
+      await expect(sel).toHaveCount(1);
+      const href = await sel.getAttribute('data-href');
+      expect(href, 'the highlighted row has a target').toBeTruthy();
+      const before = await options(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-href')));
+      expect(before.indexOf(href!), 'CONTROL: the arrow moved the highlight off the first row').toBeGreaterThan(0);
       // The sidebar asked for its rows again, and the swap awaited — the
       // palette's own afterSwap listener was bound first, so it has run.
       const swapped = await page.evaluate(() => new Promise<number>((done) => {
@@ -327,9 +333,20 @@ for (const vp of [
         document.dispatchEvent(new Event('muster:nav-open'));
       }));
       expect(swapped, 'CONTROL: the swap redrew the list (its old first row is gone)').toBe(1);
-      const sel = page.locator('#switcher-search-results [role="option"][aria-selected="true"]');
       await expect(sel).toHaveCount(1);
       await expect(sel).toHaveAttribute('data-href', href!);
+      // TYPING still starts over at the best match: only the swap keeps the
+      // highlight (refresh's keep is `=== true`; the input's handler is passed
+      // an Event, which is truthy). A space leaves the query — and so the
+      // list — as it was, so the kept row is still listed below the first
+      // and a highlight that stayed on it would be seen.
+      await input(page).press(' ');
+      await expect(input(page)).toHaveValue('a ');
+      const rows = await options(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-href')));
+      expect(rows.indexOf(href!), 'CONTROL: the kept row is still listed, below the first').toBeGreaterThan(0);
+      await expect(sel).toHaveCount(1);
+      await expect(sel).toHaveAttribute('data-href', rows[0]!);
+      await expect(options(page).nth(0)).toHaveAttribute('aria-selected', 'true');
     });
   });
 }
