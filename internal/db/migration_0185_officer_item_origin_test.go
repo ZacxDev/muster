@@ -5,34 +5,34 @@ import (
 	"testing"
 )
 
-// TestMigration0184OfficerItemOrigin: before 0184 neither an ask nor a draft
-// has origin_* (the control). At 0184 an ask and a draft record an officer
+// TestMigration0185OfficerItemOrigin: before 0185 neither an ask nor a draft
+// has origin_* (the control). At 0185 an ask and a draft record an officer
 // instance, its session, a message of that session and a time; the database
 // refuses an origin agent of ANOTHER owner, a session of another agent and a
 // message of another session; deleting the agent clears the origin (its
 // sessions go with it) and keeps the row; and the documented rollback removes
 // every column, the trigger and its function.
-func TestMigration0184OfficerItemOrigin(t *testing.T) {
+func TestMigration0185OfficerItemOrigin(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0184_officer_item_origin", 183)
+	pool := freshAt(ctx, t, "ms_0185_officer_item_origin", 184)
 	for _, tbl := range []string{"attention_asks", "plugin_reply_drafts"} {
 		if _, err := pool.Exec(ctx, `SELECT origin_agent_id FROM `+tbl); err == nil {
-			t.Fatalf("control: before 0184 %s.origin_agent_id exists", tbl)
+			t.Fatalf("control: before 0185 %s.origin_agent_id exists", tbl)
 		}
 	}
-	applyThroughFrom(ctx, t, pool, 184)
+	applyThroughFrom(ctx, t, pool, 185)
 
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE VALUES (2, 'person', 'member', 'two') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	inst := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'officer-scout-main-1', 'ns-o1') RETURNING id`)
 	other := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (2, 'officer-scout-main-1-two', 'ns-o2') RETURNING id`)
-	sess := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 1, 'k-0184-a') RETURNING id`, inst)
-	sess2 := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 1, 'k-0184-b') RETURNING id`, inst)
-	otherSess := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 2, 'k-0184-c') RETURNING id`, other)
+	sess := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 1, 'k-0185-a') RETURNING id`, inst)
+	sess2 := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 1, 'k-0185-b') RETURNING id`, inst)
+	otherSess := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, owner_id, session_key) VALUES ($1, 2, 'k-0185-c') RETURNING id`, other)
 	msg := scanID(ctx, t, pool, `INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content) VALUES ($1, 1, $2, 'assistant', 'thinking') RETURNING id`, inst, sess)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities, deliver_to)
-		VALUES (1, 'origin-relay', 'Relay', 'h-0184', 'example', '{messages,draft_checks}', 'officer:scout:main') RETURNING id`)
+		VALUES (1, 'origin-relay', 'Relay', 'h-0185', 'example', '{messages,draft_checks}', 'officer:scout:main') RETURNING id`)
 
 	ask := func(agent, session, message any) error {
 		_, err := pool.Exec(ctx, `INSERT INTO attention_asks (owner_id, asker_label, question, options, expires_at, system_asker,
@@ -98,7 +98,7 @@ func TestMigration0184OfficerItemOrigin(t *testing.T) {
 			t.Fatalf("rollback %q: %v", stmt, err)
 		}
 	}
-	if !strings.Contains(readMigration(t, "0184_officer_item_origin.sql"), "DROP FUNCTION IF EXISTS public.officer_origin_is_owners();") {
+	if !strings.Contains(readMigration(t, "0185_officer_item_origin.sql"), "DROP FUNCTION IF EXISTS public.officer_origin_is_owners();") {
 		t.Fatal("the migration's header no longer documents the rollback this test runs")
 	}
 	for _, tbl := range []string{"attention_asks", "plugin_reply_drafts"} {

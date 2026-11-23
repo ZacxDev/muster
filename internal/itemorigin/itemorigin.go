@@ -1,6 +1,6 @@
 // Package itemorigin carries, on a context, WHERE a needs-you row is being
 // made: the officer instance whose tool call is running, its chat session and
-// the moment in it (migration 0184's origin_* columns on attention_asks and
+// the moment in it (migration 0185's origin_* columns on attention_asks and
 // plugin_reply_drafts).
 //
 // 🔴 ONLY THE OFFICER TOOL DISPATCHER INSTALLS ONE (internal/api

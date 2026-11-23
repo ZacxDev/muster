@@ -817,7 +817,7 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 			// the person's handle as their contact stores it (the guard's)
 			ref = reached.Handle
 		}
-		// WHERE IT WAS FILED FROM (migration 0184): the officer instance whose
+		// WHERE IT WAS FILED FROM (migration 0185): the officer instance whose
 		// tool call is running, its session and the moment — from the context
 		// the officer tool dispatcher bound to its caller (internal/itemorigin),
 		// never from `in`: there is no field a caller could fill.

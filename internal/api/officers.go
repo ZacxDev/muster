@@ -1968,7 +1968,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	caller := officerCallerName(ctx, a)
 	// 🔴 WHERE THIS CALL IS MADE FROM, BOUND TO ITS CALLER (officer_origin.go):
 	// an ask or a draft it makes records this instance, its session and the
-	// moment (migration 0184) — never anything the arguments say.
+	// moment (migration 0185) — never anything the arguments say.
 	ctx = s.withOfficerOrigin(ctx, a)
 	if chat, lane := chatLaneCall(ctx); lane {
 		switch name {

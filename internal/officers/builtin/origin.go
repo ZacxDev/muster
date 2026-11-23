@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHERE AN OFFICER'S ASK WAS MADE FROM (migration 0184: attention_asks
+// WHERE AN OFFICER'S ASK WAS MADE FROM (migration 0185: attention_asks
 // origin_*). The officer's ask is created by the attention store; its origin
 // is written here, on the row it just made, by the officer runtime
 // (internal/api officerAsker.Raise, raiseOfficerNotice), and read back for
@@ -46,7 +46,7 @@ func (s *Store) SetAskOrigin(ctx context.Context, owner, askID int64, o itemorig
 }
 
 // AskOrigins is the origin of each of owner's asks ids that has one; an ask
-// absent from the map has none (made before 0184, or by no officer call).
+// absent from the map has none (made before 0185, or by no officer call).
 func (s *Store) AskOrigins(ctx context.Context, owner int64, ids []int64) (map[int64]itemorigin.Origin, error) {
 	out := map[int64]itemorigin.Origin{}
 	if len(ids) == 0 {

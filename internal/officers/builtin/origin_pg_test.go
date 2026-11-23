@@ -12,7 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 )
 
-// TestAnEscalationsOriginRidesOnlyOnTheOwnersNotice (migration 0184): an
+// TestAnEscalationsOriginRidesOnlyOnTheOwnersNotice (migration 0185): an
 // escalating officer_complete made under an origin (the officer tool
 // dispatcher's itemorigin) records it on the OWNER's notice only — the
 // escalate_to recipient's notice carries none, so their ask can never link

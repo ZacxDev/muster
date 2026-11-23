@@ -300,7 +300,7 @@ type noticeEntry struct {
 	// escalation (DraftEndedTx), 0 for any other: what lets that draft's
 	// late result recognise the escalation as its own (escalatedByDraft).
 	Draft int64 `json:"draft,omitempty"`
-	// Origin* is where the escalating call was made (migration 0184: the
+	// Origin* is where the escalating call was made (migration 0185: the
 	// officer instance, its session, the moment, when): the context's
 	// itemorigin, recorded ONLY on the owner's own notice — an escalate_to
 	// recipient is another person, who is never linked to the owner's

@@ -23,7 +23,7 @@ import (
 // "SHOW SESSION" ON AN OFFICER'S NEEDS-YOU ITEMS (operator decision: "Exact
 // moment"). Each ask, draft and refusal an officer's instance makes records
 // which instance made it, the chat session it was working in and the moment
-// in that session (migration 0184's origin_* columns), and the officer page
+// in that session (migration 0185's origin_* columns), and the officer page
 // draws a "Show session" button that opens the session scrolled to that
 // moment (GET /agents/{name}?session=N&at=M: agentMomentMessages, the page's
 // moment marker).
@@ -37,7 +37,7 @@ import (
 // 🔴 ONLY THE OWNER'S OWN OFFICER SESSION. A link is drawn only to an agent
 // that is the item's owner's officer's own instance (officerOriginHref), the
 // database refuses a row whose origin agent is another owner's
-// (officer_origin_is_owners, 0184), an escalation records its origin on the
+// (officer_origin_is_owners, 0185), an escalation records its origin on the
 // owner's own notice only (builtin.noticesFor), and the agent page answers
 // another owner's agent as a 404 (row-level security).
 //
@@ -92,7 +92,7 @@ func (s *Server) withOfficerOrigin(ctx context.Context, a agents.Agent) context.
 // officerOriginHref is the "Show session" link of an item owner's officer
 // made with origin o, or "" for none: the session scrolled to the moment
 // (ui.AgentMomentHref) when both are recorded, the session as a whole when
-// only it is, and — an item made before 0184, or with no session — the page
+// only it is, and — an item made before 0185, or with no session — the page
 // of the instance named by fallback (the draft's own agent, or the officer's
 // first instance), opening its latest session.
 //
@@ -139,7 +139,7 @@ func (s *Server) isOfficerInstance(owner int64, officer, name string) bool {
 }
 
 // officerFirstInstance is owner's officer's first instance name ("" when it
-// does not run): an item made before 0184 has no origin, and opens it.
+// does not run): an item made before 0185 has no origin, and opens it.
 func (s *Server) officerFirstInstance(owner int64, officer string) string {
 	o, ok := s.runningOfficer(owner, officer)
 	if !ok {
@@ -207,7 +207,7 @@ func (s *Server) agentMomentMessages(ctx context.Context, sessionID, moment int6
 }
 
 // draftShowSessionHTML is draft d's "Show session" on owner's officer's
-// page: where it was filed from (d.Origin), else — a draft filed before 0184
+// page: where it was filed from (d.Origin), else — a draft filed before 0185
 // — the instance that filed it (its agent_name), else the officer's first.
 func (s *Server) draftShowSessionHTML(ctx context.Context, owner int64, officer string, d plugins.Draft, first string) string {
 	fallback := first

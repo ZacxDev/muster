@@ -363,7 +363,7 @@ var wantForeignKeys = []string{
 	"agent_focus_history|agent_focus_history_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"agent_focus_history|agent_focus_history_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"attention_asks|attention_asks_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
-	// 0184: where an officer's ask was made from (its owner checked by the
+	// 0185: where an officer's ask was made from (its owner checked by the
 	// officer_origin_is_owners trigger).
 	"attention_asks|attention_asks_origin_agent_id_fkey|FOREIGN KEY (origin_agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"attention_asks|attention_asks_origin_session_id_fkey|FOREIGN KEY (origin_session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
@@ -412,7 +412,7 @@ var wantForeignKeys = []string{
 	// sweep, raises the ask as the message's own owner (see the migration).
 	"attention_asks|attention_asks_plugin_message_id_fkey|FOREIGN KEY (plugin_message_id) REFERENCES plugin_messages(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
-	// 0184: where an officer's draft was filed from.
+	// 0185: where an officer's draft was filed from.
 	"plugin_reply_drafts|plugin_reply_drafts_origin_agent_id_fkey|FOREIGN KEY (origin_agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_origin_session_id_fkey|FOREIGN KEY (origin_session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_message_owner_fkey|FOREIGN KEY (message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",

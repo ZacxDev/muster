@@ -185,9 +185,9 @@ type Draft struct {
 	// (migration 0182, reply_context.go): an outside party's words, UNTRUSTED.
 	// nil for every other draft, and for a reply filed without one.
 	ReplyContext *ReplyContext `json:"replyContext,omitempty"`
-	// Origin is where an officer's instance filed it from (migration 0184:
+	// Origin is where an officer's instance filed it from (migration 0185:
 	// the instance, its session, the moment); zero for a draft no officer
-	// instance filed, and for every draft filed before 0184. Read-only: the
+	// instance filed, and for every draft filed before 0185. Read-only: the
 	// outbound filing writes it from its context alone (internal/itemorigin);
 	// a retry successor carries its root's.
 	Origin itemorigin.Origin `json:"-"`
@@ -658,7 +658,7 @@ func draftDest(d *Draft, st *string) []any {
 }
 
 // zeroTimeIfNull scans a nullable timestamptz as the zero time for NULL
-// (origin_at, migration 0184).
+// (origin_at, migration 0185).
 type zeroTimeIfNull time.Time
 
 func (z *zeroTimeIfNull) Scan(src any) error {
@@ -675,7 +675,7 @@ func (z *zeroTimeIfNull) Scan(src any) error {
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
 // message_id (0121), so Draft.MessageID stays an int64 and 0 means "none";
-// and the origin_* ids (0184). Plain columns, never coalesce(): prefixed()
+// and the origin_* ids (0185). Plain columns, never coalesce(): prefixed()
 // qualifies draftCols by splitting it on commas.
 type zeroIfNull int64
 

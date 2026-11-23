@@ -17,7 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// "SHOW SESSION" ON AN OFFICER'S NEEDS-YOU ITEMS (migration 0184,
+// "SHOW SESSION" ON AN OFFICER'S NEEDS-YOU ITEMS (migration 0185,
 // officer_origin.go), through the real server, stores and dispatcher: the
 // instance's own tool calls file a draft, ask its owner, and escalate; each
 // row records the instance, its session and the moment FROM THE BOUND CALLER;
@@ -144,7 +144,7 @@ func showSessionHrefs(page string) map[string]string {
 // page's Needs-you draws "Show session" on the draft, the ask and the
 // refusal, each linking /agents/<instance>?session=<s>&at=<moment>; the agent
 // page opened there draws its moment marker right after the moment's message
-// and before the next. An item with no origin (made before 0184) links the
+// and before the next. An item with no origin (made before 0185) links the
 // instance's session as a whole: no at=, no marker.
 func TestShowSessionOpensTheSessionAtTheMoment(t *testing.T) {
 	w := newOriginWorld(t)
@@ -201,7 +201,7 @@ func TestShowSessionOpensTheSessionAtTheMoment(t *testing.T) {
 		t.Fatalf("the agent page's moment: marker at %d, the moment's message at %d (want the marker after it)", marker, reply)
 	}
 
-	// An older item: its origin cleared, as every row before 0184.
+	// An older item: its origin cleared, as every row before 0185.
 	w.draftSQL(pending, `origin_agent_id = NULL, origin_session_id = NULL, origin_message_id = NULL, origin_at = NULL`)
 	whole := ui.AgentSessionHref(w.agent.Name, w.session)
 	sec = needsYou(w.officerPage())
