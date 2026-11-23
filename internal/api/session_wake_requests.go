@@ -120,7 +120,10 @@ func (s *Server) wakeOfficerDraftDecided(ctx context.Context, d plugins.Draft, v
 // the officer (endForPluginRefusal); in every other case the officer gets its
 // draft.refused item as before, and a wake that then settles "Not delivered"
 // hands the refusal back to the officer once (wakeNotDelivered).
-func (s *Server) wakeOfficerDraftRefused(ctx context.Context, d plugins.Draft) bool {
+//
+// retryAt is the refusal's retry_at (parseRetryAt), nil for none: kept on the
+// wake (0183's retry_at), so the line says it and a hand-back carries it.
+func (s *Server) wakeOfficerDraftRefused(ctx context.Context, d plugins.Draft, retryAt *time.Time) bool {
 	if !d.RefusedByCheck() {
 		return false
 	}
@@ -131,8 +134,12 @@ func (s *Server) wakeOfficerDraftRefused(ctx context.Context, d plugins.Draft) b
 	}
 	// The PLUGIN's reason (an outside party's words): fenced on the line, and
 	// never the owner's (wakeCarriesOwnerText).
-	return s.fileWake(ctx, d.OwnerID, sessionwake.New{Kind: sessionwake.KindOfficerDraftDecided, DraftID: d.ID, OfficerItemID: item,
-		Decision: sessionwake.DecisionPluginRefused, OperatorText: plugins.RefusalText(d.Detail), Host: host, Session: sess})
+	n := sessionwake.New{Kind: sessionwake.KindOfficerDraftDecided, DraftID: d.ID, OfficerItemID: item,
+		Decision: sessionwake.DecisionPluginRefused, OperatorText: plugins.RefusalText(d.Detail), Host: host, Session: sess}
+	if retryAt != nil {
+		n.RetryAt = retryAt.UTC()
+	}
+	return s.fileWake(ctx, d.OwnerID, n)
 }
 
 // wakeNotDelivered is what follows wake w settling "Not delivered" (handWake's
@@ -163,7 +170,14 @@ func (s *Server) wakeNotDelivered(ctx context.Context, w sessionwake.Wake) {
 	// plugin's (draftEndFor, as outboundSettledTo builds it).
 	e := draftEndFor(d, *d.Officer, "", settledByOwner, ownerRejectionDetail(d), nil)
 	if d.RefusedByCheck() {
-		e = draftEndFor(d, *d.Officer, "", settledByPlugin, plugins.RefusalText(d.Detail), nil)
+		// The refusal's retry_at, kept on the wake: the item carries it as a
+		// direct refusal's does (the officer page's Re-file default).
+		var retryAt *time.Time
+		if !w.RetryAt.IsZero() {
+			at := w.RetryAt.UTC()
+			retryAt = &at
+		}
+		e = draftEndFor(d, *d.Officer, "", settledByPlugin, plugins.RefusalText(d.Detail), retryAt)
 	}
 	if e.FollowUp == nil {
 		return

@@ -27,11 +27,22 @@ func TestMigration0183PluginRefusedWake(t *testing.T) {
 	if err := exec(refused("501")); err == nil {
 		t.Fatal("control: 0182 accepted a plugin_refused officer wake")
 	}
+	if err := exec(`UPDATE session_wakes SET retry_at = NULL WHERE false`); err == nil {
+		t.Fatal("control: session_wakes has retry_at before 0183")
+	}
 
 	applyThroughFrom(ctx, t, pool, 183)
 
 	if err := exec(refused("501")); err != nil {
 		t.Fatalf("0183 refused a plugin_refused officer wake: %v", err)
+	}
+	if err := exec(`INSERT INTO session_wakes (owner_id, kind, draft_id, officer_item_id, decision, operator_text, retry_at, mirror_host, mirror_session)
+		VALUES (1, 'officer_draft_decided', 510, 223, 'plugin_refused', 'cadence', '2000-01-03T00:00:00Z', 'tower', '` + sid + `')`); err != nil {
+		t.Fatalf("0183 refused a plugin_refused wake with its retry_at: %v", err)
+	}
+	if err := exec(`INSERT INTO session_wakes (owner_id, kind, draft_id, officer_item_id, decision, retry_at, mirror_host, mirror_session)
+		VALUES (1, 'officer_draft_decided', 511, 223, 'approved', '2000-01-03T00:00:00Z', 'tower', '` + sid + `')`); err == nil {
+		t.Error("0183 accepted a retry_at on an approval's wake")
 	}
 	for name, q := range map[string]string{
 		"the owner's approval": `INSERT INTO session_wakes (owner_id, kind, draft_id, officer_item_id, decision, mirror_host, mirror_session)
@@ -82,6 +93,8 @@ func TestMigration0183PluginRefusedWake(t *testing.T) {
 		}
 		mustExec(ctx, t, pool, m178[at:at+len(drop)+end+1])
 	}
+	mustExec(ctx, t, pool, `ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_retry_at_plugin_refused`)
+	mustExec(ctx, t, pool, `ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS retry_at`)
 	mustExec(ctx, t, pool, `DELETE FROM schema_migrations WHERE version = 183`)
 	if err := exec(refused("508")); err == nil {
 		t.Fatal("the ROLLBACK block left a plugin_refused wake insertable")

@@ -15,6 +15,11 @@
 --       the PLUGIN's reason (an outside party's words, untrusted, fenced on
 --       the line, and never treated as the owner's: no sign-in is asked for
 --       it).
+--   session_wakes.retry_at   on a plugin_refused wake only: the time the
+--       plugin said the draft could be tried again (its refusal's retry_at,
+--       RFC 3339, cut to the second), NULL when it named none. The line says
+--       it, and a refusal handed back to the officer carries it into the
+--       draft.refused item as a direct refusal does (the Re-file default).
 --
 -- Widens 0178's CHECKs in place (decision, the subject rule) for that one
 -- kind; a reply draft's wakes (draft_decided, draft_outcome) may not carry the
@@ -27,17 +32,34 @@
 --
 -- ROLLBACK. 🔴 SETTLE THE NEW WAKES FIRST: an older image's renderWake reads a
 -- plugin_refused wake as a rejection and would tell the session "you
--- rejected" it. Before it starts:
+-- rejected" it.
+-- 🔴 AN UNDELIVERED REFUSAL IS LOST BY THE DELETE BELOW. Its item is already
+-- closed (the refusal was the session's), so a plugin_refused wake still
+-- queued, delivering or held reaches NOBODY once its row is gone: no session
+-- line and no draft.refused item. Before rolling back, list them
+--   SELECT id, draft_id, officer_item_id, state FROM public.session_wakes
+--     WHERE decision = 'plugin_refused' AND state IN ('queued', 'delivering');
+-- and for each, either let it settle (delivered, or "Not delivered", which
+-- hands it back to the officer) or re-file the refusal for the officer by
+-- hand (the officer page's draft.refused Re-file, or a new officer item
+-- naming the draft). Then, before the older image starts:
 --   UPDATE public.send_queue SET state = 'cancelled', finished_at = now(),
 --       detail = 'cancelled: session wakes rolled back', held_until = NULL, hold_token = NULL
 --     WHERE state = 'queued' AND session_wake_id IN (SELECT id FROM public.session_wakes WHERE decision = 'plugin_refused');
 --   DELETE FROM public.session_wakes WHERE decision = 'plugin_refused';
 -- Then restore 0178's two CHECKs: re-run the session_wakes_decision_check and
 -- session_wakes_subject statements of 0178_session_wakes_officer_stepup.sql,
+--   ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_retry_at_plugin_refused;
+--   ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS retry_at;
 -- and
 --   DELETE FROM schema_migrations WHERE version = 183;
 
 SET LOCAL lock_timeout = '3s';
+
+ALTER TABLE public.session_wakes ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ;
+ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_retry_at_plugin_refused;
+ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_retry_at_plugin_refused
+    CHECK (retry_at IS NULL OR decision = 'plugin_refused');
 
 ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_decision_check;
 ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_decision_check CHECK (decision IN ('', 'approved', 'rejected',

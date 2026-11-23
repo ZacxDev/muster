@@ -362,6 +362,11 @@ func renderWake(w sessionwake.Wake) string {
 			// called the owner's.
 			pre := "the plugin refused " + ref + ", at its check, before the owner saw it. It will not be sent, and the officer will not redraft it: " +
 				"officer item #" + strconv.FormatInt(w.OfficerItemID, 10) + " is closed, and what happens next is this session's call."
+			if !w.RetryAt.IsZero() {
+				// muster's own parse of the plugin's retry_at (RFC 3339, UTC,
+				// to the second): a time, never the plugin's words.
+				pre += " The plugin says it can be tried again after " + w.RetryAt.UTC().Format(time.RFC3339) + "."
+			}
 			if strings.TrimSpace(w.OperatorText) == "" {
 				return "muster: " + pre
 			}

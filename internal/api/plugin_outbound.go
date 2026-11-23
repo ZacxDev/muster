@@ -758,7 +758,7 @@ func (s *Server) outboundSettledTo(ctx context.Context, owner int64, d plugins.D
 		// back to the officer (wakeNotDelivered).
 		e = endForRequester(e)
 	}
-	if by == settledByPlugin && d.RefusedByCheck() && s.wakeOfficerDraftRefused(ctx, d) {
+	if by == settledByPlugin && d.RefusedByCheck() && s.wakeOfficerDraftRefused(ctx, d, retryAt) {
 		// 🔴 SO IS THE PLUGIN'S REFUSAL (operator decision 2026-11-23): its
 		// wake, filed fresh just now, carries the plugin's reason; the officer
 		// is not asked to redraft, and the item is closed. Not delivered, it

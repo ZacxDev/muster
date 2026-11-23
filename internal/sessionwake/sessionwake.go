@@ -163,7 +163,11 @@ type Wake struct {
 	// StepUpAt is the sign-in time of the request that decided it (or of the
 	// owner's later "Send to session"); zero for none. A line carrying
 	// OperatorText is queued only while it is fresh (internal/api).
-	StepUpAt    time.Time
+	StepUpAt time.Time
+	// RetryAt is a plugin_refused wake's: when the plugin said the draft could
+	// be tried again (its refusal's retry_at), zero for none (migration 0183,
+	// whose session_wakes_retry_at_plugin_refused CHECK holds it to that kind).
+	RetryAt     time.Time
 	State       State
 	Detail      string
 	Attempts    int
@@ -190,6 +194,7 @@ type New struct {
 	ViaHost       string
 	ViaSession    string
 	StepUpAt      time.Time
+	RetryAt       time.Time
 }
 
 var (
@@ -230,20 +235,24 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 const cols = `id, owner_id, created_at, kind, coalesce(ask_id, 0), coalesce(draft_id, 0), coalesce(page_id, 0),
 	coalesce(response_id, 0), route_id, decision, response_count, component, operator_text, mirror_host, mirror_session,
 	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz),
-	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz), coalesce(officer_item_id, 0)`
+	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz), coalesce(officer_item_id, 0),
+	coalesce(retry_at, 'epoch'::timestamptz)`
 
 func scan(row pgx.Row) (Wake, error) {
 	var w Wake
 	var kind, state string
 	err := row.Scan(&w.ID, &w.Owner, &w.CreatedAt, &kind, &w.AskID, &w.DraftID, &w.PageID, &w.ResponseID, &w.RouteID,
 		&w.Decision, &w.Count, &w.Component, &w.OperatorText, &w.Host, &w.Session, &state, &w.Detail, &w.Attempts,
-		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID)
+		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID, &w.RetryAt)
 	w.Kind, w.State = Kind(kind), State(state)
 	if w.DeliveredAt.Unix() == 0 {
 		w.DeliveredAt = time.Time{}
 	}
 	if w.StepUpAt.Unix() == 0 {
 		w.StepUpAt = time.Time{}
+	}
+	if w.RetryAt.Unix() == 0 {
+		w.RetryAt = time.Time{}
 	}
 	return w, err
 }
@@ -343,10 +352,12 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 		return Wake{}, false, err
 	}
 	w, err := scan(s.pool.QueryRow(ctx, `INSERT INTO session_wakes (kind, ask_id, draft_id, page_id, response_id, route_id,
-			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at, officer_item_id, response_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING `+cols,
+			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at, officer_item_id, response_count,
+			retry_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING `+cols,
 		string(n.Kind), nullID(n.AskID), nullID(n.DraftID), nullID(n.PageID), nullID(n.ResponseID), n.RouteID, n.Decision,
-		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt), nullID(n.OfficerItemID), n.Count))
+		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt), nullID(n.OfficerItemID), n.Count,
+		nullTime(n.RetryAt)))
 	if err == nil {
 		return w, true, nil
 	}

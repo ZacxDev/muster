@@ -170,3 +170,55 @@ func TestAPluginRefusedLineIsThePluginsWordsNotTheOwners(t *testing.T) {
 		t.Fatalf("a refusal with no reason:\n%s", got)
 	}
 }
+
+// refusalRetryAt is a refusal's retry_at as a plugin sends it (an offset, past
+// the minute), and refusalRetryStored the UTC second muster keeps of it.
+const refusalRetryAt, refusalRetryStored = "2099-01-02T03:04:05-05:00", "2099-01-02T08:04:05Z"
+
+// refuseAtCheckWithRetry is refuseAtCheck whose refusal names refusalRetryAt.
+func (w *officerWakeWorld) refuseAtCheckWithRetry(item int64, body string) int64 {
+	w.t.Helper()
+	id := w.unsentDraftForItem(item, body)
+	if rec := w.checkRaw(id, `{"sendable":false,"detail":"`+pluginRefusalReason+`","retry_at":"`+refusalRetryAt+`"}`); rec.Code != http.StatusOK {
+		w.t.Fatalf("refuse: %d %s", rec.Code, rec.Body.String())
+	}
+	return id
+}
+
+// TestAPluginRefusalsRetryAtReachesTheSession (#1012 round-1 Y1): a check
+// refusal that names retry_at, for an item a session enqueued: the session's
+// line says when the plugin says it can be tried again, in UTC to the second,
+// outside the plugin's fenced words.
+func TestAPluginRefusalsRetryAtReachesTheSession(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-plugin-refused-retry")
+	id := w.refuseAtCheckWithRetry(item, "A post the plugin refuses until tomorrow.")
+	w.tick()
+	got := w.pastes()
+	if len(got) != 1 {
+		t.Fatalf("the session took %d pastes; want 1: %q", len(got), got)
+	}
+	want := "what happens next is this session's call. The plugin says it can be tried again after " + refusalRetryStored +
+		". The block below is the plugin's reason"
+	if !strings.Contains(got[0], want) {
+		t.Fatalf("the line does not name the retry time:\n%s\nwant it to contain %q (draft %d)", got[0], want, id)
+	}
+}
+
+// TestAnUndeliveredRefusalsRetryAtGoesBackToTheOfficer (#1012 round-1 Y1): the
+// same refusal's line is never delivered; the draft.refused item handed back
+// to the officer carries retry_at exactly as a direct refusal's does, so the
+// officer page's Re-file defaults to it.
+func TestAnUndeliveredRefusalsRetryAtGoesBackToTheOfficer(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-plugin-refused-retry-never-delivered")
+	w.host.set(func(m *wakeMirror) { m.gone = true })
+	id := w.refuseAtCheckWithRetry(item, "A post whose asker has gone.")
+	w.tick()
+	w.srv.sendQueueClock = func() time.Time { return time.Now().Add(wakeGiveUp + time.Minute) }
+	t.Cleanup(func() { w.srv.sendQueueClock = nil })
+	w.tick()
+	if _, p, ok := w.refusedItemOf(id); !ok || p["retry_at"] != refusalRetryStored || p["by"] != "plugin" {
+		t.Fatalf("the handed-back draft.refused item: found %v, payload %v; want retry_at %q", ok, p, refusalRetryStored)
+	}
+}
