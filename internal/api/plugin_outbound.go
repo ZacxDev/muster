@@ -661,6 +661,17 @@ func endForRequester(e builtin.DraftEnd) builtin.DraftEnd {
 	return e
 }
 
+// endForPluginRefusal is draftEndFor's end e of a plugin's pre-approval
+// refusal whose wake was just filed for the mirrored session that enqueued its
+// item (wakeOfficerDraftRefused's report): as endForRequester, no follow-up and
+// no escalation, the item finished no_action saying where the refusal went.
+func endForPluginRefusal(e builtin.DraftEnd) builtin.DraftEnd {
+	e.FollowUp, e.Quiet = nil, true
+	e.Ended += " The plugin's refusal was sent to the session that enqueued this item, which decides what happens next: there is nothing to redraft." +
+		" Should muster be unable to deliver it, it comes back to this officer as a " + draftRefusedKind + " item."
+	return e
+}
+
 // ownerRejectionDetail is the detail of the draft.refused item an owner's
 // rejection of d gives its officer: the owner's reason, or that they gave none.
 func ownerRejectionDetail(d plugins.Draft) string {
@@ -746,6 +757,15 @@ func (s *Server) outboundSettledTo(ctx context.Context, owner int64, d plugins.D
 		// not asked to redraft, and the item is closed. Not delivered, it comes
 		// back to the officer (wakeNotDelivered).
 		e = endForRequester(e)
+	}
+	if by == settledByPlugin && d.RefusedByCheck() && s.wakeOfficerDraftRefused(ctx, d, retryAt) {
+		// 🔴 SO IS THE PLUGIN'S REFUSAL (operator decision 2026-11-23): its
+		// wake, filed fresh just now, carries the plugin's reason; the officer
+		// is not asked to redraft, and the item is closed. Not delivered, it
+		// comes back to the officer (wakeNotDelivered). No wake (no session
+		// asked, its host does not mirror here, a store error): the officer's
+		// draft.refused item, as before.
+		e = endForPluginRefusal(e)
 	}
 	res, err := s.officerStore.DraftEnded(ctx, owner, e, now)
 	if err != nil {

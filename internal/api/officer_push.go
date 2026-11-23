@@ -57,7 +57,9 @@ const (
 	// (onConnectorRequested).
 	officerPushConnectorRequest officerPush = "connector_request"
 	// officerPushDraftRefused: the plugin refused an officer's draft; it went
-	// back to the officer (notifyDraftRefused).
+	// to the session that asked for its item when one did (its wake was filed,
+	// wakeOfficerDraftRefused), back to the officer otherwise
+	// (notifyDraftRefused).
 	officerPushDraftRefused officerPush = "draft_refused"
 	// officerPushDraftRetrying: an officer's approved draft failed for the
 	// plugins.RetryOwnerPushAttempt-th time with nothing sent and keeps
@@ -113,7 +115,7 @@ var officerPushes = map[officerPush]bool{
 	officerPushDraft:            true,  // approve or reject what goes out
 	officerPushOutreachBatch:    true,  // tick the follows and likes that go out
 	officerPushConnectorRequest: true,  // approve or deny the access
-	officerPushDraftRefused:     false, // it went back to the officer, which handles it
+	officerPushDraftRefused:     false, // it went to the asking session or back to the officer, which handles it
 	// The owner approved it and it is still not out: one push at the third
 	// failure, one at the end, never per attempt (from the retry contract
 	// derived from the operator's ask to approve once and have it retry on

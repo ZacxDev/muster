@@ -43,24 +43,30 @@ func (w *officerWakeWorld) followUpOf(id int64) int64 {
 	return f
 }
 
-// TestARedraftAfterAPluginRefusalWakesTheSessionThatEnqueuedTheItem is the
-// regression, end to end: a session enqueues an item, the officer's draft for
-// it is refused by its plugin's check, the officer redrafts from the
-// draft.refused follow-up, and the owner approves the redraft. The follow-up
-// names the session, and the approval of the redraft reaches it.
-func TestARedraftAfterAPluginRefusalWakesTheSessionThatEnqueuedTheItem(t *testing.T) {
+// TestARedraftAfterAFailedSendWakesTheSessionThatEnqueuedTheItem is the
+// regression, end to end: a session enqueues an item, the owner approves the
+// officer's draft for it, its plugin's send fails for good, the officer
+// redrafts from the draft.refused follow-up, and the owner approves the
+// redraft. The follow-up names the session, and the approval of the redraft
+// reaches it. (A plugin's pre-approval REFUSAL of such an item files no
+// follow-up at all: it goes to the session alone,
+// session_wake_plugin_refusal_pg_test.go.)
+func TestARedraftAfterAFailedSendWakesTheSessionThatEnqueuedTheItem(t *testing.T) {
 	w := newOfficerWakeWorld(t)
-	item := w.sessionEnqueues("plan-refused-redraft")
-	id := w.unsentDraftForItem(item, "A first post its plugin refuses.")
-	if rec := w.check(w.outboundWorld.tok, id, false, "rule: off topic"); rec.Code != http.StatusOK {
-		t.Fatalf("refuse: %d %s", rec.Code, rec.Body.String())
+	item := w.sessionEnqueues("plan-failed-redraft")
+	id := w.draftForItem(item, retryPost)
+	w.approveDraft(id, retryPost)
+	w.claimed(id)
+	if code, out := w.postResult(id, `{"ok":false,"detail":"the venue rejected the post"}`); code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("result: %d %v", code, out)
 	}
 	follow := w.followUpOf(id)
 	if h, s := w.itemRequester(follow); h != "tower" || s != routeSID {
 		t.Fatalf("follow-up %d's requester: %q/%q; want tower/%s (item %d's)", follow, h, s, routeSID, item)
 	}
-	redraft := w.draftForItem(follow, retryPost)
-	w.approveDraft(redraft, retryPost)
+	const again = "A second post after the first failed."
+	redraft := w.draftForItem(follow, again)
+	w.approveDraft(redraft, again)
 	w.tick()
 	want := "muster: you approved " + officerRef(redraft, follow) + ". Its plugin sends it next; muster tells this session how that went."
 	got := w.pastes()
