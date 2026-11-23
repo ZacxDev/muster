@@ -26,7 +26,16 @@ const (
 	chatTaskEvent     = "a task event (a routed task, a merged or closed PR)"
 	chatAgentSent     = "an agent's or muster's own turn (a kickoff, a job, an officer, a memo relay, a route's note)"
 	chatE2ESeed       = "e2e fixture rows (the e2e seeders; never built into the server)"
+	// chatTyperView is NOT a writer: the one place a stored row's typer is
+	// copied onto the transcript's line (ui.ChatLine.TypedBy), from which a
+	// team's shared chat draws who typed it (chat_typers.go). It copies the
+	// row's own typed_by as read, so it can name no typer the store did not.
+	chatTyperView = "a read: the stored row's typer copied onto the transcript's view line (never written to a row)"
 )
+
+// chatTyperViewSite is the ONE site of kind chatTyperView. Any other site of
+// that kind is refused, so the kind cannot excuse a second setter.
+const chatTyperViewSite = `internal/api/chat_log_live.go chatLinesOf → literal TypedBy: m.TypedBy`
 
 // TestEveryChatWriterIsClassified is the LEDGER OF CHAT WRITERS behind
 // chat_messages.typed_by (migration 0081; docs/design/session-state.md, step
@@ -94,6 +103,8 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		`e2e/mkchat/main.go appendMessages → AddChatMessage(role not a literal: m, TypedBy -)`: chatE2ESeed,
 		`e2e/mkchat/main.go createThreads → AddChatMessage(role not a literal: m, TypedBy -)`:  chatE2ESeed,
 		`e2e/seed/main.go run → AddChatMessage(role not a literal: m, TypedBy -)`:              chatE2ESeed,
+		// The transcript's view of a row's typer: a copy, never a write.
+		chatTyperViewSite: chatTyperView,
 		// The SQL: the insert (NULL unless a user row has a typer) and the reads —
 		// the quote read, and the column list every other read scans (the
 		// transcript's — a question card is answered only by a TYPED line,
@@ -119,6 +130,12 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 	// 🔴 Only the owner-typed kind may set a typer: a site of any other kind
 	// that writes TypedBy is refused whatever the list says.
 	for site, kind := range want {
+		if kind == chatTyperView {
+			if site != chatTyperViewSite {
+				t.Errorf("%s is classified %q; only %s is a view of the typer", site, kind, chatTyperViewSite)
+			}
+			continue
+		}
 		if kind != chatOwnerTyped && !strings.Contains(site, "TypedBy -)") {
 			t.Errorf("%s is classified %q but writes a typer", site, kind)
 		}

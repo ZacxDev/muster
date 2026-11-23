@@ -99,6 +99,13 @@ func TestATeamChatNamesWhoTypedEachLine(t *testing.T) {
 	fromLong := tw.typedLine(t, long, "from L "+tw.canary)
 	untyped := tw.typedLine(t, 0, "nobody typed this "+tw.canary)
 	fromV := tw.typedLine(t, tw.v.uid, "from V "+tw.canary)
+	// A plugin message delivered to the chief, as internal/plugins' Deliverer
+	// writes it: a user row with its plugin-message link and no typer.
+	relay, err := agents.NewPG(w.pool).AddChatMessage(tw.teamCtx, agents.ChatMessage{AgentID: tw.chief.ID, SessionID: tw.session.ID,
+		Role: "user", Kind: "text", Content: "a plugin says " + tw.canary, PluginMessageID: 987654})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	aName, bName, vName := w.a.name+w.suffix, w.b.name+w.suffix, tw.v.name+"-"+w.suffix
 	type want struct {
@@ -140,6 +147,25 @@ func TestATeamChatNamesWhoTypedEachLine(t *testing.T) {
 			}
 			if g.drawn != wl.drawn || g.label != wl.label {
 				t.Errorf("GET %s as %d: message %d's typer label = %q (drawn %v); want %q (drawn %v)", c.path, c.viewer, id, g.label, g.drawn, wl.label, wl.drawn)
+			}
+		}
+		// The plugin message draws as its relay row, never with a typer label;
+		// and no label is drawn beyond the typed lines this case expects.
+		relayRow := regexp.MustCompile(`<details data-relay-row="" data-msg-id="` + strconv.FormatInt(relay.ID, 10) + `"[^>]*>(.*?)</details>`).FindStringSubmatch(body)
+		if relayRow == nil {
+			t.Errorf("GET %s as %d: the plugin message %d is not drawn as its relay row (instrument check)", c.path, c.viewer, relay.ID)
+		} else if strings.Contains(relayRow[1], "data-typed-by") {
+			t.Errorf("GET %s as %d: the plugin message %d draws a typer label", c.path, c.viewer, relay.ID)
+		}
+		labelled := 0
+		for _, wl := range c.want {
+			if wl.drawn {
+				labelled++
+			}
+		}
+		if c.viewer == tw.v.uid && c.path == "/ui/agents/"+tw.chief.Name+"/chat-log" {
+			if n := strings.Count(body, "data-typed-by"); n != labelled {
+				t.Errorf("GET %s as %d: %d typer labels drawn; want exactly the %d typed lines'", c.path, c.viewer, n, labelled)
 			}
 		}
 		if strings.Contains(body, "unnamed-"+w.suffix+"@example.com") {
