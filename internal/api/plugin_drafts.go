@@ -1058,6 +1058,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		b.WriteString(line + "\n")
 		p.rejectLead = p.rejectLead || c.Request.Reject
 	}
+	b.WriteString(p.requestContext)
 	pills := []string{
 		`<span class="` + ui.AsksPillClass + ` whitespace-normal" data-draft-state>` + esc(draftStatusText(d)) + `</span>`,
 	}
@@ -1113,6 +1114,7 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		}
 	}
 	b.WriteString(draftDecisionHTML(c, now, p))
+	b.WriteString(p.requestFooter)
 	b.WriteString("</li>\n")
 	return b.String()
 }

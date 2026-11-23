@@ -225,11 +225,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return nil, nil, false
 	}
 	now := time.Now()
-	s.withDraftAgentNames(ctx, cards)
-	s.withDraftOfficerNames(cards)
-	s.withRetryOpen(ctx, cards)
-	s.withWakeLines(ctx, cards)
-	s.withConfirmAsks(ctx, cards)
+	s.withDraftCardReads(ctx, cards)
 	pending, archived = splitDraftCards(cards, now)
 	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
@@ -248,10 +244,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return pending, archived, true
 	}
 	one := []plugins.DraftCard{c}
-	s.withDraftOfficerNames(one)
-	s.withRetryOpen(ctx, one)
-	s.withWakeLines(ctx, one)
-	s.withConfirmAsks(ctx, one)
+	s.withDraftCardReads(ctx, one)
 	c = one[0]
 	if p, _ := splitDraftCards([]plugins.DraftCard{c}, now); len(p) == 1 {
 		return append([]plugins.DraftCard{c}, pending...), archived, true
@@ -339,7 +332,9 @@ func stepUpRequestsDraft(c *attention.StepUpCard) bool {
 // draftRequestOf is ask a as its draft's request, nil when it is not an open
 // one (stepUpRequestsDraft, isStepUpCard).
 func draftRequestOf(a attention.Ask) *plugins.DraftRequest {
-	if a.Status != attention.Open || !isStepUpCard(a) {
+	// An open ask past its expiry that no sweep has moved yet is closed, as
+	// the store reads it (attention cols).
+	if a.Status != attention.Open || !a.ExpiresAt.IsZero() && !a.ExpiresAt.After(time.Now()) || !isStepUpCard(a) {
 		return nil
 	}
 	return draftRequestFor(a.ID, a.StepUp)
@@ -369,8 +364,11 @@ func draftRequestItem(it attentionItem) bool {
 
 // foldDraftRequests is items with every draft's open requests folded into
 // ONE item, the newest (the one the draft's card names: withConfirmAsks
-// reads open first, newest first). Every other item is as it was, in its
-// place.
+// reads open first, newest first), which carries the others (folded) — so a
+// feed that cannot draw that item as the draft's card (askMergedDraftCardHTML
+// "": the draft unreadable to the reader, or no longer pending) draws every
+// one of them as it was (askFeedCardHTML). Every other item is as it was, in
+// its place.
 func foldDraftRequests(items []attentionItem) []attentionItem {
 	newest := map[int64]int64{}
 	for _, it := range items {
@@ -381,10 +379,19 @@ func foldDraftRequests(items []attentionItem) []attentionItem {
 	if len(newest) == 0 {
 		return items
 	}
-	out := items[:0:0]
+	folded := map[int64][]attentionItem{}
 	for _, it := range items {
 		if draftRequestItem(it) && it.AskID != newest[it.stepUp.DraftID] {
-			continue
+			folded[it.stepUp.DraftID] = append(folded[it.stepUp.DraftID], it)
+		}
+	}
+	out := items[:0:0]
+	for _, it := range items {
+		if draftRequestItem(it) {
+			if it.AskID != newest[it.stepUp.DraftID] {
+				continue
+			}
+			it.folded = folded[it.stepUp.DraftID]
 		}
 		out = append(out, it)
 	}
@@ -431,7 +438,9 @@ func askMergedDraftCardHTML(it attentionItem, now time.Time) string {
 		c.ConfirmAskIDs = append([]int64{it.AskID}, c.ConfirmAskIDs...)
 		c.ConfirmAsks = max(c.ConfirmAsks, len(c.ConfirmAskIDs))
 	}
-	return draftCardHTMLIn(c, now, cardPlace{back: attentionPath, card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff, feedKey: it.Key})
+	place := cardPlace{back: attentionPath, card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff, feedKey: it.Key}
+	place.requestContext, place.requestFooter = askRequestPartsHTML(it, now)
+	return draftCardHTMLIn(c, now, place)
 }
 
 // The words of a draft card's request line (draftRequestHTML).
@@ -481,6 +490,22 @@ func draftConfirmAsksHTML(c plugins.DraftCard) string {
 	b.WriteString(ui.IDMoreHTML(c.ConfirmAsks - len(c.ConfirmAskIDs)))
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+// withDraftCardReads is every read a draft's card is drawn from beyond its
+// row, for cards together — each a batch over all of them, never a read per
+// card: who drafted it (withDraftAgentNames, withDraftOfficerNames), whether
+// a retry is open (withRetryOpen), where a decision went (withWakeLines) and
+// its confirm asks (withConfirmAsks). 🔴 ONE READER FOR EVERY FACE: the Drafts
+// tab's cards (readDraftViews) and a request's draft on the Open feed and its
+// page (stepUpDraftsFor) both read through it, so the same draft draws the
+// same head, wake line and chips wherever it is drawn.
+func (s *Server) withDraftCardReads(ctx context.Context, cards []plugins.DraftCard) {
+	s.withDraftAgentNames(ctx, cards)
+	s.withDraftOfficerNames(cards)
+	s.withRetryOpen(ctx, cards)
+	s.withWakeLines(ctx, cards)
+	s.withConfirmAsks(ctx, cards)
 }
 
 // withDraftAgentNames sets each card's AgentDisplay: the drafting agent's
@@ -866,3 +891,41 @@ const asksPageScript = `<script>
   });
 })();
 </script>`
+
+// stepUpSessionKey is the session that raised step-up card a (its host and
+// session), "" for none: one wake line per session per decision.
+func stepUpSessionKey(a attention.Ask) string {
+	if a.StepUp == nil || a.StepUp.RaisedBySession == "" {
+		return ""
+	}
+	return a.StepUp.RaisedByHost + "/" + a.StepUp.RaisedBySession
+}
+
+// dismissDraftRequestsWith closes, after the owner's Dismiss of request a, every
+// other open request for a's draft — the requests its draft's Open card stood
+// for (foldDraftRequests) — and tells each session that raised one, once, that
+// it was dismissed (wakeDismissed). The draft itself is left pending.
+func (s *Server) dismissDraftRequestsWith(ctx context.Context, a attention.Ask) {
+	if s.ext.Attention == nil || a.Status != attention.Cancelled || !isStepUpCard(a) || !stepUpRequestsDraft(a.StepUp) {
+		return
+	}
+	asks, err := s.ext.Attention.Search(ctx, attention.Search{DraftID: a.StepUp.DraftID, Limit: attention.MaxSearchResults})
+	if err != nil {
+		s.logger.Printf("asks: dismiss draft %d's requests: %v", a.StepUp.DraftID, err)
+		return
+	}
+	told := map[string]bool{stepUpSessionKey(a): true}
+	for _, b := range asks {
+		if b.ID == a.ID || draftRequestOf(b) == nil || b.StepUp.DraftID != a.StepUp.DraftID {
+			continue
+		}
+		c, err := s.cancelAsk(ctx, b.ID)
+		if err != nil {
+			continue
+		}
+		if k := stepUpSessionKey(c); k == "" || !told[k] {
+			told[k] = true
+			s.wakeDismissed(ctx, c)
+		}
+	}
+}

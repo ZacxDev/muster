@@ -483,8 +483,12 @@ again, and the address follows):
   saying who asked and what (*work:1 asked to approve and send this.*, or
   *… asked to reject this: <reason>.*, the session's words flagged like any
   untrusted text) and the request's **Ask #…** chip; on **Drafts** the draft's
-  card says the same. Several requests for one draft are one card with every
-  chip, and the open count counts the draft once. A request to reject leads
+  card says the same. On Open it keeps the request's **View in session**, its
+  ⓘ and **Dismiss without answering**, which closes every request for the
+  draft, tells the session it was dismissed and leaves the draft pending.
+  Several requests for one draft are one card with every chip (each request
+  is its own card again when the draft cannot be drawn), the open count
+  counts the draft once, and a session that asked twice is told one line. A request to reject leads
   with **Reject**. Deciding there is your own decision on the draft: it
   closes every request for it (on Open the card stays in its place,
   settled), the session that asked is told once (*… was settled when you

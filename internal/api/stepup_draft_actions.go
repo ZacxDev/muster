@@ -98,12 +98,11 @@ func (s *Server) stepUpDraftsFor(ctx context.Context, ids []int64) (decide map[i
 		}
 		keep = append(keep, dc)
 	}
-	// As the Drafts tab reads its cards (readDraftViews): whether a manual
-	// retry is open is the server's, not the row's.
-	s.withRetryOpen(ctx, keep)
-	// And their confirm asks (withConfirmAsks: one read), which a request's
-	// card draws as the draft's own card (askMergedDraftCardHTML).
-	s.withConfirmAsks(ctx, keep)
+	// As the Drafts tab reads its cards (withDraftCardReads, the one reader):
+	// who drafted it, whether a retry is open, where a decision went, its
+	// confirm asks — a request's card draws the draft's own card
+	// (askMergedDraftCardHTML).
+	s.withDraftCardReads(ctx, keep)
 	for i := range keep {
 		out[keep[i].Draft.ID] = &keep[i]
 	}

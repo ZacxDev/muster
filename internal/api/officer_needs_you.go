@@ -82,6 +82,10 @@ type cardPlace struct {
 	// keyed as that request's ask (attentionAskKey) so the feed's keys, its
 	// live refresh and a decision's settled landing find it.
 	feedKey string
+	// requestContext and requestFooter are, on that Open-feed card, the
+	// request's own context row (its why, its ⓘ) and footer (View in
+	// session, Dismiss and its form): askRequestPartsHTML.
+	requestContext, requestFooter string
 }
 
 // backField is the place's hidden `return` field ("" on the Asks page), and
