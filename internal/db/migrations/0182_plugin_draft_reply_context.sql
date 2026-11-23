@@ -22,8 +22,8 @@
 -- application's insert copies it; 0175's trigger does not compare it, since
 -- nothing is sent from it). Every statement is idempotent.
 --
--- Must apply after its predecessor, 0178 (a parallel branch's; the contiguity
--- test refuses a gap). 🔴 RENUMBER IT at merge if main moved.
+-- Must apply after its predecessor, 0181 (the contiguity test refuses a gap).
+-- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. An older image never reads the column (its draft columns are
 -- named, never `*`). To remove it:

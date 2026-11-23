@@ -15,7 +15,7 @@ func TestMigration0182ReplyContext(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT reply_context FROM plugin_reply_drafts`); err == nil {
 		t.Fatal("control: before 0182 plugin_reply_drafts.reply_context exists")
 	}
-	applyThroughFrom(ctx, t, pool, 179)
+	applyThroughFrom(ctx, t, pool, 182)
 
 	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'ctx-agent', 'ns-ctx') RETURNING id`)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities, deliver_to)
