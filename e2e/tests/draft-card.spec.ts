@@ -43,6 +43,8 @@ const BODY = [
 ].join('\n');
 
 test.use({ storageState: { cookies: [], origins: [] } });
+// A fake microphone (a tone), so the reason box's mic records without a prompt.
+test.use({ launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } });
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
@@ -50,6 +52,11 @@ test.beforeAll(async () => {
     // Reply drafts are drawn only with the plugin interface on.
     MUSTER_PLUGINS: '1',
     MUSTER_FOCUS_INTERVAL: '0',
+    // Dictation ON (the reason box's mic is drawn). The one test that
+    // records answers /transcribe in the page (page.route); the service
+    // itself is never reached.
+    MUSTER_STT_URL: 'http://127.0.0.1:9',
+    MUSTER_STT_TOKEN: 'e2e-stt-token-not-a-real-one',
   });
   fix('agent', '1', agentName, agentToken);
   agentMade = true;
@@ -248,7 +255,7 @@ for (const vp of [
 // that's confusing"). A confirmation card a host session filed for a draft
 // ("Post to X? · Draft #N") stays phone-only for its own Confirm/Refuse, but
 // draws the draft's Approve and send and Reject — the Drafts tab's — so a tap
-// on the Open tab approves the draft, the card leaves the feed, and the
+// on the Open tab approves the draft, the card settles in its place, and the
 // browser stays on the Open tab (never the Drafts tab).
 // 🔴 RED AT origin/main: the card drew only "Confirm this on your phone."
 const stepup = (...args: string[]) =>
@@ -265,7 +272,9 @@ for (const vp of [
     test.afterAll(() => {
       stepup('clear', '1');
     });
-    test('Approve and send on the Open tab approves the draft and the card leaves the feed', async ({ page }, testInfo) => {
+    // CHANGED: this test pinned "the card leaves the feed"; a decided card now
+    // stays in its place, settled (internal/api asks_done.go).
+    test('Approve and send on the Open tab approves the draft and the card settles in place', async ({ page }, testInfo) => {
       const x = `e2e-openapprove-${vp.key}-${stamp}`;
       plugins.push(x);
       const draftID = fix('outbound', '1', agentName, x, 'x', OPEN_POST, 'launch/hero-1.png');
@@ -291,7 +300,10 @@ for (const vp of [
       if (shotDir) await page.screenshot({ path: `${shotDir}/open-${vp.key}-before.png` });
 
       await (vp.key === 'phone' ? approve.tap() : approve.click());
-      await expect(page.locator(`li#ask-${cardID}`)).toHaveCount(0);
+      const settled = page.locator(`li#ask-${cardID}[data-asks-settled]`);
+      await expect(settled).toBeVisible();
+      await expect(settled.locator('[data-asks-outcome-state]')).toHaveText('Approved in the web UI');
+      await expect(settled.locator('[data-draft-approve]'), 'nothing left to decide on it').toHaveCount(0);
       // Still the Open tab: no navigation to the Drafts tab or its Archived view.
       expect(new URL(page.url()).pathname).toBe('/attention');
       expect(new URL(page.url()).searchParams.get('tab')).toBeNull();
@@ -306,6 +318,124 @@ for (const vp of [
       // And the card is answered, saying where it was decided.
       await page.goto(`${origin}/attention/asks/${cardID}`);
       await expect(page.locator('[data-ask-closed] [data-ask-answer]')).toContainText('Approved in the web UI');
+    });
+  });
+}
+
+// THE OPERATOR'S PATH (operator report: a card rejected with a reason
+// vanished, so its "View in session" could no longer be reached): a "Reject
+// this draft?" step-up card on
+// the Open tab, rejected with a reason typed and dictated into its reason box.
+//
+//   - the reason box is a textarea that grows with its text and stops at its
+//     cap (8rem, scrolling inside past it), heights measured before and after;
+//   - its mic is the answer boxes' mic, and a dictated transcript lands in the
+//     box (/transcribe answered in the page: the fake microphone records a
+//     tone, and the text is this test's);
+//   - after Reject the card is STILL ON SCREEN, settled, in view: "Rejected in
+//     the web UI", the reason, and "View in session", which opens the drafting
+//     agent's page;
+//   - the Done tab lists it, with the reason.
+//
+// 🔴 RED AT the branch base: an <input> that never grows, no mic, and after
+// Reject the card was gone from the page.
+const REJECT_POST = 'Big launch: everything is half off today only.\n\nClick now.';
+const DICTATED = 'lead with the fix';
+for (const vp of [
+  { name: 'phone 390×844', key: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', key: 'desktop', use: { viewport: { width: 1440, height: 900 } } },
+]) {
+  test.describe(`rejecting a draft on the Open tab, ${vp.name}`, () => {
+    test.use({ ...vp.use, permissions: ['microphone'] });
+    test.afterAll(() => {
+      stepup('clear', '1');
+    });
+    test('the card stays, settled, with the reason; View in session works; Done lists it', async ({ page }, testInfo) => {
+      const x = `e2e-openreject-${vp.key}-${stamp}`;
+      plugins.push(x);
+      const draftID = fix('outbound', '1', agentName, x, 'x', REJECT_POST, 'launch/hero-1.png');
+      const cardID = stepup('draftcard', '1', draftID, 'reject');
+      await page.route(/\/plugins\/drafts\/\d+\/media\/\d+$/, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: pngBytes }));
+      let transcribed = 0;
+      await page.route('**/transcribe', async (r) => {
+        if (r.request().method() !== 'POST') return r.continue();
+        transcribed++;
+        await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${DICTATED} ` });
+      });
+      await signIn(page, origin);
+      await page.goto(`${origin}/attention`);
+      const card = page.locator(`li#ask-${cardID}`);
+      await expect(card).toBeVisible();
+      const boxID = `draft-reason-${draftID}-ask-${cardID}`;
+      const box = card.locator(`textarea#${boxID}`);
+      await expect(box).toHaveAttribute('name', 'reason');
+      await expect(box).toHaveAttribute('maxlength', /^\d+$/);
+      await box.scrollIntoViewIfNeeded();
+
+      // THE BOX GROWS, TO ITS CAP.
+      const height = () => box.evaluate((el) => el.getBoundingClientRect().height);
+      const h0 = await height();
+      await box.fill('one\ntwo\nthree');
+      const h3 = await height();
+      expect(h3, `three lines are taller than one (${h0} → ${h3})`).toBeGreaterThan(h0 + 20);
+      await box.fill(Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const h30 = await height();
+      const capPx = await box.evaluate((el) => parseFloat(getComputedStyle(el).maxHeight));
+      expect(capPx, 'the box has a cap').toBeGreaterThan(0);
+      expect(h30, `thirty lines stop at the cap (${h3} → ${h30}, cap ${capPx})`).toBeLessThanOrEqual(capPx + 1);
+      expect(h30, 'and it did grow to it').toBeGreaterThan(h3);
+      expect(await box.evaluate((el) => el.scrollHeight > el.clientHeight), 'past the cap it scrolls inside').toBe(true);
+      await box.fill('');
+      await expect.poll(height, { message: 'emptied, it is one line again' }).toBeLessThan(h3);
+
+      // THE MIC: the box's own, and what it hears lands in the box.
+      const mic = card.locator(`button[data-dictate][data-dictate-input="${boxID}"]`);
+      await expect(mic, 'the script revealed the mic').toBeVisible();
+      await box.fill('Too salesy,');
+      await box.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length));
+      await mic.click();
+      await expect(mic).toHaveAttribute('data-state', 'recording');
+      await page.waitForTimeout(1300);
+      await mic.click();
+      await expect(box).toHaveValue(/^Too salesy, ?lead with the fix\s*$/);
+      await expect(mic).toHaveAttribute('data-state', 'idle');
+      expect(transcribed, 'one recording transcribed').toBe(1);
+      const reason = (await box.inputValue()).trim();
+
+      // REJECT: the card stays, settled, in view.
+      const reject = card.locator('[data-draft-reject]');
+      await (vp.key === 'phone' ? reject.tap() : reject.click());
+      const settled = page.locator(`#attention-items > li#ask-${cardID}[data-asks-settled]`);
+      await expect(settled).toBeVisible();
+      await expect(settled).toBeInViewport();
+      await expect(settled.locator('[data-asks-outcome-state]')).toHaveText('Rejected in the web UI');
+      await expect(settled.locator('[data-asks-reason]')).toHaveText(`Your reason: ${reason}`);
+      await expect(settled.locator('[data-draft-reject]'), 'nothing left to decide on it').toHaveCount(0);
+      // The address no longer names it: a reload is the one that lets it go.
+      expect(new URL(page.url()).searchParams.get('settled')).toBeNull();
+      await noSidewaysScroll(page);
+      const shot = testInfo.outputPath(`open-reject-${vp.key}-settled.png`);
+      await page.screenshot({ path: shot });
+      await testInfo.attach(`open-reject-${vp.key}-settled.png`, { path: shot, contentType: 'image/png' });
+
+      // VIEW IN SESSION works: the drafting agent's page.
+      const view = settled.locator('[data-asks-view-session]');
+      await expect(view).toHaveText('View in session');
+      await expect(view).toHaveAttribute('href', `/agents/${agentName}`);
+      await (vp.key === 'phone' ? view.tap() : view.click());
+      // (The agent's page opens on its latest session: ?session=N.)
+      await expect(page).toHaveURL(new RegExp(`^${origin}/agents/${agentName}(\\?session=\\d+)?$`));
+
+      // THE DONE TAB lists it, with the reason.
+      await page.goto(`${origin}/attention`);
+      await expect(page.locator(`#attention-items > li#ask-${cardID}`), 'a reload takes it off the Open tab').toHaveCount(0);
+      await page.getByRole('tab', { name: 'Done', exact: true }).click();
+      await expect(page).toHaveURL(`${origin}/attention?tab=done`);
+      const done = page.locator(`#answered-${cardID}`);
+      await expect(done).toBeVisible();
+      await expect(done.locator('[data-asks-outcome-state]')).toHaveText('Rejected in the web UI');
+      await expect(done.locator('[data-asks-reason]')).toHaveText(`Your reason: ${reason}`);
+      await expect(done.locator('[data-asks-view-session]')).toHaveAttribute('href', `/agents/${agentName}`);
     });
   });
 }

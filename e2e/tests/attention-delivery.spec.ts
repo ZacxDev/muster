@@ -136,17 +136,18 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 42?');
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'dispatch a new agent' }).click()]);
-  await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+  // The card stays where it was, settled (internal/api asks_done.go).
+  await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '');
 
-  // Where the answer went, live on the Answered tab (after the waiter's grace).
-  await page.getByRole('tab', { name: 'Answered', exact: true }).click();
-  await expect(page).toHaveURL(origin + '/attention?tab=answered');
+  // Where the answer went, live on the Done tab (after the waiter's grace).
+  await page.getByRole('tab', { name: 'Done', exact: true }).click();
+  await expect(page).toHaveURL(origin + '/attention?tab=done');
   const answered = page.locator(`#answered-${id}`);
   await expect(answered.locator('[data-attention-answer-text]')).toHaveText('Your answer: dispatch a new agent');
   await expect(answered).toHaveAttribute('data-delivery', 'delivered', { timeout: 30_000 });
   await expect(answered.locator('[data-attention-delivery]')).toHaveText('Delivered to chief as a new message in its session.');
-  // The Answered card is the Answered tab's: visible there, and hidden with it.
-  await expect(page.locator('#asks-tabs-panel-answered').locator(`#answered-${id}`)).toBeVisible();
+  // The Done card is the Done tab's: visible there, and hidden with it.
+  await expect(page.locator('#asks-tabs-panel-done').locator(`#answered-${id}`)).toBeVisible();
   await page.getByRole('tab', { name: 'Drafts', exact: true }).click();
   await expect(answered).toBeHidden();
   await expect(page.locator('#asks-drafts-pending [data-drafts-empty]')).toBeVisible();
@@ -174,6 +175,36 @@ test('the operator answers the chief on /attention and the chief\'s session rece
 // Asks page filtered to the chief's asks; the operator taps an option there,
 // the card leaves, and the chief's session receives the answer as a turn —
 // once.
+// THE CATCH-UP: an ask filed while the page's stream is down (its event
+// missed) still reaches the Open button, by the asks badge's own catch-up
+// (askerAsksRefresh, once a minute), which the button follows
+// (htmx:afterSwap on the badge, ui slotTrigger). The stream is held down from
+// the page's load (/events refused), so no event can carry it; at 390×844,
+// where the button is the only count drawn. RED with the slot's trigger
+// reduced to "": the button kept 1.
+test('the Open button catches up with an ask whose event the page missed (390×844)', async ({ page }) => {
+  test.setTimeout(150_000);
+  await signIn(page, origin);
+  await page.route('**/events', (r) => r.abort());
+  await page.goto(origin + '/agents/' + chiefName);
+  await expect(page.locator('#chat-form')).toBeVisible();
+  const open = page.locator('header #preview-toggle');
+  // No open ask yet draws no button (nothing to count); one is drawn bare
+  // or counted otherwise.
+  const drawn = (await open.count()) > 0;
+  const before = drawn ? Number((await open.getAttribute('data-open-asks')) ?? '0') : 0;
+  const asked = await mcpCall('attention_ask', { question: `Missed while asleep (${stamp})?` });
+  const id = (JSON.parse(asked.text) as { id: number }).id;
+  // No event reaches the page: nothing moves at once.
+  await page.waitForTimeout(3_000);
+  if (!drawn) await expect(open).toHaveCount(0);
+  else await expect(open).toHaveAttribute('data-open-asks', String(before));
+  // The badge's catch-up (within its minute) re-reads, and the button with it.
+  await expect(open, 'the Open button caught up').toHaveAttribute('data-open-asks', String(before + 1), { timeout: 75_000 });
+  const r = await page.request.post(origin + `/attention/asks/${id}/answer`, { form: { answer: 'caught up' }, headers: { Origin: origin }, maxRedirects: 0 });
+  expect(r.status()).toBe(303);
+});
+
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
@@ -197,6 +228,10 @@ for (const vp of [
       await page.waitForURL(onChief);
       const count = page.locator('header [data-asker-asks-link]');
       await expect(count).toHaveAttribute('data-count', '1');
+      // The Open button counts the same open ask — on a phone the only count
+      // drawn (ui agentAsksBadge) — and follows the queue with the badge.
+      const open = page.locator('header #preview-toggle');
+      await expect(open).toHaveAttribute('data-open-asks', '1');
       await expect(page.locator('#asker-asks'), 'no asks block').toHaveCount(0);
       await expect(page.locator(`#ask-${id}`), 'no ask card on the chief\'s page').toHaveCount(0);
 
@@ -214,6 +249,7 @@ for (const vp of [
       const id2 = (JSON.parse(second.text) as { id: number }).id;
       await expect(count).toHaveAttribute('data-count', '2', { timeout: 15_000 });
       await expect(shell).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      await expect(open, 'the Open button follows a new ask').toHaveAttribute('data-open-asks', '2', { timeout: 15_000 });
       const answered = await page.request.post(origin + `/attention/asks/${id2}/answer`, {
         form: { answer: 'later' },
         headers: { Origin: origin },
@@ -221,15 +257,30 @@ for (const vp of [
       });
       expect(answered.status()).toBe(303);
       await expect(count).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+      await expect(open, 'the Open button follows an answer').toHaveAttribute('data-open-asks', '1', { timeout: 15_000 });
       await expect(shell).toHaveAttribute('data-count', '1', { timeout: 15_000 });
       expect(navigations, 'the page was not reloaded').toBe(0);
       page.off('framenavigated', nav);
 
-      // The tap: the Asks page filtered to the chief's asks.
-      await Promise.all([
-        page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
-        vp.use.hasTouch ? count.tap() : count.click(),
-      ]);
+      // The tap: the Asks page filtered to the chief's asks. 🔴 On a phone the
+      // badge is not drawn on an agent of the viewer's own (operator decision
+      // on #999: the Open button counts the same asks, ui agentAsksBadge) —
+      // it is still on the page and refreshed live, as above — so its link
+      // is followed there, and the Open button's count checked in its place.
+      if (vp.use.viewport.width < 640) {
+        await expect(count).toBeHidden();
+        await expect(page.locator('header #preview-toggle')).toHaveAttribute('data-open-asks', '1', { timeout: 15_000 });
+        const href = await count.getAttribute('href');
+        await Promise.all([
+          page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
+          page.goto(origin + href!),
+        ]);
+      } else {
+        await Promise.all([
+          page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
+          count.click(),
+        ]);
+      }
       // Whose asks these are: the chief's chip, active; and ONE predicate —
       // the badge's last number (1) is the number of cards the tap lists.
       await expect(page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]')).toHaveCount(1);
@@ -237,7 +288,8 @@ for (const vp of [
       const item = page.locator(`#attention-items #ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
       await item.getByRole('button', { name: 'dispatch a new agent' }).click();
-      await expect(page.locator(`#ask-${id}`)).toHaveCount(0, { timeout: 15_000 });
+      // It settles in place (internal/api asks_done.go).
+      await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '', { timeout: 15_000 });
       await expect
         .poll(() => turns.filter((b) => b.includes(`your owner answered attention #${id}`)).length, { timeout: 30_000 })
         .toBe(1);

@@ -623,6 +623,9 @@ type NewOutbound struct {
 	// reply whose target is not one of their recorded engagements; Reason the
 	// officer's one-line reason (required for a follow and a like).
 	BecauseRef, Contact, Reason string
+	// Context is what a reply answers, as the officer read it upstream
+	// (reply_context.go): only a reply carries one, and it is optional.
+	Context *ReplyContext
 }
 
 // validate checks every field but the body (ScreenOutbound's).
@@ -663,6 +666,13 @@ func (in NewOutbound) validate() error {
 		return invalid("a %s gives reason: one line, shown to your owner in the outreach batch", in.Target.Kind)
 	case utf8.RuneCountInString(in.Reason) > MaxReasonRunes:
 		return invalid("reason is at most %d characters", MaxReasonRunes)
+	case in.Context != nil && in.Target.Kind != TargetReply:
+		return invalid("only a reply carries context: the post or message it answers")
+	}
+	if in.Context != nil {
+		if err := in.Context.validate(); err != nil {
+			return err
+		}
 	}
 	if why := flows.HiddenCharRefusal(in.Reason); in.Reason != "" && why != "" {
 		return invalid("reason: %s", why)
@@ -794,6 +804,10 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 		if media == nil {
 			media = []string{}
 		}
+		replyContext, err := replyContextArg(in.Context)
+		if err != nil {
+			return err
+		}
 		var ref any
 		switch in.Target.Kind {
 		case TargetReply, TargetLike:
@@ -805,17 +819,19 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 		d, err = scanDraft(tx.QueryRow(ctx, `
 			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state, check_due_at,
 			                                 plugin_id, venue, target_kind, target_ref, media_refs, officer, officer_item_id,
-			                                 because_ref, contact_id, outreach_reason)
+			                                 because_ref, contact_id, outreach_reason, reply_context)
 			VALUES ($1, NULL, $2, $3, $4, now() + make_interval(secs => $5), 'awaiting', now() + make_interval(secs => $5),
-			        $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, nullif($15, '')) RETURNING `+draftCols,
+			        $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, nullif($15, ''), $16::jsonb) RETURNING `+draftCols,
 			ownerID, agentID, cutRunes(agentName, 100), body, DraftTTL.Seconds(),
-			p.ID, in.Venue, in.Target.Kind, ref, media, in.Officer, in.ItemID, in.BecauseRef, reached.Contact, strings.TrimSpace(in.Reason)))
+			p.ID, in.Venue, in.Target.Kind, ref, media, in.Officer, in.ItemID, in.BecauseRef, reached.Contact, strings.TrimSpace(in.Reason),
+			replyContext))
 		if err != nil {
 			return err
 		}
 		return audit(ctx, tx, "plugin.draft.filed", DraftObject(d.ID), map[string]any{
 			"outbound": true, "plugin_id": p.ID, "officer": in.Officer, "agent_id": agentID, "venue": in.Venue,
 			"target_kind": in.Target.Kind, "media_refs": media, "item_id": in.ItemID, "because_ref": in.BecauseRef, "contact_id": reached.Contact,
+			"reply_context": in.Context != nil,
 		})
 	})
 	if err != nil {

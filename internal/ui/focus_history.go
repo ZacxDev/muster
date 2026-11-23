@@ -25,6 +25,19 @@ import (
 // The fragment is server-rendered and escaped like every other view
 // (RenderFocusHistoryPage); the script parses it with a <template>, never runs
 // anything in it.
+//
+// 🔴 ENTRIES ARE GROUPED BY TITLE (operator report: "the what it worked on
+// history seems to frequently have the same title for every entry"). A row is
+// written whenever the title OR the description changes (internal/focus), so
+// a long piece of work is many rows under one title, each a step of it. The
+// list draws CONSECUTIVE rows with the same title as ONE group: the title
+// once, its steps (description and when) under it, newest first. A title
+// change starts a new group; the same title again later is a new group too,
+// since something else was worked on between.
+//
+// ⚠ GROUPS ARE PER PAGE (operator decision on #999: "Drop it"). A run that a
+// 20-row page boundary cuts is two groups, its title drawn again where the
+// next page begins; nothing carries a title across the pages.
 
 // FocusHistoryRoute is the history fragment's route.
 const FocusHistoryRoute = "/ui/focus/history"
@@ -55,6 +68,29 @@ type FocusHistoryPageView struct {
 	First   bool
 }
 
+// FocusHistoryGroup is a run of consecutive entries with one title.
+type FocusHistoryGroup struct {
+	// Title is the run's title, plained (textplain.Title).
+	Title   string
+	Entries []FocusHistoryEntry
+}
+
+// GroupFocusHistory is entries (newest first) as runs of one title, in
+// order: an entry whose plained title is its predecessor's joins its group,
+// any other starts a new one.
+func GroupFocusHistory(entries []FocusHistoryEntry) []FocusHistoryGroup {
+	var out []FocusHistoryGroup
+	for _, e := range entries {
+		t := textplain.Title(e.Title)
+		if n := len(out); n > 0 && out[n-1].Title == t {
+			out[n-1].Entries = append(out[n-1].Entries, e)
+			continue
+		}
+		out = append(out, FocusHistoryGroup{Title: t, Entries: []FocusHistoryEntry{e}})
+	}
+	return out
+}
+
 // RenderFocusHistoryPage writes one page as list rows: what the sentinel it
 // was fetched for is replaced with.
 func RenderFocusHistoryPage(w io.Writer, v FocusHistoryPageView) error {
@@ -65,17 +101,25 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 	if len(v.Entries) == 0 && v.First {
 		return focusHistoryEmpty()
 	}
-	rows := make([]g.Node, 0, len(v.Entries)+1)
-	for _, e := range v.Entries {
+	groups := GroupFocusHistory(v.Entries)
+	rows := make([]g.Node, 0, len(groups)+1)
+	for _, gr := range groups {
+		steps := make([]g.Node, 0, len(gr.Entries))
+		for _, e := range gr.Entries {
+			d := textplain.Title(e.Description)
+			steps = append(steps, Li(
+				g.Attr("data-focus-history-step", ""),
+				Class("flex items-start gap-3"),
+				Span(g.Attr("data-focus-history-description", ""), Class("min-w-0 flex-1 break-words text-sm text-fg2"), g.Text(d)),
+				Span(g.Attr("data-focus-history-at", ""), Class("inline-flex shrink-0 items-center gap-1 text-xs text-muted"), cardTime(e.At), g.Text("ago")),
+			))
+		}
+		list := Ol(g.Attr("data-focus-history-steps", ""), Class("flex flex-col gap-1.5"), g.Group(steps))
 		rows = append(rows, Li(
 			g.Attr("data-focus-history-item", ""),
-			Class("flex flex-col gap-1 border-b border-line px-4 py-3"),
-			Div(
-				Class("flex items-start gap-3"),
-				Span(g.Attr("data-focus-history-title", ""), Class("min-w-0 flex-1 break-words text-sm font-semibold text-fg"), g.Text(textplain.Title(e.Title))),
-				Span(g.Attr("data-focus-history-at", ""), Class("inline-flex shrink-0 items-center gap-1 text-xs text-muted"), cardTime(e.At), g.Text("ago")),
-			),
-			g.If(textplain.Title(e.Description) != "", P(g.Attr("data-focus-history-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(e.Description)))),
+			Class("flex flex-col gap-1.5 border-b border-line px-4 py-3"),
+			Span(g.Attr("data-focus-history-title", ""), Class("break-words text-sm font-semibold text-fg"), g.Text(gr.Title)),
+			list,
 		))
 	}
 	if v.Next != "" {
@@ -138,26 +182,6 @@ func focusHistoryButton() g.Node {
 		g.Attr("aria-expanded", "false"),
 		Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>`),
-	)
-}
-
-// focusHistoryMenuItem is focusHistoryButton as an item of a claude-code
-// agent's ⋯ menu (foldedMenuItems): the same id and data-focus-history-open,
-// so focusHistoryScript opens the same dialog; it closes the menu as it is
-// picked (data-menu-close).
-func focusHistoryMenuItem() g.Node {
-	return Button(
-		Type("button"),
-		ID("focus-history-open"),
-		g.Attr("role", "menuitem"),
-		g.Attr("data-menu-close", ""),
-		g.Attr("data-focus-history-open", "focus-history"),
-		g.Attr("aria-haspopup", "dialog"),
-		g.Attr("aria-controls", "focus-history"),
-		g.Attr("aria-expanded", "false"),
-		Class(headerMenuItemClass),
-		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>`),
-		Span(g.Text(FocusHistoryLabel)),
 	)
 }
 

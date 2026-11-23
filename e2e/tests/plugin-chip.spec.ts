@@ -286,14 +286,17 @@ test('the Preview button on both session views: drawn only while the window has 
   const other = await page.goto(origin + '/tasks');
   expect(other!.headers()['content-security-policy']).not.toContain('frame-src');
 
-  // REVOKED: no slot, no panel, no frame-src.
+  // REVOKED: no button, nothing to mint, no plugin frame, no frame-src.
+  // (The slot and the panel are still drawn, empty: the Open control also
+  // lists the session's asks whenever the queue is served (#999's Asks tab),
+  // and this window has none, so its button is not drawn.)
   const rv = await page.request.post(origin + `/plugins/${id}/revoke`, { headers: { Origin: origin }, maxRedirects: 0 });
   expect(rv.status(), await rv.text()).toBe(303);
   for (const p of [viewOf('@1'), termOf('@2')]) {
     const r = await page.goto(origin + p);
     expect(r!.headers()['content-security-policy'], p).not.toContain('frame-src');
-    await expect(page.locator('#preview-slot'), p).toHaveCount(0);
-    await expect(page.locator('#preview-panel'), p).toHaveCount(0);
+    await expect(page.locator('#preview-toggle'), p).toHaveCount(0);
+    await expect(page.locator('#preview-panel[data-mint], #preview-panel [data-preview-frame]'), p).toHaveCount(0);
   }
 });
 

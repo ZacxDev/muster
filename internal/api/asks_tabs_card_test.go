@@ -326,7 +326,7 @@ func TestTheAnsweredTabDrawsTheOpenCard(t *testing.T) {
 	plain := attention.Ask{ID: 8, Owner: 1, Question: "Ship it?\nTonight or Monday", Answer: "Monday —\nafter the freeze", Status: attention.Answered,
 		CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute), Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
 	asks := []attention.Ask{step, plain}
-	frag := answeredFeedHTML(asks, []attentionItem{askItem(step), askItem(plain)}, now, nil)
+	frag := closedFeedHTML(closedCardsOf(asks, []attentionItem{askItem(step), askItem(plain)}, nil), now)
 	cards := cardsOf(t, frag)
 	if len(cards) != 2 {
 		t.Fatalf("%d answered cards", len(cards))
@@ -466,7 +466,7 @@ func TestTheAnsweredCardFlagsHiddenCharsInItsQuestionAndAnswer(t *testing.T) {
 	now := designNow
 	a := attention.Ask{ID: 8, Owner: 1, Question: "Ship it‮ tonight?", Answer: "Yes​, ship it", Status: attention.Answered,
 		CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute), Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
-	card := cardsOf(t, answeredFeedHTML([]attention.Ask{a}, []attentionItem{askItem(a)}, now, nil))
+	card := cardsOf(t, closedFeedHTML(closedCardsOf([]attention.Ask{a}, []attentionItem{askItem(a)}, nil), now))
 	if len(card) != 1 {
 		t.Fatalf("%d answered cards", len(card))
 	}
@@ -538,7 +538,8 @@ func (c chatDraftStore) DraftCard(context.Context, int64) (plugins.DraftCard, er
 // TestAChatConfirmCardQuotesWhatAReplyAnswers: an officer chat's confirm card
 // for an outbound REPLY draft quotes the message it answers — the outside
 // party's, in its own box, marked untrusted — and, when muster holds no
-// message with that reference, says to check the target before approving:
+// message with that reference and its officer gave no context, says the post
+// it answers was not provided and to check the target before approving:
 // the Drafts tab's card's own part (draftAnswersHTML), not a copy.
 //
 // RED at 23adc35: the chat card drew the preview and Details only.
@@ -575,7 +576,9 @@ func TestAChatConfirmCardQuotesWhatAReplyAnswers(t *testing.T) {
 
 	s.ext.Plugins = chatDraftStore{card: unknown}
 	card = parseAsks(t, s.chatCardHTML(context.Background(), officerScope{}, cc))
-	if w, ok := card.first("data-draft-reply-to-missing"); !ok || w.text() != "muster received no reply with this reference: check the target before you approve." {
+	// A reply with no context and no message on its thread: the card says
+	// what it answers was not provided (draft_reply_context.go), never fetched.
+	if w, ok := card.first("data-draft-context-missing"); !ok || w.text() != "The post this replies to was not provided, so it is not shown: check the target before you approve." {
 		t.Errorf("an unknown target does not draw the warning")
 	}
 	if _, ok := card.first("data-draft-reply-to"); ok {

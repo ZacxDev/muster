@@ -188,6 +188,8 @@ var uiExempt = map[string]exemption{
 	"switcher.go switcherLabel it.Label":                 {1, "the pill's name line, split out of switcherEntry for \"Show tmux sessions\": SwitcherItem.Label, built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
 	"nav_agents.go navAgentRow it.Label":                 {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
 	"nav_agents.go navAgentRow it.Title":                 {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
+	"focus_history.go GroupFocusHistory out[n-1].Title":  {1, "a group's Title is set from textplain.Title(e.Title) two lines up; this compares the next entry's plained title with it, a key, not a display"},
+	"focus_history.go focusHistoryRows gr.Title":         {1, "FocusHistoryGroup.Title is built through Title by GroupFocusHistory; plaining it again here would apply Title twice"},
 	"switcher.go switcherEntry it.Title":                 {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
 	"mirror_ask.go askForm o.Label":                      {2, whyOption},
 	"mirror_ask.go askReadOnly o.Label":                  {1, whyOption},

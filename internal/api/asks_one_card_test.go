@@ -102,8 +102,8 @@ func TestEveryAsksListItemIsACard(t *testing.T) {
 	b.WriteString(draftsOnly)
 	ans := attention.Ask{ID: 7, Owner: 1, Question: "Ship it?", Answer: "yes", Status: attention.Answered, CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute),
 		Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
-	b.WriteString(answeredFeedHTML([]attention.Ask{ans}, []attentionItem{askItem(ans)}, now, nil))
-	b.WriteString(answeredFeedHTML(nil, nil, now, nil))
+	b.WriteString(closedFeedHTML(closedCardsOf([]attention.Ask{ans}, []attentionItem{askItem(ans)}, nil), now))
+	b.WriteString(closedFeedHTML(closedCardsOf(nil, nil, nil), now))
 	agent := int64(4)
 	pending := plugins.DraftCard{Draft: plugins.Draft{ID: 11, AgentID: &agent, AgentName: "marketing-acme-1", Body: "It is on by default.", Status: plugins.DraftPending,
 		CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(24 * time.Hour), CheckState: plugins.CheckSendable},

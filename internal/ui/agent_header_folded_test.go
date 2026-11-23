@@ -113,30 +113,46 @@ func foldedPageCase(t *testing.T, chief bool) {
 	if _, ok := ccAttr(menu, "data-menu-align"); ok {
 		t.Error("the folded menu is aligned to its trigger's start")
 	}
-	// The tools are gap-1 and ONE control wide (agentHeaderToolsWith's compact
-	// row: New chat, or the chief's list icon); Chat history and Focus
-	// history are ⋯ menu items, not tools — a worker's; the chief's list icon
-	// opens both.
+	// The tools are gap-1 (agentHeaderToolsWith's compact row): a worker's
+	// three — New chat, Chat history, What it worked on — in the row, none of
+	// them in the ⋯ menu (operator ask: the history buttons back on the page),
+	// so three controls wide; the chief's list icon alone, one control wide.
 	v := chiefPageView(chief)
 	v.FocusHistory = FocusHistoryPath("agent:7", "")
 	vdoc := ccParse(t, renderString(t, AgentDetailPage(v, Features{})))
 	tools := ccFirst(t, vdoc, "data-header-tools", "")
-	if cls, _ := ccAttr(tools, "class"); !strings.Contains(" "+cls+" ", " gap-1 ") || !strings.Contains(" "+cls+" ", " w-11 ") {
-		t.Errorf("tools: class %q, want gap-1 and w-11", cls)
+	wide := " w-[6.75rem] "
+	if v.ChiefChat != nil {
+		wide = " w-11 "
+	}
+	if cls, _ := ccAttr(tools, "class"); !strings.Contains(" "+cls+" ", " gap-1 ") || !strings.Contains(" "+cls+" ", wide) {
+		t.Errorf("tools: class %q, want gap-1 and%s", cls, wide)
 	}
 	vmenu := ccFirst(t, vdoc, "id", AgentMenuID)
-	hist, focusOpen := ccWithAttr(vdoc, "data-chat-history", ""), ccWithAttr(vdoc, "id", "focus-history-open")
+	hist, focusOpen := ccWithAttr(tools, "aria-label", "Chat history"), ccWithAttr(vdoc, "id", "focus-history-open")
+	if n := len(ccWithAttr(vmenu, "aria-label", "Chat history")) + len(ccWithAttr(vmenu, "for", sessionDrawerID)); n != 0 {
+		t.Errorf("the ⋯ menu holds %d Chat history controls", n)
+	}
 	if v.ChiefChat != nil {
 		if len(hist)+len(focusOpen) != 0 {
-			t.Errorf("the chief's page carries Chat history (%d) or Focus history (%d) items", len(hist), len(focusOpen))
+			t.Errorf("the chief's page carries Chat history (%d) or What it worked on (%d)", len(hist), len(focusOpen))
 		}
 	} else {
-		if len(hist) != 1 || !ccInside(hist[0], vmenu) || len(focusOpen) != 1 || !ccInside(focusOpen[0], vmenu) {
-			t.Errorf("a worker's Chat history (%d) and Focus history (%d) are not the ⋯ menu's", len(hist), len(focusOpen))
+		if len(hist) != 1 || !ccInside(hist[0], tools) || len(focusOpen) != 1 || !ccInside(focusOpen[0], tools) {
+			t.Errorf("a worker's Chat history (%d) and What it worked on (%d) are not the header's tools", len(hist), len(focusOpen))
 		}
-		if ccInside(focusOpen[0], tools) {
-			t.Error("Focus history is still a header tool")
+		if len(hist) == 1 && ccInside(hist[0], vmenu) || len(focusOpen) == 1 && ccInside(focusOpen[0], vmenu) {
+			t.Error("a history control is still in the ⋯ menu")
 		}
+	}
+	// The ⋯ keeps its other actions: Rename, Start and Stop, Terminal.
+	for _, k := range []string{"rename", "Start", "Stop"} {
+		if n := len(ccWithAttr(vmenu, "data-agent-action", k)); n != 1 {
+			t.Errorf("the ⋯ has %d %q items, want 1", n, k)
+		}
+	}
+	if term := ccWithAttr(vdoc, "id", "view-terminal"); len(term) != 1 || !ccInside(term[0], vmenu) {
+		t.Error("Terminal is not the ⋯ menu's")
 	}
 	// The asks are the header's badge alone: one link, in the header, to the
 	// Asks page filtered to this agent's asks — and no asks block anywhere.

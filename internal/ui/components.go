@@ -2340,8 +2340,9 @@ var appScriptSrc = staticJS("app", `
   // in this script (the combobox, the tag input, a whitespace-collapsing
   // replace), which is exactly how the previous guard became vacuous. Do not
   // inline these back into the handler.
-  // A <label> drawn as a menu item (an agent's ⋯ menu's Chat history,
-  // chatHistoryMenuItem) is the same contract: Enter/Space activate it.
+  // A <label> drawn as a menu item is the same contract: Enter/Space activate
+  // it (none is drawn today: an agent's Chat history is its header's own
+  // button again, label[role="button"]).
   var LABEL_BUTTON_SELECTOR = 'label[role="button"], label[role="menuitem"]';
   var LABEL_BUTTON_KEYS = ['Enter', ' '];
   document.addEventListener('keydown', function (e) {

@@ -468,15 +468,24 @@ does not fill its history.
 
 You can scroll back through it:
 - on a mirrored session's rendered view, the "Your messages" sheet (the
-  header's **⋯** menu, **Messages and what it worked on**) has two tabs, **Your
-  messages** and **What it worked on**. The arrow keys move between them, and the
-  tab you pick is remembered for that window in the browser;
-- on a dispatched agent's page, **What it worked on** in the header's **⋯** menu
+  header's list button, **Your messages and what it worked on**) has two tabs,
+  **Your messages** and **What it worked on**. The arrow keys move between
+  them, and the tab you pick is remembered for that window in the browser;
+- on a dispatched agent's page, the header's **What it worked on** button
   opens a dialog. That page has no "Your messages" sheet, so the history is a
   dialog of its own rather than a tab.
 
-Both list the newest first, 20 at a time, and load older pages as you scroll
-(or with **Load older**). Pages come from `GET /ui/focus/history`, which reads
+Both list the newest first, 20 rows at a time, and load older pages as you
+scroll (or with **Load older**).
+
+**The list is grouped by title.** A row is written whenever the title *or*
+the description changes, so one piece of work is usually many rows under one
+title. Consecutive rows with the same title are drawn as one group: the title
+once, and under it each step's description and how long ago it was written,
+newest first. A different title starts a new group, and the same title coming
+back later (after other work) is a group of its own. Groups are per page: a
+run the 20-row page cuts in two shows its title again where the next page
+begins. Pages come from `GET /ui/focus/history`, which reads
 under your own row-level security and answers 404 for a session that is not
 yours (a mirrored session is yours while you hold its history or an online
 window of it).

@@ -364,9 +364,11 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
-					// The session's Open button (previews and pages), while it
-					// has something to open (plugin_chip.go).
-					previewButtonSlot(v.Plugins),
+					// The session's Open button (previews, pages and asks), while
+					// it has something to open (plugin_chip.go). This page has no
+					// asks badge and no stream, so its asks are polled
+					// (PluginChips.AsksPoll).
+					previewButtonSlot(withAsksPoll(v.Plugins)),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),

@@ -9,7 +9,7 @@ import { touchDrag } from '../lib/touch';
 // THE ASKS CARD FEED (internal/ui/asks_card.go, internal/api/asks_feed.go;
 // docs/attention.md "The card feed"), in a real browser against a real
 // muster-server with plugins, task routing and chief nudges on — so the Open,
-// Answered, Drafts, Nudges and Log tabs are all drawn — at a phone (390×844)
+// Done, Drafts, Nudges and Log tabs are all drawn — at a phone (390×844)
 // and a desktop (1280×800), both with touch:
 //
 //   - a sideways swipe on the feed switches tabs, in its direction, and the
@@ -17,14 +17,17 @@ import { touchDrag } from '../lib/touch';
 //     the page DID scroll);
 //   - a tap on a card expands it in place, and again collapses it; its
 //     "View in session" is the asking agent's page, at the card's bottom;
-//   - tapping an option answers it: the card leaves, the next card takes
-//     focus, the open count drops, and the server has the answer;
+//   - tapping an option answers it: the card STAYS, settled in place (its
+//     outcome, "View in session", its page), the next card takes focus, the
+//     open count drops, and the server has the answer; a reload takes it off
+//     the Open feed and it is on the Done tab;
 //   - every answerable card carries the dictation mic;
 //   - the keyboard: j/k move focus between cards (visibly), Enter expands, a
 //     focuses the answer box, d starts the mic, Esc leaves the box, then
 //     collapses;
-//   - Dismiss is sent at once (an htmx post answered 204), the next card
-//     takes focus; a live refresh while a card leaves never brings it back;
+//   - Dismiss is sent at once (an htmx post answered with the settled card),
+//     the card settles in place and the next card takes focus; a live refresh
+//     waits while a post is in flight and then keeps the settled card;
 //   - prefers-reduced-motion: reduce turns every card transition off.
 //
 // The queue is fixture rows (e2e/asksfeedfix) written through the real store
@@ -106,8 +109,8 @@ for (const vp of [
       };
       // Leftwards: the next tab.
       await swipe('left');
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
-      await expect(page).toHaveURL(`${origin}/attention?tab=answered`);
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'done');
+      await expect(page).toHaveURL(`${origin}/attention?tab=done`);
       await expect(page.locator(`#answered-${ids.answered}`)).toBeVisible();
       // Again: Drafts.
       await swipe('left');
@@ -115,7 +118,7 @@ for (const vp of [
       await expect(page).toHaveURL(`${origin}/attention?tab=drafts`);
       // Rightwards twice: back to Open, its address bare.
       await swipe('right');
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'done');
       await swipe('right');
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
       await expect(page).toHaveURL(`${origin}/attention`);
@@ -229,7 +232,11 @@ for (const vp of [
       await expect.poll(async () => (await q.boundingBox())!.height, { message: 'the cut line is shown' }).toBeGreaterThan(clamped + 8);
     });
 
-    test('tapping an option answers it: the card leaves and the next card takes focus', async ({ page }) => {
+    // 🔴 A DECIDED CARD STAYS PUT (operator report: a decided card vanished
+    // at once, leaving no way back to it). CHANGED: this
+    // test pinned "the card leaves"; the card now settles in place.
+    // RED at the branch base: the card was removed.
+    test('tapping an option answers it: the card settles in place and the next card takes focus', async ({ page }) => {
       await openFeed(page);
       const n0 = await openN(page);
       expect(n0, 'the fixture\u2019s five cards are counted').toBeGreaterThanOrEqual(5);
@@ -240,81 +247,89 @@ for (const vp of [
       const nextId = await rotate.locator('xpath=following-sibling::li[1]').getAttribute('id');
       expect(nextId, 'a card follows the one answered').toBeTruthy();
       const next = page.locator(`[id="${nextId}"]`);
+      // Where it is on the PAGE (not the viewport: focus moving on to the
+      // next card may scroll).
+      const pageTop = () => rotate.evaluate((el) => Math.round(el.getBoundingClientRect().top + window.scrollY));
+      const top0 = await pageTop();
+      const posted = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.rotate}/answer` && r.request().method() === 'POST');
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
-      await expect(rotate).toHaveCount(0);
+      expect((await posted).status(), 'the answer is taken, with the settled card').toBe(200);
+      // Still on screen, in its place, settled: its outcome, no answer row.
+      await expect(rotate).toBeVisible();
+      await expect(rotate).toHaveAttribute('data-asks-settled', '');
+      await expect(rotate.locator('[data-asks-outcome-state]')).toHaveText('Answered');
+      await expect(rotate.locator('[data-attention-answer-text]')).toHaveText('Your answer: Rotate it');
+      await expect(rotate.getByRole('button', { name: 'Rotate it', exact: true })).toHaveCount(0);
+      await expect(rotate.locator('[data-asks-view-session]')).toHaveAttribute('href', `/agents/${agent}`);
+      await expect(rotate.locator('[data-asks-ask-link]')).toHaveAttribute('href', `/attention/asks/${ids.rotate}`);
+      expect(Math.abs((await pageTop()) - top0), 'it stayed where it was').toBeLessThan(8);
       await expect(next).toBeFocused();
       await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
       await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.rotate}`)).text()).toContain('Your answer: Rotate it');
-      // Still gone after a reload: the server has it.
+      // A reload takes it off the Open feed; it is on the Done tab.
       await page.reload();
-      await expect(page.locator(`#ask-${ids.rotate}`)).toHaveCount(0);
+      await expect(page.locator(`#attention-items #ask-${ids.rotate}`)).toHaveCount(0);
+      await page.getByRole('tab', { name: 'Done', exact: true }).click();
+      await expect(page.locator(`#answered-${ids.rotate}`)).toBeVisible();
+      await expect(page.locator(`#answered-${ids.rotate} [data-asks-view-session]`)).toHaveAttribute('href', `/agents/${agent}`);
     });
 
-    // 🔴 THE FADE PLAYS BEFORE THE CARD IS REMOVED (a frame probe). The
-    // answer's POST lands in tens of milliseconds, inside the 180ms leave;
-    // removing the card then cut the motion off and the card simply vanished.
-    // The leave is OPACITY AND TRANSFORM ONLY (the asks audit: no height,
-    // padding or margin animation). Sampled per frame from the click: partway
-    // through, the card is still in the DOM, part-faded, at its FULL height;
-    // the last frame it is shown it has faded to (nearly) nothing.
-    // RED at origin/main d1ff2dbe: gone by ~65ms. (Its height collapsed until
-    // the asks audit; this probe pinned that collapse then.)
-    test('an answered card plays its fade before it is removed (frame probe)', async ({ page }) => {
+    // 🔴 THE CARD NEVER LEAVES THE SCREEN (a frame probe). CHANGED: this
+    // probe pinned a fade-out and removal ("the card plays its fade before it
+    // is removed"); a decided card now settles in place. Sampled per frame
+    // from the click to well past the POST: on EVERY frame a card with the
+    // answered card's id is on the page, shown, at least half opaque, and
+    // its top stays where it was — never faded off, never gone for a frame.
+    // RED at the branch base: it faded out and was removed.
+    test('an answered card is on screen on every frame until it settles (frame probe)', async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'no-preference' });
       await openFeed(page);
       const id = `ask-${ids.rotate}`;
       const rotate = page.locator('#' + id);
       await rotate.scrollIntoViewIfNeeded();
-      // Its LAYOUT height (offsetHeight: a transform's scale is not layout).
-      const h0 = await rotate.evaluate((el) => (el as HTMLElement).offsetHeight);
-      expect(h0, 'the card has a height').toBeGreaterThan(60);
       await page.evaluate((id) => {
         const el = document.getElementById(id)!;
-        const out: { t: number; connected: boolean; h: number; o: number; shown: boolean }[] = [];
+        const out: { t: number; on: boolean; o: number; top: number; settled: boolean }[] = [];
         (window as unknown as { __probe: typeof out }).__probe = out;
         el.addEventListener('click', () => {
           const t0 = performance.now();
           (function f() {
             const t = performance.now() - t0;
-            const connected = el.isConnected;
-            const cs = connected ? getComputedStyle(el) : null;
-            out.push({ t, connected, h: connected ? (el as HTMLElement).offsetHeight : 0, o: cs ? parseFloat(cs.opacity) : 0, shown: !!cs && cs.display !== 'none' });
-            if (t < 700) requestAnimationFrame(f);
+            const c = document.getElementById(id);
+            const cs = c && c.isConnected ? getComputedStyle(c) : null;
+            out.push({ t, on: !!cs && cs.display !== 'none' && cs.visibility !== 'hidden', o: cs ? parseFloat(cs.opacity) : 0,
+              top: c ? c.getBoundingClientRect().top + window.scrollY : -1, settled: !!c && c.hasAttribute('data-asks-settled') });
+            if (t < 900) requestAnimationFrame(f);
           })();
         }, { capture: true, once: true });
       }, id);
+      const top0 = await rotate.evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
       const posted = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.rotate}/answer` && r.request().method() === 'POST');
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
-      expect((await posted).status(), 'the answer is taken (204)').toBe(204);
-      await expect(rotate).toHaveCount(0);
+      expect((await posted).status(), 'the answer is taken (200, the settled card)').toBe(200);
       const frames = await page.waitForFunction(() => {
         const p = (window as unknown as { __probe: { t: number }[] }).__probe;
-        return p.length && p[p.length - 1].t >= 700 ? p : null;
-      }).then((h) => h.jsonValue() as Promise<{ t: number; connected: boolean; h: number; o: number; shown: boolean }[]>);
-      const mid = frames.filter((f) => f.t >= 50 && f.t <= 130);
-      expect(mid.length, 'frames were sampled partway through the fade').toBeGreaterThan(0);
-      for (const f of mid) {
-        expect(f.connected && f.shown, `at ${Math.round(f.t)}ms the card is still on the page: ${JSON.stringify(frames)}`).toBe(true);
-        expect(f.o, `at ${Math.round(f.t)}ms it is mid-fade`).toBeGreaterThan(0.01);
-        expect(f.o, `at ${Math.round(f.t)}ms it is mid-fade`).toBeLessThan(0.99);
-        expect(Math.abs(f.h - h0), `at ${Math.round(f.t)}ms its height is not animated`).toBeLessThan(1);
+        return p.length && p[p.length - 1].t >= 900 ? p : null;
+      }).then((h) => h.jsonValue() as Promise<{ t: number; on: boolean; o: number; top: number; settled: boolean }[]>);
+      expect(frames.length, 'frames were sampled').toBeGreaterThan(10);
+      for (const f of frames) {
+        expect(f.on, `at ${Math.round(f.t)}ms the card is on the page: ${JSON.stringify(frames)}`).toBe(true);
+        expect(f.o, `at ${Math.round(f.t)}ms it is not faded off`).toBeGreaterThanOrEqual(0.5);
+        expect(Math.abs(f.top - top0), `at ${Math.round(f.t)}ms it stayed in its place`).toBeLessThan(8);
       }
-      const lastShown = [...frames].reverse().find((f) => f.shown)!;
-      expect(lastShown.o, `the last frame it was shown, it had faded (${Math.round(lastShown.t)}ms)`).toBeLessThan(0.25);
-      expect(frames.some((f) => !f.connected), 'and then it was removed').toBe(true);
+      expect(frames[frames.length - 1].settled, 'and it ends settled').toBe(true);
     });
 
-    // An INVARIANT GUARD (green at origin/main too): the wait for the
-    // collapse must not hold a reduced-motion card on the page.
-    test('under reduced motion an answered card leaves at once', async ({ page }) => {
+    // An INVARIANT GUARD (green at the branch base too, for the reverse
+    // reason: it left at once): under reduced motion nothing waits on a
+    // transition — the card settles as soon as the POST lands.
+    test('under reduced motion an answered card settles at once', async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await openFeed(page);
       const rotate = page.locator(`#ask-${ids.rotate}`);
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
-      // Hidden as the post starts (no transition), then removed when the POST
-      // lands: nothing waits for a transitionend that never comes.
-      await expect(rotate, 'hidden at once').toBeHidden({ timeout: 300 });
-      await expect(rotate).toHaveCount(0, { timeout: 1500 });
+      await expect(rotate).toHaveAttribute('data-asks-settled', '', { timeout: 1500 });
+      await expect(rotate).toBeVisible();
     });
 
     // AN ACCEPTED ANSWER SAYS WHERE IT WENT: window.toast's info tone, "Sent
@@ -339,7 +354,7 @@ for (const vp of [
       expect(((await freetext.getAttribute('data-asks-who')) ?? '').trim(), 'the dismissed card has a name a toast could say').toBeTruthy();
       const sent = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.freetext}/cancel`);
       await freetext.getByRole('button', { name: 'Dismiss without answering' }).click();
-      expect((await sent).status()).toBe(204);
+      expect((await sent).status()).toBe(200);
       await page.waitForTimeout(500);
       // Read once, NOT retried: a toast fades by itself after 5s, so a retried
       // toHaveCount(0) passes on a toast that WAS shown (it did, mutation-tested).
@@ -381,7 +396,8 @@ for (const vp of [
       const gate = new Promise<void>((r) => (release = r));
       await page.route(`**/attention/asks/${ids.rotate}/answer`, async (route) => { await gate; await route.continue(); });
       await page.locator(`#ask-${ids.rotate}`).getByRole('button', { name: 'Rotate it', exact: true }).click();
-      await expect(page.locator(`#ask-${ids.rotate}`)).toBeHidden();
+      // In flight: out of the count (count() has run), still on screen.
+      await expect(page.locator(`#ask-${ids.rotate}`)).toHaveAttribute('aria-busy', 'true');
       await page.waitForTimeout(500);
       expect(await page.locator('[data-attention-episodes-error]').count(), 'the nested line was taken for the empty state and removed').toBe(1);
       release();
@@ -505,15 +521,19 @@ for (const vp of [
       await expect(mic).not.toHaveAttribute('data-state', 'idle');
     });
 
-    test('Dismiss is sent at once: the card leaves and the next takes focus', async ({ page }) => {
+    // CHANGED: this test pinned "the card leaves"; a dismissed card now
+    // settles in place, saying it was dismissed.
+    test('Dismiss is sent at once: the card settles in place and the next takes focus', async ({ page }) => {
       await openFeed(page);
       const card = page.locator(`#ask-${ids.freetext}`);
       const nextId = await card.locator('xpath=following-sibling::li[1]').getAttribute('id');
       const n0 = await openN(page);
       const sent = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.freetext}/cancel` && r.request().method() === 'POST');
       await card.getByRole('button', { name: 'Dismiss without answering' }).click();
-      expect((await sent).status(), 'the card post is answered 204').toBe(204);
-      await expect(card).toHaveCount(0);
+      expect((await sent).status(), 'the card post is answered with the settled card').toBe(200);
+      await expect(card).toHaveAttribute('data-status', 'cancelled');
+      await expect(card.locator('[data-asks-outcome-state]')).toHaveText('Dismissed');
+      await expect(card.getByRole('button', { name: 'Dismiss without answering' })).toHaveCount(0);
       await expect(page.locator(`[id="${nextId}"]`)).toBeFocused();
       await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
       await expect(page.locator('[data-asks-toast]'), 'no Undo toast').toHaveCount(0);
@@ -521,11 +541,15 @@ for (const vp of [
       await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.freetext}`)).text()).toContain('Dismissed');
     });
 
-    // 🔴 A LEAVING CARD IS NOT RESURRECTED. The answer's POST is held in the
-    // network while the queue changes elsewhere: the page hears the event and
-    // re-draws the feed from the server, where the ask is still open. The card
-    // must stay gone (it is leaving), and settle once the POST lands.
-    test('an attention event while a card leaves does not bring it back', async ({ page }) => {
+    // 🔴 A LIVE REFRESH WAITS FOR A POST IN FLIGHT, THEN KEEPS THE SETTLED
+    // CARD. The answer's POST is held in the network while the queue changes
+    // elsewhere: the page hears the event, but the refresh waits (it would
+    // replace the very card the answer settles), and the card stays on
+    // screen, busy. Once the POST lands the card is settled in place, the
+    // held refresh runs — the other card it no longer lists goes — and the
+    // settled card, which the server no longer lists, is KEPT where it was.
+    // CHANGED: this test pinned "the leaving card stays gone".
+    test('a refresh waits for a card in flight, then keeps it settled', async ({ page }) => {
       await openFeed(page);
       const rotate = page.locator(`#ask-${ids.rotate}`);
       let release!: () => void;
@@ -534,24 +558,30 @@ for (const vp of [
         await gate;
         await route.continue();
       });
+      let refreshes = 0;
+      page.on('response', (r) => {
+        const u = new URL(r.url());
+        if (u.pathname === '/attention/items' && u.search === '') refreshes++;
+      });
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
-      await expect(rotate).toBeHidden();
-      // Positive control: the refresh really runs, and really lists the card.
-      // (The Open feed's refresh: /attention/items with no query — the
-      // Answered feed's is ?part=answered.)
+      await expect(rotate).toHaveAttribute('aria-busy', 'true');
+      const dismissed = await page.request.post(`${origin}/attention/asks/${ids.notice}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
+      expect(dismissed.status(), await dismissed.text()).toBeLessThan(400);
+      await page.waitForTimeout(600);
+      expect(refreshes, 'no refresh ran while the post was in flight').toBe(0);
+      await expect(rotate, 'the card in flight is still on screen').toBeVisible();
+      await expect(page.locator(`#ask-${ids.notice}`), 'the held refresh has not run').toHaveCount(1);
       const refreshed = page.waitForResponse((r) => {
         const u = new URL(r.url());
         return u.pathname === '/attention/items' && u.search === '' && r.status() === 200;
       });
-      const dismissed = await page.request.post(`${origin}/attention/asks/${ids.notice}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
-      expect(dismissed.status(), await dismissed.text()).toBeLessThan(400);
-      const body = await (await refreshed).text();
-      expect(body, 'the refresh still lists the leaving card (its answer has not landed)').toContain(`id="ask-${ids.rotate}"`);
-      await expect(page.locator(`#ask-${ids.notice}`), 'the refresh was applied').toHaveCount(0);
-      await page.waitForTimeout(300);
-      await expect(rotate, 'the leaving card came back').toBeHidden();
       release();
-      await expect(rotate).toHaveCount(0);
+      // Positive control: the held refresh runs, and no longer lists the card.
+      const body = await (await refreshed).text();
+      expect(body, 'the refresh no longer lists the answered card').not.toContain(`id="ask-${ids.rotate}"`);
+      await expect(page.locator(`#ask-${ids.notice}`), 'the refresh was applied').toHaveCount(0);
+      await expect(rotate, 'the settled card is kept through the refresh').toHaveAttribute('data-asks-settled', '');
+      await expect(rotate).toBeVisible();
       await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.rotate}`)).text()).toContain('Your answer: Rotate it');
     });
 
@@ -580,7 +610,9 @@ for (const vp of [
         ['', 'open'],
         ['?tab=ask', 'open'],
         ['?tab=open', 'open'],
-        ['?tab=answered', 'answered'],
+        // The Done tab's old name still opens it.
+        ['?tab=answered', 'done'],
+        ['?tab=done', 'done'],
         ['?tab=drafts', 'drafts'],
         ['?tab=archived', 'drafts'],
         ['?tab=nudges', 'nudges'],
@@ -689,9 +721,11 @@ for (const vp of [
       await expect(rotate).toBeVisible();
     });
 
-    // A POST THAT FAILS AFTER A REFRESH TOOK THE CARD AWAY (round 1, N2): the
-    // ask is dismissed elsewhere while the answer is in flight; the refresh no
-    // longer lists the card, and the refusal is said in the feed's notice.
+    // A POST THAT FAILS WHILE A REFRESH WOULD TAKE THE CARD AWAY (round 1,
+    // N2): the ask is dismissed elsewhere while the answer is in flight; the
+    // refresh waits for the post (it is in flight), the answer is refused,
+    // and the refresh that then runs no longer lists the card: the refusal is
+    // said in the feed's notice, never silently.
     test('a card refused after a refresh took it away is reported, not silent', async ({ page }) => {
       await openFeed(page);
       const rotate = page.locator(`#ask-${ids.rotate}`);
@@ -702,15 +736,15 @@ for (const vp of [
         await route.continue();
       });
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
-      await expect(rotate).toBeHidden();
+      await expect(rotate).toHaveAttribute('aria-busy', 'true');
       const refreshed = page.waitForResponse((r) => {
         const u = new URL(r.url());
         return u.pathname === '/attention/items' && u.search === '' && r.status() === 200;
       });
       const r = await page.request.post(`${origin}/attention/asks/${ids.rotate}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
       expect(r.status()).toBeLessThan(400);
-      expect(await (await refreshed).text(), 'the refresh no longer lists it').not.toContain(`id="ask-${ids.rotate}"`);
       release();
+      expect(await (await refreshed).text(), 'the refresh no longer lists it').not.toContain(`id="ask-${ids.rotate}"`);
       const notice = page.locator('[data-asks-feed-notice]');
       await expect(notice).toBeVisible();
       await expect(notice).toHaveText(/^Your answer was not recorded \(“Rotate the staging key\?”\): That question is no longer open \(it is cancelled\)\.$/);
@@ -738,10 +772,10 @@ for (const vp of [
       await expect(first).toBeFocused();
     });
 
-    // THE ANSWERED FEED'S REFRESH KEEPS WHAT YOU HAD (round 1, N4).
-    test('the Answered refresh keeps an expanded card and its focus', async ({ page }) => {
+    // THE DONE FEED'S REFRESH KEEPS WHAT YOU HAD (round 1, N4).
+    test('the Done refresh keeps an expanded card and its focus', async ({ page }) => {
       await openFeed(page);
-      await page.getByRole('tab', { name: 'Answered', exact: true }).click();
+      await page.getByRole('tab', { name: 'Done', exact: true }).click();
       const card = page.locator(`#answered-${ids.answered}`);
       await card.locator('[data-asks-toggle]').click();
       await expect(card).toHaveAttribute('data-expanded', 'true');
@@ -751,7 +785,7 @@ for (const vp of [
       await card.evaluate((el) => ((el as unknown as { __old: boolean }).__old = true));
       const refreshed = page.waitForResponse((r) => {
         const u = new URL(r.url());
-        return u.pathname === '/attention/items' && u.search === '?part=answered' && r.status() === 200;
+        return u.pathname === '/attention/items' && u.search === '?part=done' && r.status() === 200;
       });
       const r = await page.request.post(`${origin}/attention/asks/${ids.notice}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
       expect(r.status()).toBeLessThan(400);
@@ -788,20 +822,20 @@ for (const vp of [
         await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: f });
         await expect.poll(() => page.evaluate(() => Math.round(window.visualViewport!.scale * 100) / 100)).toBe(f);
       };
-      // At scale 1, to the Answered tab (the positive control: a drag here
+      // At scale 1, to the Done tab (the positive control: a drag here
       // IS a swipe).
       await drag('left');
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'done');
       // Zoomed in, the visual viewport at its left edge: a drag RIGHTWARDS has
       // nothing to pan towards, so the browser does not take the gesture —
       // only the feed's zoom guard keeps it from swiping back to Open.
       await zoom(1.3);
       expect(await page.evaluate(() => window.visualViewport!.offsetLeft), 'the zoomed view is at its left edge').toBe(0);
       await drag('right');
-      await expect(selectedTab(page), 'a zoomed sideways drag switched the tab').toHaveAttribute('data-tab', 'answered');
+      await expect(selectedTab(page), 'a zoomed sideways drag switched the tab').toHaveAttribute('data-tab', 'done');
       // A leftward one pans the zoomed page instead of switching.
       await drag('left');
-      await expect(selectedTab(page), 'a zoomed sideways drag switched the tab').toHaveAttribute('data-tab', 'answered');
+      await expect(selectedTab(page), 'a zoomed sideways drag switched the tab').toHaveAttribute('data-tab', 'done');
       // Back at scale 1, the same rightward drag swipes.
       await zoom(1);
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
@@ -855,7 +889,7 @@ for (const vp of [
       await link.focus();
       await page.keyboard.press('Enter');
       await expect(page).toHaveURL(`${origin}/attention/asks/${ids.deploy}`);
-      // The Answered tab's card opens its page the same way.
+      // The Done tab's card (opened by its old name) opens its page the same way.
       await page.goto(origin + '/attention?tab=answered');
       const answered = page.locator(`#answered-${ids.answered}`);
       await expect(answered).toBeVisible();
@@ -881,10 +915,10 @@ for (const vp of [
       await expect(box).toBeFocused();
       // The id chip copies; it does not open the card.
       await press(free.locator('[data-id-copy]'));
-      // An option answers; the card leaves and the page stays.
+      // An option answers; the card settles in place and the page stays.
       const rotate = page.locator(`#ask-${ids.rotate}`);
       await press(rotate.getByRole('button', { name: 'Leave it', exact: true }));
-      await expect(rotate).toHaveCount(0);
+      await expect(rotate).toHaveAttribute('data-asks-settled', '');
       await page.waitForTimeout(400);
       await expect(page, 'a control opened the card').toHaveURL(`${origin}/attention`);
       // Control: a tap on the same card's words (not its link) does open it.

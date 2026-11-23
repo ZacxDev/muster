@@ -936,6 +936,8 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET "+ui.PreviewButtonPath, s.requireSession(s.handlePreviewButton))
 	// Its panel's Pages tab: the window's session's pages.
 	mux.HandleFunc("GET "+ui.SessionPagesPath, s.requireSession(s.handleSessionPages))
+	// And its Asks tab: the window's sessions' asks (session_asks.go).
+	mux.HandleFunc("GET "+ui.SessionAsksPath, s.requireSession(s.handleSessionAsks))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))

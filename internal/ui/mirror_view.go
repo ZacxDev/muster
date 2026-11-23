@@ -278,13 +278,15 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// column (nothing below moves), and an overlay at every width.
 				overlayNav(v.Nav, ""),
 				Header(
-					// 🔴 ONE ROW THAT NEVER WRAPS (mirrorHeaderMenu): ☰, the title
-					// (flex-1, truncating: it takes what the controls leave), the
-					// asks badge while the window has open asks, the Open button
-					// while there is something to open, the Rendered | Terminal
-					// switch and the ⋯ menu, which holds the secondary actions
-					// (Home, the message index). Measured at 390×844 and 1280×800
-					// by e2e/tests/session-open.spec.ts.
+					// 🔴 ONE ROW THAT NEVER WRAPS: ☰, the title (flex-1,
+					// truncating: it takes what the controls leave), the asks
+					// badge while the window has open asks, the Open button while
+					// there is something to open, the Rendered | Terminal switch
+					// and the message index ("Your messages and what it worked
+					// on", chatIndexButton). No ⋯ menu and no Home: the menu held
+					// only those two, and the ☰'s navigation reaches home
+					// (operator ask). Measured at 390×844 and 1280×800 by
+					// e2e/tests/session-open.spec.ts.
 					Class("flex flex-nowrap items-center gap-2 border-b border-line px-2 py-1.5"),
 					// Polled only without the asks badge, whose live refresh's
 					// asks:changed refreshes it (AttentionLiveScript).
@@ -313,7 +315,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					// something to open (plugin_chip.go).
 					previewButtonSlot(v.Plugins),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
-					mirrorHeaderMenu(HomeLeavingMirrorPath(ref), "mv-log"),
+					chatIndexButton("mv-log"),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
 				// The rename offer, when the conversation has moved on from its

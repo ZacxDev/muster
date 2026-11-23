@@ -156,6 +156,26 @@ for (const vp of [
   test.describe(vp.name, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
     const press = async (page: Page, sel: string) => (vp.use.hasTouch ? page.locator(sel).tap() : page.locator(sel).click());
+    // 🔴 BELOW `sm` THE BADGE IS NOT DRAWN on an agent of the viewer's own
+    // (operator decision on #999, "Hide on phones only"): the Open button
+    // counts the same open asks and its Asks tab lists them (ui
+    // agentAsksBadge). So at 390px the badge is asserted hidden, the Open
+    // button's count asserted in its place, and its link — still on the page,
+    // and still refreshed live — followed instead of tapped.
+    const phone = vp.use.viewport.width < 640;
+    const badgeShown = async (page: Page, n: number) => {
+      if (!phone) {
+        await expect(badge(page)).toBeVisible();
+        return;
+      }
+      await expect(badge(page)).toBeHidden();
+      await expect(page.locator('header #preview-toggle')).toHaveAttribute('data-open-asks', String(n));
+    };
+    const openBadge = async (page: Page) => {
+      if (!phone) return press(page, 'header [data-asker-asks-link]');
+      const href = await badge(page).getAttribute('href');
+      await page.goto(origin + href!);
+    };
 
     // THE COMPARISON ITSELF: the chief's page and a mirrored session's, one
     // after the other at the same size — each a single header row over a
@@ -249,10 +269,11 @@ for (const vp of [
       await expect(page.locator('#asker-asks, #asker-asks-chip, [data-asker-asks-hide]'), 'no asks block').toHaveCount(0);
       await expect(page.locator('main [data-attention-item]'), 'no ask card on the page').toHaveCount(0);
       const b = badge(page);
-      await expect(b).toBeVisible();
+      await badgeShown(page, ASKS);
       await expect(b).toHaveText(String(ASKS));
-      await expect(b).toHaveAccessibleName(`Open the ${ASKS} questions waiting on your answer`);
-      expect((await b.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      // Its name (an attribute: a hidden element has no accessible name).
+      await (phone ? expect(b).toHaveAttribute('aria-label', `Open the ${ASKS} questions waiting on your answer`) : expect(b).toHaveAccessibleName(`Open the ${ASKS} questions waiting on your answer`));
+      if (!phone) expect((await b.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       // The badge leaves the title its words: "chief" is drawn whole, not
       // clipped to its "…" (at 390px it was, with the page header's gutter).
       const fit = await page.locator('header [data-agent-title-text]').evaluate((el) => [el.scrollWidth, el.clientWidth]);
@@ -262,7 +283,7 @@ for (const vp of [
       // The tap: the Asks page, filtered to this session, listing its 3 asks
       // and not the dispatched agent's open one.
       const asks = page.locator('#attention-items [data-attention-item]');
-      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + NAME), press(page, 'header [data-asker-asks-link]')]);
+      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + NAME), openBadge(page)]);
       // Whose asks these are: the agent's chip, active, leading the row.
       const chip = page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]');
       await expect(chip).toHaveCount(1);
@@ -283,7 +304,8 @@ for (const vp of [
       // The other session: its own count, its own one ask.
       await page.goto(origin + '/agents/' + DISPATCHED);
       await expect(badge(page)).toHaveText('1');
-      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + DISPATCHED), press(page, 'header [data-asker-asks-link]')]);
+      await badgeShown(page, 1);
+      await Promise.all([page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + DISPATCHED), openBadge(page)]);
       await expect(asks).toHaveCount(1);
       await expect(page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]')).toHaveCount(1);
       await expect(asks.first()).toContainText('Dispatched question: retry the flaky job?');
@@ -351,9 +373,9 @@ for (const vp of [
       await page.keyboard.press('Escape');
       await expect(menu).toBeHidden();
       // Its open ask: the header badge, named for the one question.
-      await expect(badge(page)).toBeVisible();
+      await badgeShown(page, 1);
       await expect(badge(page)).toHaveText('1');
-      await expect(badge(page)).toHaveAccessibleName('Open the question waiting on your answer');
+      await (phone ? expect(badge(page)).toHaveAttribute('aria-label', 'Open the question waiting on your answer') : expect(badge(page)).toHaveAccessibleName('Open the question waiting on your answer'));
       // Terminal from the menu opens the terminal view in the kept frame.
       await press(page, '#agent-actions-open');
       await press(page, '#view-terminal');

@@ -540,7 +540,7 @@ var agentReadCallers = map[string]string{
 	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
 	"Get Server.operatorChatMessages":         "machine: the officer's own instance holding a person's chat, read as the officer's owner on the officer door (officerPrincipal: ViaOfficer carries no team memberships) and kept only when it is that officer's (officerOf); only its messages are returned — to the page and to the owner's own chief (chief_officer_read)",
 
-	"GetByName Server.agentPagesOf":              "visible: the Open button and Pages tab of an agent the member sees; its pages are read as the member (owner-only rows), so a team agent's are never listed",
+	"GetByName Server.agentOfPath":               "visible: the Open button and the Pages and Asks tabs of an agent the member sees; its pages and asks are read as the member (owner-only rows; the asks store names the owner), so a team agent's are never listed",
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
 	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",
 	"GetByName Server.handleAgentDetail":         "visible: GET /agents/{name} (teamAgentRead)",

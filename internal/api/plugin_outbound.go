@@ -390,7 +390,11 @@ func postDraftToolDef() agents.ToolDef {
 			"and not marked a bot or hostile; a dm, follow or like cites because_ref — the ref of a recorded engagement OF THAT PERSON that motivates it (never a like; " +
 			"a dm answers something they said; a follow may answer their follow); no other outreach to them is still out; they engaged since you last reached them; and, " +
 			"inside the cooldown, it answers an engagement newer than your last outreach. A dm is approved on its exact text. A follow or a like has NO body: give a " +
-			"one-line reason instead; it goes on your owner's outreach batch card for the day, where they tick what goes out.",
+			"one-line reason instead; it goes on your owner's outreach batch card for the day, where they tick what goes out. " +
+			"A REPLY SHOWS WHAT IT ANSWERS: with a reply, pass context — the parent post or message exactly as you read it upstream " +
+			"(an X status or a Reddit comment from your relay's read: its author, its whole text, when it was written and its URL) — " +
+			"so your owner sees what you are replying to above your draft. muster fetches nothing: a reply filed without context " +
+			"reaches your owner with a card saying the post it answers was not provided.",
 		Parameters: objSchema(map[string]any{
 			"plugin": strProp("The name of the plugin bound to your officer."),
 			"venue":  strProp("Where it goes, as the plugin names it: 1-64 lower-case letters, digits, '.', '_' and '-'."),
@@ -412,7 +416,23 @@ func postDraftToolDef() agents.ToolDef {
 			"media": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": plugins.MaxMediaRefs,
 				"description": "Optional, at most 4: media refs as <angle>/<id>, which the plugin resolves on its machine."},
 			"item_id": strProp("Optional: the id of an item you hold that this draft is for."),
+			"context": replyContextSchema(map[string]any{
+				"author": strProp(fmt.Sprintf("Who wrote it, as the venue names them (\"@ada\", \"u/ada\"), at most %d characters.", plugins.MaxReplyContextAuthorRunes)),
+				"text": strProp(fmt.Sprintf("Its WHOLE text, exactly as you read it, at most %d bytes. It is shown to your owner as the outside party's words, "+
+					"never as yours.", plugins.MaxReplyContextTextBytes)),
+				"written_at": strProp("When it was written, RFC 3339 (\"2026-11-22T14:05:00Z\"), as the read gave it."),
+				"url":        strProp("Its absolute http(s) URL upstream (the status or comment link), as the read gave it."),
+			}, "text"),
 		}, "plugin", "venue", "target")}
+}
+
+// replyContextSchema is officer_post_draft's `context` property over props:
+// an object, text required, described.
+func replyContextSchema(props map[string]any, required ...string) map[string]any {
+	sc := objSchema(props, required...)
+	sc["description"] = "For a reply (optional; refused on any other kind): the post or message it answers, as you read it upstream. " +
+		"Your owner's card shows it above your draft as the outside party's words."
+	return sc
 }
 
 // officerOutboundGranted reports whether builtin officer o's type grants
@@ -460,16 +480,22 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		BecauseRef json.RawMessage `json:"because_ref"`
 		Contact    string          `json:"contact"`
 		Reason     string          `json:"reason"`
+		// A reply's context (plugins reply_context.go): what it answers.
+		Context json.RawMessage `json:"context"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {plugin, venue, target: {kind, ref?, handle?}, body?, media?, item_id?, because_ref?, contact?, reason?}: %v", err)
+		return toolErr("arguments are {plugin, venue, target: {kind, ref?, handle?}, body?, media?, item_id?, because_ref?, contact?, reason?, context?}: %v", err)
 	}
 	becauseRef, err := plugins.DecodeRef("because_ref", in.BecauseRef)
 	if err != nil {
 		return toolErr("%v", err)
 	}
+	replyContext, err := plugins.DecodeReplyContext(in.Context)
+	if err != nil {
+		return toolErr("%s", strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "))
+	}
 	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media,
-		PublicLinks: officerPublicLinks(o), BecauseRef: becauseRef, Contact: in.Contact, Reason: in.Reason}
+		PublicLinks: officerPublicLinks(o), BecauseRef: becauseRef, Contact: in.Contact, Reason: in.Reason, Context: replyContext}
 	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
 		// Whether this instance holds it is decided in the filing's
 		// transaction, under the item's row lock (plugins.FileOutbound).

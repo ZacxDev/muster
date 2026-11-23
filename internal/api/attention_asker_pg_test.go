@@ -136,7 +136,9 @@ func TestAnAgentWithNoOpenAsksDrawsNoBadge(t *testing.T) {
 	if href, n := badgeOf(t, page); href != "" || n != 0 {
 		t.Errorf("a badge with nothing open: %q %d", href, n)
 	}
-	if !strings.Contains(page, `<span id="`+ui.AskerAsksBadgeID+`" class="`+html.EscapeString(ui.AskerAsksSlotClass)+`" aria-live="polite"></span>`) {
+	// max-sm:hidden: the agent's Open button lists its asks on a phone
+	// (ui agentAsksBadge), the queue being served here.
+	if !strings.Contains(page, `<span id="`+ui.AskerAsksBadgeID+`" class="`+html.EscapeString(ui.AskerAsksSlotClass)+` max-sm:hidden" aria-live="polite"></span>`) {
 		t.Error("the badge's empty slot is not drawn (the live refresh fills it)")
 	}
 }
@@ -308,7 +310,8 @@ func activeSourceChip(page string) string {
 }
 
 // TestAnAnswerFromTheFilteredAsksPageIsRecorded: the filtered page's card
-// answers as every Asks card does (its htmx post: 204, nothing swapped), the
+// answers as every Asks card does (its htmx post: 200, the card settled for
+// the script to put in place — asks_done.go), the
 // ask is answered with that answer, and it leaves the filtered list and the
 // badge's count.
 func TestAnAnswerFromTheFilteredAsksPageIsRecorded(t *testing.T) {
@@ -323,7 +326,7 @@ func TestAnAnswerFromTheFilteredAsksPageIsRecorded(t *testing.T) {
 	}
 	body, hdr := form(url.Values{"option": {"ship it"}})
 	w := f.call(t, http.MethodPost, "/attention/asks/"+sid+"/answer", body, merge(merge(f.operator(), hdr), map[string]string{asksCardHeader: "1"}))
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `<li id="ask-`+sid+`" `) || !strings.Contains(w.Body.String(), "data-asks-settled") {
 		t.Fatalf("the card's answer: %d %s", w.Code, w.Body)
 	}
 	if a := f.askStatus(t, id); a.Status != attention.Answered || a.Answer != "ship it" {
@@ -340,8 +343,10 @@ func TestAnAnswerFromTheFilteredAsksPageIsRecorded(t *testing.T) {
 // TestAReturnToASessionPageLandsOnTheQueue: a session page draws no answer
 // form any more, so a `return` naming one (an agent's page, a window's view)
 // is not followed — the answer is recorded and the browser lands on the queue,
-// as a form on /attention does — and neither is any other page that draws no
-// form; an ask's own page still is.
+// as a form on /attention does, with the closed ask drawn settled in its old
+// spot (?settled=<id>#ask-<id>: asks_done.go settledLink; it was the bare
+// queue, where the card had vanished) — and neither is any other page that
+// draws no form; an ask's own page still is.
 func TestAReturnToASessionPageLandsOnTheQueue(t *testing.T) {
 	f := newAttnFixture(t)
 	post := func(id int64, verb string, v url.Values) string {
@@ -354,22 +359,23 @@ func TestAReturnToASessionPageLandsOnTheQueue(t *testing.T) {
 		return w.Header().Get("Location")
 	}
 	for _, c := range []struct {
-		verb, ret, want string
+		verb, ret string
 	}{
-		{"answer", "/agents/" + f.op.Name, "/attention"},
-		{"cancel", "/agents/" + f.op.Name, "/attention"},
-		{"answer", "/mirror/view?host=ws&session=main&window=%401", "/attention"},
-		{"answer", "", "/attention"},
-		{"answer", "https://evil.example.test/agents/x", "/attention"},
-		{"answer", "/tasks", "/attention"},
+		{"answer", "/agents/" + f.op.Name},
+		{"cancel", "/agents/" + f.op.Name},
+		{"answer", "/mirror/view?host=ws&session=main&window=%401"},
+		{"answer", ""},
+		{"answer", "https://evil.example.test/agents/x"},
+		{"answer", "/tasks"},
 	} {
 		id := f.ask(t, f.opTok, "Where do I land? "+c.verb+" "+c.ret)
 		v := url.Values{"answer": {"here"}}
 		if c.ret != "" {
 			v.Set("return", c.ret)
 		}
-		if got := post(id, c.verb, v); got != c.want {
-			t.Errorf("%s with return %q lands on %q, want %q", c.verb, c.ret, got, c.want)
+		want := "/attention?settled=" + strconv.FormatInt(id, 10) + "#ask-" + strconv.FormatInt(id, 10)
+		if got := post(id, c.verb, v); got != want {
+			t.Errorf("%s with return %q lands on %q, want %q", c.verb, c.ret, got, want)
 		}
 		if a := f.askStatus(t, id); a.Status == attention.Open {
 			t.Errorf("%s with return %q left the ask open", c.verb, c.ret)

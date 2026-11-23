@@ -21,14 +21,14 @@ import (
 // (foldedHeader):
 //
 //   - ONE header row: ☰, the status dot, the title, the asks badge, the Open
-//     button (its pages, plugin_chip.go), New chat, and the ⋯ — at the row's
-//     END, where a
-//     mirrored session's last control is. The CHIEF's row has the one list
-//     icon a mirrored session's has instead of the three (its sheet holds its
-//     chats: chief_chats.go), and its ⋯ says how much memory the chat uses
-//     when that is high (chiefMemorySlot);
-//   - Chat history and Focus history IN THE ⋯ MENU too (session-open: the
-//     row left the title 8px at 390px with the Open button drawn);
+//     button (its pages and asks, plugin_chip.go), New chat, Chat history,
+//     What it worked on, and the ⋯ — at the row's END, where a mirrored
+//     session's last control is. Below `sm` the three tools are compact
+//     (agentHeaderTools), so the title keeps its room with the Open button
+//     drawn. The CHIEF's row has the one list icon a mirrored session's has
+//     instead of the three (its sheet holds its chats: chief_chats.go), and
+//     its ⋯ says how much memory the chat uses when that is high
+//     (chiefMemorySlot);
 //   - the status row's other controls IN THE ⋯ MENU (foldedMenuItems): the Claude
 //     account, the failover ("Account switched" and its whole line — in the menu
 //     itself, no second popover), the worker pool, and Terminal (the same
@@ -60,12 +60,13 @@ func headerFolded(v AgentDetailView) bool {
 // width ladder (contentMaxW) — so from `sm` up its left edge is the chat
 // column's, as agentDetailHeader's is.
 //
-// 🔴 BELOW `sm` ITS GUTTER IS px-2 AND ITS TOOLS ARE gap-1, AND THAT IS
-// MEASURED ROOM, NOT TASTE. The row holds five 44px controls (☰, New chat,
-// Chat history, Focus history, ⋯), the 12px status dot and — while asks are
-// open — the asks badge. With the page header's px-4 and gap-3 tools, at 390px the
-// badge left the title 0px: "chief" drew as its "…" alone (the e2e
-// chief-fold-in shot). A mirrored session's header is px-2 for the same reason.
+// 🔴 BELOW `sm` ITS GUTTER IS px-2, ITS GAPS gap-1 AND ITS TOOLS COMPACT, AND
+// THAT IS MEASURED ROOM, NOT TASTE. The row holds the ☰, the Open button, the
+// three tools (36px wide there: agentHeaderTools), the ⋯, the 12px status dot
+// and — while asks are open — the asks badge. With the page header's px-4
+// and gap-3 tools, at 390px the badge left the title 0px: "chief" drew as its
+// "…" alone (the e2e chief-fold-in shot). A mirrored session's header is px-2
+// for the same reason.
 func foldedHeader(v AgentDetailView) g.Node {
 	return Header(
 		g.Attr("data-folded-header", ""),
@@ -73,14 +74,15 @@ func foldedHeader(v AgentDetailView) g.Node {
 		Div(
 			// py-1.5: a mirrored session's header's (MirrorViewPage) — the row is
 			// its 44px controls, so the two headers are one height.
-			Class(contentMaxW()+" flex items-center gap-2 px-2 py-1.5 sm:px-4"),
+			// gap-1 below `sm` (headerPhoneTools: the row's room at 390px).
+			Class(contentMaxW()+" flex items-center gap-1 px-2 py-1.5 sm:gap-2 sm:px-4"),
 			sidebarOpenButton(),
 			// The status dot (and any badge the strip carries), live: the same
 			// strip the second row drew, refreshing itself (agentStrip).
 			g.If(v.Card.ID != 0, agentStrip(v.Card)),
 			foldedTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
-			g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
+			g.If(v.AsksSrc != "", agentAsksBadge(v.Asks, v.Open)),
 			// The agent's Open button (its pages), while it has any
 			// (plugin_chip.go).
 			previewButtonSlot(v.Open),
@@ -140,10 +142,6 @@ func foldedMenuItems(v AgentDetailView) g.Node {
 				Span(g.Attr("data-worker-pool", v.WorkerPool), Class("ml-auto min-w-0 truncate text-fg2"), g.Text(v.WorkerPool)),
 			)),
 		),
-		// The chat's history and its focus history (the header kept New chat
-		// alone, agentHeaderToolsWith): not on the chief's page, whose list
-		// icon opens both (chatIndexButton).
-		historyMenuItems(v),
 		// A chief's chat: its memory line, when its context is high
 		// (chiefMemorySlot).
 		foldedChiefMemory(v),

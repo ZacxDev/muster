@@ -165,13 +165,14 @@ type ToolResult = { isError: boolean; body: Record<string, unknown> };
 
 // approveLink taps Approve link on a share card on the Asks page, which must
 // already be open, and returns once the answer is recorded. The card's form
-// posts through htmx (204, no navigation: asks_feed.go asksCardRequest), so
+// posts through htmx (200 with the card settled in place, no navigation:
+// asks_feed.go asksCardRequest, asks_done.go), so
 // the page never leaves /attention and a waitForURL there settles at once;
 // the answer's own response is the signal that the link is live.
 async function approveLink(p: Page, askID: number) {
   const posted = p.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${askID}/answer` && r.request().method() === 'POST');
   await p.locator(`#ask-${askID}`).getByRole('button', { name: 'Approve link', exact: true }).click();
-  expect((await posted).status(), 'the approval is taken (204)').toBe(204);
+  expect((await posted).status(), 'the approval is taken (200, the settled card)').toBe(200);
 }
 
 // call is one tools/call through the host's loopback endpoint as the pane's

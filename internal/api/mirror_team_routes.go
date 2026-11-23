@@ -93,6 +93,7 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 
 	"GET /ui/mirror/preview-button":           mirrorTeamView,    // on the TEAM's viewer plugins (2b.3b), never the viewer's
 	"GET /ui/mirror/session-pages":            mirrorTeamView,    // a team window lists no pages (windowPagesRef)
+	"GET /ui/mirror/session-asks":             mirrorTeamView,    // nor asks (windowAsksQuery)
 	"GET /mirror/view/complete":               mirrorTeamOperate, // the composer's catalog
 	"GET /mirror/terminal/send":               mirrorTeamOperate,
 	"POST /mirror/terminal/send":              mirrorTeamOperate,

@@ -404,7 +404,9 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 		{"", "open", "drafts", true, "n"},
 		{"?tab=open", "open", "drafts", true, "n"},
 		{"?tab=ask", "open", "drafts", true, "n"},
-		{"?tab=answered", "answered", "drafts", true, "n"},
+		// The Done tab's old name still opens it.
+		{"?tab=answered", "done", "drafts", true, "n"},
+		{"?tab=done", "done", "drafts", true, "n"},
 		{"?tab=drafts", "drafts", "drafts", true, "n"},
 		{"?tab=archived", "drafts", "archived", true, "n"},
 		{"?tab=drafts&draft=9", "drafts", "drafts", true, "n"},
@@ -426,13 +428,13 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 	if strings.Contains(off, `id="asks-tabs-tab-log"`) || !regexp.MustCompile(`id="asks-tabs-tab-open" [^>]*aria-selected="true"|aria-selected="true"[^>]* id="asks-tabs-tab-open"`).MatchString(off) {
 		t.Errorf("with the ask log off ?tab=log draws a Log tab or does not open Open:\n%s", off)
 	}
-	// The labels and their order: Open · Answered · Drafts · Nudges · Log.
+	// The labels and their order: Open · Done · Drafts · Nudges · Log.
 	out := s.asksTabsHTML("", "", true, []plugins.DraftCard{{}, {}}, nil, "n", "log", asksTabOpen)
 	var labels []string
 	for _, m := range regexp.MustCompile(`role="tab"[^>]*>([^<]+)</button>`).FindAllStringSubmatch(out, -1) {
 		labels = append(labels, m[1])
 	}
-	if got := strings.Join(labels, " · "); !strings.HasPrefix(got, "Open · Answered · Drafts (2) · Nudges · Log") {
+	if got := strings.Join(labels, " · "); !strings.HasPrefix(got, "Open · Done · Drafts (2) · Nudges · Log") {
 		t.Errorf("the tabs read %q", got)
 	}
 	// The draft deep link (a push's tap target) names the Drafts tab and the card.
