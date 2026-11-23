@@ -503,12 +503,15 @@ const paletteJS = `
   }
   // refresh is the input's handler: a changed query drops the old query's
   // server answers and asks again; the list is redrawn from the page at once.
-  function refresh() {
+  // keep (=== true; the input's handler is passed an Event) holds the
+  // highlighted result, as a server answer's redraw does: the sidebar's rows
+  // landing is not the operator typing, and must not move their selection.
+  function refresh(keep) {
     var input = byId(INPUT);
     if (!input) return;
     var q = input.value.trim();
     if (q !== srv.q) { srv = { q: q, hits: [], asks: [], pages: [] }; ask(q); }
-    render(false);
+    render(keep === true);
   }
   // row is one result's <li>: its first child the label, then a muted line
   // saying what it is.
@@ -717,10 +720,10 @@ const paletteJS = `
     if (b) openSearch(b);
   });
   // The sidebar's rows arrive by htmx (nav_agents.go): an open palette that
-  // reads them is refreshed when they land.
+  // reads them is refreshed when they land, its highlight kept.
   document.addEventListener('htmx:afterSwap', function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.id === '` + NavAgentsListID + `' && isOpen(byId(PAL))) refresh();
+    if (t && t.id === '` + NavAgentsListID + `' && isOpen(byId(PAL))) refresh(true);
   });
   // "/" opens the palette when focus is not in a text field (nor in a
   // terminal, xterm, where it is the shell's), and one of its buttons is on
