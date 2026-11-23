@@ -410,8 +410,14 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		if it.stepUpDraft != nil {
 			review = draftTabLink(it.stepUpDraft.Draft.ID)
 		}
-		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now()); d != "" {
-			return d
+		if d := askStepUpDraftHTML(a.StepUp, it.stepUpDraft, askPagePath(a.ID), review, "text-base", false, time.Now(),
+			cardPlace{card: a.ID, dictate: it.dictate, dictateOff: it.dictateOff}); d != "" {
+			// The reason box's mic (draftReasonFieldHTML) needs the dictation
+			// script, after it: a step-up card's page has no composer, whose
+			// script it would otherwise share. On the page's load it runs; in
+			// a live refresh's fragment (innerHTML) it is inert, and the
+			// refresh's DictateRevealEvent shows the mics it redrew.
+			return d + ui.DictateScriptHTML(it.dictate)
 		}
 		return askStepUpPhoneHTML("text-base")
 	}

@@ -231,12 +231,12 @@ func TestDeliveriesAreTheirOwnersAlone(t *testing.T) {
 	if ok, err := s.MarkWaited(as(3), a.ID); err != nil || ok {
 		t.Errorf("another owner marked it waited: %v %v", ok, err)
 	}
-	if got, err := s.Answered(as(3), time.Now().Add(-time.Hour), 20); err != nil || len(got) != 0 {
-		t.Errorf("another owner's answered list: %+v %v", got, err)
+	if got, err := s.Closed(as(3), ClosedPage{}); err != nil || len(got) != 0 {
+		t.Errorf("another owner's closed list: %+v %v", got, err)
 	}
-	got, err := s.Answered(as(2), time.Now().Add(-time.Hour), 20)
+	got, err := s.Closed(as(2), ClosedPage{})
 	if err != nil || len(got) != 1 || got[0].ID != a.ID || got[0].Answer != "left" {
-		t.Errorf("the owner's answered list: %+v %v", got, err)
+		t.Errorf("the owner's closed list: %+v %v", got, err)
 	}
 }
 

@@ -149,7 +149,7 @@ func TestAnAnsweredMirrorAskIsPastedOnceWhenTheSessionIsIdle(t *testing.T) {
 	if err != nil || it.State != sendqueue.Queued || it.SessionWakeID != w.ID {
 		t.Fatalf("its queue row: %+v %v; want queued, carrying the wake", it, err)
 	}
-	if html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "Waiting for ") || !strings.Contains(html, " to be idle") {
+	if html := f.srv.doneFeedNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "Waiting for ") || !strings.Contains(html, " to be idle") {
 		t.Fatalf("the Answered card does not say it waits for the session to be idle:\n%s", html)
 	}
 
@@ -171,7 +171,7 @@ func TestAnAnsweredMirrorAskIsPastedOnceWhenTheSessionIsIdle(t *testing.T) {
 	if w := f.askWake(t, a.ID); w.State != sessionwake.Delivered {
 		t.Fatalf("after the paste the wake is %s; want delivered", w.State)
 	}
-	if html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "Sent to ") {
+	if html := f.srv.doneFeedNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "Sent to ") {
 		t.Fatalf("the Answered card does not say Sent to …:\n%s", html)
 	}
 
@@ -244,7 +244,7 @@ func TestAnAnswerReadInAttentionWaitIsNotPasted(t *testing.T) {
 		if w := f.askWake(t, a.ID); w.State != sessionwake.Waited {
 			t.Fatalf("the wake is %s; want waited", w.State)
 		}
-		if html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "read it while waiting for it") {
+		if html := f.srv.doneFeedNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "read it while waiting for it") {
 			t.Fatalf("the Answered card does not say the session read it:\n%s", html)
 		}
 	})
@@ -327,7 +327,7 @@ func TestAWindowGoneForADayIsNotDeliveredAndRetryQueuesItOnce(t *testing.T) {
 	if w.State != sessionwake.Unconfirmed || !strings.HasPrefix(w.Detail, "Not delivered: no window showed the session within a day") {
 		t.Fatalf("a day later the wake is %s %q; want unconfirmed, Not delivered", w.State, w.Detail)
 	}
-	html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now())
+	html := f.srv.doneFeedNow(f.ownerCtx(), time.Now())
 	if !strings.Contains(html, "Not delivered: no window showed the session within a day") || !strings.Contains(html, "data-attention-redeliver>Retry delivery") {
 		t.Fatalf("the Answered card does not offer Retry delivery on the undelivered answer:\n%s", html)
 	}
@@ -673,7 +673,7 @@ func TestAWakeCarryingTheOwnersWordsNeedsAFreshSignIn(t *testing.T) {
 		if w.State != sessionwake.Queued || w.Detail != sessionwake.HeldForSignIn || w.SendQueueID != 0 {
 			t.Fatalf("the wake is %s %q (row %d); want queued, held for a sign-in, no row", w.State, w.Detail, w.SendQueueID)
 		}
-		html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now())
+		html := f.srv.doneFeedNow(f.ownerCtx(), time.Now())
 		if !strings.Contains(html, "Sign in again to send to ") || !strings.Contains(html, `data-step-up-form data-asks-controls><button type="submit"`) {
 			t.Fatalf("the card does not say to sign in again, with a step-up Send:\n%s", html)
 		}
@@ -808,7 +808,7 @@ func TestAnAskFromASessionMirroredElsewhereFilesNoWake(t *testing.T) {
 	if ws, err := f.wakes.ForAsks(f.ownerCtx(), []int64{a.ID}); err != nil || len(ws) != 0 {
 		t.Fatalf("a wake was filed for a session mirrored elsewhere: %v %v", ws, err)
 	}
-	if html := f.srv.answeredAsksNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "to read it: a mirrored session reads its answer itself") {
+	if html := f.srv.doneFeedNow(f.ownerCtx(), time.Now()); !strings.Contains(html, "to read it: a mirrored session reads its answer itself") {
 		t.Fatalf("the card lost the old wording:\n%s", html)
 	}
 }

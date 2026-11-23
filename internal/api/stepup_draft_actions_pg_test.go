@@ -164,7 +164,10 @@ func TestAStepUpCardAboutADraftDrawsTheDraftsDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shared := draftDecisionHTML(dc, time.Now(), cardPlace{back: attentionPath}); !strings.Contains(card, shared) {
+	// The place is the card's own: its id rides on the forms (a decision lands
+	// on the card settled) and names the reason box, beside the server's mic.
+	at := cardPlace{back: attentionPath, card: f.card, dictate: f.srv.dictatePath(), dictateOff: f.srv.dictateOff()}
+	if shared := draftDecisionHTML(dc, time.Now(), at); !strings.Contains(card, shared) {
 		t.Errorf("the feed card's controls are not draftDecisionHTML's:\n%s", shared)
 	}
 	page := f.page(t, askPagePath(f.card))
@@ -200,19 +203,24 @@ func TestARejectStepUpCardLeadsWithTheDraftsReject(t *testing.T) {
 }
 
 // TestApprovingAStepUpCardsDraftSettlesTheCard: the feed's approve form,
-// posted as the browser posts it, approves the draft and returns to the Asks
-// page (not the Drafts tab); the card is answered with what happened and
-// where, leaves the Open feed, and the phone's Confirm afterwards is refused
-// as closed — the draft is approved once.
+// posted as the browser posts it (with its card), approves the draft and
+// returns to the Asks page (not the Drafts tab) with the card drawn SETTLED in
+// its old spot — answered with what happened and where — and the phone's
+// Confirm afterwards is refused as closed — the draft is approved once. On
+// the next load of the page it has left the Open feed.
 //
 // 🔴 RED AT origin/main: the card stayed open after the draft was decided.
+// CHANGED with the settled card (asks_done.go): the approve used to land on
+// the bare Asks page, where the card was simply gone — now it lands on
+// settledLink and the card is there, settled; only a plain reload drops it.
 func TestApprovingAStepUpCardsDraftSettlesTheCard(t *testing.T) {
 	f := newStepUpDraftFixture(t, "approve")
-	form := url.Values{"return": {attentionPath}, "body_sha256": {sha(f.body)},
+	form := url.Values{"return": {attentionPath}, "card": {strconv.FormatInt(f.card, 10)}, "body_sha256": {sha(f.body)},
 		"media_sha256": {sha("launch/hero-7") + "," + sha("launch/demo-8")}}
 	w := f.ownerForm(t, "/plugins/drafts/"+strconv.FormatInt(f.draft.ID, 10)+"/approve", form, sessionCookieFor(f.srv))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != attentionPath {
-		t.Fatalf("the approve: %d to %q, want 303 to %s (%s)", w.Code, w.Header().Get("Location"), attentionPath, w.Body)
+	landing := "/attention?settled=" + strconv.FormatInt(f.card, 10) + "#ask-" + strconv.FormatInt(f.card, 10)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != landing {
+		t.Fatalf("the approve: %d to %q, want 303 to %s (%s)", w.Code, w.Header().Get("Location"), landing, w.Body)
 	}
 	if r := f.row(t, f.draft.ID); r.status != "approved" || r.via != "browser" {
 		t.Fatalf("the draft after the approve: %+v", r)
@@ -221,8 +229,17 @@ func TestApprovingAStepUpCardsDraftSettlesTheCard(t *testing.T) {
 	if err != nil || got.Status != attention.Answered || got.Answer != "Approved in the web UI" {
 		t.Fatalf("the card after the draft's approve: %+v %v", got, err)
 	}
+	// Where the approve lands: the card, settled, saying what was decided.
+	settled := feedCard(f.page(t, strings.SplitN(landing, "#", 2)[0]), f.card)
+	if !strings.Contains(settled, "data-asks-settled") || !strings.Contains(settled, `data-asks-outcome-state data-attention-answer-text>Approved in the web UI</p>`) {
+		t.Fatalf("the approve's landing does not draw the card settled: %s", settled)
+	}
+	if strings.Contains(settled, "data-draft-approve") || strings.Contains(settled, "data-draft-reject") {
+		t.Fatalf("the settled card still offers the draft's decision: %s", settled)
+	}
+	// The next load of the page: it has left the Open feed.
 	if c := feedCard(f.page(t, attentionPath), f.card); c != "" {
-		t.Fatalf("the settled card is still on the Open feed: %s", c)
+		t.Fatalf("the settled card is still on the Open feed after a reload: %s", c)
 	}
 	if _, err := f.srv.answerAskFrom(asDevice(f.owner), f.card, hostDecisionConfirm, attention.AnswerSource{}); !errors.Is(err, errHostDecisionClosed) {
 		t.Fatalf("the phone's confirm after the web decision: %v, want closed", err)

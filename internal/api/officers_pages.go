@@ -2096,6 +2096,11 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	controllable := sc.Manage && builtinBackend && (v.ManagedBy == officers.ManagedByDB || v.ManagedBy == officers.ManagedByEnv)
 	needs := s.officerNeedsOf(ctx, s.readNeeds(ctx), sc.Owner, v.ID, builtinBackend)
 	b.WriteString(s.needsYouHTML(ctx, sc, v, needs, s.officerRunHTML(ctx, sc, v, controllable), controllable))
+	if len(needs.drafts) > 0 || len(needs.asks) > 0 {
+		// The mics of what Needs you draws — a draft's reason box, an ask's
+		// answer box — once, after them (ui/dictate.go).
+		b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
+	}
 	// Chat with it (officer_operator_chat.go), right below what waits on
 	// the person: its confirm cards are decisions too.
 	chat := s.officerChatHTML(r, sc, v)

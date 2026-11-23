@@ -78,7 +78,7 @@ for (const vp of [
       // The page is long enough to scroll (else 0 is no measurement).
       expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeGreaterThan(400);
       expect(await settledY(page), 'Open').toBe(0);
-      for (const tab of ['answered', 'drafts']) {
+      for (const tab of ['done', 'drafts']) {
         await page.goto(origin + '/attention?tab=' + tab);
         await expect(selectedTab(page)).toHaveAttribute('data-tab', tab);
         expect(await settledY(page), tab).toBe(0);
@@ -102,18 +102,21 @@ for (const vp of [
       await card.scrollIntoViewIfNeeded();
       const answered = await card.getAttribute('id');
       await card.locator('[data-attention-option]').first().click();
-      await expect(page.locator(`[id="${answered}"]`)).toHaveCount(0);
+      // It settles in place (internal/api asks_done.go), and stays.
+      await expect(page.locator(`[id="${answered}"]`)).toHaveAttribute('data-asks-settled', '');
       const focused = await page.evaluate(() => document.activeElement?.id ?? '');
       expect(focused, 'focus moved to the next card').toMatch(/^ask-\d+$/);
       expect(await page.evaluate(() => Math.round(window.scrollY)), 'the answer scrolled to the next card').toBeGreaterThan(400);
       // The reader scrolls back to the top.
       await page.evaluate(() => window.scrollTo(0, 0));
       // Another card is dismissed elsewhere: the queue's event, a refresh.
-      const before = await page.locator('#attention-items > li[data-asks-card]').count();
+      // (Counted: the open cards; the settled one is kept through it.)
+      const before = await page.locator('#attention-items > li[data-asks-card]:not([data-asks-settled])').count();
       const st = await page.evaluate((id) => fetch('/attention/asks/' + id + '/cancel', { method: 'POST', credentials: 'same-origin' }).then((r) => r.status), ids.product_ask);
       expect(st, 'the dismissal elsewhere').toBeLessThan(400);
       await expect(page.locator(`#ask-${ids.product_ask}`), 'the refresh ran').toHaveCount(0);
-      expect(await page.locator('#attention-items > li[data-asks-card]').count()).toBe(before - 1);
+      expect(await page.locator('#attention-items > li[data-asks-card]:not([data-asks-settled])').count()).toBe(before - 1);
+      await expect(page.locator(`[id="${answered}"]`), 'the settled card is kept through the refresh').toHaveAttribute('data-asks-settled', '');
       expect(await settledY(page), 'the refresh moved the page').toBe(0);
       // Focus came back to the card it was on (without moving the page).
       expect(await page.evaluate(() => document.activeElement?.id ?? '')).toBe(focused);
@@ -127,9 +130,9 @@ for (const vp of [
       // A SWIPE switches the tab by clicking it from script (ui/tab_swipe.go):
       // no focus moves, so nothing but the page's own script can bring the
       // new tab's top into view.
-      await page.evaluate(() => (document.getElementById('asks-tabs-tab-answered') as HTMLElement).click());
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
-      // The Answered tab is long too, so an offset carried over would show.
+      await page.evaluate(() => (document.getElementById('asks-tabs-tab-done') as HTMLElement).click());
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'done');
+      // The Done tab is long too, so an offset carried over would show.
       expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeGreaterThan(400);
       expect(await settledY(page), 'the new tab opened part-way down').toBe(0);
       // A tap on a tab, the same.
@@ -162,14 +165,15 @@ for (const vp of [
       const top = await page.locator(`[id="${deep}"]`).evaluate((e) => Math.round(e.getBoundingClientRect().top));
       expect(top, 'the card is at the top of the screen').toBeGreaterThanOrEqual(0);
       expect(top, 'the card is at the top of the screen').toBeLessThan(160);
-      // A jump INTO another tab (#ask-N on ?tab=answered opens Open): the tab
-      // it opened is the tab on screen, so a tap back to Answered is a tab
-      // change — the top of the page, the fragment dropped.
+      // A jump INTO another tab (#ask-N on ?tab=answered — the Done tab's old
+      // name — opens Open): the tab it opened is the tab on screen, so a tap
+      // back to Done is a tab change — the top of the page, the fragment
+      // dropped.
       await page.goto(origin + `/attention?tab=answered#${deep}`);
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
       expect(await settledY(page), 'the jump scrolled to its card').toBeGreaterThan(400);
-      await page.locator('#asks-tabs-tab-answered').click();
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'answered');
+      await page.locator('#asks-tabs-tab-done').click();
+      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'done');
       expect(await settledY(page), 'the tap back landed part-way down').toBe(0);
       expect(await page.evaluate(() => location.hash), 'the tap back kept the fragment').toBe('');
       // A search for a draft's id goes to its card on the Drafts tab (the

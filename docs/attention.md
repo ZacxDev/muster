@@ -7,7 +7,7 @@ to ask you something and wait for the answer instead of stopping.
 
 `/attention` — the **Asks** page (the **Asks** link in the menu) — is a
 **feed of cards** ([below](#the-card-feed)) in up to five tabs: **Open ·
-Answered · Drafts · Nudges · Log** (Drafts with plugins on, Nudges with nudges
+Done · Drafts · Nudges · Log** (Drafts with plugins on, Nudges with nudges
 on, Log with the ask log on). Its heading carries **N open**.
 
 **One open count.** The heading's *N open*, the count on the sidebar's
@@ -28,19 +28,32 @@ held question's creation), ties broken by the item's key. A card that is not
 a question carries its kind as a small badge (*Notice*, *Waiting*, *Task to
 route*); a question, the most common card, carries none.
 
-**One card on every tab.** Every item on the page — an Open card, an
-Answered card, a reply draft, an outreach batch, a nudge decision, a stalled
+**One card on every tab.** Every item on the page — an Open card, a
+Done card, a reply draft, an outreach batch, a nudge decision, a stalled
 session, a log row — is the same card: one shape, one head (an optional kind
 badge, the title, a muted line under it), its facts as small pills, its
 actions under them. A card with something more to show expands in place; the
 others do not. Every empty list says so the same way.
 Nothing pending at all: a calm **All clear**. Nothing on the Open tab while
 drafts wait: *Nothing else is open* and how many drafts wait, with a link
-to the Drafts tab — never All clear. The **Answered** tab holds the recent
-answers (the last day's, at most 20), each titled by its session's name (the
-rule below): the question, your answer, and where it went as a pill
-(*Delivered*, *Queued*, *Waiting for the session to read it*, *Delivery
-failed* …); expanded, the sentence that says it in full.
+to the Drafts tab — never All clear.
+
+**Nothing you decide is lost.** The **Done** tab (it was *Answered*) lists
+**everything closed** — answered, answered in the session, dismissed, expired,
+and a step-up card whose draft you rejected or approved — newest closed first,
+with no age limit, 25 to a page (**Show older** / **Newest** at its end; the
+page is `?before=` in the address). An answer whose **delivery failed** heads
+the first page however old, with its **Retry delivery**, and is not drawn
+again further down. Each card is titled by its session's name
+(the rule below) and shows the question, its outcome (*Answered*,
+*Dismissed*, *Expired*, *Rejected in the web UI* …), your answer, the reason
+you gave with a draft's rejection, and — for an answer — where it went as a
+pill (*Delivered*, *Queued*, *Waiting for the session to read it*, *Delivery
+failed* …; expanded, the sentence that says it in full). Its footer has
+**View in session** (when it has a session; a step-up card's is the agent
+that drafted its draft) and **Open ask**. The filter chips narrow it. Only
+your own asks are listed (a team's that you can read is not); a question a
+session put to your chief is listed once closed, as *Your chief's answer*.
 
 **Every card names its session the same way:** the session's name as its title
 (its human name, else the window's label or tmux address, else the asking
@@ -97,7 +110,7 @@ chip and Clear lead it.
   `?from=<source>`, beside `?q=` and `?tab=`, so a filtered page is a bookmark,
   Back undoes a tap, every chip is a plain link (no script needed), and a
   search keeps the filter (and the filter the search).
-- It applies to the Open, Answered and Drafts tabs and to search results; the
+- It applies to the Open, Done and Drafts tabs and to search results; the
   Log keeps its own filters. Each chip counts what a tap on it would list: the
   type chips over the active source, the source chips over the active type.
 - **A source is who raised the item.** An officer's chip (`officer:<id>`) holds
@@ -130,29 +143,36 @@ taller than the screen still scrolls through).
   box, on attached media, on anything that scrolls sideways, at the left edge
   (the menu's swipe) or with text selected is left alone. Pinch-zoomed in, a
   sideways drag pans the zoomed page and never changes the tab.
-- **Answer** or **Dismiss** a card and it fades out (opacity and transform
-  only, 180 ms): the fade plays to its end before the card is removed (at once
-  under *reduce motion*), the next card moves up and takes focus, and the open
-  count drops. **Answer** is off while its box is blank. An answer
-  that is taken says **Sent to** *the session's name* in a small toast; a
-  dismissal says nothing. The card's form posts (htmx)
-  to the queue's own answer and dismiss routes with an
-  `X-Muster-Asks-Card: 1` header, and only such a post is answered `204` (or,
-  refused — the question closed meanwhile, an answer the asker cannot take —
-  its error status and one line saying why, which the card shows when it comes
-  back); every other post to those routes keeps its redirect. A card that is
-  leaving is never brought back by a live refresh that arrives before its post
-  lands. When what comes back is not that line (a network failure, a refusal
-  from outside the queue), the card says so in a plain sentence; when the card
-  is no longer on the page by then (its ask closed elsewhere), a line above
-  the tabs says the answer was not recorded, and why. A failed delivery's
-  **Retry** (on the Answered tab) lands back on the Answered tab.
+- **A decided card stays where it was, settled.** **Answer** or **Dismiss** a
+  card — or **Reject** or **Approve** the draft on a step-up card — and the
+  card does not leave: it is drawn again in its place, quieter, as the Done
+  tab draws it (its outcome, your answer or reason, **View in session**,
+  **Open ask**), the next card takes focus, and the open count drops. It
+  leaves the Open tab when the page is next loaded, and is on the **Done**
+  tab from then on. **Answer** is off while its box is blank. An answer that
+  is taken says **Sent to** *the session's name* in a small toast; a dismissal
+  says nothing. The card's form posts (htmx) to the queue's own answer and
+  dismiss routes with an `X-Muster-Asks-Card: 1` header, and only such a post
+  is answered with the settled card itself (or, refused — the question closed
+  meanwhile, an answer the asker cannot take — its error status and one line
+  saying why, which the card shows); while it is in flight the card is dimmed
+  and the live refresh waits for it. A plain form that lands back on the page
+  (a step-up card's draft decision, a team card's confirmed answer, a form
+  with no script) lands on `/attention?settled=<id>#ask-<id>`, which draws
+  that one closed ask settled in its old spot; the address then drops
+  `settled`, so a reload lets it go. When what comes back is not that line (a
+  network failure, a refusal from outside the queue), the card says so in a
+  plain sentence; when the card is no longer on the page by then (its ask
+  closed elsewhere), a line above the tabs says the answer was not recorded,
+  and why. A failed delivery's **Retry** (on the Done tab) lands back on the
+  Done tab.
 - **On a keyboard**: <kbd>j</kbd>/<kbd>k</kbd> (or <kbd>↓</kbd>/<kbd>↑</kbd>
   from a card) move between cards, <kbd>Enter</kbd> expands, <kbd>a</kbd>
   focuses the answer box, <kbd>d</kbd> starts its mic, <kbd>Esc</kbd> leaves
   the box and then collapses the card.
-- **Live**: the Open feed and the Answered feed follow the queue as it changes,
-  without a reload; an answer you are typing (or dictating) is never replaced,
+- **Live**: the Open feed and the Done feed follow the queue as it changes,
+  without a reload; a card settled in place stays in place; an answer (or a
+  reason) you are typing or dictating is never replaced,
   an expanded card stays expanded, and the page never scrolls (a card that
   had focus gets it back, where you left it).
 - **It opens at its top**: a load lands at the top of the page and a tab change
@@ -163,8 +183,9 @@ taller than the screen still scrolls through).
   the swipe's side, a button's press) is all off under the system's
   *reduce motion* setting.
 
-**Old links still land.** The tab is in the query: `?tab=answered`,
-`?tab=drafts`, `?tab=nudges` and `?tab=log` open those tabs; `?tab=ask` (the
+**Old links still land.** The tab is in the query: `?tab=done`,
+`?tab=drafts`, `?tab=nudges` and `?tab=log` open those tabs; `?tab=answered`
+(the Done tab's old name) opens **Done**; `?tab=ask` (the
 Open tab's old name), no `tab` and anything unknown open **Open**;
 `?tab=archived` opens **Drafts** with its archived list shown, where a
 decided draft lands. A tab that is not drawn (Drafts with plugins off, Nudges with
@@ -183,7 +204,7 @@ plugin drafts are numbered apart, so a bare number could be either.
 
 | Card | Shows |
 |---|---|
-| An ask or notice on **Open**, on **Answered**, and its own page's header | **Ask #859** |
+| An ask or notice on **Open**, on **Done**, and its own page's header | **Ask #859** |
 | A draft on **Drafts** | **Draft #484** |
 | An agent's question on **Log** | **Ask #859** (the muster ask it records; a question asked in chat or with a picker has no muster ask, so no id) |
 | A step-up card for a draft | **Ask #…** like any ask, and its title ends **· Draft #484** ([what a card shows](mirroring.md#what-a-card-shows)) |
@@ -448,7 +469,12 @@ again, and the address follows):
   the draft carries is still shown: anything invisible or look-alike is spelled
   out), with **Approve and send** as the one primary action (it needs a sign-in
   from the last few minutes, asked for in place) and a small **Reject** under
-  it.
+  it. Reject's optional **reason** box (also on Withdraw, on a step-up card's
+  draft controls, on its ask page and on an officer's page) starts one line
+  and grows with what you type up to a few lines, then scrolls; it has the
+  answer boxes' microphone while dictation is on (its ✓ puts the transcript
+  in the box; nothing is sent before Reject). The reason is shown on the
+  decided draft, and on its step-up card when settled and on the Done tab.
 - **Archived** — every draft that is no longer pending, moved here the moment
   you approve or reject it, or it is replaced by a newer draft or expires. Each
   shows its live status: approved and waiting for the plugin to collect it,
@@ -1440,8 +1466,8 @@ queued a day after it was given or retried (its agent stopped, never started,
 or stayed busy), saying why; unconfirmed answers stay listed until retried. A turn the runtime provably
 did not take (busy, not ready) stays queued.
 
-**Where it went.** Below the open items, `/attention` lists the last day's
-answers and where each went: *Queued for …* (with why, while it waits),
+**Where it went.** The **Done** tab lists every answer and where each went
+(an answer whose delivery failed at the top of its first page, however old): *Queued for …* (with why, while it waits),
 *Delivering…*, *Delivered to …*, *… read it while waiting for it*, *Waiting for …
 to read it* (a team's or an opencode session, which muster does not type into),
 a mirrored session's own lines ([below](#waking-a-mirrored-session)), or
@@ -1584,7 +1610,7 @@ refused with nothing typed. A message no window shows waits, saying why, and a
 day after it was given (or retried) settles **Not delivered**, as does one
 whose window kept refusing it or stayed busy for a day.
 
-**Where it went.** The answer's card on the Answered tab, the ask's own page
+**Where it went.** The answer's card on the Done tab, the ask's own page
 and the draft's card say it: *Waiting for <session> to be idle*, *Waiting to
 send it to <session>: no window shows the session now*, *Sent to <session>*,
 *<session> read it while waiting for it*, *Sign in again to send to <session>*

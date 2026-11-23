@@ -136,17 +136,18 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 42?');
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'dispatch a new agent' }).click()]);
-  await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+  // The card stays where it was, settled (internal/api asks_done.go).
+  await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '');
 
-  // Where the answer went, live on the Answered tab (after the waiter's grace).
-  await page.getByRole('tab', { name: 'Answered', exact: true }).click();
-  await expect(page).toHaveURL(origin + '/attention?tab=answered');
+  // Where the answer went, live on the Done tab (after the waiter's grace).
+  await page.getByRole('tab', { name: 'Done', exact: true }).click();
+  await expect(page).toHaveURL(origin + '/attention?tab=done');
   const answered = page.locator(`#answered-${id}`);
   await expect(answered.locator('[data-attention-answer-text]')).toHaveText('Your answer: dispatch a new agent');
   await expect(answered).toHaveAttribute('data-delivery', 'delivered', { timeout: 30_000 });
   await expect(answered.locator('[data-attention-delivery]')).toHaveText('Delivered to chief as a new message in its session.');
-  // The Answered card is the Answered tab's: visible there, and hidden with it.
-  await expect(page.locator('#asks-tabs-panel-answered').locator(`#answered-${id}`)).toBeVisible();
+  // The Done card is the Done tab's: visible there, and hidden with it.
+  await expect(page.locator('#asks-tabs-panel-done').locator(`#answered-${id}`)).toBeVisible();
   await page.getByRole('tab', { name: 'Drafts', exact: true }).click();
   await expect(answered).toBeHidden();
   await expect(page.locator('#asks-drafts-pending [data-drafts-empty]')).toBeVisible();
@@ -287,7 +288,8 @@ for (const vp of [
       const item = page.locator(`#attention-items #ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
       await item.getByRole('button', { name: 'dispatch a new agent' }).click();
-      await expect(page.locator(`#ask-${id}`)).toHaveCount(0, { timeout: 15_000 });
+      // It settles in place (internal/api asks_done.go).
+      await expect(page.locator(`#ask-${id}`)).toHaveAttribute('data-asks-settled', '', { timeout: 15_000 });
       await expect
         .poll(() => turns.filter((b) => b.includes(`your owner answered attention #${id}`)).length, { timeout: 30_000 })
         .toBe(1);

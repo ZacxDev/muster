@@ -102,7 +102,7 @@ for (const vp of [
       await expect(page).toHaveURL(/[?&]from=officer%3A1%3Amarketing%3Aacme/);
       await expect(marketingChip(page)).toHaveAttribute('aria-current', 'true');
       expect(mine(await listed(page, '#attention-items', 'ask-')), 'Open').toEqual(sorted(ids.mkt_ask, ids.mkt_ask2, ids.mkt_stepup));
-      expect(mine(await listed(page, '#attention-answered', 'answered-')), 'Answered').toEqual([ids.mkt_answered]);
+      expect(mine(await listed(page, '#attention-answered', 'answered-')), 'Done').toEqual([ids.mkt_answered]);
       expect(mine(await listed(page, '#asks-drafts-pending', 'draft-')), 'Drafts').toEqual([ids.mkt_draft]);
       await expect(page.locator('body')).not.toContainText('OTHER OWNER');
 

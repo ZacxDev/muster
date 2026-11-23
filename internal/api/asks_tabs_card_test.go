@@ -326,7 +326,7 @@ func TestTheAnsweredTabDrawsTheOpenCard(t *testing.T) {
 	plain := attention.Ask{ID: 8, Owner: 1, Question: "Ship it?\nTonight or Monday", Answer: "Monday —\nafter the freeze", Status: attention.Answered,
 		CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute), Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
 	asks := []attention.Ask{step, plain}
-	frag := answeredFeedHTML(asks, []attentionItem{askItem(step), askItem(plain)}, now, nil)
+	frag := closedFeedHTML(closedCardsOf(asks, []attentionItem{askItem(step), askItem(plain)}, nil), now)
 	cards := cardsOf(t, frag)
 	if len(cards) != 2 {
 		t.Fatalf("%d answered cards", len(cards))
@@ -466,7 +466,7 @@ func TestTheAnsweredCardFlagsHiddenCharsInItsQuestionAndAnswer(t *testing.T) {
 	now := designNow
 	a := attention.Ask{ID: 8, Owner: 1, Question: "Ship it‮ tonight?", Answer: "Yes​, ship it", Status: attention.Answered,
 		CreatedAt: now.Add(-time.Hour), ResolvedAt: now.Add(-time.Minute), Asker: attention.Asker{Label: "deploy-bot", AgentID: 3}, Delivery: attention.DeliveryDelivered}
-	card := cardsOf(t, answeredFeedHTML([]attention.Ask{a}, []attentionItem{askItem(a)}, now, nil))
+	card := cardsOf(t, closedFeedHTML(closedCardsOf([]attention.Ask{a}, []attentionItem{askItem(a)}, nil), now))
 	if len(card) != 1 {
 		t.Fatalf("%d answered cards", len(card))
 	}
