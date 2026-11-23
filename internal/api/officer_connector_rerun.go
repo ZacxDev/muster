@@ -249,7 +249,11 @@ func (s *Server) settleGrantBlocks(ctx context.Context, rt *officerRuntime, o of
 const ConnectorBlockSweepInterval = 30 * time.Minute
 
 // connectorBlockSweepGrants bounds the grants one pass reads per officer.
-const connectorBlockSweepGrants = 50
+// Wide on purpose: a pending grant's blocks are read every pass and left, so
+// a narrow bound would let pending grants fill it and starve every decided
+// grant past them. An officer has at most one live grant per (instance,
+// connector), so real counts are far below it; reaching it is logged.
+const connectorBlockSweepGrants = 1000
 
 // RunConnectorBlockSweep runs sweepConnectorBlocks now and every interval
 // (0: ConnectorBlockSweepInterval) until ctx ends. Unguarded at replicas > 1:
@@ -293,6 +297,10 @@ func (s *Server) sweepConnectorBlocks(ctx context.Context) {
 		if err != nil {
 			s.logger.Printf("officers: block sweep: %s's blocks could not be read: %v", o.ID, err)
 			continue
+		}
+		if len(grants) == connectorBlockSweepGrants {
+			s.logger.Printf("officers: block sweep: %s has unsettled blocks on at least %d grants; this pass reads the first %d by id",
+				o.ID, connectorBlockSweepGrants, connectorBlockSweepGrants)
 		}
 		for _, id := range grants {
 			g, err := s.ext.Connectors.GetGrant(octx, id)
