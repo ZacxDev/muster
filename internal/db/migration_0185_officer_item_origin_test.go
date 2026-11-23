@@ -9,8 +9,9 @@ import (
 // has origin_* (the control). At 0185 an ask and a draft record an officer
 // instance, its session, a message of that session and a time; the database
 // refuses an origin agent of ANOTHER owner, a session of another agent and a
-// message of another session; deleting the agent clears the origin (its
-// sessions go with it) and keeps the row; and the documented rollback removes
+// message of another session; there is no origin_at (the row's created_at
+// is when); deleting the agent clears the origin (its sessions go with it)
+// and keeps the row; and the documented rollback removes
 // every column, the trigger and its function.
 func TestMigration0185OfficerItemOrigin(t *testing.T) {
 	ctx := ctx0006(t)
@@ -21,6 +22,11 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 		}
 	}
 	applyThroughFrom(ctx, t, pool, 185)
+	for _, tbl := range []string{"attention_asks", "plugin_reply_drafts"} {
+		if _, err := pool.Exec(ctx, `SELECT origin_at FROM `+tbl); err == nil {
+			t.Fatalf("%s.origin_at exists: when is the row's own created_at", tbl)
+		}
+	}
 
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE VALUES (2, 'person', 'member', 'two') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
@@ -36,15 +42,15 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 
 	ask := func(agent, session, message any) error {
 		_, err := pool.Exec(ctx, `INSERT INTO attention_asks (owner_id, asker_label, question, options, expires_at, system_asker,
-			origin_agent_id, origin_session_id, origin_message_id, origin_at)
-			VALUES (1, 'officer scout:main', 'which first?', '[]', now() + interval '1 hour', true, $1, $2, $3, now())`, agent, session, message)
+			origin_agent_id, origin_session_id, origin_message_id)
+			VALUES (1, 'officer scout:main', 'which first?', '[]', now() + interval '1 hour', true, $1, $2, $3)`, agent, session, message)
 		return err
 	}
 	draft := func(agent, session, message any) error {
 		_, err := pool.Exec(ctx, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state,
-			check_due_at, plugin_id, venue, target_kind, target_ref, officer, origin_agent_id, origin_session_id, origin_message_id, origin_at)
+			check_due_at, plugin_id, venue, target_kind, target_ref, officer, origin_agent_id, origin_session_id, origin_message_id)
 			VALUES (1, NULL, $1, 'officer-scout-main-1', 'a post', now() + interval '7 days', 'awaiting', now() + interval '7 days', $2, 'x', 'post',
-			        NULL, 'scout:main', $3, $4, $5, now())`, inst, plugin, agent, session, message)
+			        NULL, 'scout:main', $3, $4, $5)`, inst, plugin, agent, session, message)
 		return err
 	}
 	for name, write := range map[string]func(a, s, m any) error{"ask": ask, "draft": draft} {
@@ -72,7 +78,7 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 		}
 	}
 	// The agent is deleted (its drafts first: they reference it as their
-	// agent_id): the asks' origin goes, the asks stay, origin_at kept.
+	// agent_id): the asks' origin goes, the asks stay.
 	if _, err := pool.Exec(ctx, `DELETE FROM plugin_reply_drafts WHERE agent_id = $1`, inst); err != nil {
 		t.Fatal(err)
 	}
@@ -81,9 +87,9 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 	}
 	var left int
 	// Three asks were written (instance+session+message, instance+session,
-	// and none — each with a time): all three stay, none names anything.
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE origin_agent_id IS NULL AND origin_session_id IS NULL AND origin_message_id IS NULL AND origin_at IS NOT NULL`).Scan(&left); err != nil || left != 3 {
-		t.Fatalf("after the agent's delete: %d asks with the origin cleared and its time kept (%v); want 3", left, err)
+	// and none): all three stay, none names anything.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE origin_agent_id IS NULL AND origin_session_id IS NULL AND origin_message_id IS NULL`).Scan(&left); err != nil || left != 3 {
+		t.Fatalf("after the agent's delete: %d asks with the origin cleared (%v); want 3", left, err)
 	}
 
 	// ROLLBACK, as the migration's header writes it.
@@ -91,8 +97,8 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 		`DROP TRIGGER IF EXISTS attention_asks_origin_is_owners ON public.attention_asks`,
 		`DROP TRIGGER IF EXISTS plugin_reply_drafts_origin_is_owners ON public.plugin_reply_drafts`,
 		`DROP FUNCTION IF EXISTS public.officer_origin_is_owners()`,
-		`ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id, DROP COLUMN IF EXISTS origin_at`,
-		`ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id, DROP COLUMN IF EXISTS origin_at`,
+		`ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id`,
+		`ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id`,
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("rollback %q: %v", stmt, err)
@@ -102,8 +108,8 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 		t.Fatal("the migration's header no longer documents the rollback this test runs")
 	}
 	for _, tbl := range []string{"attention_asks", "plugin_reply_drafts"} {
-		if _, err := pool.Exec(ctx, `SELECT origin_at FROM `+tbl); err == nil {
-			t.Fatalf("after the rollback %s.origin_at still exists", tbl)
+		if _, err := pool.Exec(ctx, `SELECT origin_agent_id FROM `+tbl); err == nil {
+			t.Fatalf("after the rollback %s.origin_agent_id still exists", tbl)
 		}
 	}
 	if err := ask(nil, nil, nil); err == nil {

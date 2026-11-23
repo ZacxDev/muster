@@ -826,13 +826,13 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state, check_due_at,
 			                                 plugin_id, venue, target_kind, target_ref, media_refs, officer, officer_item_id,
 			                                 because_ref, contact_id, outreach_reason, reply_context,
-			                                 origin_agent_id, origin_session_id, origin_message_id, origin_at)
+			                                 origin_agent_id, origin_session_id, origin_message_id)
 			VALUES ($1, NULL, $2, $3, $4, now() + make_interval(secs => $5), 'awaiting', now() + make_interval(secs => $5),
 			        $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, nullif($15, ''), $16::jsonb,
-			        $17, $18, $19, $20) RETURNING `+draftCols,
+			        $17, $18, $19) RETURNING `+draftCols,
 			ownerID, agentID, cutRunes(agentName, 100), body, DraftTTL.Seconds(),
 			p.ID, in.Venue, in.Target.Kind, ref, media, in.Officer, in.ItemID, in.BecauseRef, reached.Contact, strings.TrimSpace(in.Reason),
-			replyContext, origin[0], origin[1], origin[2], origin[3]))
+			replyContext, origin[0], origin[1], origin[2]))
 		if err != nil {
 			return err
 		}

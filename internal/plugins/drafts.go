@@ -645,7 +645,7 @@ const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
 	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
 	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from, reply_context,
-	origin_agent_id, origin_session_id, origin_message_id, origin_at`
+	origin_agent_id, origin_session_id, origin_message_id`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
@@ -654,23 +654,7 @@ func draftDest(d *Draft, st *string) []any {
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
 		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
 		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom, &d.ReplyContext,
-		(*zeroIfNull)(&d.Origin.AgentID), (*zeroIfNull)(&d.Origin.SessionID), (*zeroIfNull)(&d.Origin.MessageID), (*zeroTimeIfNull)(&d.Origin.At)}
-}
-
-// zeroTimeIfNull scans a nullable timestamptz as the zero time for NULL
-// (origin_at, migration 0185).
-type zeroTimeIfNull time.Time
-
-func (z *zeroTimeIfNull) Scan(src any) error {
-	switch v := src.(type) {
-	case nil:
-		*z = zeroTimeIfNull(time.Time{})
-	case time.Time:
-		*z = zeroTimeIfNull(v)
-	default:
-		return fmt.Errorf("plugins: origin_at is %T", src)
-	}
-	return nil
+		(*zeroIfNull)(&d.Origin.AgentID), (*zeroIfNull)(&d.Origin.SessionID), (*zeroIfNull)(&d.Origin.MessageID)}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's

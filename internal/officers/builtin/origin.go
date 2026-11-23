@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/itemorigin"
 )
@@ -34,8 +33,8 @@ func (s *Store) SetAskOrigin(ctx context.Context, owner, askID int64, o itemorig
 	if args[0] == nil {
 		return nil
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET origin_agent_id = $3, origin_session_id = $4, origin_message_id = $5, origin_at = $6
-		WHERE id = $1 AND owner_id = $2 AND origin_agent_id IS NULL`, askID, owner, args[0], args[1], args[2], args[3])
+	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET origin_agent_id = $3, origin_session_id = $4, origin_message_id = $5
+		WHERE id = $1 AND owner_id = $2 AND origin_agent_id IS NULL`, askID, owner, args[0], args[1], args[2])
 	if err != nil {
 		return err
 	}
@@ -52,7 +51,7 @@ func (s *Store) AskOrigins(ctx context.Context, owner int64, ids []int64) (map[i
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, origin_agent_id, coalesce(origin_session_id, 0), coalesce(origin_message_id, 0), origin_at
+	rows, err := s.pool.Query(ctx, `SELECT id, origin_agent_id, coalesce(origin_session_id, 0), coalesce(origin_message_id, 0)
 		FROM attention_asks WHERE owner_id = $1 AND id = ANY($2::bigint[]) AND origin_agent_id IS NOT NULL`, owner, ids)
 	if err != nil {
 		return nil, err
@@ -61,12 +60,8 @@ func (s *Store) AskOrigins(ctx context.Context, owner int64, ids []int64) (map[i
 	for rows.Next() {
 		var id int64
 		var o itemorigin.Origin
-		var at *time.Time
-		if err := rows.Scan(&id, &o.AgentID, &o.SessionID, &o.MessageID, &at); err != nil {
+		if err := rows.Scan(&id, &o.AgentID, &o.SessionID, &o.MessageID); err != nil {
 			return nil, err
-		}
-		if at != nil {
-			o.At = *at
 		}
 		out[id] = o
 	}

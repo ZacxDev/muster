@@ -245,22 +245,29 @@ Each manager's save of a team officer's instructions is in the team's audit
 
 Each item in **Needs you** — a post or reply to approve, an outreach batch, a
 question, a refusal — has a **Show session** button. It opens the conversation
-of the officer's copy that made it, scrolled to the moment it did, with a
-marker: *Below: the turn where it raised this*. A refusal opens the session
-that wrote the draft it refused.
+of the officer's copy that made it, at the turn where it made it, with a
+marker: *Below: the turn where it raised this*. What follows the marker is that
+turn: the message that started it, what the officer said and every tool it
+called. Its private reasoning is never stored, so it is not shown. A refusal
+opens the session that wrote the draft it refused.
 
-muster records the moment when the item is made (migration `0185`,
-`origin_*`), from the tool call itself. It notes which of the officer's
-running copies made the call, the conversation that copy was in, and the
-newest message of that conversation at the call. An officer's tool calls are
-not messages of their own, so the marker sits at the start of the turn that
-made the item. The record comes from the officer's own sign-in, never from
-anything the officer wrote in the call. An item made before this, or one with
-no conversation recorded, opens that copy's conversation as a whole. The
-button only ever opens one of the item's own officer's copies, for the people
-who can see that officer; the database refuses a record naming anyone else's.
-An escalation sent to someone in `escalate_to` carries no such link: only the
-owner's own copy of it does.
+muster records the turn when the item is made (migration `0185`, `origin_*`),
+from the tool call itself. It notes which of the officer's running copies made
+the call, its conversation, and that turn's own first message, which muster
+records for each turn it starts. It is not "the newest message", which another
+message arriving mid-turn would move. The record comes from the officer's own
+sign-in, never from anything the officer wrote in the call. An item made
+before this, or one whose turn muster does not know, opens that copy's
+conversation as a whole.
+
+**An officer on one of your machines** keeps its conversation in that
+machine's window, not in muster's chat, so its button opens the window's
+mirrored view, without a position (that view has no turns a link could name).
+
+The button only ever opens one of the item's own officer's copies, for the
+people who can see that officer; the database refuses a record naming anyone
+else's. An escalation sent to someone in `escalate_to` carries no such link:
+only the owner's own copy of it does.
 
 Every decision there is made only by your own signed-in browser: an
 officer's instance (or its machine's window) holds a token, never your

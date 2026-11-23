@@ -3,7 +3,6 @@ package builtin_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/itemorigin"
@@ -24,8 +23,7 @@ func TestAnEscalationsOriginRidesOnlyOnTheOwnersNotice(t *testing.T) {
 	if err := w.store.PutDef(ctxOp(), 1, builtin.Def{Officer: backendtest.OfficerA, Enabled: true, EscalateTo: []int64{2}}); err != nil {
 		t.Fatal(err)
 	}
-	at := time.Date(2000, 1, 3, 4, 5, 6, 0, time.UTC)
-	origin := itemorigin.Origin{AgentID: 7101, SessionID: 7102, MessageID: 7103, At: at}
+	origin := itemorigin.Origin{AgentID: 7101, SessionID: 7102, MessageID: 7103}
 	ctx := itemorigin.With(context.Background(), func(context.Context) (itemorigin.Origin, bool) { return origin, true })
 	id := w.AddItem(backendtest.OfficerA, "k", "origin-escalation", officers.TierRoutine, "")
 	claimed(t, b, id)
@@ -41,11 +39,11 @@ func TestAnEscalationsOriginRidesOnlyOnTheOwnersNotice(t *testing.T) {
 		agent, has := n["origin_agent"]
 		switch r {
 		case 1:
-			if !has || agent.(float64) != 7101 || n["origin_session"].(float64) != 7102 || n["origin_message"].(float64) != 7103 || n["origin_at"] != "2000-01-03T04:05:06Z" {
+			if !has || agent.(float64) != 7101 || n["origin_session"].(float64) != 7102 || n["origin_message"].(float64) != 7103 {
 				t.Errorf("the owner's notice does not carry the origin: %v", n)
 			}
 		case 2:
-			if has || n["origin_session"] != nil || n["origin_message"] != nil || n["origin_at"] != nil {
+			if has || n["origin_session"] != nil || n["origin_message"] != nil {
 				t.Errorf("the escalate_to recipient's notice carries an origin: %v", n)
 			}
 		default:
@@ -65,7 +63,7 @@ func TestAnEscalationsOriginRidesOnlyOnTheOwnersNotice(t *testing.T) {
 		got := d.Origin
 		switch d.Recipient {
 		case 1:
-			if got.AgentID != 7101 || got.SessionID != 7102 || got.MessageID != 7103 || !got.At.Equal(at) {
+			if got.AgentID != 7101 || got.SessionID != 7102 || got.MessageID != 7103 {
 				t.Errorf("the owner's due notice's origin %+v", got)
 			}
 		case 2:
@@ -111,12 +109,11 @@ func TestAnAskOriginIsWrittenOnceAndOnlyOnTheOwnersAsk(t *testing.T) {
 		_, _ = pool.Exec(sys, `DELETE FROM attention_asks WHERE id IN ($1, $2)`, ask, theirs)
 		_, _ = pool.Exec(sys, `DELETE FROM agents WHERE id IN ($1, $2)`, agent, other)
 	})
-	at := time.Date(2000, 1, 3, 4, 5, 6, 0, time.UTC)
-	first := itemorigin.Origin{AgentID: agent, SessionID: sess, At: at}
+	first := itemorigin.Origin{AgentID: agent, SessionID: sess}
 	if err := w.store.SetAskOrigin(sys, 1, ask, first); err != nil {
 		t.Fatalf("the first write: %v", err)
 	}
-	if err := w.store.SetAskOrigin(sys, 1, ask, itemorigin.Origin{AgentID: other, At: at}); err == nil {
+	if err := w.store.SetAskOrigin(sys, 1, ask, itemorigin.Origin{AgentID: other}); err == nil {
 		t.Fatal("a second write was taken")
 	}
 	if err := w.store.SetAskOrigin(sys, 2, theirs, first); err == nil {
@@ -126,7 +123,7 @@ func TestAnAskOriginIsWrittenOnceAndOnlyOnTheOwnersAsk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o := got[ask]; o.AgentID != agent || o.SessionID != sess || !o.At.Equal(at) {
+	if o := got[ask]; o.AgentID != agent || o.SessionID != sess {
 		t.Fatalf("the origin was moved by the second write: %+v", o)
 	}
 	if _, ok := got[theirs]; ok || len(got) != 1 {

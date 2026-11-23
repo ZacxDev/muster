@@ -8,11 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/itemorigin"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -25,13 +27,22 @@ import (
 // it at the moment; an older item opens the session as a whole; another
 // owner is never linked or let in; a caller-supplied session is ignored.
 
-// originWorld is an outbound world whose instance has a session with two
-// messages (a turn's prompt and reply): the moment its calls record is the
-// reply.
+// originWorld is an outbound world whose instance's session holds an
+// earlier exchange (a prompt and its reply) and then a RUNNING TURN: its
+// prompt row stored first and the turn registered through the very seam the
+// kickoff deliverer and Reprompt use (OfficerTurnContext with
+// agents.WithTurnInputRow). Its tool calls go through the agent door with no
+// turn on their own context — as a pod's CLI calls /mcp — so the per-turn
+// record is read from the registry. The moment they record is the turn's
+// prompt.
 type originWorld struct {
 	*outboundWorld
-	session        int64
-	prompt, moment int64
+	session int64
+	// earlier is the earlier exchange's reply; moment is the running turn's
+	// prompt row.
+	earlier, moment int64
+	// endTurn ends the running turn (its context, as the door's would).
+	endTurn context.CancelFunc
 }
 
 func newOriginWorld(t *testing.T) originWorld {
@@ -42,15 +53,31 @@ func newOriginWorld(t *testing.T) originWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := ag.AddChatMessage(w.ctx, agents.ChatMessage{AgentID: w.agent.ID, SessionID: sess.ID, Role: "user", Content: "New work for the officer."})
-	if err != nil {
-		t.Fatal(err)
+	add := func(role, text string) int64 {
+		t.Helper()
+		m, err := ag.AddChatMessage(w.ctx, agents.ChatMessage{AgentID: w.agent.ID, SessionID: sess.ID, Role: role, Content: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.ID
 	}
-	m, err := ag.AddChatMessage(w.ctx, agents.ChatMessage{AgentID: w.agent.ID, SessionID: sess.ID, Role: "assistant", Content: "Read the queue; one reply needs the owner."})
+	add("user", "Earlier work for the officer.")
+	earlier := add("assistant", "Done with the earlier work.")
+	prompt := add("user", "New work for the officer.")
+	turn, end := context.WithCancel(agents.WithTurnInputRow(context.Background(), prompt))
+	_ = w.srv.OfficerTurnContext(turn, w.agent)
+	t.Cleanup(end)
+	return originWorld{outboundWorld: w, session: sess.ID, earlier: earlier, moment: prompt, endTurn: end}
+}
+
+// addMessage stores a message in the instance's session now.
+func (w originWorld) addMessage(role, text string) int64 {
+	w.t.Helper()
+	m, err := w.srv.ext.Agents.AddChatMessage(w.ctx, agents.ChatMessage{AgentID: w.agent.ID, SessionID: w.session, Role: role, Content: text})
 	if err != nil {
-		t.Fatal(err)
+		w.t.Fatal(err)
 	}
-	return originWorld{outboundWorld: w, session: sess.ID, prompt: p.ID, moment: m.ID}
+	return m.ID
 }
 
 // want is the origin the world's instance's calls must record.
@@ -68,9 +95,7 @@ func (w originWorld) askOrigin(id int64) itemorigin.Origin {
 	return m[id]
 }
 
-func sameOrigin(got, want itemorigin.Origin) bool {
-	return got.AgentID == want.AgentID && got.SessionID == want.SessionID && got.MessageID == want.MessageID && !got.At.IsZero()
-}
+func sameOrigin(got, want itemorigin.Origin) bool { return got == want }
 
 // ownerAsks is user 1's open asks raised as the officer.
 func (w originWorld) ownerAsks() []attention.Ask {
@@ -143,7 +168,8 @@ func showSessionHrefs(page string) map[string]string {
 // TestShowSessionOpensTheSessionAtTheMoment (PR B (3) and (4)): the officer
 // page's Needs-you draws "Show session" on the draft, the ask and the
 // refusal, each linking /agents/<instance>?session=<s>&at=<moment>; the agent
-// page opened there draws its moment marker right after the moment's message
+// page opened there draws its moment marker right BEFORE the turn's prompt
+// (after the earlier exchange), so the whole turn follows it
 // and before the next. An item with no origin (made before 0185) links the
 // instance's session as a whole: no at=, no marker.
 func TestShowSessionOpensTheSessionAtTheMoment(t *testing.T) {
@@ -185,7 +211,8 @@ func TestShowSessionOpensTheSessionAtTheMoment(t *testing.T) {
 		}
 	}
 
-	// The agent page at the moment: the marker after the moment's message.
+	// The agent page at the moment: the marker between the earlier reply and
+	// the turn's prompt.
 	page := w.do("GET", strings.TrimSuffix(moment, "#session-moment"), "", func(r *http.Request) {
 		r.Header.Set("Cookie", sessionCookieFor(w.srv))
 		r.Header.Set("Sec-Fetch-Dest", "document")
@@ -196,13 +223,14 @@ func TestShowSessionOpensTheSessionAtTheMoment(t *testing.T) {
 	}
 	body := page.Body.String()
 	marker := strings.Index(body, `data-session-moment="`+strconv.FormatInt(w.moment, 10)+`"`)
-	reply := strings.Index(body, `data-msg-id="`+strconv.FormatInt(w.moment, 10)+`"`)
-	if marker < 0 || reply < 0 || marker < reply || !strings.Contains(body, `id="session-moment"`) {
-		t.Fatalf("the agent page's moment: marker at %d, the moment's message at %d (want the marker after it)", marker, reply)
+	prompt := strings.Index(body, `data-msg-id="`+strconv.FormatInt(w.moment, 10)+`"`)
+	earlier := strings.Index(body, `data-msg-id="`+strconv.FormatInt(w.earlier, 10)+`"`)
+	if marker < 0 || prompt < 0 || earlier < 0 || !(earlier < marker && marker < prompt) || !strings.Contains(body, `id="session-moment"`) {
+		t.Fatalf("the agent page's moment: earlier reply at %d, marker at %d, the turn's prompt at %d (want reply < marker < prompt)", earlier, marker, prompt)
 	}
 
 	// An older item: its origin cleared, as every row before 0185.
-	w.draftSQL(pending, `origin_agent_id = NULL, origin_session_id = NULL, origin_message_id = NULL, origin_at = NULL`)
+	w.draftSQL(pending, `origin_agent_id = NULL, origin_session_id = NULL, origin_message_id = NULL`)
 	whole := ui.AgentSessionHref(w.agent.Name, w.session)
 	sec = needsYou(w.officerPage())
 	i := strings.Index(sec, `data-draft-id="`+strconv.FormatInt(pending, 10)+`"`)
@@ -313,5 +341,87 @@ func TestACallerSuppliedSessionIsIgnored(t *testing.T) {
 	var n int
 	if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT (SELECT count(*) FROM attention_asks WHERE origin_agent_id = $1) + (SELECT count(*) FROM plugin_reply_drafts WHERE origin_agent_id = $1)`, foreign).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d rows name the forged agent (%v)", n, err)
+	}
+}
+
+// TestTheMomentIsTheTurnsOwnPromptEvenWhenAMessageLandsMidTurn (round 0's
+// step 3): a message lands in the session WHILE the turn runs — a relay row,
+// the narration of a lane — and the draft and the ask the turn's calls make
+// still record the turn's OWN prompt row, never "the newest message" (which
+// is now that later row). Once the turn has ended, a call muster cannot tie to
+// a turn records the session as a whole and NO moment: never a guess.
+func TestTheMomentIsTheTurnsOwnPromptEvenWhenAMessageLandsMidTurn(t *testing.T) {
+	w := newOriginWorld(t)
+	mid := w.addMessage("assistant", "A row that lands while the turn runs.")
+	if mid <= w.moment {
+		t.Fatalf("control: the mid-turn row %d is not newer than the turn's prompt %d", mid, w.moment)
+	}
+	id, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"x","target":{"kind":"post"},"body":"Filed mid-turn."}`)
+	if id == 0 {
+		t.Fatalf("file: %s", out)
+	}
+	d, err := w.ps.Draft(w.ctx, id)
+	if err != nil || !sameOrigin(d.Origin, w.want()) {
+		t.Fatalf("a draft filed after a mid-turn row records %+v (%v); want the turn's prompt %+v (not the newest row %d)", d.Origin, err, w.want(), mid)
+	}
+	plan := w.claimedPlan("origin:midturn", `{}`)
+	if out := w.call(officers.ToolAskPerson, `{"item_id":"`+strconv.FormatInt(plan, 10)+`","to":"owner","question":"Mid-turn?","options":["yes","no"]}`); isToolErr(out) {
+		t.Fatalf("ask: %s", out)
+	}
+	asks := w.ownerAsks()
+	if len(asks) != 1 || !sameOrigin(w.askOrigin(asks[0].ID), w.want()) {
+		t.Fatalf("an ask made after a mid-turn row: %d asks; want one from the turn's prompt %+v", len(asks), w.want())
+	}
+
+	// The turn ends: a later call is tied to no turn.
+	w.endTurn()
+	waitNoTurn(t, w.srv, w.agent.ID)
+	late, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"x","target":{"kind":"post"},"body":"Filed outside any turn."}`)
+	if late == 0 {
+		t.Fatalf("file: %s", out)
+	}
+	ld, err := w.ps.Draft(w.ctx, late)
+	if want := (itemorigin.Origin{AgentID: w.agent.ID, SessionID: w.session}); err != nil || ld.Origin != want {
+		t.Fatalf("a call outside any turn records %+v (%v); want the session with no moment %+v", ld.Origin, err, want)
+	}
+}
+
+// waitNoTurn waits until the per-turn record no longer holds a turn for
+// agent (context.AfterFunc ends it on its own goroutine).
+func waitNoTurn(t *testing.T, s *Server, agent int64) {
+	t.Helper()
+	for i := 0; i < 200 && s.turnInputs.only(agent) != 0; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.turnInputs.only(agent) != 0 {
+		t.Fatal("the ended turn is still recorded")
+	}
+}
+
+// TestAHostOfficersItemOpensItsMirroredWindow: a HOST officer's conversation
+// is its instance's mirrored session, not the agent row's chat, so its
+// draft's "Show session" is the instance's window's mirrored view — with no
+// position (that view has no rows a moment could name) — never the agent page.
+func TestAHostOfficersItemOpensItsMirroredWindow(t *testing.T) {
+	w := newHostOutboundWorld(t, true)
+	id, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"x","target":{"kind":"post"},"body":"From a host instance."}`)
+	if id == 0 {
+		t.Fatalf("file from the host instance: %s", out)
+	}
+	if rec := w.check(w.tok, id, true, ""); rec.Code != http.StatusOK {
+		t.Fatalf("check: %d", rec.Code)
+	}
+	if w.spawn.Window == "" {
+		t.Fatal("control: the host instance has no window")
+	}
+	want := ui.MirrorRef{Host: hostOffHost, Session: mirror.AgentSpawnSession, Window: w.spawn.Window}.ViewPath()
+	links := showSessionHrefs(needsYou(w.officerPage()))
+	if links[want] != "whole" || len(links) != 1 {
+		t.Fatalf("the host officer's draft links %v; want only its window %q, as a whole", links, want)
+	}
+	for href := range links {
+		if strings.HasPrefix(href, "/agents/") {
+			t.Fatalf("a host officer's item links the agent page %q", href)
+		}
 	}
 }

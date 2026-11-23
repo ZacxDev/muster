@@ -10,19 +10,20 @@
 --                      supplied
 --   origin_session_id  that instance's chat session (chat_sessions.id) the
 --                      call was made in: the conversation "Show session" opens
---   origin_message_id  the newest chat_messages row of that session when the
---                      call was made: the moment it scrolls to (no FK — a
---                      message is only a position, and NULL when the session
---                      had none yet)
---   origin_at          when the call was made
+--   origin_message_id  the prompt row (chat_messages) of the TURN the call
+--                      was made in — the per-turn record, not "the newest
+--                      message" — the moment it scrolls to (no FK: a message
+--                      is only a position; NULL when the turn is not known)
 --
--- All four are NULL on every row made before this migration, and on every
+-- When the call was made is the row's own created_at: no column of its own.
+--
+-- All three are NULL on every row made before this migration, and on every
 -- row no officer instance made: "Show session" then opens the instance's
 -- session as a whole, or is not drawn.
 --
 -- The shape: a session only with its agent, a message only with its
--- session (the trigger below). A row whose agent is deleted keeps origin_at
--- and loses the rest.
+-- session (the trigger below). A row whose agent is deleted keeps the row and
+-- loses all three.
 --
 -- 🔴 OWNER ISOLATION, IN THE DATABASE TOO. The application writes only its
 -- bound caller; this trigger refuses, whatever wrote it, an origin agent that
@@ -40,21 +41,19 @@
 --   DROP TRIGGER IF EXISTS plugin_reply_drafts_origin_is_owners ON public.plugin_reply_drafts;
 --   DROP FUNCTION IF EXISTS public.officer_origin_is_owners();
 --   ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id,
---       DROP COLUMN IF EXISTS origin_message_id, DROP COLUMN IF EXISTS origin_at;
+--       DROP COLUMN IF EXISTS origin_message_id;
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id,
---       DROP COLUMN IF EXISTS origin_message_id, DROP COLUMN IF EXISTS origin_at;
+--       DROP COLUMN IF EXISTS origin_message_id;
 
 ALTER TABLE public.attention_asks
     ADD COLUMN IF NOT EXISTS origin_agent_id   BIGINT REFERENCES public.agents (id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS origin_session_id BIGINT REFERENCES public.chat_sessions (id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS origin_message_id BIGINT,
-    ADD COLUMN IF NOT EXISTS origin_at         TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS origin_message_id BIGINT;
 
 ALTER TABLE public.plugin_reply_drafts
     ADD COLUMN IF NOT EXISTS origin_agent_id   BIGINT REFERENCES public.agents (id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS origin_session_id BIGINT REFERENCES public.chat_sessions (id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS origin_message_id BIGINT,
-    ADD COLUMN IF NOT EXISTS origin_at         TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS origin_message_id BIGINT;
 
 CREATE OR REPLACE FUNCTION public.officer_origin_is_owners() RETURNS trigger
 LANGUAGE plpgsql AS $$

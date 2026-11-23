@@ -17,7 +17,6 @@ package itemorigin
 import (
 	"context"
 	"sync"
-	"time"
 )
 
 // Origin is where a row was made.
@@ -27,11 +26,10 @@ type Origin struct {
 	// SessionID is its chat session (chat_sessions.id) the call was made in;
 	// 0 when it has none.
 	SessionID int64
-	// MessageID is the newest chat_messages row of that session when the
-	// call was made: the moment; 0 when the session had none yet.
+	// MessageID is the chat_messages row of the TURN the call was made in —
+	// its own prompt row (the per-turn record, internal/api turnInputOf): the
+	// moment; 0 when the turn is not known.
 	MessageID int64
-	// At is when the call was made.
-	At time.Time
 }
 
 // Resolver answers the origin, ok false for none.
@@ -76,21 +74,18 @@ func Resolve(ctx context.Context) (Origin, bool) {
 	return c.o, true
 }
 
-// Args is o as the four column values an INSERT binds (origin_agent_id,
-// origin_session_id, origin_message_id, origin_at): NULLs for none.
-func Args(o Origin, ok bool) [4]any {
+// Args is o as the three column values an INSERT binds (origin_agent_id,
+// origin_session_id, origin_message_id): NULLs for none.
+func Args(o Origin, ok bool) [3]any {
 	if !ok || o.AgentID <= 0 {
-		return [4]any{nil, nil, nil, nil}
+		return [3]any{nil, nil, nil}
 	}
-	out := [4]any{o.AgentID, nil, nil, o.At.UTC()}
+	out := [3]any{o.AgentID, nil, nil}
 	if o.SessionID > 0 {
 		out[1] = o.SessionID
 		if o.MessageID > 0 {
 			out[2] = o.MessageID
 		}
-	}
-	if o.At.IsZero() {
-		out[3] = nil
 	}
 	return out
 }

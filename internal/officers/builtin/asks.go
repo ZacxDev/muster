@@ -301,14 +301,13 @@ type noticeEntry struct {
 	// late result recognise the escalation as its own (escalatedByDraft).
 	Draft int64 `json:"draft,omitempty"`
 	// Origin* is where the escalating call was made (migration 0185: the
-	// officer instance, its session, the moment, when): the context's
+	// officer instance, its session, the moment): the context's
 	// itemorigin, recorded ONLY on the owner's own notice — an escalate_to
 	// recipient is another person, who is never linked to the owner's
 	// officer session. Raised, it becomes the ask's origin_* columns.
-	OriginAgent   int64      `json:"origin_agent,omitempty"`
-	OriginSession int64      `json:"origin_session,omitempty"`
-	OriginMessage int64      `json:"origin_message,omitempty"`
-	OriginAt      *time.Time `json:"origin_at,omitempty"`
+	OriginAgent   int64 `json:"origin_agent,omitempty"`
+	OriginSession int64 `json:"origin_session,omitempty"`
+	OriginMessage int64 `json:"origin_message,omitempty"`
 }
 
 // noticesFor is who an escalation of officer's item notifies: its owner and
@@ -335,10 +334,6 @@ func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string, dra
 		e := noticeEntry{Recipient: r, Suppressed: mode == "shadow", Settled: mode == "shadow", Draft: draft}
 		if hasOrigin && r == owner {
 			e.OriginAgent, e.OriginSession, e.OriginMessage = origin.AgentID, origin.SessionID, origin.MessageID
-			if !origin.At.IsZero() {
-				at := origin.At.UTC()
-				e.OriginAt = &at
-			}
 		}
 		out = append(out, e)
 	}
@@ -367,8 +362,7 @@ func (n DueNotice) About() AskAbout {
 // owner (the system scope).
 func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNotice, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, i.officer, i.kind, i.subject_key, coalesce(i.summary, ''), i.payload,
-			coalesce((n->>'origin_agent')::bigint, 0), coalesce((n->>'origin_session')::bigint, 0), coalesce((n->>'origin_message')::bigint, 0),
-			(n->>'origin_at')::timestamptz
+			coalesce((n->>'origin_agent')::bigint, 0), coalesce((n->>'origin_session')::bigint, 0), coalesce((n->>'origin_message')::bigint, 0)
 		FROM officer_items i, jsonb_array_elements(i.notices) n
 		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"attention_id": null, "suppressed": false}]' AND status = 'escalated'
 				AND id > $2 ORDER BY id LIMIT $1)
@@ -379,12 +373,8 @@ func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNo
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DueNotice, error) {
 		var d DueNotice
-		var at *time.Time
 		err := r.Scan(&d.Owner, &d.Item, &d.Recipient, &d.Officer, &d.Kind, &d.SubjectKey, &d.Summary, &d.Payload,
-			&d.Origin.AgentID, &d.Origin.SessionID, &d.Origin.MessageID, &at)
-		if at != nil {
-			d.Origin.At = *at
-		}
+			&d.Origin.AgentID, &d.Origin.SessionID, &d.Origin.MessageID)
 		return d, err
 	})
 }

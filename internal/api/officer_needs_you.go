@@ -249,7 +249,7 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 		// THE Asks page's cards and their routes (draftListHTMLIn): a
 		// decision posts where it does there, and comes back here.
 		list := draftListHTMLIn(n.drafts, "", s.withDictation(cardPlace{back: back}))
-		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + s.withDraftShowSessions(ctx, sc.Owner, v.ID, list, n.drafts, first) + `</ul>`)
+		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + s.withDraftShowSessions(ctx, sc, v.ID, list, n.drafts, first) + `</ul>`)
 	}
 	if len(n.asks) > 0 {
 		origins := s.askOrigins(ctx, sc.Owner, n.asks)
@@ -257,7 +257,8 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 		for _, a := range n.asks {
 			it := askItem(a)
 			o := origins[a.ID]
-			it.showSession = showSessionHTML(s.officerOriginHref(ctx, sc.Owner, v.ID, o, first), o.SessionID > 0 && o.MessageID > 0)
+			href := s.officerOriginHref(ctx, sc, v.ID, o, first)
+			it.showSession = showSessionHTML(href, momentHref(href))
 			items = append(items, it)
 		}
 		sortAttentionItems(items)
@@ -268,7 +269,7 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-asks>` + attentionItemsHTMLTo(items, time.Now(), back) + `</ul>`)
 	}
 	for _, rf := range n.refusals {
-		b.WriteString(refusalCardHTML(sc, v.ID, rf, controllable, s.officerNow(), s.refusalShowSessionHTML(ctx, sc.Owner, v.ID, rf, first)))
+		b.WriteString(refusalCardHTML(sc, v.ID, rf, controllable, s.officerNow(), s.refusalShowSessionHTML(ctx, sc, v.ID, rf, first)))
 	}
 	b.WriteString(`</section>`)
 	return b.String()

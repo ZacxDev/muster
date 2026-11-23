@@ -137,8 +137,8 @@ type AgentDetailView struct {
 	// first); ActiveSessionID is the one whose transcript Messages holds.
 	Sessions        []SessionView
 	ActiveSessionID int64
-	// MomentID is the moment the page opens at (?at=, AgentMomentHref): its
-	// marker is drawn after the last message at or before it. 0: none.
+	// MomentID is the moment the page opens at (?at=, AgentMomentHref): the
+	// prompt row of a turn; its marker is drawn before it. 0: none.
 	MomentID int64
 	// DraftUser is the signed-in user, the first part of the chat box's draft
 	// key (composer_draft.go).
@@ -1550,13 +1550,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 	// chief's turn after them is drawn: its relay of an answer is collapsed
 	// (dedupRelay). Any other user row ends it.
 	var answered []string
-	// The moment (?at=, AgentMomentHref): its marker goes after the last
-	// message at or before it — before the first message past it, or at the
-	// end when none is.
+	// The moment (?at=, AgentMomentHref): the prompt row of the turn that made
+	// the item. Its marker goes BEFORE it — before the first message at or
+	// past it, or at the end when none is — so the whole turn follows.
 	marked := v.MomentID <= 0
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
-		if !marked && m.ID > v.MomentID {
+		if !marked && m.ID >= v.MomentID {
 			items = append(items, logItem{node: momentMarker(v.MomentID)})
 			marked = true
 		}

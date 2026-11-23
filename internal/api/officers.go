@@ -1206,6 +1206,7 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	if !ok {
 		return ctx
 	}
+	ctx = s.registerOfficerTurn(ctx, a)
 	if !o.FreshSessionPerItem() {
 		return s.unbriefedFirstTurn(ctx, o, a)
 	}
@@ -1233,6 +1234,24 @@ func (s *Server) officerConversationAccepted(name string, acc agents.TurnAccepta
 	s.logger.Printf("officers: %s: 🔴 its ccd took a fresh_session_per_item turn but did not confirm a new conversation (no %s on its answer): "+
 		"it predates that header, and the turn runs in the conversation the CLI already had. Its claims stay refused after its current item, and muster "+
 		"sends it no further turn until it is started again on a claude-code-agent image from this version", name, agents.HeaderCCNewConversationSession)
+}
+
+// registerOfficerTurn records officer instance a's running turn's input —
+// its prompt row, which the door stored before the send and put on ctx
+// (agents.TurnInputRow: the kickoff deliverer, Reprompt) — for the turn's
+// whole run: ctx (withTurnInput) for an in-process dispatch, and the registry
+// (turnInputs) for the pod's CLI calling /mcp on a request of its own. The
+// record ends when ctx does (both doors cancel it when the turn ends). It is
+// the moment an item the turn makes points at (officer_origin.go). ctx
+// unchanged when the door stored no row first.
+func (s *Server) registerOfficerTurn(ctx context.Context, a agents.Agent) context.Context {
+	id := agents.TurnInputRow(ctx)
+	if id <= 0 || a.ID <= 0 {
+		return ctx
+	}
+	end := s.turnInputs.begin(a.ID, id)
+	context.AfterFunc(ctx, end)
+	return withTurnInput(ctx, id)
 }
 
 // unbriefedFirstTurn is OfficerTurnContext for an instance of a pool that
@@ -1396,18 +1415,38 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		if sendCtx.Err() != nil || s.streams.context().Err() != nil {
 			return
 		}
-		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(sendCtx, fresh), turn)
+		// THE TURN'S PROMPT ROW FIRST, as the kickoff's (agentkickoff): the
+		// turn runs with its own input recorded (OfficerTurnContext,
+		// registerOfficerTurn), which is the moment an item it makes points
+		// at ("Show session", officer_origin.go). A send refused before
+		// anything was typed takes the row back below.
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
+		prompt, perr := s.ext.Agents.AddChatMessage(pctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		pcancel()
+		turnCtx := sendCtx
+		if perr == nil {
+			turnCtx = agents.WithTurnInputRow(sendCtx, prompt.ID)
+		}
+		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(turnCtx, fresh), turn)
 		defer cancel()
 		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
+		bctx, bcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
+		defer bcancel()
 		if unsent := agentgateway.Unsent(err); unsent != "" {
 			// Refused before anything was typed (ccd's 409 busy, 503
-			// not_ready): not a turn, so nothing goes on the transcript.
+			// not_ready): not a turn, so nothing stays on the transcript.
+			if perr == nil {
+				if derr := s.ext.Agents.DeleteChatMessage(bctx, fresh.ID, prompt.ID); derr != nil {
+					s.logger.Printf("officers: %s: take back the unsent re-prompt's row %d: %v", name, prompt.ID, derr)
+				}
+			}
 			s.logger.Printf("officers: %s: re-prompt not sent (%s); the next pass tries again", name, unsent)
 			return
 		}
-		bctx, bcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
-		defer bcancel()
-		_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		if perr != nil {
+			// Its row could not be stored first: stored now, as before.
+			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		}
 		if reply != "" {
 			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 		}
