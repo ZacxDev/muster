@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -647,8 +648,8 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 	if edited != nil && !fleetEditable(a) {
 		return fleetApproveResult{note: FleetNotEditable}
 	}
-	if s.now().Sub(a.CreatedAt) >= fleet.ProposalTTL {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: "12 h passed", Finish: true})
+	if fleet.Expired(a.CreatedAt, s.now()) {
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Finish: true})
 		return fleetApproveResult{note: FleetExpiredNote}
 	}
 	switch s.fleetStillOn(ctx, a) {
@@ -1211,9 +1212,10 @@ const fleetPushTag = "fleet-proposals"
 
 // fleetPushWaiting pushes owner "N proposals waiting" when one is due
 // (fleet.Actions.ClaimPush: at most every fleet.PushEvery, and only when a
-// proposal arrived since the last). Its tap opens the chief panel; it carries
-// NO action — 🔴 a phone's notification can never approve a proposal (the
-// card's routes refuse a device principal too: fleetCardRefusal).
+// proposal arrived since the last). It names the newest proposal, and its tap
+// opens the digest's Proposed group on it; it carries NO action — 🔴 a
+// phone's notification can never approve a proposal (the card's routes
+// refuse a device principal too: fleetCardRefusal).
 func (s *Server) fleetPushWaiting(octx context.Context, owner int64) {
 	n, due, err := s.ext.FleetActions.ClaimPush(octx, s.now())
 	if err != nil {
@@ -1221,7 +1223,7 @@ func (s *Server) fleetPushWaiting(octx context.Context, owner int64) {
 		return
 	}
 	if due {
-		s.goNotify(owner, push.EventAttention, fleetPushNotification(n), nil)
+		s.goNotify(owner, push.EventAttention, fleetPushNotification(n, s.fleetNewestWaiting(octx)), nil)
 	}
 	s.fleetNoticeSync(octx, due, n)
 }
@@ -1316,14 +1318,97 @@ func (s *Server) fleetNoticeWithdraw(octx context.Context) {
 	}
 }
 
-// fleetPushNotification is the batched push for n waiting proposals: muster's
-// own words, no session text, and no actions.
-func fleetPushNotification(n int) RouterNotification {
+// fleetPushNotification is the batched push for n waiting proposals, newest
+// the newest of them (its zero value when it could not be read): muster's own
+// words naming what is proposed and on which session (fleetPushBody) — never
+// a message's or an instruction's text — and no actions. Its tap opens the
+// digest's Proposed group on newest (ui.FleetProposalsURL).
+func fleetPushNotification(n int, newest fleet.Action) RouterNotification {
 	title := "1 proposal waiting"
 	if n != 1 {
 		title = strconv.Itoa(n) + " proposals waiting"
 	}
 	return RouterNotification{Type: attentionNotificationType, ID: fleetPushTag, Title: title,
-		Body: "Your chief proposed what to send your sessions. Nothing is sent until you approve it in the fleet digest.",
-		Tag:  fleetPushTag, Data: map[string]string{"url": ui.ChiefOpenURL}}
+		Body: fleetPushBody(n, newest), Tag: fleetPushTag, Data: map[string]string{"url": ui.FleetProposalsURL(newest.ID)}}
+}
+
+// fleetPushGeneric is the push's body when the newest proposal could not be
+// read.
+const fleetPushGeneric = "Your chief proposed what to send your sessions. Nothing is sent until you approve it in the fleet digest."
+
+// fleetPushAsks is each class as the push asks it, %s the session's name.
+// TestThePushNamesEveryClass holds it to fleet.ClassVerb's classes.
+var fleetPushAsks = map[string]string{
+	fleet.ClassContinue:       "Continue '%s'?",
+	fleet.ClassHandoff:        "Ask '%s' for its handoff?",
+	fleet.ClassStopNote:       "Stop '%s' after this step?",
+	fleet.ClassCustom:         "Send the chief's message to '%s'?",
+	fleet.ClassWrap:           "Wrap '%s'?",
+	fleet.ClassReassign:       "Move a task off '%s'?",
+	fleet.ClassAnswerRule:     "Answer '%s'?",
+	fleet.ClassAnswerComposed: "Answer '%s'?",
+	fleet.ClassAnswerPick:     "Pick an option for '%s'?",
+	fleet.ClassCIResult:       "Tell '%s' its CI finished?",
+	fleet.ClassClose:          "Close '%s'?",
+}
+
+// fleetPushNameRunes caps the session's name in the push.
+const fleetPushNameRunes = 40
+
+// fleetPushBody is the push's body: what the newest proposal is, on which
+// session ("Wrap 'muster-asks-ux'?"), "+N more." for the others, and that
+// nothing is sent until approved.
+func fleetPushBody(n int, newest fleet.Action) string {
+	if newest.ID <= 0 {
+		return fleetPushGeneric
+	}
+	ask, ok := fleetPushAsks[newest.Class]
+	if !ok {
+		ask = "A proposal for '%s'."
+	}
+	body := strings.Replace(ask, "%s", fleetPushName(fleetLabel(newest)), 1)
+	if n > 1 {
+		return body + " +" + strconv.Itoa(n-1) + " more. Nothing is sent until you approve them."
+	}
+	return body + " Nothing is sent until you approve it."
+}
+
+// fleetPushName is a session's name as the push quotes it: the digest card's
+// label on one line, with no control character and no straight quote (so the
+// quoting stays unambiguous), cut to fleetPushNameRunes with "…".
+func fleetPushName(label string) string {
+	label = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\'':
+			return '’'
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			return ' '
+		}
+		return r
+	}, label)
+	label = strings.Join(strings.Fields(label), " ")
+	if label == "" {
+		return "a session"
+	}
+	if r := []rune(label); len(r) > fleetPushNameRunes {
+		return strings.TrimSpace(string(r[:fleetPushNameRunes-1])) + "…"
+	}
+	return label
+}
+
+// fleetNewestWaiting is octx's owner's newest proposal still waiting for its
+// tap; the zero Action when there is none or it could not be read.
+func (s *Server) fleetNewestWaiting(octx context.Context) fleet.Action {
+	list, err := s.ext.FleetActions.OpenActions(octx)
+	if err != nil {
+		s.logger.Printf("fleet: the batched push's newest proposal: %v", err)
+		return fleet.Action{}
+	}
+	// Oldest first: the newest waiting is the last proposed.
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].State == fleet.StateProposed {
+			return list[i]
+		}
+	}
+	return fleet.Action{}
 }

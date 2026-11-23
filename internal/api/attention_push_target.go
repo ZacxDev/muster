@@ -172,6 +172,11 @@ func (s *Server) attentionSessionPathIn(ctx context.Context, owner int64, it att
 		}
 		return c.ref.ViewPath()
 	case attentionKindNotice:
+		// The fleet's "N proposals waiting": the proposals are in the
+		// digest, not in a session — its Proposed group, on the newest.
+		if it.fleetNotice {
+			return ui.FleetProposalsURL(0)
+		}
 		if it.AskID > 0 {
 			return s.nudgeSessionPathIn(ctx, owner, it.AskID, hosts)
 		}

@@ -22,7 +22,9 @@ import (
 // THE FLEET DIGEST CARD's routes (internal/ui fleet_digest.go; docs/chief.md
 // "Fleet digest"):
 //
-//	GET  /ui/chief/fleet            the card (?look=1: the panel was opened on it)
+//	GET  /ui/chief/fleet            the card (?look=1: the panel was opened on it;
+//	                                ?fleet=proposed[&proposal=<id>]: a fleet link's
+//	                                arrival, fleetFocus)
 //	GET  /ui/chief/fleet/session    one session's drill-in (?id=<fleet id>)
 //	POST /ui/chief/fleet/chat       the Fleet side chat, with a draft (about=)
 //
@@ -127,6 +129,12 @@ func (s *Server) handleFleetDigest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v := s.fleetDigestViewFor(ctx, baseline)
+	// A fleet link's arrival (ui.FleetProposalsURL, passed on by the panel
+	// script): the Proposed group open on the proposal it named.
+	if q := r.URL.Query(); q.Get(ui.FleetFocusParam) == ui.FleetGroupProposed {
+		id, _ := strconv.ParseInt(q.Get(ui.FleetProposalParam), 10, 64)
+		s.fleetFocus(ctx, &v, max(id, 0))
+	}
 	if err := ui.RenderFleetDigest(w, v); err != nil {
 		s.logger.Printf("fleet digest: render: %v", err)
 	}

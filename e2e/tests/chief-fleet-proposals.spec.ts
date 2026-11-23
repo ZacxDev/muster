@@ -23,7 +23,13 @@ import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 //   - Approve all, after a confirm listing every card, sends each that is
 //     still on its stop and skips one whose stop ended after it was drawn:
 //     "2 sent, 1 skipped (moved on).";
-//   - opening the panel on a card with a Proposed group shifts nothing.
+//   - opening the panel on a card with a Proposed group shifts nothing;
+//   - the batched push's tap (ui.FleetProposalsURL, the url
+//     TestTheFleetPushNamesTheNewestProposalAndOpensIt pins on the push) lands
+//     with the panel open on the Proposed group — on a phone its sheet —
+//     scrolled to the newest proposal, highlighted, its Approve in view, each
+//     card saying when it expires, and nothing shifted; a tap whose proposal
+//     no longer waits (decided, expired) says so.
 //
 // ⚠ WHAT IS PLAYED: tmux (the e2emirror host's windows file), GitHub (a fake
 // App: one merged pull request), the model (a fake runtime that must hear
@@ -62,6 +68,14 @@ const DESK = windowsOf('d', 30);
 // stopped: muster proposes ci_result (its stop is opened in that viewport's
 // test, so the other's card is not in its bulk approve).
 const CIW = { p: { sid: `${prefix}pci`, win: '@50' }, d: { sid: `${prefix}dci`, win: '@51' } };
+// Three windows per viewport for the push's tap: proposed oldest to newest;
+// the middle one's stop ends before a tap (it expires).
+const ARRIVALS = ['old', 'gone', 'fresh'] as const;
+type Arrival = (typeof ARRIVALS)[number];
+const arrivalsOf = (vp: string, base: number) =>
+  Object.fromEntries(ARRIVALS.map((r, i) => [r, { sid: `${prefix}${vp}a${i}`, win: `@${base + i}` }])) as Record<Arrival, { sid: string; win: string }>;
+const ARRIVE = { p: arrivalsOf('p', 60), d: arrivalsOf('d', 70) };
+const ARRIVE_CLASS: Record<Arrival, string> = { old: 'continue', gone: 'handoff', fresh: 'stop_note' };
 
 const APP_ID = '515151';
 const APP_ACCOUNT = { login: 'e2e-quill', id: 5151, type: 'User' };
@@ -143,7 +157,7 @@ test.beforeAll(async ({ browser }) => {
   const longAgo = Date.now() - 60 * 60 * 1000;
   const lines: string[] = [];
   let i = 0;
-  for (const w of [...Object.values(PHONE), ...Object.values(DESK), CIW.p, CIW.d]) {
+  for (const w of [...Object.values(PHONE), ...Object.values(DESK), CIW.p, CIW.d, ...Object.values(ARRIVE.p), ...Object.values(ARRIVE.d)]) {
     i++;
     const file = path.join(rig.dir, `${w.sid}.jsonl`);
     fs.writeFileSync(file, cc.prompt('Fix ledger bug ' + i + '.') + cc.reply('Ledger fix ' + i + ' is merged.'));
@@ -161,7 +175,7 @@ test.beforeAll(async ({ browser }) => {
   await ctx.close();
   // Every window's stop, as the pass would open it; the pass then observes
   // each (its idle streak), which a proposal is filed on.
-  const all = [...Object.values(PHONE), ...Object.values(DESK)];
+  const all = [...Object.values(PHONE), ...Object.values(DESK), ...Object.values(ARRIVE.p), ...Object.values(ARRIVE.d)];
   for (const w of all) fix('episode', '1', w.sid, 'stalled', rig.host, w.win);
   // The question each answer card answers: an open plain-text ask in the
   // answer window's stop.
@@ -382,6 +396,76 @@ for (const vp of [
       const r = await readCls(page);
       expect(r.unsupported, 'the browser reports layout-shift entries').toBeUndefined();
       expect(r.total, JSON.stringify(r.shifts)).toBeLessThan(0.01);
+      await page.evaluate(() => { try { localStorage.removeItem('muster.chief.v1.open.chief-panel'); } catch (e) {} });
+    });
+
+    test("the push's tap opens the Proposed group on the newest proposal, and says when one no longer waits", async ({ page }) => {
+      test.setTimeout(120_000);
+      const tap = async (loc: ReturnType<Page['locator']>) => (vp.phone ? loc.tap() : loc.click());
+      await rig.login(page);
+      const set = ARRIVE[vp.key as 'p' | 'd'];
+      const ids = {} as Record<Arrival, number>;
+      for (const r of ARRIVALS) {
+        const out = await chiefCall('session_instruct', { subject: `mirror:${set[r].sid}`, class: ARRIVE_CLASS[r], reason: `the ${r} arrival` });
+        expect(out.state, `session_instruct ${r}: ${JSON.stringify(out)}`).toBe('proposed');
+        ids[r] = out.action_id as number;
+      }
+      const card = page.locator('#fleet-digest [data-fleet-digest]');
+      const group = () => (vp.phone ? page.locator('[data-fleet-sheet="proposed"]') : card.locator('details[data-fleet-group="proposed"]'));
+      const of = (r: Arrival) => group().locator(`[data-fleet-proposal-subject="mirror:${set[r].sid}"]`);
+      // The push's url for proposal id (ui.FleetProposalsURL; the Go tests pin
+      // the push and the Attention notice to it).
+      const arrive = async (id: number) => {
+        await page.goto(rig.origin + `/tasks?chief=open&fleet=proposed&proposal=${id}`);
+        await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1', { timeout: 20_000 });
+        await expect(card).toHaveAttribute('data-fleet-state', 'ready');
+        await expect(group(), 'the Proposed group is open on arrival').toBeVisible();
+      };
+
+      await page.addInitScript(clsInit);
+      await arrive(ids.fresh);
+      // The parameters left the address bar: a reload does not reopen it.
+      await expect(page).toHaveURL(rig.origin + '/tasks');
+      if (vp.phone) {
+        await expect(card.locator('[data-fleet-chip="proposed"]')).toHaveAttribute('aria-expanded', 'true');
+      } else {
+        await expect(group()).toHaveAttribute('open', '');
+      }
+      // The newest, highlighted, scrolled into view, its Approve right there.
+      const hl = group().locator('[data-fleet-highlight]');
+      await expect(hl).toHaveCount(1);
+      await expect(hl).toHaveAttribute('data-fleet-proposal-subject', `mirror:${set.fresh.sid}`);
+      await expect(hl.locator('[data-fleet-verb]')).toHaveText('Stop and wait');
+      await expect(of('old')).toHaveCount(1);
+      await expect(hl.locator('[data-fleet-approve]')).toBeInViewport();
+      // Each card says when it expires, in the reader's own clock (with its
+      // date when that is not today: 12 h on can be tomorrow) — never the
+      // server's UTC fallback.
+      for (const r of ARRIVALS) {
+        await expect(of(r).locator('[data-fleet-expires]')).toHaveText(/^expires in 1[01]h \((?:[A-Z][a-z]{2} \d{1,2}, )?\d{1,2}:\d\d(\s?[AP]M)?\)$/);
+      }
+      await settle(page);
+      const shift = await readCls(page);
+      expect(shift.unsupported, 'the browser reports layout-shift entries').toBeUndefined();
+      console.log(`[cls ${vp.name}] arriving from the push: ${shift.total}`);
+      expect(shift.total, 'arriving from the push: ' + JSON.stringify(shift.shifts)).toBeLessThan(0.01);
+
+      // Approve is reachable and works; the oldest is rejected.
+      await tap(hl.locator('[data-fleet-approve]'));
+      await expect(card.locator('[data-fleet-note]')).toHaveText('Queued: it is pasted once the session is idle.');
+      await tap(of('old').locator('[data-fleet-reject]'));
+      await expect(card.locator('[data-fleet-note]')).toHaveText('Rejected.');
+
+      // A tap whose proposal expired (its stop ended): the line says so, and
+      // nothing waits.
+      fix('endepisode', '1', set.gone.sid);
+      await arrive(ids.gone);
+      await expect(group().locator('[data-fleet-gone]')).toHaveText(/^That proposal expired at \d{1,2}:\d\d(\s?[AP]M)?\.$/);
+      await expect(group().locator('[data-fleet-proposal]')).toHaveCount(0);
+      await expect(group()).toContainText('None.');
+      // The one already approved: decided, and said so.
+      await arrive(ids.fresh);
+      await expect(group().locator('[data-fleet-gone]')).toHaveText(/^That proposal was already approved at \d{1,2}:\d\d(\s?[AP]M)?\.$/);
       await page.evaluate(() => { try { localStorage.removeItem('muster.chief.v1.open.chief-panel'); } catch (e) {} });
     });
   });

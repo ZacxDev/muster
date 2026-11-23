@@ -265,7 +265,8 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 		}
 		p := ui.FleetProposalView{ID: a.ID, Subject: a.Evidence.SubjectID, Session: firstNonBlank(a.Evidence.Label, firstNonBlank(a.Evidence.SubjectID, a.SubjectKey)),
 			Verb: fleet.ClassVerb[a.Class], Reason: a.Reason, Text: fleet.Body(owner, now, a.Text), EditText: a.Text,
-			Age: fleetAge(now.Sub(a.CreatedAt)), Editable: fleetEditable(a)}
+			Age: fleetAge(now.Sub(a.CreatedAt)), Editable: fleetEditable(a),
+			ExpiresIn: fleetExpiresIn(fleet.ExpiresAt(a.CreatedAt).Sub(now)), ExpiresAt: fleet.ExpiresAt(a.CreatedAt)}
 		if a.Class == fleet.ClassReassign {
 			p.Text = "1. Route task #" + strconv.FormatInt(a.TaskID, 10) + " to " + a.ToSubject + " (as route_to_session does).\n2. Then send:\n" + p.Text
 		}
@@ -280,12 +281,16 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 	return out
 }
 
+// fleetTTLOutcome is the outcome of a proposal expired by its 12 h
+// (fleet.Expired): fleetGone says it expired at fleet.ExpiresAt by it.
+const fleetTTLOutcome = "12 h passed"
+
 // fleetExpire expires proposal a when its 12 h passed or its stop moved on
 // (the stop ended, a new message, a new pull-request head): true when it is
 // no longer a proposal. A state that cannot be read keeps it.
 func (s *Server) fleetExpire(ctx context.Context, a fleet.Action) bool {
-	if s.now().Sub(a.CreatedAt) >= fleet.ProposalTTL {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: "12 h passed", Finish: true})
+	if fleet.Expired(a.CreatedAt, s.now()) {
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Finish: true})
 		return true
 	}
 	if s.fleetStillOn(ctx, a).movedOn() {
@@ -293,6 +298,91 @@ func (s *Server) fleetExpire(ctx context.Context, a fleet.Action) bool {
 		return true
 	}
 	return false
+}
+
+// fleetExpiresIn is d, the time left before a proposal expires, as its card
+// says it: "in 3h", "in 45m", "in under a minute".
+func fleetExpiresIn(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "in under a minute"
+	case d < time.Hour:
+		return "in " + strconv.Itoa(int(d.Minutes())) + "m"
+	}
+	return "in " + strconv.Itoa(int(d.Hours())) + "h"
+}
+
+// --- a fleet link's arrival (ui.FleetProposalsURL) ------------------------------
+
+// The lines a fleet link's card draws when the proposal it named no longer
+// waits (ui.FleetGroupView.Gone; " at <clock>." follows when it says when).
+const (
+	FleetGoneExpired  = "That proposal expired"
+	FleetGoneApproved = "That proposal was already approved"
+	FleetGoneRejected = "That proposal was already rejected"
+	FleetGoneMovedOn  = "That proposal was not sent: its session moved on"
+	FleetGoneUnknown  = "That proposal is no longer waiting"
+	// FleetNoneWaiting: the link named no proposal (the Attention notice's)
+	// and none waits now.
+	FleetNoneWaiting = "No proposal is waiting now"
+)
+
+// fleetFocus is v as a fleet link asked for it (?fleet=proposed&proposal=id):
+// its Proposed group open (on a phone, its sheet), and the proposal id
+// highlighted — or, when id no longer waits, the line saying so and the newest
+// waiting one highlighted. id 0 highlights the newest. A card with no
+// Proposed group (fleet proposals off, no digest) is left as it is.
+func (s *Server) fleetFocus(ctx context.Context, v *ui.FleetDigestView, id int64) {
+	for i := range v.Groups {
+		gr := &v.Groups[i]
+		if gr.Key != ui.FleetGroupProposed {
+			continue
+		}
+		v.OpenGroup = ui.FleetGroupProposed
+		at := -1
+		for j, p := range gr.Proposals {
+			if id > 0 && p.ID == id {
+				at = j
+			}
+		}
+		if at < 0 && id > 0 {
+			gr.Gone, gr.GoneAt = s.fleetGone(ctx, id)
+		}
+		// The cards are oldest first: the newest is the last.
+		if at < 0 && len(gr.Proposals) > 0 {
+			at = len(gr.Proposals) - 1
+		}
+		if at >= 0 {
+			gr.Proposals[at].Highlight = true
+		} else if gr.Gone == "" {
+			gr.Gone = FleetNoneWaiting
+		}
+		return
+	}
+}
+
+// fleetGone is why proposal id, not drawn as waiting, no longer waits, and
+// when (zero when the row cannot be read as the principal's).
+func (s *Server) fleetGone(ctx context.Context, id int64) (string, time.Time) {
+	a, err := s.ext.FleetActions.GetAction(ctx, id)
+	if err != nil || a.Owner != requestOwner(ctx) {
+		return FleetGoneUnknown, time.Time{}
+	}
+	switch {
+	case a.State == fleet.StateExpired && a.Outcome == fleetTTLOutcome:
+		// Its 12 h passed: then, not when a draw next noticed and marked it.
+		return FleetGoneExpired, fleet.ExpiresAt(a.CreatedAt)
+	case a.State == fleet.StateExpired:
+		// Its session moved on: noticed (and marked) by a draw or the pass.
+		return FleetGoneExpired, a.FinishedAt
+	case a.State == fleet.StateRejected:
+		return FleetGoneRejected, a.DecidedAt
+	case a.State == fleet.StateApproved || a.State == fleet.StateQueued || a.State == fleet.StateSent || a.State == fleet.StateFailed:
+		return FleetGoneApproved, a.DecidedAt
+	case a.State == fleet.Suppressed(fleet.GuardMovedOn):
+		return FleetGoneMovedOn, a.FinishedAt
+	}
+	return FleetGoneUnknown, time.Time{}
 }
 
 // fleetLabel is a proposal's session as a short line (for logs and notes).

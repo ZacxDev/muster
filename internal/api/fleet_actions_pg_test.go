@@ -255,8 +255,8 @@ func TestAPhoneNotificationActionCannotApprove(t *testing.T) {
 	if a := f.action(t, id); a.State != fleet.StateProposed || len(f.rows(t)) != 0 {
 		t.Fatalf("a phone's tap moved it: %+v rows %v", a, f.rows(t))
 	}
-	n := fleetPushNotification(3)
-	if n.AskActions || len(n.Data) != 1 || n.Data["url"] != "/?chief=open" || n.Title != "3 proposals waiting" {
+	n := fleetPushNotification(3, f.action(t, id))
+	if n.AskActions || len(n.Data) != 1 || n.Data["url"] != "/tasks?chief=open&fleet=proposed&proposal="+strconv.FormatInt(id, 10) || n.Title != "3 proposals waiting" {
 		t.Fatalf("the batched push: %+v", n)
 	}
 }
