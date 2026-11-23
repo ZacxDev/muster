@@ -466,6 +466,12 @@ func TestEveryAgentsListCallerIsClassified(t *testing.T) {
 //     (an agent's, a hook/API/service token's, an officer's, a background loop,
 //     System): a team agent is visible to it only when the principal IS the team.
 var agentReadCallers = map[string]string{
+	// An officer's Needs-you "Show session" (officer_origin.go): a team
+	// officer's instance is the team's agent, linked for a member who reads
+	// the officer's page; the link is drawn only when the agent is the item
+	// owner's officer's own instance, and nothing acts on it.
+	"Get Server.officerOriginHref":           "visible: a team officer's instance is linked for a member reading its page (owner and instance name checked)",
+	"GetByName Server.officerOriginHref":     "visible: a team officer's instance is linked for a member reading its page (owner and instance name checked)",
 	"AgentsByNoteIDs Server.dismissTask":     "visible: a member's dismiss leaves a team's linked agent running (memberOnTeamAgent)",
 	"AgentsByNoteIDs Server.taskCardView":    "visible: the task card names its agent (read)",
 	"AgentsByNoteIDs Server.taskCardViews":   "visible: the task cards name their agents (read)",

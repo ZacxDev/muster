@@ -343,10 +343,15 @@ var agentHrefCallLedger = map[string]int{
 	"AgentListHref ← internal/ui/agents.go:AgentCardView.PageHref":  1,
 	"AgentListHref ← internal/ui/notes.go:taskActionTrailing":       1,
 	"AgentSessionHref ← internal/ui/agents_detail.go:sessionDrawer": 1,
-	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChip":       1,
-	"AgentSessionHref ← internal/ui/notifications.go:activeRow":     1,
-	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
-	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,
+	// An officer's Needs-you "Show session" (officer_origin.go): the session
+	// at the moment (AgentMomentHref, which is AgentSessionHref plus ?at=), or
+	// an older item's instance's latest session.
+	"AgentSessionHref ← internal/ui/agent_href.go:AgentMomentHref":               1,
+	"AgentSessionHref ← internal/api/officer_origin.go:Server.officerOriginHref": 1,
+	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChip":                    1,
+	"AgentSessionHref ← internal/ui/notifications.go:activeRow":                  1,
+	"AgentSessionHref ← internal/ui/notifications.go:notifRow":                   1,
+	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":               1,
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,
