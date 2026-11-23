@@ -1553,12 +1553,26 @@ within a day, or its queue row was cancelled): then the officer gets the
 an approval (you withdraw an approval its plugin has not claimed yet) is a line
 of its own, after the approval's — for a reply draft a session wrote, too.
 
+🔴 **So is a plugin's refusal of such a draft** (operator decision 2026-11-23;
+migration 0183). When the plugin's pre-approval check refuses the officer's
+draft, the refusal's wake is filed first, and when a new one was filed the
+session is told the plugin refused it, with the **plugin's** reason fenced as
+the plugin's words (marker `plugin-reason`, never called yours, and needing no
+sign-in since it carries nothing of yours); the officer gets no
+`draft.refused` item and the item is finished `no_action`. With no wake filed,
+or a line that settles **Not delivered**, the refusal goes back to the officer
+once, as the `draft.refused` item it would have had (after a line that was not
+delivered, that item names no session: the officer owns the redraft). A send that fails after
+your approval is unchanged: the session is told it could not be sent, and the
+officer gets its `draft.refused` item, which names the same session.
+
 🔴 **Only muster's words and yours.** One function builds every one of these
 messages, and it reads only ids, a decision word, a count, a page component's
 name and your own words (your answer, your rejection reason, your own page
 response). A page response from anyone else is a count and never its text,
 which the database also refuses to store with it; a draft's body, its
-plugin's detail, the sender's message, a page's title and the session's own
+plugin's detail (except a plugin's refusal of an officer draft for an item the
+session enqueued, fenced as the plugin's words, above), the sender's message, a page's title and the session's own
 question are never typed. Your words travel inside the fence, each line
 sanitised, every kind of line break (`\r\n` from a form posted without
 script, a lone `\r`) one break. A decision made from a mirrored session says

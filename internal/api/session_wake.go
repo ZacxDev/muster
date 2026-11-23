@@ -111,6 +111,9 @@ const (
 	wakeAnswerMarker   = attentionDeliveryMarker
 	wakeReasonMarker   = "owner-reason"
 	wakeResponseMarker = "page-response"
+	// wakePluginReasonMarker fences a plugin's reason (a plugin_refused
+	// wake): an outside party's words, not the owner's.
+	wakePluginReasonMarker = "plugin-reason"
 )
 
 // wakesOn reports whether this server delivers wakes: a wakes store, the send
@@ -352,6 +355,24 @@ func renderWake(w sessionwake.Wake) string {
 		// (session_wake_requests.go): the draft and the item by id, never
 		// the draft's body or the officer's words.
 		ref := officerDraftRef(w)
+		if w.Decision == sessionwake.DecisionPluginRefused {
+			// 🔴 THE PLUGIN'S REFUSAL OF WORK THIS SESSION ASKED FOR IS ITS
+			// ALONE (wakeOfficerDraftRefused): the officer files no redraft.
+			// The reason is the plugin's words, fenced as untrusted, never
+			// called the owner's.
+			pre := "the plugin refused " + ref + ", at its check, before the owner saw it. It will not be sent, and the officer will not redraft it: " +
+				"officer item #" + strconv.FormatInt(w.OfficerItemID, 10) + " is closed, and what happens next is this session's call."
+			if !w.RetryAt.IsZero() {
+				// muster's own parse of the plugin's retry_at (RFC 3339, UTC,
+				// to the second): a time, never the plugin's words.
+				pre += " The plugin says it can be tried again after " + w.RetryAt.UTC().Format(time.RFC3339) + "."
+			}
+			if strings.TrimSpace(w.OperatorText) == "" {
+				return "muster: " + pre
+			}
+			return fenced(pre+" The block below is the plugin's reason (the plugin's words, not the owner's), relayed by muster.",
+				wakePluginReasonMarker, "plugin reason:", w.OperatorText, "")
+		}
 		verb := "approved"
 		if w.Decision != sessionwake.DecisionApproved {
 			verb = "rejected"
@@ -762,7 +783,13 @@ func (s *Server) deliverWake(parent context.Context, owner, id int64) string {
 // (an answer, a rejection's reason, their own page response): THE predicate
 // for which lines need the owner's fresh sign-in. A dismissal, an approval
 // without a reason, an outcome and a count are muster's sentence alone.
-func wakeCarriesOwnerText(w sessionwake.Wake) bool { return strings.TrimSpace(w.OperatorText) != "" }
+//
+// A plugin_refused wake's text is the PLUGIN's reason, not the owner's: it
+// asks no sign-in (nothing of the owner's to authorise) and its row carries
+// the server's time, as muster's own sentence does.
+func wakeCarriesOwnerText(w sessionwake.Wake) bool {
+	return strings.TrimSpace(w.OperatorText) != "" && w.Decision != sessionwake.DecisionPluginRefused
+}
 
 // wakeNeedsSignIn reports whether w may not be queued now for want of a fresh
 // sign-in: it carries the owner's words and the sign-in that decided it (or
@@ -1126,7 +1153,7 @@ func wakeDeliveryText(w sessionwake.Wake, who string) (string, wakeAction) {
 			d = "Not confirmed: " + d
 		}
 		if wakeWentToOfficer(w) {
-			return d + ". The rejection went back to the officer instead.", wakeAction{}
+			return d + ". The " + wakeEndWord(w) + " went back to the officer instead.", wakeAction{}
 		}
 		return d + ".", wakeAction{Label: "Retry delivery", StepUp: wakeCarriesOwnerText(w)}
 	}

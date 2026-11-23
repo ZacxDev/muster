@@ -1,6 +1,11 @@
 package builtin
 
-import "github.com/jackc/pgx/v5/pgxpool"
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
 
 // FaultDoubleClaim turns on the conformance suite's fault: a claim of an
 // item another instance holds under a live lease succeeds. Test-only.
@@ -11,3 +16,8 @@ func (b *Backend) FaultSpendRead() { b.faultSpendRead = true }
 
 // Pool is the store's pool. Test-only.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// InheritRequesterTx is inheritRequesterTx. Test-only.
+func InheritRequesterTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, from, to int64) error {
+	return inheritRequesterTx(ctx, tx, owner, officer, from, to)
+}

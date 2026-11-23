@@ -969,8 +969,12 @@ refusal: a result `"ok": false` or a check `"sendable": false`.
   payload as `retry_at`. On the officer's page, that refusal's **Re-file**
   then defaults to it ("When the plugin says it can go"), rounded **up** to the
   next minute, while it is still ahead and within the 30 days a re-file may
-  reach; otherwise Re-file offers its usual times. A reply draft (not an
-  officer's) records nothing more.
+  reach; otherwise Re-file offers its usual times. When a check refusal of an
+  officer's draft goes to the [session that enqueued its item](attention.md#officer-items-a-session-enqueues)
+  instead, `retry_at` is kept with that refusal: the session's line says
+  *"The plugin says it can be tried again after <time>."*, and should the line
+  not be delivered, the `draft.refused` item the officer then gets carries it
+  exactly as above. A reply draft (not an officer's) records nothing more.
 
 ### When the plugin refuses a reply
 
@@ -1463,8 +1467,15 @@ After the result, for an outbound draft filed with an `item_id`:
   that session (its host no longer mirrors here, or the wake could not be
   written), the rejection goes back to the officer as above; when the filed
   line settles *Not delivered*, the officer gets that `draft.refused` item then
-  — it is never dropped. A plugin's refusal or a failed send of such a draft
-  still goes back to the officer.
+  — it is never dropped. A plugin's **check refusal** of such a draft is that
+  session's alone in the same way (migration 0183): the session is told the
+  plugin refused it, with the plugin's reason fenced as the plugin's words and
+  its `retry_at` when it gave one; the officer gets no `draft.refused` item, and
+  the item is finished `no_action` saying the refusal went to the session.
+  With no line filed, or a line that settles *Not delivered*, the refusal goes
+  back to the officer as a `draft.refused` item (its reason and `retry_at` in
+  it). A **failed send** of such a draft still goes back to the officer, its
+  `draft.refused` item naming the same session.
 - `ok: false` with `nothing_sent: true` and `transient: true`, while the
   draft has time left: **none of that yet** — the draft is
   [retried on its own](#retries-approve-once), and the item keeps waiting

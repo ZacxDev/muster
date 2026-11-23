@@ -1569,6 +1569,29 @@ instance gets the tool error "this HQ has no claim-next; call officer_items
 and officer_claim{item_id}" — muster does not pick an item itself. With an
 `item_id` the claim is exactly as before.
 
+**A builtin officer's item list and claim carry its drafts' current
+state.** For a [builtin](officers-builtin.md) officer whose type grants
+`outbound_drafts`, the `officer_items` answer and a successful `officer_claim`
+answer (claim-next or by id) both carry `draft_state`: muster's record of that
+officer's outbound drafts, read with that answer (`read_at`). An instance can
+resume one long conversation across many wakes, and it may decide what to do
+from the list before it claims anything, so what it remembers about an earlier
+draft can be out of date: `about` says this record overrides that memory. The
+two answers are built by one reader and one shaping, so for the same moment
+they carry the same `draft_state`.
+
+| field | what |
+|---|---|
+| `live` | every draft that can still go out: `pending`, or `approved` (`claimed: true` while its plugin posts it; a retry's queued attempt carries `retry_of` and `attempt`), newest first |
+| `ended` | the recent refusals: drafts `rejected` (by the owner, by its plugin's check — `refused_by_check` — or withdrawn by muster) or `failed` (its plugin's send failed) in the last 24 hours (`ended_window_hours`), at most 20 (`ended_max`), newest first, with `ended_at`. A sent, expired, superseded or unconfirmed draft is not listed |
+| each draft | `draft_id`, `item_id`, `venue`, `target`, `status`, `check_state`, `decided_at`, `created_at` and `body_sha256` (the SHA-256 of its exact text: never the text itself, to keep the answer small; `officer_my_state` shows a pending draft's text). An ended one also has `detail` (its plugin's words) and `owner_reason`, each fenced as outside words |
+| `live_truncated`, `ended_truncated` | more drafts matched than are listed |
+
+Only that officer's drafts of that owner are listed (the query's officer and
+owner filters, and row-level security as the owner). If the drafts or the
+type's grant cannot be read, or the reads take longer than 3 seconds,
+`draft_state` is `{read_at, error}` and the list or claim still succeeds.
+
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
 conflict: HQ refuses a claim on any live lease, the caller's own included, and
@@ -1624,7 +1647,7 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names, and that repository's name may also stand alone (not inside a longer name such as `<repo>-prod`) even when it is a deny word ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
 | `context` | a `reply` only, optional: `{"text", "author"?, "written_at"?, "url"?}` — the post it answers as the officer read it upstream (its whole text, at most 16 KiB; who wrote it; when, RFC 3339; its absolute http(s) URL), shown to the owner above the draft as untrusted outside words. muster fetches nothing: a reply without it says the post it answers was not provided ([plugins.md](plugins.md#what-a-reply-answers)) |
-| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
+| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — except for an item a mirrored session enqueued, whose owner rejection or plugin check refusal goes to that session alone (nothing is queued, and the item is finished `no_action` saying so) unless that line cannot be filed or is never delivered, when the `draft.refused` item is queued after all ([attention.md](attention.md#officer-items-a-session-enqueues)) — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
 
 It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
 with `item_id`, an `item` note saying the item now waits on the draft). Nothing
