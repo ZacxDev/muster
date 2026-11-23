@@ -105,18 +105,21 @@ func TestAStillClaimedBlockedItemReadsNoDonePage(t *testing.T) {
 // read stops at the bound and the log says so, naming the list and the
 // bound, and the item as not found BEFORE the bound — never "HQ listed no …
 // item in any status read". The block stays unsettled. CONTROL: with a short
-// done history the same item IS logged as listed in no status.
+// done history the same item IS logged as listed in no status — gone — and
+// its block is settled (nothing is left to re-run: the queue drain's itemGone
+// rule).
 func TestABlockedItemPastThePageBoundIsNotLoggedAsGone(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		done    int
-		want    []string
-		notWant string
+		name      string
+		done      int
+		want      []string
+		notWant   string
+		unsettled int
 	}{
 		{"past the bound", officers.MaxStatusPages*officers.StatusPageLimit + 10,
 			[]string{"done list read stopped at the page bound (400 pages of up to 25)", "not found before the page bound of the done list(s)"},
-			"in any status read"},
-		{"control: a short history", 30, []string{"in any status read"}, "page bound"},
+			"in any status read", 1},
+		{"control: a short history", 30, []string{"in any status read: gone, settled"}, "page bound", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRerunRig(t)
@@ -134,8 +137,8 @@ func TestABlockedItemPastThePageBoundIsNotLoggedAsGone(t *testing.T) {
 			if strings.Contains(logs, tc.notWant) {
 				t.Fatalf("log has %q; log:\n%s", tc.notWant, logs)
 			}
-			if r.blocks(rrGitHub) != 1 {
-				t.Fatalf("%d blocks unsettled, want 1 (the item not found stays unsettled)", r.blocks(rrGitHub))
+			if n := r.blocks(rrGitHub); n != tc.unsettled {
+				t.Fatalf("%d blocks unsettled, want %d (not found before the bound stays unsettled; gone is settled)", n, tc.unsettled)
 			}
 		})
 	}

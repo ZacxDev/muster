@@ -73,6 +73,44 @@ func blockContract(t *testing.T, ctx context.Context, st officers.ConnectorBlock
 			t.Fatalf("a new store on its own pool sees %v; want the same two", got)
 		}
 	}
+
+	// UnsettledGrants: every grant with an unsettled block, ascending; a
+	// grant whose blocks are all settled is not named; the limit holds.
+	grants := func(limit int) []int64 {
+		t.Helper()
+		g, err := st.UnsettledGrants(ctx, blkOfficer, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	rec(st, blkGrant+7, "5120", t0)
+	if got := grants(10); len(got) != 3 || got[0] != blkGrant || got[1] != blkGrant+1 || got[2] != blkGrant+7 {
+		t.Fatalf("unsettled grants %v; want [%d %d %d]", got, blkGrant, blkGrant+1, blkGrant+7)
+	}
+	if got := grants(1); len(got) != 1 || got[0] != blkGrant {
+		t.Fatalf("limit 1: %v; want [%d]", got, blkGrant)
+	}
+	// SettleBlocks with a bound settles only those recorded before it (3702
+	// at t0; 4156 at t0+5h stays), and says how many.
+	n, err := st.SettleBlocks(ctx, blkOfficer, blkGrant, t0.Add(time.Hour), t0.Add(10*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("SettleBlocks before t0+1h = %d, %v; want 1", n, err)
+	}
+	if got := items(st, blkGrant, time.Time{}, 10); len(got) != 1 || got[0] != "4156" {
+		t.Fatalf("after the bounded settle: %v; want [4156]", got)
+	}
+	// With no bound it settles every unsettled one of THAT grant only.
+	if n, err := st.SettleBlocks(ctx, blkOfficer, blkGrant+1, time.Time{}, t0.Add(10*time.Hour)); err != nil || n != 1 {
+		t.Fatalf("SettleBlocks of grant+1 = %d, %v; want 1", n, err)
+	}
+	if got := grants(10); len(got) != 2 || got[0] != blkGrant || got[1] != blkGrant+7 {
+		t.Fatalf("unsettled grants after settling grant+1: %v; want [%d %d]", got, blkGrant, blkGrant+7)
+	}
+	// A repeat settles nothing more.
+	if n, err := st.SettleBlocks(ctx, blkOfficer, blkGrant+1, time.Time{}, t0.Add(11*time.Hour)); err != nil || n != 0 {
+		t.Fatalf("repeat SettleBlocks = %d, %v; want 0", n, err)
+	}
 }
 
 func TestTheMemoryBlockStoreKeepsTheContract(t *testing.T) {

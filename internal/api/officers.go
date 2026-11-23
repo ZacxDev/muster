@@ -146,7 +146,7 @@ type officerRuntime struct {
 	// instance held while a pending grant refused it (connectorBlocks;
 	// officer_connector_rerun.go); memBlocks the in-memory one when none is
 	// configured, made once. blockWork counts the refusals' records and the
-	// approvals' re-runs in flight; blockNotes is, per "agent grant", the
+	// decisions' settling in flight; blockNotes is, per "agent grant", the
 	// last refusal that read HQ (the debounce), guarded by blockNotesMu.
 	blocks        officers.ConnectorBlockStore
 	memBlocksOnce sync.Once
@@ -154,6 +154,15 @@ type officerRuntime struct {
 	blockWork     sync.WaitGroup
 	blockNotesMu  sync.Mutex
 	blockNotes    map[string]time.Time
+	// grantLocks serialises the settling of one grant's blocks, per
+	// "officer grant" (*sync.Mutex; settleGrantBlocks): an approval, the
+	// operator's re-run route and the block sweep never read a block
+	// unsettled while another of them is re-running it.
+	grantLocks sync.Map
+	// sweepBackoff is, per "officer grant", until when the block sweep
+	// leaves an approved grant alone after a read that stopped at the page
+	// bound (time.Time; noteBounded).
+	sweepBackoff sync.Map
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.

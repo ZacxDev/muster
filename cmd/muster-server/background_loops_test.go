@@ -41,6 +41,7 @@ var backgroundLoops = map[string]string{
 	"a.kickoff.Run":                  rowOwners,
 	"a.status.Run":                   rowOwners,
 	"a.officers.Run":                 configOwner,
+	"a.srv.RunConnectorBlockSweep":   configOwner, // each roster officer's owner (officerPrincipal), as the wake loop
 	"a.srv.RunOfficerAttentionSweep": rowOwners,
 	"a.srv.RunOfficerScheduler":      rowOwners,
 	"a.srv.RunAskSweep":              rowOwners,

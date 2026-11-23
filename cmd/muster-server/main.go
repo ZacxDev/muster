@@ -1495,6 +1495,13 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// is idempotent (docs/officers.md).
 	if a.officers != nil {
 		a.loop(ctx, "a.officers.Run", func(ctx context.Context) { a.officers.Run(ctx) })
+		// The connector-block sweep: a pass now (boot) and every
+		// api.ConnectorBlockSweepInterval, settling the blocks on grants
+		// already decided. Unguarded at replicas > 1: one grant's settling is
+		// serialised in-process, and HQ answers a repeated re-run with the
+		// item that carries the work, so two pods cost a request, never an
+		// item.
+		a.loop(ctx, "a.srv.RunConnectorBlockSweep", func(ctx context.Context) { a.srv.RunConnectorBlockSweep(ctx, api.ConnectorBlockSweepInterval) })
 	}
 	// The built-in officer store's Attention sweep (held draft.refused items
 	// delivered, asks back onto items, escalation notices out). Unguarded at

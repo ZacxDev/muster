@@ -35,7 +35,8 @@ import (
 // RerunMaxPerApproval per approval (newest first). A block re-run or skipped
 // once is settled and never read again; HQ answering a repeat with the
 // existing re-run backs that. A block HQ could not answer (no route yet, an
-// outage) stays unsettled, so the grant's next approval tries it again.
+// outage) stays unsettled, so muster's block sweep tries it again. A denied
+// grant's blocks are all settled, none re-run.
 //
 // Kept in muster's database (PGConnectorBlockStore, migration 0148) when it has
 // one, so an approval days later, after a restart or on the other replica,
@@ -53,7 +54,8 @@ const RerunWindow = 7 * 24 * time.Hour
 // for days can collect many blocks (an instance that claims item after item
 // and is refused on each), and a burst of re-runs would wake the whole pool
 // at once against the officer's budget. Ten covers the largest batch measured
-// (five items on one grant) twice over; the rest are logged, never sent.
+// (five items on one grant) twice over; the rest are logged and left
+// unsettled, and the block sweep sends up to ten more on each later pass.
 const RerunMaxPerApproval = 10
 
 // GrantRerunKey is HQ's idempotency key for re-runs caused by approving grant
@@ -79,8 +81,16 @@ type ConnectorBlockStore interface {
 	// after since, newest first, at most limit.
 	BlocksForGrant(ctx context.Context, officer string, grant int64, since time.Time, limit int) ([]ConnectorBlock, error)
 	// SettleBlock marks (officer, grant, item) settled at at — re-run, or
-	// skipped for good — so it is never read again.
+	// skipped for good — so it is never read again. A block already settled
+	// keeps its first time.
 	SettleBlock(ctx context.Context, officer string, grant int64, item ItemID, at time.Time) error
+	// SettleBlocks settles, at at, every unsettled block of (officer, grant)
+	// recorded before before — every one when before is zero — and says how
+	// many: a denied grant's blocks, or an approved grant's past RerunWindow.
+	SettleBlocks(ctx context.Context, officer string, grant int64, before, at time.Time) (int, error)
+	// UnsettledGrants is the grants officer has an unsettled block on,
+	// ascending, at most limit: what the block sweep reads.
+	UnsettledGrants(ctx context.Context, officer string, limit int) ([]int64, error)
 }
 
 func blockKey(officer string, grant int64, item ItemID) string {
@@ -148,6 +158,39 @@ func (m *MemConnectorBlockStore) SettleBlock(_ context.Context, officer string, 
 	return nil
 }
 
+// SettleBlocks implements ConnectorBlockStore.
+func (m *MemConnectorBlockStore) SettleBlocks(_ context.Context, officer string, grant int64, before, _ time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, r := range m.rows {
+		if r.b.Officer == officer && r.b.GrantID == grant && !r.settled && (before.IsZero() || r.b.BlockedAt.Before(before)) {
+			r.settled = true
+			n++
+		}
+	}
+	return n, nil
+}
+
+// UnsettledGrants implements ConnectorBlockStore.
+func (m *MemConnectorBlockStore) UnsettledGrants(_ context.Context, officer string, limit int) ([]int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[int64]bool{}
+	var out []int64
+	for _, r := range m.rows {
+		if r.b.Officer == officer && !r.settled && !seen[r.b.GrantID] {
+			seen[r.b.GrantID] = true
+			out = append(out, r.b.GrantID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // PGConnectorBlockStore is ConnectorBlockStore on officer_connector_blocks
 // (migration 0148), under row-level security: ctx must act as the officer's
 // owner.
@@ -191,8 +234,51 @@ func (s *PGConnectorBlockStore) BlocksForGrant(ctx context.Context, officer stri
 // SettleBlock implements ConnectorBlockStore.
 func (s *PGConnectorBlockStore) SettleBlock(ctx context.Context, officer string, grant int64, item ItemID, at time.Time) error {
 	_, err := s.pool.Exec(ctx, `UPDATE officer_connector_blocks SET settled_at = $4
-		WHERE officer = $1 AND grant_id = $2 AND item = $3`, officer, grant, string(item), at)
+		WHERE officer = $1 AND grant_id = $2 AND item = $3 AND settled_at IS NULL`, officer, grant, string(item), at)
 	return err
+}
+
+// ownBlock limits a sweep's read and bulk settle to the acting owner's own
+// blocks (muster.uid, as the owner_id default writes it). A person who is a
+// team member reads the team's rows too (team_read); when both declare the
+// same officer id, the person's sweep would otherwise name the team's grants,
+// which it cannot read, and could settle the team's blocks.
+const ownBlock = `owner_id = NULLIF(current_setting('muster.uid', true), '')::bigint`
+
+// SettleBlocks implements ConnectorBlockStore.
+func (s *PGConnectorBlockStore) SettleBlocks(ctx context.Context, officer string, grant int64, before, at time.Time) (int, error) {
+	var b *time.Time
+	if !before.IsZero() {
+		b = &before
+	}
+	// Only the acting owner's own rows (ownBlock): row-level security also
+	// shows a person their team's rows, which are the team's to settle.
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_connector_blocks SET settled_at = $4
+		WHERE officer = $1 AND grant_id = $2 AND settled_at IS NULL AND ($3::timestamptz IS NULL OR blocked_at < $3) AND `+ownBlock,
+		officer, grant, b, at)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// UnsettledGrants implements ConnectorBlockStore.
+func (s *PGConnectorBlockStore) UnsettledGrants(ctx context.Context, officer string, limit int) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT grant_id FROM officer_connector_blocks
+		WHERE officer = $1 AND settled_at IS NULL AND `+ownBlock+` ORDER BY grant_id LIMIT $2`, officer, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
