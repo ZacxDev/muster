@@ -27,7 +27,7 @@ const (
 	capTeamOfficer = "scout:teamcap"
 	// The literal amounts (never derived from the code): a $10 budget, $12
 	// spent, so held; one raise is +$10, to $20.
-	capButtonWords = "Raise cap for today: +$10, to $20"
+	capButtonWords = "Raise today&#39;s limit to $20"
 )
 
 const capEnv = `[{"id":"` + capOfficer + `","backend":"builtin","daily_budget_usd":10},
@@ -108,7 +108,7 @@ func (c capRig) raises(t *testing.T) (rows, audits int) {
 
 // TestTheOwnerRaisesTodaysCapAndTheHeldOfficerResumes: user 1's officer, $12
 // into its $10 budget, holds its (non-owner) item back; its page says held and
-// offers "Raise cap for today: +$10, to $20". The owner's raise writes the row
+// offers "Raise today's limit to $20". The owner's raise writes the row
 // and ONE audit row (who, which officer, $10 -> $20, until the next 00:00
 // UTC); the next pass wakes it for the item, and the page reads $12 of $20.
 // On the next UTC day (the clock seam moved past midnight, no cleanup run)

@@ -62,6 +62,12 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		// officerConversationAccepted) and writes no owner_turn_ field. Listed
 		// because every WithTurnAccepted is, so a new one is looked at.
 		"internal/api/officers.go (*Server).OfficerTurnContext → WithTurnAccepted(ctx)",
+		// Not a marker setter: an unbriefed officer instance's first turn (Save
+		// and refresh's new conversation, officers.go unbriefedFirstTurn) only
+		// logs a ccd that did not confirm one; it writes no owner_turn_ field.
+		// It is the same door as OfficerTurnContext's, for a pool that keeps
+		// one conversation.
+		"internal/api/officers.go (*Server).unbriefedFirstTurn → WithTurnAccepted(ctx)",
 		// Not a marker setter: a member's message to a team agent answers the
 		// agent's open asks once the runtime takes it (team_agents.go
 		// addressAskerOnAccept). It writes no owner_turn_ field and CHAINS to the

@@ -47,16 +47,16 @@ func TestTheAsksCardAndAReturnListDrawOneAnswerForm(t *testing.T) {
 	}
 	for _, want := range []string{
 		`class="` + ui.AsksOptionClass + `" data-attention-option>yes</button>`,
-		`<div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="answer-9"`,
+		`<div class="` + ui.AskFormAnswerRowClass + `" data-asks-answer-row><textarea id="answer-9"`,
 		`<button type="submit" id="answer-9-submit" class="` + ui.AsksCardSendQuietClass + ` ` + ui.AsksSendDisabledClass + `" aria-disabled="true" data-asks-send>Answer</button>`,
-		`rows="1"`, `class="` + ui.AskFormInputClass + `"`, `<label for="answer-9" class="sr-only">Your answer</label>`,
+		`rows="1"`, `class="` + ui.AskFormAnswerInputClass + `"`, `<label for="answer-9" class="sr-only">Your answer</label>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the answer form lacks %q:\n%s", want, card)
 		}
 	}
-	if !strings.HasPrefix(ui.AskFormInputClass, ui.AskFormFitClass+" ") || !strings.Contains(ui.AsksOptionClass, "w-full") {
-		t.Errorf("the box does not grow, or an option is not full width: %q / %q", ui.AskFormInputClass, ui.AsksOptionClass)
+	if !strings.HasPrefix(ui.AskFormAnswerInputClass, ui.AskFormFitClass+" ") || !strings.Contains(ui.AsksOptionClass, "w-full") {
+		t.Errorf("the box does not grow, or an option is not full width: %q / %q", ui.AskFormAnswerInputClass, ui.AsksOptionClass)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestTheAnswerFormsTwoPostsAreUnchanged(t *testing.T) {
 	} {
 		out := attentionItemsHTMLTo([]attentionItem{c.it}, now, c.returnTo)
 		answer := answerFormOf(t, out)
-		row := regexp.MustCompile(`(?s)<div class="` + regexp.QuoteMeta(ui.AskFormBoxRowClass) + `" data-asks-answer-row>.*?</div>`).FindString(answer)
+		row := regexp.MustCompile(`(?s)<div class="` + regexp.QuoteMeta(ui.AskFormBoxActionsClass) + `" data-asks-answer-actions>.*?</div>`).FindString(answer)
 		if got := strings.Contains(row, `form="ask-9-dismiss"`); got != c.inRow {
 			t.Errorf("%s: Dismiss in the answer row = %v, want %v:\n%s", c.name, got, c.inRow, out)
 		}

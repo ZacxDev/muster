@@ -60,7 +60,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: officerfix seed|rmplugin …")
+		return fmt.Errorf("usage: officerfix seed|spend|ask|rmplugin …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -87,6 +87,34 @@ func run(args []string) error {
 		}
 		b, _ := json.Marshal(out)
 		fmt.Println(string(b))
+	case "spend":
+		// Today's spend for the officer page's spend bar
+		// (officer-page-redesign.spec.ts): one usage row of usd, today (UTC).
+		if len(args) != 4 {
+			return fmt.Errorf("usage: spend <owner-id> <officer> <usd>")
+		}
+		usd, err := strconv.ParseFloat(args[3], 64)
+		if err != nil {
+			return fmt.Errorf("spend: the amount: %w", err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO officer_llm_usage (owner_id, officer, pool, instance, day, requests, input_tokens, output_tokens,
+			cache_read_tokens, cache_write_tokens, cost_usd, estimated_requests) VALUES ($1, $2, 'judgement', 1, (now() AT TIME ZONE 'UTC')::date, 1, 0, 0, 0, 0, $3, 1)
+			ON CONFLICT ON CONSTRAINT officer_llm_usage_one_pool_row DO UPDATE SET cost_usd = EXCLUDED.cost_usd`, owner, args[2], usd); err != nil {
+			return fmt.Errorf("spend: %w", err)
+		}
+	case "ask":
+		// An OPEN ask the officer raised (a System ask labelled as the
+		// officer: officerAskLabel), for its page's Needs you and the Asks
+		// page (officer-page-redesign.spec.ts). Prints its id.
+		if len(args) != 4 {
+			return fmt.Errorf("usage: ask <owner-id> <officer> <question>")
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, asker_label, question, options, expires_at, system_asker)
+			VALUES ($1, 'officer ' || $2, $3, '[]'::jsonb, now() + interval '1 hour', true) RETURNING id`, owner, args[2], args[3]).Scan(&id); err != nil {
+			return fmt.Errorf("ask: %w", err)
+		}
+		fmt.Println(id)
 	case "rmplugin":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: rmplugin <owner-id> <plugin-name>")

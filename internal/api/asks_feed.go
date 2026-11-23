@@ -569,10 +569,11 @@ func askSuggestionChipsHTML(suggestions []string) string {
 // askAnswerFormHTML is THE answer form, on the Asks page's card and on a
 // session page's asks block alike (the design review: the two surfaces drew
 // two forms): the asker's options as full-width buttons (a tap answers), the
-// suggested replies as chips (a tap FILLS the box), and the box — one line,
-// growing — with its microphone (only while dictation is on: a disabled mic
-// on every card was noise) and Answer. With options to tap, they are the
-// primary action and Answer is quiet.
+// suggested replies as chips (a tap FILLS the box), and the box — on a line
+// of its own, the card's full width, one line tall and growing — with, on the
+// row under it, its microphone (only while dictation is on: a disabled mic on
+// every card was noise), Answer and Dismiss (ui.AskFormAnswerRowClass). With
+// options to tap, they are the primary action and Answer is quiet.
 //
 // 🔴 EVERY ID IS THE ASK'S OWN: a page draws one box per ask, and the mic
 // finds its box and note by id (ui.DictateControlHTML). The mic's ✓ FILLS the
@@ -642,18 +643,24 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		send += " " + ui.AsksSendDisabledClass
 		sendAttrs = ` aria-disabled="true" data-asks-send`
 	}
-	mic, note := "", ""
+	wave, mic, note := "", "", ""
 	if it.dictate != "" || p.micOff && it.dictateOff {
 		// answerMic: the real mic, or — the ask page only (micOff), with no
 		// dictation on the server — the muted one linking to how to turn it on.
-		mic = ui.DictateWaveHTML(it.dictate, ids.mic) +
-			answerMic(it.dictate, p.micOff && it.dictateOff, input, ids.mic+"-note", ids.mic) +
+		// 🔴 THE WAVEFORM TAKES THE BOX'S PLACE while it records (the box is
+		// hidden then), so it is on the BOX's line, never in the actions row:
+		// there it made the row wrap, and the ↑ — which stands in for Answer
+		// while recording, so a tap landing just after the recording ends
+		// lands on Answer — was a row above Answer (e2e dictation.spec.ts).
+		wave = ui.DictateWaveHTML(it.dictate, ids.mic)
+		mic = answerMic(it.dictate, p.micOff && it.dictateOff, input, ids.mic+"-note", ids.mic) +
 			ui.DictateSendHTML(it.dictate, ids.mic, submit, ui.DictateSendPill)
 		note = ui.DictateNoteHTML(it.dictate, ids.mic+"-note", "")
 	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
-<div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>` + sendLabel + `</button>` + p.dismiss + `</div>
+<div class="` + ui.AskFormAnswerRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormAnswerInputClass + `"></textarea>` +
+		wave + `<div class="` + ui.AskFormBoxActionsClass + `" data-asks-answer-actions>` +
+		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>` + sendLabel + `</button>` + p.dismiss + `</div></div>
 ` + note)
 	if it.multi {
 		// THE OPTIONAL NOTE (migration 0175): one line under the answer, its

@@ -82,6 +82,8 @@ func (s *Server) registerOfficerPages(mux Mux) {
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/mode", s.requireOperatorWrite(s.handleOfficerMode))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/run", s.requireOperatorWrite(s.handleOfficerRunNow))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/raise-cap", s.requireOperatorWrite(s.handleOfficerRaiseCap))
+	// Its Instructions section's Save and Save and refresh (officer_page_charter.go).
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/charter", s.requireOperatorWrite(s.handleOfficerCharter))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/delete", s.requireOperatorWrite(s.handleOfficerDeletePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules", s.requireOperatorWrite(s.handleOfficerSchedulePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules/{name}/delete", s.requireOperatorWrite(s.handleOfficerScheduleDeletePage))
@@ -2017,6 +2019,9 @@ func officerPageNotice(code string) (string, bool) {
 	if n, ok := officerNotices[code]; ok {
 		return n, true
 	}
+	if n, ok := charterNotices[code]; ok {
+		return n, true
+	}
 	if n, ok := composerNotices[code]; ok && strings.HasPrefix(code, "ask-") {
 		return n.text, true
 	}
@@ -2070,23 +2075,17 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	case managedByDef:
 		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">It has instructions but nowhere to run yet, so muster does not start it.</p>`)
 	}
-	if v.RunsOn == officers.RuntimeHost || v.Runtime == officers.RuntimeHost {
-		b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" data-host-risk>` + esc(hostRiskLine) + `</p>`)
-	}
+	// 🔴 NO MACHINE-USER WARNING HERE, AND NO SHADOW / LIVE BUTTON (the operator:
+	// "we can drop the alert that's saying on one of your
+	// machines it runs as the machines user … We can also remove the switch
+	// to shadow button"). The warning stays where the choice is made — the
+	// setup wizard's host step (officerFormPage, hostRiskLine) — and Shadow
+	// stays a setting of the API, the edit form and MUSTER_OFFICERS
+	// (POST /officers/{id}/mode still answers). Run now and Pause / Resume
+	// are the Needs-you section's run controls (officerRunHTML).
 	if writable {
-		form := func(suffix, label, cls string, extra string) string {
-			return `<form method="POST" action="` + esc(officersPagePath+"/"+url.PathEscape(v.ID)+suffix) + `">` + sc.ownerField() + extra +
-				`<button type="submit" class="` + cls + `">` + label + `</button></form>`
-		}
-		// Run now and Pause / Resume are the Needs-you section's run
-		// controls (officerRunHTML), drawn for every officer they apply to.
-		b.WriteString(`<div class="flex flex-wrap gap-2" id="officer-actions">`)
-		if v.Mode == "shadow" {
-			b.WriteString(form("/mode", "Switch to Live", adminQuiet, `<input type="hidden" name="mode" value="live">`))
-		} else {
-			b.WriteString(form("/mode", "Switch to Shadow", adminQuiet, `<input type="hidden" name="mode" value="shadow">`))
-		}
-		b.WriteString(`<a href="` + officerHref(sc, v.ID, "/edit") + `" class="` + adminQuiet + ` inline-flex items-center" id="officer-edit">Edit</a></div>`)
+		b.WriteString(`<div class="flex flex-wrap gap-2" id="officer-actions">` +
+			`<a href="` + officerHref(sc, v.ID, "/edit") + `" class="` + adminQuiet + ` inline-flex items-center" id="officer-edit">Edit settings</a></div>`)
 	} else if v.ManagedBy == officers.ManagedByDB {
 		b.WriteString(`<p class="text-sm text-fg2">` + esc(TeamOfficerManagerOnly) + `</p>`)
 	}
@@ -2101,6 +2100,9 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 		// answer box — once, after them (ui/dictate.go).
 		b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	}
+	// Its Instructions: what it was told, which version it read, and the
+	// editor (officer_page_charter.go).
+	b.WriteString(s.officerCharterHTML(ctx, sc, v))
 	// Chat with it (officer_operator_chat.go), right below what waits on
 	// the person: its confirm cards are decisions too.
 	chat := s.officerChatHTML(r, sc, v)
@@ -2169,19 +2171,8 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	b.WriteString(s.officerPRQueueHTML(ctx, sc, v.ID))
 	b.WriteString(`</details>`)
 
-	// Its spend, where the server books it.
-	if builtinBackend {
-		if days, err := s.officerStore.ListUsage(ctx, sc.Owner, v.ID, 7, s.officerNow()); err == nil && len(days) > 0 {
-			var cost float64
-			var reqs int64
-			for _, d := range days {
-				cost += d.CostUSD
-				reqs += d.Requests
-			}
-			b.WriteString(`<section class="` + adminCard + `" id="officer-usage"><h2 class="text-base font-semibold text-fg">Usage, last 7 days</h2><p class="text-sm text-fg">` +
-				esc(fmt.Sprintf("%d requests · about $%.2f (an estimate at list price)", reqs, cost)) + `</p></section>`)
-		}
-	}
+	// Its spend is the Needs-you section's spend bar (officerRunHTML), whose
+	// details hold the last 7 days' usage (officerUsageWeekHTML).
 
 	if writable {
 		b.WriteString(`<section class="` + adminCard + `" id="officer-delete"><h2 class="text-base font-semibold text-fg">Delete</h2>

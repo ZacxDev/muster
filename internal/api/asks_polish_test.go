@@ -392,7 +392,7 @@ func TestAnAskWithOptionsKeepsItsAnswerBoxOpen(t *testing.T) {
 	body := askPageBody(t, whereServer(t, opts), opts, askPagePath(opts.ID))
 	for _, want := range []string{
 		`<button type="submit" name="option" value="Squash" class="` + ui.AsksOptionClass + `" data-attention-option>Squash</button>`,
-		`<div class="flex items-end gap-2" data-asks-answer-row><textarea id="ask-input" name="answer"`,
+		`<div class="flex min-w-0 flex-col gap-2" data-asks-answer-row><textarea id="ask-input" name="answer"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the options page lacks %s:\n%s", want, body)

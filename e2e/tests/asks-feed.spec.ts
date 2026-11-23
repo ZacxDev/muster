@@ -424,12 +424,12 @@ for (const vp of [
     });
 
     // DENSITY (the design review, 8): with the fixture's fleet of asks open,
-    // a phone shows at least 2.5 cards above the fold (each card's visible
+    // a phone shows at least 2 cards (2.5 before the answer box's own line) above the fold (each card's visible
     // fraction of its own height, summed, at the page's top) — no footer of a
     // lone ✕, no empty slot, no "Question" badge. RED at origin/main (about 2
     // cards: a ✕-only footer band, two empty slots and a badge on every card).
     if (vp.use.isMobile) {
-      test('a phone shows at least 2.5 cards above the fold', async ({ page }) => {
+      test('a phone shows at least 2 cards above the fold', async ({ page }) => {
         // Suggested replies OFF, their default (suggest.DefaultDisabled) and the
         // review's fleet: another spec on this leg's database may have turned
         // them on for this user, which adds the chip row to the first card.
@@ -473,7 +473,12 @@ for (const vp of [
         expect(m.loneX, 'a footer holding only ✕').toBe(0);
         expect(m.emptySlots, 'an empty error slot').toBe(0);
         expect(m.questionBadges, 'a "Question" badge').toBe(0);
-        expect(m.sum, `cards above the fold at 390×844: ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(2.5);
+        // 🔴 2.0, NOT 2.5, SINCE THE ANSWER BOX HAS A LINE OF ITS OWN (operator
+        // decision: "put the your answer text area on its own line", the Asks
+        // page included). That line is one more 44px row per card: measured on
+        // this fixture, 2.54 cards before and 2.05 after, so the gate holds the
+        // new layout's density and still fails a card that grows again.
+        expect(m.sum, `cards above the fold at 390×844: ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(2.0);
       });
     }
 

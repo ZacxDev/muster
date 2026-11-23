@@ -298,14 +298,34 @@ func AsksFilterHTML(name, all string) string {
 // share one row. Dismiss SAYS "Dismiss" and is NAMED "Dismiss without
 // answering" (aria-label, title): the long words on the button squeezed
 // Answer to "Answe" in the queue's 286px card. Every target stays 44px (e2e layout.spec.ts).
+//
+// 🔴 THE ANSWER BOX HAS A LINE OF ITS OWN (operator: "put the
+// your answer text area on its own line … it's squished"). The answer form's
+// box row (AskFormAnswerRowClass) is a COLUMN: the box, full width
+// (AskFormAnswerInputClass), and under it the actions row
+// (AskFormBoxActionsClass) with the mic, Answer and Dismiss. Before, the box
+// shared one row with all three and was left a sliver of a phone card.
+// AskFormBoxRowClass stays a ROW: a draft's reason box and its mic
+// (internal/api plugin_drafts.go) still share one, and are not the answer form.
 const (
 	AskFormFitClass     = "answer-fit"
 	AskFormClass        = "flex flex-col gap-1.5"
 	AskFormOptionsClass = "flex flex-wrap gap-1.5"
 	AskFormOptionClass  = "press min-h-[44px] rounded-md bg-bg px-2.5 py-1.5 text-left text-sm font-normal leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
 	AskFormBoxRowClass  = "flex items-end gap-2"
-	AskFormInputClass   = AskFormFitClass + " min-h-[44px] min-w-0 flex-1 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
-	AskFormActionsClass = "flex items-center gap-2"
-	AskFormAnswerClass  = "press min-h-[44px] flex-1 rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"
-	AskFormDismissClass = "press min-h-[44px] shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"
+	// AskFormAnswerRowClass is the answer form's box row: a column, the box
+	// on its own line and the actions row under it.
+	AskFormAnswerRowClass = "flex min-w-0 flex-col gap-2"
+	// AskFormBoxActionsClass is the row under the answer box: the mic (and
+	// its ↑ while it records), then Answer and Dismiss — ONE row that never
+	// wraps, so the ↑ stands where Answer stands. (The waveform is on the
+	// box's own line: it takes the box's place while recording.)
+	AskFormBoxActionsClass = "flex min-w-0 items-center justify-end gap-2"
+	AskFormInputClass      = AskFormFitClass + " min-h-[44px] min-w-0 flex-1 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
+	// AskFormAnswerInputClass is the answer box on its own line: the full
+	// width of the card (AskFormInputClass sizes a box sharing a row).
+	AskFormAnswerInputClass = AskFormFitClass + " block min-h-[44px] w-full min-w-0 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
+	AskFormActionsClass     = "flex items-center gap-2"
+	AskFormAnswerClass      = "press min-h-[44px] flex-1 rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"
+	AskFormDismissClass     = "press min-h-[44px] shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"
 )

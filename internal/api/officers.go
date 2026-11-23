@@ -1203,8 +1203,11 @@ func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kick
 // the order is the CLI's, not a lock's.
 func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context.Context {
 	o, _, ok := s.officerOf(a)
-	if !ok || !o.FreshSessionPerItem() {
+	if !ok {
 		return ctx
+	}
+	if !o.FreshSessionPerItem() {
+		return s.unbriefedFirstTurn(ctx, o, a)
 	}
 	// Set, never a map literal: a literal key is not canonicalised ("CC"), and
 	// Header.Get — applyTurnRoute's read — would never find it.
@@ -1230,6 +1233,56 @@ func (s *Server) officerConversationAccepted(name string, acc agents.TurnAccepta
 	s.logger.Printf("officers: %s: 🔴 its ccd took a fresh_session_per_item turn but did not confirm a new conversation (no %s on its answer): "+
 		"it predates that header, and the turn runs in the conversation the CLI already had. Its claims stay refused after its current item, and muster "+
 		"sends it no further turn until it is started again on a claude-code-agent image from this version", name, agents.HeaderCCNewConversationSession)
+}
+
+// unbriefedFirstTurn is OfficerTurnContext for an instance of a pool that
+// keeps one conversation (not fresh_session_per_item): its FIRST turn (the
+// kickoff deliverer's; a re-prompt is never sent while one is owed,
+// promptPending) is routed with agents.HeaderCCNewConversation when the
+// instance has NO recorded brief (officer_defs.charter_briefed lacks its
+// name: builtin.Store.HasBriefed) — so its ccd starts a new conversation (the
+// old transcript kept, and recorded as the one later starts resume) before
+// it pastes the kickoff. Every other turn: ctx unchanged.
+//
+// 🔴 THIS IS WHAT "SAVE AND REFRESH" RESTS ON (officer_page_charter.go):
+// the page forgets every instance's brief (builtin.Store.ForgetBriefs)
+// between stopping and starting them (officers.Reconciler.Refresh), so each
+// restarted instance's first turn opens a new conversation, which reads the
+// charter afresh through officer_brief. The state is in the DATABASE, not in
+// this process: a refresh survives a muster restart and is seen by whichever
+// replica delivers the kickoff. Once the instance calls officer_brief its
+// brief is recorded again, so every later start resumes that new
+// conversation — never another reset.
+//
+// ⚠ An instance that never read its charter is the other case it covers,
+// on purpose: a brand-new instance (a fresh volume: its ccd has no transcript,
+// so nothing is typed) and one restarted before it ever called officer_brief,
+// whose conversation could do nothing (officer_claim refuses an unbriefed
+// instance, CharterCurrent). Only a builtin officer the store declares has
+// briefs; an HQ officer, or an unreadable store, is ctx unchanged (resume:
+// the cautious side).
+func (s *Server) unbriefedFirstTurn(ctx context.Context, o officers.Officer, a agents.Agent) context.Context {
+	if !promptPending(a) || !o.IsBuiltin() || o.OnHost() || s.officerStore == nil {
+		return ctx
+	}
+	briefed, declared, err := s.officerStore.HasBriefed(s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID, a.Name)
+	if err != nil {
+		s.logger.Printf("officers: %s: read whether it was briefed (its first turn resumes its conversation): %v", a.Name, err)
+		return ctx
+	}
+	if !declared || briefed {
+		return ctx
+	}
+	h := http.Header{}
+	h.Set(agents.HeaderCCNewConversation, "1")
+	name := a.Name
+	ctx = agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
+	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) {
+		if acc.NewConversation == "" {
+			s.logger.Printf("officers: %s: its first turn asked for a new conversation and its ccd did not confirm one (no %s): "+
+				"it predates that header, so it resumed the conversation it had", name, agents.HeaderCCNewConversationSession)
+		}
+	})
 }
 
 // promptPending is the kickoff deliverer's own "owed" rule

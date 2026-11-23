@@ -186,22 +186,60 @@ decided right there:
   you approve the draft it files then. **Drop it**: the officer never
   redrafts it. A refusal you rejected yourself is not listed (that was your
   decision), nor one older than 7 days.
-- **Its budget and run controls**: today's spend against its daily budget,
-  **held** once the budget has stopped it (until the next UTC midnight), and
-  **Run now** and **Pause** / **Resume**. Run now is how you wake a held
-  officer: work you give it yourself gets past the cap. While it is held,
-  its **owner** also sees **Raise cap for today: +$N, to $M** — one more
-  day's worth of its `daily_budget_usd`, for the current UTC day only: it
-  goes back at the next 00:00 UTC by itself (the raise is stored against
-  that day, `officer_cap_raises`, so nothing has to clean it up). The next
-  wake pass reads it and the officer resumes the work the budget held back.
-  At most 3 raises a day. Only the officer's own owner can raise it, from
-  their own signed-in browser: a team's officer (whose owner is the team) is
-  not raised here, and no token — an officer's, an agent's, a personal API
+- **Its spend and run controls**: one bar, **$X of $Y today**, against its
+  daily budget. It turns **amber from 80%** and **red once held** (the budget
+  has stopped it, until the next UTC midnight). From 80% its **owner** also
+  sees **Raise today's limit to $M** — one more day's worth of its
+  `daily_budget_usd`, for the current UTC day only: it goes back at the next
+  00:00 UTC by itself (the raise is stored against that day,
+  `officer_cap_raises`, so nothing has to clean it up). The next wake pass
+  reads it, and a held officer resumes the work the budget held back. At
+  most 3 raises a day. Only the officer's own owner can raise it, from their
+  own signed-in browser: a team's officer (whose owner is the team) is not
+  raised here, and no token — an officer's, an agent's, a personal API
   token — can. Each raise is in the audit log (`officer.cap_raise`: who,
   which officer, the cap before and after, and until when). It raises the
   officer's daily budget, not an [LLM proxy](officers.md#the-llm-proxy)
-  pool's `llm.daily_budget_usd`.
+  pool's `llm.daily_budget_usd`. **Spending details** under the bar holds
+  the limit, when it resets, a raise, and the last 7 days' requests and
+  estimated cost. Then **Run now** and **Pause** / **Resume**. Run now is how
+  you wake a held officer: work you give it yourself gets past the cap.
+
+The page is laid out for a phone first: a question's answer box has a line
+of its own, the card's full width, with the microphone, **Answer** and
+**Dismiss** on the row under it (the Asks page draws the same form), and
+every button is at least 44px tall.
+
+**Instructions** — the officer's charter (its type's: when several officers
+share the type, the section says how many, and a change reaches all of
+them), its version (**Version N**), and which version the officer last read.
+An officer still working from an older version says so: *It is still working
+from version M*. **Read or change them** opens the editor, with two buttons:
+
+- **Save** — the instructions are stored; the version goes up only when the
+  text changed. A running officer switches to them the next time it picks up
+  or finishes work (its `officer_claim` and `officer_complete` are refused
+  until it reads the new version, as below in
+  [Charter changes reach running instances](#charter-changes-reach-running-instances)).
+- **Save and refresh** — the same save, then every running instance is
+  stopped and started again in a **new conversation** that begins by reading
+  the new instructions and its brief. muster forgets which version each
+  instance read (`officer_defs.charter_briefed`), and an instance's first turn
+  after a start, with nothing recorded, asks its pod's `ccd` for a new
+  conversation (the `X-Muster-CC-New-Conversation` header: the CLI's
+  `/clear`; the old transcript is kept). Once it reads its charter again,
+  later starts resume that new conversation. An officer that is not running
+  is not started; its next start is a new conversation. A machine officer's
+  start is always a new window and conversation. The restart carries on if you close the page
+  mid-way. If a copy could not be stopped or started again, the page says
+  how many of each (the instructions are saved either way).
+
+Instructions are at most 32,768 characters (the editor stops there). A
+refused or failed save shows your text again with the reason, never the
+stored instructions.
+
+Each manager's save of a team officer's instructions is in the team's audit
+(`officer.charter.put`).
 
 Every decision there is made only by your own signed-in browser: an
 officer's instance (or its machine's window) holds a token, never your
@@ -225,8 +263,10 @@ post's reference) are behind its ⓘ.
 
 Below those: where it runs and why it is not running when it is not, its
 instances (a machine instance's window opens its mirrored view), its raw
-queue, its schedules (add and delete them there) and its usage over the last
-7 days when there is any. It shows no "last pass": the wake loop's memory of
+queue and its schedules (add and delete them there). The page does not
+repeat the machine-user warning (the wizard shows it where you choose a
+machine), and has no Shadow / Live button: Shadow is set on Edit, through the
+admin API or in `MUSTER_OFFICERS`. It shows no "last pass": the wake loop's memory of
 one is per replica and forgotten by a restart, so it is not drawn until a
 shared record of passes exists. Its other actions:
 
@@ -234,8 +274,7 @@ shared record of passes exists. Its other actions:
   within seconds; a second tap while it waits adds none.
 - **Pause** / **Resume** — paused, its instances stop and none starts,
   whatever its queue holds.
-- **Switch to Live** / **Switch to Shadow** — the mode, as above.
-- **Edit** — the wizard's steps 2, 3, 5 and 6 on one form (schedules are on
+- **Edit settings** — the wizard's steps 2, 3, 5 and 6 on one form (schedules are on
   the page). It keeps a machine officer on its machine when that machine is
   not connected right now (drawn selected, marked offline).
 - **Delete** — type its id to confirm. It goes with its queue, schedules and

@@ -173,6 +173,7 @@ cookie POST /mirror/view/suggest/event
 cookie POST /officers/new
 cookie POST /officers/spawns/{id}/share
 cookie POST /officers/spawns/{id}/unshare
+cookie POST /officers/{officer}/charter
 cookie POST /officers/{officer}/chat
 cookie POST /officers/{officer}/chat/cards/{card}/approve
 cookie POST /officers/{officer}/chat/cards/{card}/reject

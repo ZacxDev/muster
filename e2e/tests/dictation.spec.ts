@@ -217,9 +217,11 @@ const chatBox: Box = { input: '#chat-input', mic: '#chat-dictate', note: '#chat-
 
 type BB = { x: number; y: number; width: number; height: number };
 // expectMicPlaced: the mic is a 40px target where its box puts it — on the
-// Rendered view's button row, BELOW the box's own row (twoRows: the page
-// draws #mv-input-row; mirror_compose.go); beside the box, on its row,
-// everywhere else (a Terminal view's one-row composer, the agent chat, an ask).
+// button row, BELOW the box's own row, for a two-row composer (twoRows: the
+// Rendered view, which draws #mv-input-row, mirror_compose.go; and an ask's
+// answer box, which has a line of its own with the mic, Answer and Dismiss
+// under it, data-asks-answer-row); beside the box, on its row, everywhere
+// else (a Terminal view's one-row composer, the agent chat).
 function expectMicPlaced(twoRows: boolean, mb: BB, ib: BB, viewportWidth: number) {
   expect(mb.height, 'a 40px target').toBeGreaterThanOrEqual(40);
   expect(mb.width, 'a 40px target').toBeGreaterThanOrEqual(40);
@@ -674,7 +676,8 @@ test.describe('an ask’s answer boxes', () => {
     const input = page.locator(box.input);
     const mic = page.locator(box.mic);
     await expect(mic, 'the script revealed the mic').toBeVisible();
-    expectMicPlaced((await page.locator('#mv-input-row').count()) > 0, (await mic.boundingBox())!, (await input.boundingBox())!, width);
+    const twoRows = (await page.locator('#mv-input-row').count()) > 0 || (await input.evaluate((el) => !!el.closest('[data-asks-answer-row]')));
+    expectMicPlaced(twoRows, (await mic.boundingBox())!, (await input.boundingBox())!, width);
     await noHorizontalScroll(page);
     await input.fill('please now');
     await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
