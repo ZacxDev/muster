@@ -100,6 +100,11 @@ const (
 	DecisionSent        = "sent"
 	DecisionFailed      = "failed"
 	DecisionUnconfirmed = "unconfirmed"
+	// DecisionPluginRefused: an officer's draft for an item the session
+	// enqueued was refused by its plugin's pre-approval check
+	// (KindOfficerDraftDecided, migration 0183). Its OperatorText is the
+	// PLUGIN's reason, never the owner's words.
+	DecisionPluginRefused = "plugin_refused"
 	// A step-up card's (KindStepUpDecided): confirmed and its call ran;
 	// confirmed and its call ran but the tool refused it; refused on the
 	// phone; dismissed; settled by the owner approving or rejecting the
@@ -289,8 +294,9 @@ func (n New) Valid() error {
 			return fmt.Errorf("%w: an owner's response names its page and response", ErrInvalid)
 		}
 	case KindOfficerDraftDecided:
-		if n.DraftID <= 0 || n.OfficerItemID <= 0 || (n.Decision != DecisionApproved && n.Decision != DecisionRejected) {
-			return fmt.Errorf("%w: an officer draft's decision names its draft, its item and approved or rejected", ErrInvalid)
+		if n.DraftID <= 0 || n.OfficerItemID <= 0 ||
+			(n.Decision != DecisionApproved && n.Decision != DecisionRejected && n.Decision != DecisionPluginRefused) {
+			return fmt.Errorf("%w: an officer draft's decision names its draft, its item and approved, rejected or plugin_refused", ErrInvalid)
 		}
 	case KindOfficerDraftOutcome:
 		if n.DraftID <= 0 || n.OfficerItemID <= 0 || n.Count < 1 || n.OperatorText != "" ||
