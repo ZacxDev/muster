@@ -1206,9 +1206,10 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	if !ok {
 		return ctx
 	}
-	ctx = s.registerOfficerTurn(ctx, a)
+	// The turn's own prompt row is recorded once ccd accepts the turn, last,
+	// so it chains to whichever acceptance callback the paths below set.
 	if !o.FreshSessionPerItem() {
-		return s.unbriefedFirstTurn(ctx, o, a)
+		return s.registerOfficerTurn(s.unbriefedFirstTurn(ctx, o, a), a)
 	}
 	// Set, never a map literal: a literal key is not canonicalised ("CC"), and
 	// Header.Get — applyTurnRoute's read — would never find it.
@@ -1216,7 +1217,7 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	h.Set(agents.HeaderCCNewConversation, "1")
 	name := a.Name
 	ctx = agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
-	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) { s.officerConversationAccepted(name, acc) })
+	return s.registerOfficerTurn(agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) { s.officerConversationAccepted(name, acc) }), a)
 }
 
 // officerConversationAccepted is ccd's acceptance of a turn OfficerTurnContext
@@ -1238,20 +1239,29 @@ func (s *Server) officerConversationAccepted(name string, acc agents.TurnAccepta
 
 // registerOfficerTurn records officer instance a's running turn's input —
 // its prompt row, which the door stored before the send and put on ctx
-// (agents.TurnInputRow: the kickoff deliverer, Reprompt) — for the turn's
-// whole run: ctx (withTurnInput) for an in-process dispatch, and the registry
-// (turnInputs) for the pod's CLI calling /mcp on a request of its own. The
-// record ends when ctx does (both doors cancel it when the turn ends). It is
-// the moment an item the turn makes points at (officer_origin.go). ctx
-// unchanged when the door stored no row first.
+// (agents.TurnInputRow: the kickoff deliverer, Reprompt) — in the registry
+// (turnInputs) the pod's CLI calling /mcp is read by: the moment an item the
+// turn makes points at (officer_origin.go). ctx unchanged when the door
+// stored no row first.
+//
+// 🔴 ONLY ONCE ccd ACCEPTS THE TURN (agents.WithTurnAccepted: its 103 says
+// the CLI took the text), never before the send. A turn ccd refuses before
+// typing (409 busy, 503 not_ready) is not a turn, and Reprompt takes its row
+// back: registered before, a call in that window would have pointed at a row
+// about to be deleted. The record ends when ctx does (both doors cancel it
+// when the turn ends). It chains to the acceptance callback ctx already
+// carries, as acceptedAfterQueued does.
 func (s *Server) registerOfficerTurn(ctx context.Context, a agents.Agent) context.Context {
 	id := agents.TurnInputRow(ctx)
 	if id <= 0 || a.ID <= 0 {
 		return ctx
 	}
-	end := s.turnInputs.begin(a.ID, id)
-	context.AfterFunc(ctx, end)
-	return withTurnInput(ctx, id)
+	agent, prev := a.ID, ctx
+	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) {
+		agents.MarkTurnAccepted(prev, acc)
+		end := s.turnInputs.begin(agent, id)
+		context.AfterFunc(prev, end)
+	})
 }
 
 // unbriefedFirstTurn is OfficerTurnContext for an instance of a pool that

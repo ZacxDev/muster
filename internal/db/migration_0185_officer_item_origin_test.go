@@ -1,8 +1,11 @@
 package db_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestMigration0185OfficerItemOrigin: before 0185 neither an ask nor a draft
@@ -92,20 +95,17 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 		t.Fatalf("after the agent's delete: %d asks with the origin cleared (%v); want 3", left, err)
 	}
 
-	// ROLLBACK, as the migration's header writes it.
-	for _, stmt := range []string{
-		`DROP TRIGGER IF EXISTS attention_asks_origin_is_owners ON public.attention_asks`,
-		`DROP TRIGGER IF EXISTS plugin_reply_drafts_origin_is_owners ON public.plugin_reply_drafts`,
-		`DROP FUNCTION IF EXISTS public.officer_origin_is_owners()`,
-		`ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id`,
-		`ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id, DROP COLUMN IF EXISTS origin_message_id`,
-	} {
+	// ROLLBACK, EXACTLY as the migration's header writes it: the statements
+	// are read from the header, so a line missing there (the
+	// schema_migrations delete) is missing here too.
+	rollback := rollbackStatements(t, readMigration(t, "0185_officer_item_origin.sql"))
+	if len(rollback) != 6 {
+		t.Fatalf("the header's rollback is %d statements, want 6 (two triggers, the function, two tables, schema_migrations): %q", len(rollback), rollback)
+	}
+	for _, stmt := range rollback {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("rollback %q: %v", stmt, err)
 		}
-	}
-	if !strings.Contains(readMigration(t, "0185_officer_item_origin.sql"), "DROP FUNCTION IF EXISTS public.officer_origin_is_owners();") {
-		t.Fatal("the migration's header no longer documents the rollback this test runs")
 	}
 	for _, tbl := range []string{"attention_asks", "plugin_reply_drafts"} {
 		if _, err := pool.Exec(ctx, `SELECT origin_agent_id FROM `+tbl); err == nil {
@@ -115,4 +115,46 @@ func TestMigration0185OfficerItemOrigin(t *testing.T) {
 	if err := ask(nil, nil, nil); err == nil {
 		t.Fatal("after the rollback an insert naming the origin columns still works")
 	}
+	// RE-MIGRATE: the rollback took 0185 out of schema_migrations, so the
+	// migrator applies it again and the columns and the trigger come back.
+	applyThroughFrom(ctx, t, pool, 185)
+	if err := ask(inst2(ctx, t, pool), nil, nil); err != nil {
+		t.Fatalf("after the rollback and a re-migrate, the origin columns are not back: %v", err)
+	}
+	var trig int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger WHERE tgname IN ('attention_asks_origin_is_owners', 'plugin_reply_drafts_origin_is_owners')`).Scan(&trig); err != nil || trig != 2 {
+		t.Fatalf("after the re-migrate %d origin triggers (%v); want 2", trig, err)
+	}
+}
+
+// inst2 is a fresh officer instance of owner 1 (the first was deleted above).
+func inst2(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	return scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'officer-scout-main-2', 'ns-o2b') RETURNING id`)
+}
+
+// rollbackStatements is the SQL of a migration's "ROLLBACK." header block:
+// its "--   " lines up to the first non-comment line, joined and split on ";".
+func rollbackStatements(t *testing.T, body string) []string {
+	t.Helper()
+	i := strings.Index(body, "-- ROLLBACK.")
+	if i < 0 {
+		t.Fatal("the migration has no ROLLBACK block")
+	}
+	var sql []string
+	for _, line := range strings.Split(body[i:], "\n")[1:] {
+		if !strings.HasPrefix(line, "--") {
+			break
+		}
+		if rest, ok := strings.CutPrefix(line, "--   "); ok {
+			sql = append(sql, strings.TrimSpace(rest))
+		}
+	}
+	var out []string
+	for _, st := range strings.Split(strings.Join(sql, " "), ";") {
+		if st = strings.TrimSpace(st); st != "" {
+			out = append(out, st)
+		}
+	}
+	return out
 }

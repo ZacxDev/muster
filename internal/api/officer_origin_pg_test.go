@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/itemorigin"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -31,7 +32,7 @@ import (
 // earlier exchange (a prompt and its reply) and then a RUNNING TURN: its
 // prompt row stored first and the turn registered through the very seam the
 // kickoff deliverer and Reprompt use (OfficerTurnContext with
-// agents.WithTurnInputRow). Its tool calls go through the agent door with no
+// agents.WithTurnInputRow), once ccd accepts it (agents.MarkTurnAccepted). Its tool calls go through the agent door with no
 // turn on their own context — as a pod's CLI calls /mcp — so the per-turn
 // record is read from the registry. The moment they record is the turn's
 // prompt.
@@ -65,7 +66,11 @@ func newOriginWorld(t *testing.T) originWorld {
 	earlier := add("assistant", "Done with the earlier work.")
 	prompt := add("user", "New work for the officer.")
 	turn, end := context.WithCancel(agents.WithTurnInputRow(context.Background(), prompt))
-	_ = w.srv.OfficerTurnContext(turn, w.agent)
+	tctx := w.srv.OfficerTurnContext(turn, w.agent)
+	if w.srv.turnInputs.only(w.agent.ID) != 0 {
+		t.Fatal("control: the turn is recorded before ccd accepted it")
+	}
+	agents.MarkTurnAccepted(tctx, agents.TurnAcceptance{}) // ccd's 103: the CLI took the text
 	t.Cleanup(end)
 	return originWorld{outboundWorld: w, session: sess.ID, earlier: earlier, moment: prompt, endTurn: end}
 }
@@ -423,5 +428,115 @@ func TestAHostOfficersItemOpensItsMirroredWindow(t *testing.T) {
 		if strings.HasPrefix(href, "/agents/") {
 			t.Fatalf("a host officer's item links the agent page %q", href)
 		}
+	}
+}
+
+// TestARetrySuccessorCarriesItsRootsOrigin (round 1's G1): a draft filed
+// under the running turn, approved, whose send fails with nothing sent, is
+// retried as a successor that carries the root's origin — the instance, the
+// session and the moment — so its "Show session" opens the same turn. When
+// the moment's message has been deleted since (retention), the retry is still
+// filed, carrying the instance and the session and no moment.
+func TestARetrySuccessorCarriesItsRootsOrigin(t *testing.T) {
+	w := newOriginWorld(t)
+	_, root := w.approvedForItem("origin:retry:1")
+	if d := w.draft(root); !sameOrigin(d.Origin, w.want()) {
+		t.Fatalf("control: the root's origin %+v, want %+v", d.Origin, w.want())
+	}
+	w.claimed(root)
+	if code, out := w.postResult(root, transientFail); code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("result: %d %v", code, out)
+	}
+	succ := w.successors(root)
+	if len(succ) != 1 || !sameOrigin(succ[0].Origin, w.want()) {
+		t.Fatalf("the successor's origin: %d successors, %+v; want the root's %+v", len(succ), func() any {
+			if len(succ) == 0 {
+				return nil
+			}
+			return succ[0].Origin
+		}(), w.want())
+	}
+
+	// The moment's message is gone before the next failure.
+	_, root2 := w.approvedForItem("origin:retry:2")
+	w.claimed(root2)
+	if err := w.srv.ext.Agents.DeleteChatMessage(w.ctx, w.agent.ID, w.moment); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := w.postResult(root2, transientFail); code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("result: %d %v", code, out)
+	}
+	succ2 := w.successors(root2)
+	want := itemorigin.Origin{AgentID: w.agent.ID, SessionID: w.session}
+	if len(succ2) != 1 || succ2[0].Origin != want {
+		t.Fatalf("a retry whose moment was deleted: %d successors %+v; want one carrying %+v", len(succ2), succ2, want)
+	}
+}
+
+// agentPageAt is the agent page at session sid, moment at, as user 1.
+func (w originWorld) agentPageAt(at int64) string {
+	w.t.Helper()
+	rec := w.do("GET", strings.TrimSuffix(ui.AgentMomentHref(w.agent.Name, w.session, at), "#"+ui.AgentMomentAnchor), "", func(r *http.Request) {
+		r.Header.Set("Cookie", sessionCookieFor(w.srv))
+		r.Header.Set("Sec-Fetch-Dest", "document")
+		r.Header.Set("Sec-Fetch-Mode", "navigate")
+	})
+	if rec.Code != http.StatusOK {
+		w.t.Fatalf("the agent page at %d: %d", at, rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// TestAMomentThatIsNotOnThePageGetsNoMarker (round 1's Y2): the marker is
+// drawn only when the moment's own row is on the page. A moment more than
+// 1000 messages back (past the read-back window) and a moment whose row was
+// deleted each open the session with NO marker and a plain note that the
+// moment is no longer in the conversation. CONTROL: the moment while it is
+// in reach is marked, with no note.
+func TestAMomentThatIsNotOnThePageGetsNoMarker(t *testing.T) {
+	w := newOriginWorld(t)
+	page := w.agentPageAt(w.moment)
+	if !strings.Contains(page, `data-session-moment="`+strconv.FormatInt(w.moment, 10)+`"`) || strings.Contains(page, "data-session-moment-gone") {
+		t.Fatal("control: the moment in reach is not marked, or says it is gone")
+	}
+	// 1010 messages after it: the moment is past the 1000-message read-back.
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content)
+		SELECT $1, 1, $2, 'assistant', 'later ' || g FROM generate_series(1, 1010) g`, w.agent.ID, w.session)
+	page = w.agentPageAt(w.moment)
+	if strings.Contains(page, "data-session-moment=") || !strings.Contains(page, "data-session-moment-gone") {
+		t.Fatalf("a moment 1010 messages back: marker drawn %v, note drawn %v; want no marker and the note",
+			strings.Contains(page, "data-session-moment="), strings.Contains(page, "data-session-moment-gone"))
+	}
+
+	// A fresh world: the moment's row deleted (retention, a taken-back row).
+	w2 := newOriginWorld(t)
+	w2.addMessage("assistant", "After the moment.")
+	if err := w2.srv.ext.Agents.DeleteChatMessage(w2.ctx, w2.agent.ID, w2.moment); err != nil {
+		t.Fatal(err)
+	}
+	page = w2.agentPageAt(w2.moment)
+	if strings.Contains(page, "data-session-moment=") || !strings.Contains(page, "data-session-moment-gone") {
+		t.Fatalf("a deleted moment: marker drawn %v, note drawn %v; want no marker and the note",
+			strings.Contains(page, "data-session-moment="), strings.Contains(page, "data-session-moment-gone"))
+	}
+}
+
+// TestAVanishedTurnRowIsNeverWrittenAsTheMoment (round 1's Y3): the turn is
+// recorded, then its prompt row disappears (taken back, or deleted) before a
+// call makes a draft. The origin resolver skips the vanished row: the draft
+// is filed — never failed on the officer_origin_is_owners trigger by an
+// origin_message_id naming no row — with its session and no moment.
+func TestAVanishedTurnRowIsNeverWrittenAsTheMoment(t *testing.T) {
+	w := newOriginWorld(t)
+	if err := w.srv.ext.Agents.DeleteChatMessage(w.ctx, w.agent.ID, w.moment); err != nil {
+		t.Fatal(err)
+	}
+	id, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"x","target":{"kind":"post"},"body":"Filed after the turn's row vanished."}`)
+	if id == 0 {
+		t.Fatalf("a draft filed after its turn's row vanished was not filed: %s", out)
+	}
+	d, err := w.ps.Draft(w.ctx, id)
+	if want := (itemorigin.Origin{AgentID: w.agent.ID, SessionID: w.session}); err != nil || d.Origin != want {
+		t.Fatalf("a draft filed after its turn's row vanished records %+v (%v); want %+v, no moment", d.Origin, err, want)
 	}
 }

@@ -44,6 +44,7 @@
 --       DROP COLUMN IF EXISTS origin_message_id;
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS origin_agent_id, DROP COLUMN IF EXISTS origin_session_id,
 --       DROP COLUMN IF EXISTS origin_message_id;
+--   DELETE FROM schema_migrations WHERE version = 185;
 
 ALTER TABLE public.attention_asks
     ADD COLUMN IF NOT EXISTS origin_agent_id   BIGINT REFERENCES public.agents (id) ON DELETE SET NULL,

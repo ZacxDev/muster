@@ -138,8 +138,12 @@ type AgentDetailView struct {
 	Sessions        []SessionView
 	ActiveSessionID int64
 	// MomentID is the moment the page opens at (?at=, AgentMomentHref): the
-	// prompt row of a turn; its marker is drawn before it. 0: none.
+	// prompt row of a turn; its marker is drawn before it. 0: none. The
+	// caller sets it only when that row is among Messages.
 	MomentID int64
+	// MomentGone: a moment was asked for and its row is not on the page (past
+	// the read-back window, deleted, expired): no marker, a plain note.
+	MomentGone bool
 	// DraftUser is the signed-in user, the first part of the chat box's draft
 	// key (composer_draft.go).
 	DraftUser int64
@@ -1642,6 +1646,9 @@ func chatLogInner(v AgentDetailView) g.Node {
 	if !marked && len(v.Messages) > 0 {
 		items = append(items, logItem{node: momentMarker(v.MomentID)})
 	}
+	if v.MomentGone {
+		items = append(items, logItem{node: momentGoneNote()})
+	}
 	msgs := groupToolRuns(items)
 	return g.Group{
 		// 🔴 THE CHIEF INTRO IS INSIDE #chat-log AND NOT IN chiefPanelBody, AND THAT
@@ -2082,6 +2089,13 @@ func relayRow(m ChatLine) g.Node {
 func momentMarker(id int64) g.Node {
 	return Div(ID(AgentMomentAnchor), Role("note"), g.Attr("data-session-moment", strconv.FormatInt(id, 10)),
 		Class(AgentMomentMarkerClass), g.Text("Below: the turn where it raised this"))
+}
+
+// momentGoneNote is the page's word when the moment it was opened at is no
+// longer in the conversation (AgentDetailView.MomentGone).
+func momentGoneNote() g.Node {
+	return P(Role("note"), g.Attr("data-session-moment-gone", ""), Class(AgentMomentGoneClass),
+		g.Text("The moment this item came from is no longer in this conversation, so it opens at the latest messages."))
 }
 
 func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {

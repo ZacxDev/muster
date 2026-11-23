@@ -258,7 +258,10 @@ records for each turn it starts. It is not "the newest message", which another
 message arriving mid-turn would move. The record comes from the officer's own
 sign-in, never from anything the officer wrote in the call. An item made
 before this, or one whose turn muster does not know, opens that copy's
-conversation as a whole.
+conversation as a whole. If that turn is no longer in the conversation (it was
+deleted, or is too far back to load), the conversation opens at its latest
+messages with a note saying so, and no marker. A post muster retries after a
+failed send keeps the original's link.
 
 **An officer on one of your machines** keeps its conversation in that
 machine's window, not in muster's chat, so its button opens the window's

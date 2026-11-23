@@ -84,12 +84,16 @@ func (s *Server) withOfficerOrigin(ctx context.Context, a agents.Agent) context.
 		o := itemorigin.Origin{AgentID: agent}
 		if input > 0 {
 			if r, ok := s.ext.Agents.(chatMessageReader); ok {
+				// A registered row that no longer exists (taken back, or
+				// deleted since) is SKIPPED, never written: an
+				// origin_message_id naming no row would fail the insert on the
+				// officer_origin_is_owners trigger.
 				m, err := r.ChatMessage(rctx, input)
 				switch {
 				case err == nil && m.AgentID == agent && m.SessionID > 0:
 					o.SessionID, o.MessageID = m.SessionID, input
 					return o, true
-				case err != nil:
+				case err != nil && !errors.Is(err, pgx.ErrNoRows):
 					s.logger.Printf("officers: origin of agent %d's call: its turn's prompt %d: %v", agent, input, err)
 				}
 			}
@@ -138,6 +142,10 @@ func (s *Server) officerOriginHref(ctx context.Context, sc officerScope, officer
 	default:
 		return ""
 	}
+	// a.OwnerID != sc.Owner is DEFENCE IN DEPTH, unreachable today: the
+	// origin row's trigger (officer_origin_is_owners) only stores the owner's
+	// own agent, and row-level security hides every other owner's from this
+	// read. It stays so a future reader that bypasses either cannot link out.
 	if err != nil || a.OwnerID != sc.Owner || !s.isOfficerInstance(sc.Owner, officer, a.Name) {
 		return ""
 	}
@@ -234,8 +242,10 @@ const (
 // agentMomentMessages is session sessionID's messages for the agent page: the
 // newest chatHistoryCap, as always — and, for a moment older than them, read
 // back page by page (at most momentReach messages) until it is in, keeping
-// momentLead messages before it. A moment that is not this session's simply
-// is not found: the page draws the newest messages and no marker moves.
+// momentLead messages before it. A moment it does not find (older than
+// momentReach, deleted, expired, or not this session's) leaves the newest
+// messages; momentOnPage then draws no marker and the page says the moment is
+// no longer in the conversation.
 func (s *Server) agentMomentMessages(ctx context.Context, sessionID, moment int64) []agents.ChatMessage {
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, sessionID, chatHistoryCap)
 	if moment <= 0 || len(msgs) == 0 || msgs[0].ID <= moment {
@@ -370,4 +380,20 @@ func insertAtCardEnd(page, attr, ins string) string {
 		}
 	}
 	return page
+}
+
+// momentOnPage is the moment the page may mark: moment when its own row is
+// among msgs, else 0 — and gone reports a moment asked for and not there
+// (past the read-back window, deleted, expired), which the page then says in
+// words rather than drawing a marker in the wrong place.
+func momentOnPage(msgs []agents.ChatMessage, moment int64) (int64, bool) {
+	if moment <= 0 {
+		return 0, false
+	}
+	for _, m := range msgs {
+		if m.ID == moment {
+			return moment, false
+		}
+	}
+	return 0, true
 }

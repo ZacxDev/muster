@@ -1616,6 +1616,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// page reaches back far enough to draw it (agentMomentMessages).
 	moment := agentMomentParam(r)
 	msgs := s.agentMomentMessages(ctx, active.ID, moment)
+	// The marker is drawn only when the moment's own row is on the page; a
+	// moment past the read-back window, deleted or expired says so instead.
+	moment, momentGone := momentOnPage(msgs, moment)
 	op.set("messages", strconv.Itoa(len(msgs)))
 	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(op.begin("task"), a)
@@ -1624,7 +1627,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(ctx, a), Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		LastFailover: s.lastFailoverLine(ctx, a),
-		Messages:     lines, Sessions: sessions, ActiveSessionID: active.ID, MomentID: moment,
+		Messages:     lines, Sessions: sessions, ActiveSessionID: active.ID, MomentID: moment, MomentGone: momentGone,
 		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.

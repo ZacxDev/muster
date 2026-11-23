@@ -68,6 +68,12 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		// It is the same door as OfficerTurnContext's, for a pool that keeps
 		// one conversation.
 		"internal/api/officers.go (*Server).unbriefedFirstTurn → WithTurnAccepted(ctx)",
+		// Not a marker setter: an officer turn's prompt row is recorded for
+		// "Show session" once ccd accepts the turn (officers.go
+		// registerOfficerTurn: turnInputs only). It writes no owner_turn_ field
+		// and CHAINS to the callback ctx already carries, as acceptedAfterQueued
+		// does.
+		"internal/api/officers.go (*Server).registerOfficerTurn → WithTurnAccepted(ctx)",
 		// Not a marker setter: a member's message to a team agent answers the
 		// agent's open asks once the runtime takes it (team_agents.go
 		// addressAskerOnAccept). It writes no owner_turn_ field and CHAINS to the
