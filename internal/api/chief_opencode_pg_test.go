@@ -60,8 +60,10 @@ func TestOpencodeIsOfferedOnlyWhereTheSpendDoorServes(t *testing.T) {
 	if got := s.sessionRuntimesFor(ctx, p.agent(t, p.adminChief)); !slices.Equal(got, []string{"claude-code", "opencode"}) {
 		t.Fatalf("the admin's chief is offered %v, want claude-code and opencode", got)
 	}
-	if got := s.sessionRuntimesFor(ctx, p.agent(t, p.memberChief)); slices.Contains(got, "opencode") {
-		t.Fatalf("another owner's chief is offered %v: the spend door serves the admin's chief only", got)
+	// The member's own chief, read as the member: the picker it would see.
+	member := asUser(p.member)
+	if got := s.sessionRuntimesFor(member, p.agent(t, p.memberChief)); !slices.Equal(got, []string{"claude-code"}) {
+		t.Fatalf("another owner's chief is offered %v, want claude-code only: the spend door serves the admin's chief only", got)
 	}
 	cs := s.chiefSessions
 	s.chiefSessions = nil
