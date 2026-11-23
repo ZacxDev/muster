@@ -20,7 +20,7 @@ import (
 //	SessionRuntimeClaudeCode "claude-code" a CLI of its own in ccd, started with
 //	                                       --model when Model is set.
 //	SessionRuntimeOpencode   "opencode"    an opencode server of its own in ccd
-//	                                       (migration 0183) on an OpenRouter
+//	                                       (migration 0184) on an OpenRouter
 //	                                       model ("openrouter/<id>", always set),
 //	                                       reached through muster's LLM proxy:
 //	                                       no provider key enters the pod.

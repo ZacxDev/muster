@@ -1,4 +1,4 @@
--- muster 0183 — A CHIEF CHAT SESSION MAY RUN ON OPENCODE (internal/agents
+-- muster 0184 — A CHIEF CHAT SESSION MAY RUN ON OPENCODE (internal/agents
 -- SessionRuntimeOpencode; cmd/ccd opencode lanes; docs/chief.md "OpenRouter
 -- sessions").
 --

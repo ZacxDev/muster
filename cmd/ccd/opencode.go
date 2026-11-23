@@ -31,7 +31,7 @@ import (
 // OPENCODE LANES: ONE OPENCODE SERVER PER OPENCODE MUSTER SESSION.
 //
 // A chief side chat started on the opencode runtime (muster's
-// chat_sessions.runtime 'opencode', migration 0183) runs on an OpenRouter
+// chat_sessions.runtime 'opencode', migration 0184) runs on an OpenRouter
 // model in an opencode server of its own, beside the Claude Code CLIs:
 //
 //   - its turns come on POST /v1/opencode/responses (opencodeResponsesPath),
