@@ -90,6 +90,12 @@ type DraftEnd struct {
 	// failed after its lease lapsed) may settle the item that draft's
 	// unconfirmed end escalated (escalatedByDraft).
 	ClaimedAt *time.Time
+	// NoRequester: the follow-up names NO session, even when the item does
+	// (inheritRequesterTx is skipped). Set by the hand-back of a decision the
+	// item's session was never reached with (internal/api wakeNotDelivered):
+	// the officer owns the redraft from then on, so a later decision on it is
+	// not held a day for a session that already did not answer.
+	NoRequester bool
 }
 
 // DraftSettled is what Store.DraftEnded did.
@@ -208,7 +214,7 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 			} else if err != nil {
 				return out, err
 			}
-			if e.Item > 0 {
+			if e.Item > 0 && !e.NoRequester {
 				// The session that asked for the item asked for its redraft too
 				// (inheritRequesterTx): the follow-up's own draft wakes it.
 				if err := inheritRequesterTx(ctx, tx, owner, e.Officer, e.Item, out.FollowUp); err != nil {

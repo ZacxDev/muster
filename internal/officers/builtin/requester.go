@@ -24,10 +24,12 @@ import (
 // 🔴 AND IT IS INHERITED, NEVER NAMED. The one other writer is
 // inheritRequesterTx: the follow-up muster files when an item's draft ends
 // unsent (DraftEndedTx: a plugin's refusal, a failed send, an expiry, a broken
-// binding, Checks replies off, an owner rejection that could not go to the
-// session) takes the requester of the item it continues, copied row to row in
+// binding, Checks replies off, an owner rejection whose wake could not be
+// filed) takes the requester of the item it continues, copied row to row in
 // the same transaction. It is the same ask, so the decision on the redraft
-// reaches the session that made it, not nobody.
+// reaches the session that made it, not nobody. The one exception is a
+// decision handed back because its line to that session was never delivered
+// (DraftEnd.NoRequester): that follow-up names no session.
 
 // inheritRequesterTx copies, inside tx, owner's officer's item from's requester
 // onto item to (a follow-up DraftEndedTx just filed), unless to already names

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -83,12 +84,12 @@ func TestAnExpiredDraftsFollowUpKeepsTheSessionThatEnqueuedTheItem(t *testing.T)
 	}
 }
 
-// TestARejectionHandedBackToTheOfficerKeepsTheSession: a rejection whose wake
-// could not be filed (the session's host no longer mirrors here) goes back to
-// the officer (TestARejectionNoWakeCanReachGoesBackToTheOfficer) — and its
-// follow-up still names the session, so a later decision on the redraft
-// reaches it once its host mirrors again.
-func TestARejectionHandedBackToTheOfficerKeepsTheSession(t *testing.T) {
+// TestARejectionWhoseWakeCouldNotBeFiledKeepsTheSessionOnItsFollowUp: a
+// rejection whose wake could not be filed at all (the session's host does not
+// mirror here) goes back to the officer at once
+// (TestARejectionNoWakeCanReachGoesBackToTheOfficer), and its follow-up names
+// the item's session, as any follow-up of a requested item does.
+func TestARejectionWhoseWakeCouldNotBeFiledKeepsTheSessionOnItsFollowUp(t *testing.T) {
 	w := newOfficerWakeWorld(t)
 	item := w.sessionEnqueues("plan-reject-handed-back")
 	id := w.draftForItem(item, "A post whose asker is away.")
@@ -100,6 +101,41 @@ func TestARejectionHandedBackToTheOfficerKeepsTheSession(t *testing.T) {
 	follow := w.followUpOf(id)
 	if h, s := w.itemRequester(follow); h != "tower" || s != routeSID {
 		t.Fatalf("follow-up %d's requester: %q/%q; want tower/%s (item %d's)", follow, h, s, routeSID, item)
+	}
+}
+
+// TestARejectionNeverDeliveredHandsTheRedraftToTheOfficerAlone: the
+// rejection's wake is filed but settles "Not delivered" a day later, so it is
+// handed back to the officer (wakeNotDelivered). That follow-up names NO
+// session — the one that was not reached — so the owner's rejection of the
+// redraft goes straight to the officer, with no new session wake, instead of
+// waiting another day for the same session.
+func TestARejectionNeverDeliveredHandsTheRedraftToTheOfficerAlone(t *testing.T) {
+	w := newOfficerWakeWorld(t)
+	item := w.sessionEnqueues("plan-reject-never-delivered-redraft")
+	id := w.draftForItem(item, "A post whose asker has gone.")
+	w.host.set(func(m *wakeMirror) { m.gone = true })
+	if rec := w.rejectForm(id, "Wrong venue."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject: %d %s", rec.Code, rec.Body.String())
+	}
+	w.tick()
+	w.srv.sendQueueClock = func() time.Time { return time.Now().Add(wakeGiveUp + time.Minute) }
+	w.tick()
+	w.srv.sendQueueClock = nil
+	follow := w.followUpOf(id)
+	if h, s := w.itemRequester(follow); h != "" || s != "" {
+		t.Fatalf("the handed-back follow-up %d names %q/%q; want no session (it was not reached)", follow, h, s)
+	}
+	const again = "A second post for the officer alone."
+	redraft := w.draftForItem(follow, again)
+	if rec := w.rejectForm(redraft, "Still no."); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject the redraft: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, p, ok := w.refusedItemOf(redraft); !ok || p["detail"] != "Still no." || p["by"] != "owner" {
+		t.Fatalf("the redraft's rejection did not go straight to the officer (follow-up %v, payload %v)", ok, p)
+	}
+	if ws := w.officerWakesOf(redraft); len(ws) != 0 {
+		t.Fatalf("the redraft's rejection filed %d session wake(s); want none", len(ws))
 	}
 }
 
