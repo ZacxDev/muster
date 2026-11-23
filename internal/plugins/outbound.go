@@ -628,6 +628,72 @@ type NewOutbound struct {
 	Context *ReplyContext
 }
 
+// DuplicateLiveDraftCode is the stable code a duplicate-live-draft refusal
+// leads with (DuplicateLiveDraftError): the officer's tool error starts with it.
+const DuplicateLiveDraftCode = "duplicate_live_draft"
+
+// ErrDuplicateLiveDraft: FileOutbound refused the draft because the same
+// officer of the same owner already has a LIVE outbound draft with the same
+// venue, target and body (DuplicateLiveDraftError names it).
+var ErrDuplicateLiveDraft = errors.New("plugins: an identical outbound draft is still live")
+
+// LiveOutboundStatuses are the statuses of an outbound draft that can STILL
+// GO OUT, THE set the duplicate guard in FileOutbound blocks on:
+//
+//   - pending: awaiting its plugin's check or its owner's decision;
+//   - approved: awaiting its plugin's claim, claimed and being posted under a
+//     lease (claimed_at set, status still approved), or a retry chain's
+//     queued successor (draft_retry.go: filed approved, claimable from its
+//     not_before).
+//
+// Every other status has ENDED and does not block a re-file: rejected (the
+// owner's rejection, a refused check, a withdrawn approval, a broken
+// binding), failed, expired and superseded can never go out; unconfirmed is
+// never offered again (its claim lapsed with no result).
+//
+// 🔴 SENT IS DELIBERATELY NOT LIVE. This guard answers one question — "is the
+// same draft still on its way?" — from muster's own rows, so an officer never
+// has to decide it from memory. Whether an identical post already went out
+// (sent, or unconfirmed and maybe sent) is the relay's twin guard's concern
+// upstream, not this one's: a sent draft blocking a re-file here would turn a
+// deliberate repost into a refusal muster cannot explain.
+var LiveOutboundStatuses = []DraftStatus{DraftPending, DraftApproved}
+
+// DuplicateLiveDraftError is FileOutbound's refusal of a draft identical to
+// live draft Draft (status Status; Claimed: its plugin has collected it).
+// It is ErrDuplicateLiveDraft, and ErrInvalid too, so the officer tool's
+// existing pass-through of invalid filings hands the sentence to the officer
+// as its tool error.
+type DuplicateLiveDraftError struct {
+	Draft   int64
+	Status  DraftStatus
+	Claimed bool
+}
+
+func (e *DuplicateLiveDraftError) Error() string {
+	where := "awaiting its plugin's check or your owner's decision"
+	if e.Status == DraftApproved {
+		where = "approved, waiting for its plugin to post it"
+		if e.Claimed {
+			where = "approved and being posted by its plugin now"
+		}
+	}
+	return fmt.Sprintf("plugins: %s: draft %d has the same venue, target and body and is still live (status %s: %s), so this one was not filed. "+
+		"Report draft %d instead of filing it again; once it is refused, rejected, expired or fails, you may file it again.",
+		DuplicateLiveDraftCode, e.Draft, e.Status, where, e.Draft)
+}
+
+func (e *DuplicateLiveDraftError) Unwrap() []error { return []error{ErrDuplicateLiveDraft, ErrInvalid} }
+
+// liveStatusArg is LiveOutboundStatuses as a query argument.
+func liveStatusArg() []string {
+	out := make([]string, len(LiveOutboundStatuses))
+	for i, s := range LiveOutboundStatuses {
+		out[i] = string(s)
+	}
+	return out
+}
+
 // validate checks every field but the body (ScreenOutbound's).
 func (in NewOutbound) validate() error {
 	switch {
@@ -786,6 +852,39 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 				}
 			}
 		}
+		var ref any
+		switch in.Target.Kind {
+		case TargetReply, TargetLike:
+			ref = in.Target.Ref
+		case TargetDM, TargetFollow:
+			// the person's handle as their contact stores it (the guard's)
+			ref = reached.Handle
+		}
+		// 🔴 NO SECOND COPY OF A DRAFT THAT CAN STILL GO OUT, decided HERE from
+		// the rows, never by the officer from its memory of an earlier turn: the
+		// same officer's live draft (LiveOutboundStatuses) with the same venue,
+		// target (kind and ref) and body refuses this one, naming it. The body
+		// is compared as stored (screened), byte for byte: the same test as
+		// equal body SHA-256s. Media refs are NOT compared, so the same text
+		// with other media is a duplicate too. Race-free:
+		// every filing of this officer holds the advisory lock above for its
+		// whole transaction, so two identical filings serialize and the second
+		// reads the first. A retry chain's successor is inserted in the same
+		// transaction that fails its predecessor (draft_retry.go), so a reader
+		// sees one of the two live.
+		var dup DuplicateLiveDraftError
+		var dupClaimed *time.Time
+		err = tx.QueryRow(ctx, `SELECT id, status, claimed_at FROM plugin_reply_drafts
+			WHERE owner_id = $1 AND officer = $2 AND message_id IS NULL AND status = ANY($3::text[])
+			  AND venue = $4 AND target_kind = $5 AND target_ref IS NOT DISTINCT FROM $6::text AND body = $7
+			ORDER BY id LIMIT 1`, ownerID, in.Officer, liveStatusArg(), in.Venue, in.Target.Kind, ref, body).Scan(&dup.Draft, &dup.Status, &dupClaimed)
+		switch {
+		case err == nil:
+			dup.Claimed = dupClaimed != nil
+			return &dup
+		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
 		if in.ItemID != nil {
 			// 🔴 THE ITEM WAITS ON THE DRAFT, IN THIS TRANSACTION: the instance
 			// must hold it under a live lease now (checked under the item's row
@@ -807,14 +906,6 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 		replyContext, err := replyContextArg(in.Context)
 		if err != nil {
 			return err
-		}
-		var ref any
-		switch in.Target.Kind {
-		case TargetReply, TargetLike:
-			ref = in.Target.Ref
-		case TargetDM, TargetFollow:
-			// the person's handle as their contact stores it (the guard's)
-			ref = reached.Handle
 		}
 		d, err = scanDraft(tx.QueryRow(ctx, `
 			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state, check_due_at,

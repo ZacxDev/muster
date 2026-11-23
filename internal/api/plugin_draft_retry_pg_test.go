@@ -379,8 +379,9 @@ func TestAManualRetryIsAllowedOnlyAfterNothingWasSent(t *testing.T) {
 			t.Fatalf("retry of draft %d: %v; want refused %s", id, err, code)
 		}
 	}
-	// Pending (never approved).
-	_, pending := w.fileForItem("manual:pending", retryPost)
+	// Pending (never approved). Its own body: while it is pending, the
+	// approvals below of retryPost would be refused as its duplicates.
+	_, pending := w.fileForItem("manual:pending", retryPost+" Still pending.")
 	refused(pending, plugins.RetryNotFailed)
 	// An unknown outcome: failed without nothing_sent.
 	_, unknown := w.approvedForItem("manual:unknown")

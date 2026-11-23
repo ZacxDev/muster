@@ -70,6 +70,8 @@ type outboundWorld struct {
 	spawn  officers.HostSpawn
 	// pusher records the pushes, when the fixture asked for them (pushes).
 	pusher *payloadPusher
+	// readyN counts readyDraft's filings in this world.
+	readyN int
 }
 
 // call runs an officer tool as the world's instance: through the agent door
@@ -368,9 +370,16 @@ const twoMediaDraft = `{"plugin":"` + outboundPluginName + `","venue":"example.f
 	`"body":"Thanks for trying it. The source is at github.com/example/project.","media":["launch/hero-1","launch/demo-2"]}`
 
 // readyDraft files twoMediaDraft, uploads both media and checks it sendable.
+// Its first call in a world files twoMediaDraft exactly; each later one
+// answers another thread (ref t1_abc_<n>), since an identical draft while
+// the first is still live is refused (FileOutbound's duplicate guard).
 func (w *outboundWorld) readyDraft() int64 {
 	w.t.Helper()
-	id, out := w.postDraft(twoMediaDraft)
+	args := twoMediaDraft
+	if w.readyN++; w.readyN > 1 {
+		args = strings.Replace(args, `"ref":"t1_abc"`, `"ref":"t1_abc_`+strconv.Itoa(w.readyN)+`"`, 1)
+	}
+	id, out := w.postDraft(args)
 	if id == 0 {
 		w.t.Fatalf("officer_post_draft: %s", out)
 	}

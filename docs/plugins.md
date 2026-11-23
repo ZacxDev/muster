@@ -1179,6 +1179,14 @@ the plugin REFUSES its outbound drafts still awaiting the check (`rejected`,
 detail "the plugin's Checks replies was turned off…"), since none could be
 approved without it.
 
+A filing identical to one of the officer's outbound drafts that can still go
+out (`pending`, or `approved` whether or not your plugin has claimed it) is
+refused `duplicate_live_draft`, naming that draft, so your plugin never sees
+two copies of one post on their way at once
+([officers.md](officers.md#outbound-drafts-officer_post_draft)). A **sent**
+draft does not block one: refusing a post that already went out is your
+plugin's own twin check on the venue, not this one.
+
 An outbound draft's body may contain **public host names and URLs**, such as
 `github.com/example/project`, so a post can link to the project. Everything
 else in the [screen](#replying-drafts-you-approve) still applies: no IP

@@ -1610,7 +1610,21 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
 with `item_id`, an `item` note saying the item now waits on the draft). Nothing
 is sent: the plugin checks the draft and uploads its media, then the owner
-decides. At most 20 of an officer's drafts may await a decision. The tool is
+decides. At most 20 of an officer's drafts may await a decision.
+
+**No second copy of a live draft.** A filing identical to one of the same
+officer's drafts that can still go out — the same venue, target (kind and
+ref) and body, while that draft is `pending` or `approved` (unclaimed, being
+posted by its plugin, or a retry's queued next attempt) — is refused, and
+nothing is filed. The tool error starts with `duplicate_live_draft:` and
+names that draft's id and status, so the officer reports it rather than
+deciding from its memory whether an earlier draft is still out. A draft that
+was refused, rejected, failed, expired, superseded or ended unconfirmed does
+not block filing the same text again, and neither does a **sent** one: this
+guard is about drafts still on their way, and whether an identical post
+already went out is the plugin's concern on the venue. Two identical filings
+at once file one draft (the check and the insert run under the officer's
+filing lock, in one transaction). The tool is
 offered to an instance only while its type grants the capability (read at
 call time), and an HQ officer is never offered it. The draft is filed as the
 officer's owner; its author on the card is the instance.
