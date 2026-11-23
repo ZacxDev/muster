@@ -1209,11 +1209,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 	if cfg.PagesPublicListen != "" {
-		a.pagesPublic = &http.Server{
-			Addr:              cfg.PagesPublicListen,
-			Handler:           api.PagesPublicSurface(handler),
-			ReadHeaderTimeout: readHeaderTimeout,
-		}
+		a.pagesPublic = api.NewPagesPublicServer(cfg.PagesPublicListen, handler, cfg.ClientAddr.Header(), readHeaderTimeout)
 	}
 	if cfg.MetricsPort != 0 {
 		a.metrics = &http.Server{

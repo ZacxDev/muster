@@ -204,7 +204,7 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 		return agents.Agent{}, false
 	}
 	if auth.ConstantTimeEqual(token, s.auth.HookToken) || auth.ConstantTimeEqual(token, s.auth.ServiceToken) {
-		s.logger.Printf("agent routes: refused a shared machine token at %s %s", r.Method, r.URL.Path)
+		s.logger.Printf("agent routes: refused a shared machine token at %s %s", r.Method, accessLogPath(r.URL))
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": SharedTokenRefusal})
 		return agents.Agent{}, false
 	}

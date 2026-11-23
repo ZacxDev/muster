@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/pages"
@@ -33,7 +35,7 @@ func newPublicPageFixture(t *testing.T) *publicPageFixture {
 	t.Helper()
 	f := newPageFixture(t)
 	f.srv.ext.PagesPublicURL = pagesPublicBase
-	return &publicPageFixture{pageFixture: f, public: PagesPublicSurface(f.h)}
+	return &publicPageFixture{pageFixture: f, public: PagesPublicSurface(f.h, "")}
 }
 
 // pub is a request to the public listener.
@@ -213,5 +215,107 @@ func TestALinkIsWrittenUnderThePublicPagesURL(t *testing.T) {
 	f.srv.ext.PagesPublicURL = ""
 	if u := share(); !strings.HasPrefix(u, pagesPublicURL+pages.SharePrefix) {
 		t.Fatalf("the owner's Share with the public listener off: %q, want under %s", u, pagesPublicURL)
+	}
+}
+
+// TestASlowSubmitIsCutOffAtItsReadDeadline: a submit whose body stops
+// arriving is answered 408 once pageSubmitReadTimeout passes, on the private
+// listener as on the public one, and the link still takes the next submit.
+func TestASlowSubmitIsCutOffAtItsReadDeadline(t *testing.T) {
+	defer func(d time.Duration) { pageSubmitReadTimeout = d }(pageSubmitReadTimeout)
+	pageSubmitReadTimeout = 300 * time.Millisecond
+	f := newPublicPageFixture(t)
+	id := f.create(t, f.agent, "Slow sender", formBlocks)
+	l := f.liveLink(t, f.owner, id)
+	for name, h := range map[string]http.Handler{"private": f.h, "public": f.public} {
+		srv := httptest.NewServer(h)
+		pr, pw := io.Pipe()
+		go func() { _, _ = io.WriteString(pw, `{"component":"q1","da`) }()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+pages.LinkPath(l.Token)+"/submit", pr)
+		req.Header.Set("Content-Type", "application/json")
+		req.ContentLength = 200
+		start := time.Now()
+		done := make(chan *http.Response, 1)
+		go func() {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				done <- nil
+				return
+			}
+			done <- resp
+		}()
+		select {
+		case resp := <-done:
+			if resp == nil || resp.StatusCode != http.StatusRequestTimeout {
+				t.Errorf("%s: a stalled submit was answered %+v; want 408", name, resp)
+			} else {
+				resp.Body.Close()
+			}
+			if took := time.Since(start); took < 250*time.Millisecond {
+				t.Errorf("%s: answered after %v, before the deadline", name, took)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: a stalled submit was still being read after 5s; the deadline is 300ms", name)
+		}
+		_ = pw.Close()
+		srv.Close()
+	}
+	if w := f.submit(t, l.Token, "q1", `{"answer":"after"}`); w.Code != http.StatusOK {
+		t.Fatalf("the next submit: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAnUploadOutlastsThePublicServersReadTimeout: an upload that takes
+// longer than the public server's read timeout — but is inside the upload's
+// own read deadline — is recorded: the route's deadline wins, and the write
+// timeout leaves room for it.
+func TestAnUploadOutlastsThePublicServersReadTimeout(t *testing.T) {
+	defer func(d time.Duration) { pagesPublicReadTimeout = d }(pagesPublicReadTimeout)
+	pagesPublicReadTimeout = 300 * time.Millisecond
+	f := newPublicPageFixture(t)
+	id := f.create(t, f.agent, "Slow upload", formBlocks)
+	l := f.liveLink(t, f.owner, id)
+	srv := NewPagesPublicServer("127.0.0.1:0", f.h, "", 5*time.Second)
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	_ = mw.WriteField("component", "u1")
+	fw, _ := mw.CreateFormFile("file", "logo.png")
+	_, _ = fw.Write([]byte("\x89PNG\r\n\x1a\nnot-really-a-png"))
+	_ = mw.Close()
+	body := b.Bytes()
+	pr, pw := io.Pipe()
+	go func() {
+		// The body arrives over ~900 ms, three times the server's read timeout.
+		for i, n := 0, len(body)/3; i < 3; i++ {
+			end := (i + 1) * n
+			if i == 2 {
+				end = len(body)
+			}
+			_, _ = pw.Write(body[i*n : end])
+			time.Sleep(300 * time.Millisecond)
+		}
+		_ = pw.Close()
+	}()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+ln.Addr().String()+pages.LinkPath(l.Token)+"/upload", pr)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.ContentLength = int64(len(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("the slow upload: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("the slow upload: %d %s", resp.StatusCode, out)
+	}
+	if rs, err := f.pages.Responses(f.as(f.owner, authz.ViaSession), id, 0, 10); err != nil || len(rs) != 1 || rs[0].Kind != pages.KindUpload {
+		t.Fatalf("responses: %+v %v", rs, err)
 	}
 }

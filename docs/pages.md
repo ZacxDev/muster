@@ -368,10 +368,17 @@ else as it is: the rest of muster stays on your network.
   icon. That list is one list in the code (`api.PagesPublicRoutes`). Every
   other path is a 404 there, including `/`, `/api/`, sign-in, `/plugin/`,
   MCP, `/health` and `/metrics`.
-- **No credential crosses it.** Cookies and credential headers are taken off
-  every request before muster sees it, and no response sets a cookie, so
-  your own signed-in browser gets nothing more there than a stranger does.
-  There is no CORS on it.
+- **No credential crosses it.** Only a short list of request headers is
+  passed on (`api.PagesPublicRequestHeaders`: the body's type and length,
+  `Accept*`, the caching headers, `Range`, `Origin`, `Referer`,
+  `User-Agent` and `Sec-Fetch-*`, plus your `MUSTER_CLIENT_IP_HEADER`, which
+  muster believes only from `MUSTER_TRUSTED_PROXIES`). Every other header,
+  cookies included, is removed before muster sees the request, and no
+  response sets a cookie, so your own signed-in browser gets nothing more
+  there than a stranger does. There is no CORS on it.
+- **A slow client is cut off.** The listener has its own timeouts: 30 s to
+  read a request (a submit has 15 s for its body, an upload its own minute),
+  2 minutes to answer it, and 1 minute for an idle connection.
 - **The links you hand on** (Share, an agent's `page_share_request`, the
   page's screen) are written under `MUSTER_PAGES_PUBLIC_URL`. Your own view
   of a page and every other link stay under `MUSTER_PUBLIC_URL`. A token
@@ -381,7 +388,11 @@ else as it is: the rest of muster stays on your network.
   [Limits](#limits) are the share routes' own, on either listener. They are
   counted per client address, so behind a proxy or tunnel set
   [`MUSTER_TRUSTED_PROXIES`](configuration.md#client-addresses-behind-a-proxy),
-  or every viewer shares the proxy's one address.
+  or every viewer shares the proxy's one address. One difference: on this
+  listener an address past the failed-lookup limit is answered 429 for the
+  minute **before** its link is looked up, so it cannot open even a live
+  link until then. On your own network a throttled address still opens a
+  live link, and only its misses are refused.
 - Prefer a hostname of its own for `MUSTER_PAGES_PUBLIC_URL`, not muster's:
   a page link's shell then shares no origin with your muster.
 

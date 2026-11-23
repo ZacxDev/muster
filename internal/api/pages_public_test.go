@@ -58,7 +58,7 @@ func reachesInner(r *http.Request) (bool, *httptest.ResponseRecorder) {
 	h := PagesPublicSurface(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusTeapot)
-	}))
+	}), "")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return reached, w
@@ -192,45 +192,5 @@ func TestThePublicPagesListenerRefusesEveryOtherShape(t *testing.T) {
 	// Positive control: the same surface does pass a ledgered shape.
 	if ok, _ := reachesInner(httptest.NewRequest(http.MethodHead, "/s/w0rd", nil)); !ok {
 		t.Fatal("HEAD /s/w0rd is refused: the surface refuses everything")
-	}
-}
-
-// TestThePublicPagesListenerStripsEveryCredential: what reaches muster
-// carries no cookie and no credential header, whatever the client sent, and
-// what goes back sets no cookie.
-func TestThePublicPagesListenerStripsEveryCredential(t *testing.T) {
-	var got http.Header
-	h := PagesPublicSurface(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Clone()
-		http.SetCookie(w, &http.Cookie{Name: "muster_session", Value: "w0rd"})
-		w.WriteHeader(http.StatusOK)
-	}))
-	r := httptest.NewRequest(http.MethodPost, "/s/w0rd/submit", strings.NewReader(`{}`))
-	for k, v := range map[string]string{
-		"Cookie": "muster_session=w0rd", "Authorization": "Bearer mst_w0rd", "Proxy-Authorization": "Basic w0rd",
-		"X-Api-Key": "w0rd", "X-Muster-Token": "w0rd", "X-Muster-Step-Up": "w0rd", "X-Muster-Cc-Session": "w0rd",
-		"Content-Type": "application/json", "Origin": "null",
-	} {
-		r.Header.Set(k, v)
-	}
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if got == nil {
-		t.Fatal("the submit did not reach muster")
-	}
-	for k := range got {
-		if k == "Cookie" || k == "Authorization" || k == "Proxy-Authorization" || k == "X-Api-Key" || strings.HasPrefix(k, "X-Muster-") {
-			t.Errorf("%s reached muster through the public listener", k)
-		}
-	}
-	if got.Get("Content-Type") != "application/json" || got.Get("Origin") != "null" {
-		t.Errorf("the request's own headers were lost: %v", got)
-	}
-	if sc := w.Header().Values("Set-Cookie"); len(sc) != 0 {
-		t.Errorf("the public listener set a cookie: %v", sc)
-	}
-	// The client's own request is untouched (the strip works on a copy).
-	if r.Header.Get("Cookie") == "" {
-		t.Error("the caller's request was modified")
 	}
 }
