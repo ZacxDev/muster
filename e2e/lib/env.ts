@@ -604,6 +604,12 @@ export const qrHandoffPort = port + 493;
 // +495: clear of the blocks above.
 export const sessionWakePort = port + 494;
 export const sessionWakeMirrorMCPPort = port + 495;
+// tests/chief-openrouter-session.spec.ts: a chief side chat on an OpenRouter
+// model (the opencode runtime) — its own server (the e2eterm binary, the spend
+// door on), its connect listener, and its fake OpenRouter model list.
+export const chiefOpenRouterPort = port + 620;
+export const chiefOpenRouterConnectPort = port + 621;
+export const chiefOpenRouterCatalogPort = port + 622;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.
