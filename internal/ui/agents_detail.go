@@ -137,6 +137,9 @@ type AgentDetailView struct {
 	// first); ActiveSessionID is the one whose transcript Messages holds.
 	Sessions        []SessionView
 	ActiveSessionID int64
+	// MomentID is the moment the page opens at (?at=, AgentMomentHref): its
+	// marker is drawn after the last message at or before it. 0: none.
+	MomentID int64
 	// DraftUser is the signed-in user, the first part of the chat box's draft
 	// key (composer_draft.go).
 	DraftUser int64
@@ -1547,8 +1550,16 @@ func chatLogInner(v AgentDetailView) g.Node {
 	// chief's turn after them is drawn: its relay of an answer is collapsed
 	// (dedupRelay). Any other user row ends it.
 	var answered []string
+	// The moment (?at=, AgentMomentHref): its marker goes after the last
+	// message at or before it — before the first message past it, or at the
+	// end when none is.
+	marked := v.MomentID <= 0
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
+		if !marked && m.ID > v.MomentID {
+			items = append(items, logItem{node: momentMarker(v.MomentID)})
+			marked = true
+		}
 		switch m.Kind {
 		case "tool_call":
 			// Pair with its tool_result (same ToolID) so the call + result render
@@ -1627,6 +1638,9 @@ func chatLogInner(v AgentDetailView) g.Node {
 			}
 			items = append(items, logItem{node: chatBubbleUnfolded(m.Role, content, m.ID, v.Mentions, i == newest)})
 		}
+	}
+	if !marked && len(v.Messages) > 0 {
+		items = append(items, logItem{node: momentMarker(v.MomentID)})
 	}
 	msgs := groupToolRuns(items)
 	return g.Group{
@@ -2061,6 +2075,13 @@ func relayRow(m ChatLine) g.Node {
 			Pre(Class("max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg/80 p-2 text-[11px] leading-relaxed text-muted"), g.Text(m.Content)),
 		),
 	)
+}
+
+// momentMarker is the marker of moment id in the conversation
+// (AgentMomentHref): a labelled rule, the target the page scrolls to.
+func momentMarker(id int64) g.Node {
+	return Div(ID(AgentMomentAnchor), Role("note"), g.Attr("data-session-moment", strconv.FormatInt(id, 10)),
+		Class(AgentMomentMarkerClass), g.Text("Below: the turn where it raised this"))
 }
 
 func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
@@ -2908,7 +2929,16 @@ func agentChatScript(name string) g.Node {
   }
   // Open scrolled to the latest message: the transcript is laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
-  if (interim && interim.away) session.stick = false; else forceScroll();
+  var moment = document.getElementById('session-moment');
+  if (interim && interim.away) {
+    session.stick = false;
+  } else if (moment) {
+    // A moment (?at=): open at its marker, not at the end.
+    session.stick = false;
+    logEl.scrollTop += moment.getBoundingClientRect().top - logEl.getBoundingClientRect().top - logEl.clientHeight / 3;
+  } else {
+    forceScroll();
+  }
 
   // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
   // the reply streams back. With it NOT open — still connecting, dropped, or
@@ -3100,11 +3130,18 @@ func agentChatScript(name string) g.Node {
   window.__cgLayoutLog = function () {
     var log = document.getElementById('chat-log');
     if (!log) return;
-    log.scrollTop = log.scrollHeight;
+    // A MOMENT (?at=, an officer's "Show session"): opened at its marker,
+    // and counted as scrolled away so nothing pins the log back to the end.
+    var moment = document.getElementById('session-moment');
+    if (moment) {
+      log.scrollTop += moment.getBoundingClientRect().top - log.getBoundingClientRect().top - log.clientHeight / 3;
+    } else {
+      log.scrollTop = log.scrollHeight;
+    }
     log.removeAttribute('data-cg-unlaid');
     var cf = document.getElementById('chat-form');
     if (cf) cf.removeAttribute('data-cg-unlaid');
-    var pre = { log: log, away: false, ro: null };
+    var pre = { log: log, away: !!moment, ro: null };
     pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
     log.addEventListener('scroll', pre.onScroll, { passive: true });
     if (typeof ResizeObserver !== 'undefined') {

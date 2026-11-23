@@ -53,3 +53,22 @@ func AgentListHref(name string, sessionID int64) string {
 	}
 	return h
 }
+
+// AgentMomentParam is the query parameter naming a MOMENT of the session an
+// agent page opens: a chat_messages id, after which the page draws its
+// moment marker and scrolls to it (an officer's "Show session", migration
+// 0184).
+const AgentMomentParam = "at"
+
+// AgentMomentHref is AgentSessionHref scrolled to message messageID of the
+// session (AgentMomentParam); messageID <= 0 is the session as a whole.
+func AgentMomentHref(name string, sessionID, messageID int64) string {
+	h := AgentSessionHref(name, sessionID)
+	if sessionID > 0 && messageID > 0 {
+		h += "&" + AgentMomentParam + "=" + strconv.FormatInt(messageID, 10) + "#" + AgentMomentAnchor
+	}
+	return h
+}
+
+// AgentMomentAnchor is the moment marker's id on the agent page.
+const AgentMomentAnchor = "session-moment"

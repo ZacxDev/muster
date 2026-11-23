@@ -31,4 +31,10 @@ const (
 	OfficerSpendHeldClass = "text-sm text-st-error-fg"
 	// OfficerSpendNearClass is the "getting close" line under an amber bar.
 	OfficerSpendNearClass = "text-sm text-st-warning-fg"
+	// OfficerShowSessionClass is a Needs-you item's "Show session" button: a
+	// quiet, full-width-on-a-phone 44px link to the session that made it.
+	OfficerShowSessionClass = "press inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge sm:w-auto"
+	// AgentMomentMarkerClass is the agent page's marker of a moment
+	// (AgentMomentHref): a labelled rule across the conversation.
+	AgentMomentMarkerClass = "my-2 flex scroll-mt-24 items-center gap-2 text-xs font-semibold text-accent before:h-px before:flex-1 before:bg-accent/50 after:h-px after:flex-1 after:bg-accent/50"
 )

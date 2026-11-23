@@ -1966,6 +1966,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// holder (officerCallerName), so its reads are its chat item's and its
 	// item verbs reach that item only; and it takes no queue work.
 	caller := officerCallerName(ctx, a)
+	// 🔴 WHERE THIS CALL IS MADE FROM, BOUND TO ITS CALLER (officer_origin.go):
+	// an ask or a draft it makes records this instance, its session and the
+	// moment (migration 0184) — never anything the arguments say.
+	ctx = s.withOfficerOrigin(ctx, a)
 	if chat, lane := chatLaneCall(ctx); lane {
 		switch name {
 		case officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
