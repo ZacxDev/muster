@@ -18,8 +18,16 @@ import (
 // go out: pending (awaiting its plugin's check or its owner's decision) and
 // approved (waiting for its plugin's claim, claimed and being posted under a
 // lease, or a retry chain's queued next attempt, which is filed approved:
-// draft_retry.go). Every other status has ended.
+// draft_retry.go).
 var DraftStateLiveStatuses = []DraftStatus{DraftPending, DraftApproved}
+
+// DraftStateEndedStatuses are the ENDED statuses reported: the recent
+// refusals — rejected (by its owner, by its plugin's check, or withdrawn at
+// its claim) and failed (its plugin's send reported failure). Sent,
+// unconfirmed, superseded and expired drafts are not reported: the question
+// the snapshot answers is "was this refused, and why?" (an operator
+// decision).
+var DraftStateEndedStatuses = []DraftStatus{DraftRejected, DraftFailed}
 
 const (
 	// DraftStateWindow is how far back an ENDED draft is still reported.
@@ -34,8 +42,9 @@ const (
 )
 
 // DraftState is officer's outbound drafts of owner ownerID, as read at
-// ReadAt: every live one (up to DraftStateMaxLive) and the ones that ended
-// within DraftStateWindow (up to DraftStateMaxEnded), each newest first.
+// ReadAt: every live one (up to DraftStateMaxLive) and the rejected or failed
+// ones that ended within DraftStateWindow (up to DraftStateMaxEnded), each
+// newest first.
 type DraftState struct {
 	ReadAt time.Time
 	Live   []Draft
@@ -57,10 +66,7 @@ func (s *PGStore) OfficerDraftState(ctx context.Context, ownerID int64, officer 
 	if err := s.sweep(ctx); err != nil {
 		return DraftState{}, err
 	}
-	live := make([]string, len(DraftStateLiveStatuses))
-	for i, st := range DraftStateLiveStatuses {
-		live[i] = string(st)
-	}
+	live, ended := statusArg(DraftStateLiveStatuses), statusArg(DraftStateEndedStatuses)
 	out := DraftState{ReadAt: now}
 	read := func(where, order string, max int, args ...any) ([]Draft, bool, error) {
 		rows, err := s.pool.Query(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts
@@ -90,9 +96,18 @@ func (s *PGStore) OfficerDraftState(ctx context.Context, ownerID int64, officer 
 	if out.Live, out.LiveTruncated, err = read(`status = ANY($3::text[])`, `id DESC`, DraftStateMaxLive, live); err != nil {
 		return DraftState{}, err
 	}
-	if out.Ended, out.EndedTruncated, err = read(`NOT (status = ANY($3::text[])) AND `+draftEndedAt+` >= $4`, draftEndedAt+` DESC, id DESC`, DraftStateMaxEnded,
-		live, now.Add(-DraftStateWindow)); err != nil {
+	if out.Ended, out.EndedTruncated, err = read(`status = ANY($3::text[]) AND `+draftEndedAt+` >= $4`, draftEndedAt+` DESC, id DESC`, DraftStateMaxEnded,
+		ended, now.Add(-DraftStateWindow)); err != nil {
 		return DraftState{}, err
 	}
 	return out, nil
+}
+
+// statusArg is ss as a query argument.
+func statusArg(ss []DraftStatus) []string {
+	out := make([]string, len(ss))
+	for i, st := range ss {
+		out[i] = string(st)
+	}
+	return out
 }

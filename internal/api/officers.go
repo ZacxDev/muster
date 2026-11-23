@@ -2270,11 +2270,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = cb.ReleaseCaptain(ctx, instance, post)
 	}
-	if name == officers.ToolClaim && err == nil {
+	if err == nil {
 		// 🔴 FRESH DRAFT STATE WITH THE WORK (officer_draft_state.go): a
-		// builtin officer's claim carries muster's current record of its
-		// outbound drafts, so it never decides about one from memory.
-		body = s.withDraftState(ctx, o, body)
+		// builtin officer's item list and claim carry muster's current record
+		// of its outbound drafts, so it never decides about one from memory.
+		body = s.withDraftState(ctx, o, name, body)
 	}
 	// An item's payload (payload.claims included) is HQ's data, handed on as
 	// HQ wrote it: officerToolResult returns HQ's body byte for byte. HQ

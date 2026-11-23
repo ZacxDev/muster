@@ -1569,24 +1569,27 @@ instance gets the tool error "this HQ has no claim-next; call officer_items
 and officer_claim{item_id}" — muster does not pick an item itself. With an
 `item_id` the claim is exactly as before.
 
-**A builtin officer's claim carries its drafts' current state.** When a
-[builtin](officers-builtin.md) officer whose type grants `outbound_drafts`
-claims an item (claim-next or by id), the answer also has `draft_state`:
-muster's record of that officer's outbound drafts, read at the claim
-(`read_at`). An instance can resume one long conversation across many
-wakes, so what it remembers about an earlier draft can be out of date: its
-`about` says this record overrides that memory.
+**A builtin officer's item list and claim carry its drafts' current
+state.** For a [builtin](officers-builtin.md) officer whose type grants
+`outbound_drafts`, the `officer_items` answer and a successful `officer_claim`
+answer (claim-next or by id) both carry `draft_state`: muster's record of that
+officer's outbound drafts, read with that answer (`read_at`). An instance can
+resume one long conversation across many wakes, and it may decide what to do
+from the list before it claims anything, so what it remembers about an earlier
+draft can be out of date: `about` says this record overrides that memory. The
+two answers are built by one reader and one shaping, so for the same moment
+they carry the same `draft_state`.
 
 | field | what |
 |---|---|
 | `live` | every draft that can still go out: `pending`, or `approved` (`claimed: true` while its plugin posts it; a retry's queued attempt carries `retry_of` and `attempt`), newest first |
-| `ended` | the drafts that ended in the last 24 hours (`ended_window_hours`), at most 20 (`ended_max`), newest first: refused by its plugin's check (`refused_by_check`), rejected by the owner, failed, expired, superseded, unconfirmed or sent, with `ended_at` |
-| each draft | `draft_id`, `item_id`, `venue`, `target`, `status`, `check_state`, `decided_at`, `created_at` and `body_sha256` (the SHA-256 of its exact text: never the text itself, to keep the claim small; `officer_my_state` shows a pending draft's text). An ended one also has `detail` (its plugin's words) and `owner_reason`, each fenced as outside words |
+| `ended` | the recent refusals: drafts `rejected` (by the owner, by its plugin's check — `refused_by_check` — or withdrawn by muster) or `failed` (its plugin's send failed) in the last 24 hours (`ended_window_hours`), at most 20 (`ended_max`), newest first, with `ended_at`. A sent, expired, superseded or unconfirmed draft is not listed |
+| each draft | `draft_id`, `item_id`, `venue`, `target`, `status`, `check_state`, `decided_at`, `created_at` and `body_sha256` (the SHA-256 of its exact text: never the text itself, to keep the answer small; `officer_my_state` shows a pending draft's text). An ended one also has `detail` (its plugin's words) and `owner_reason`, each fenced as outside words |
 | `live_truncated`, `ended_truncated` | more drafts matched than are listed |
 
 Only that officer's drafts of that owner are listed (the query's officer and
 owner filters, and row-level security as the owner). If they cannot be read,
-`draft_state` is `{read_at, error}` and the claim still succeeds.
+`draft_state` is `{read_at, error}` and the list or claim still succeeds.
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
