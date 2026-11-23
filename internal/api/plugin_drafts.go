@@ -1195,13 +1195,20 @@ func draftDecisionHTML(c plugins.DraftCard, now time.Time, p cardPlace) string {
 // party's message, quoted and marked untrusted (draftQuoteHTML) — a reply
 // draft's message, an outbound reply's (or a because-of draft's) target — or,
 // when muster holds no message with that reference, the one line telling the
-// owner to check the target before approving. THE one rule for it: the Drafts
-// tab's card and an officer chat's confirm card both draw it from here.
+// owner to check the target before approving. An outbound REPLY's own context
+// — the post it answers, as its officer filed it — comes first, folded when
+// long (draft_reply_context.go); a reply with neither says its context was not
+// provided. THE one rule for it: the Drafts tab's card and an officer chat's
+// confirm card both draw it from here.
 func draftAnswersHTML(c plugins.DraftCard) string {
 	d, m := c.Draft, c.Message
 	switch {
 	case !d.IsOutbound():
 		return draftQuoteHTML(m.Sender, m.Subject, m.Body, ` data-draft-original`)
+	case d.Target().Kind == plugins.TargetReply && d.ReplyContext != nil:
+		return replyContextQuoteHTML(*draftStepUpContext(c), false, false)
+	case d.Target().Kind == plugins.TargetReply && c.ReplyTo == nil:
+		return replyContextMissingHTML()
 	case d.Target().Kind == plugins.TargetReply || d.BecauseRef != nil:
 		if r := c.ReplyTo; r != nil {
 			return draftQuoteHTML(r.Sender, "", r.Body, ` data-draft-reply-to`)
@@ -1212,8 +1219,10 @@ func draftAnswersHTML(c plugins.DraftCard) string {
 	return ""
 }
 
-// draftReplyToMissing is what a reply draft's card says when muster received
-// no message with its target's reference.
+// draftReplyToMissing is what an outreach draft's card (a because-of draft
+// that is not a reply) says when muster received no message with its
+// reference. A reply with neither context nor message draws
+// attention.StepUpContextMissing instead (draft_reply_context.go).
 const draftReplyToMissing = "muster received no reply with this reference: check the target before you approve."
 
 // draftQuoteHTML is the message a draft answers, from the OUTSIDE party:

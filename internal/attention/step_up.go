@@ -3,6 +3,7 @@ package attention
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/fence"
@@ -53,6 +54,11 @@ const (
 	MaxStepUpParts        = 1000
 	MaxStepUpMedia        = 4
 	MaxStepUpMediumRunes  = 150
+	// MaxStepUpContextRunes bounds a reply's context text on the card
+	// (StepUpContext.Text, cut beyond it); MaxStepUpContextLineRunes the
+	// excerpt of it the card's question (Text) carries.
+	MaxStepUpContextRunes     = 1000
+	MaxStepUpContextLineRunes = 200
 )
 
 // StepUpCard is a step-up card's parts, as muster built them when it filed
@@ -102,6 +108,10 @@ type StepUpCard struct {
 	DraftID int64 `json:"draft_id,omitempty"`
 	// Media are the draft's media the card shows, in the draft's order.
 	Media []StepUpMedium `json:"media,omitempty"`
+	// Context is, on a card about an outbound REPLY draft, what the reply
+	// answers (plugins.ReplyContext, as its officer filed it): an outside
+	// party's words, UNTRUSTED. nil on every other card.
+	Context *StepUpContext `json:"context,omitempty"`
 	// Changed: the draft the call names is not what it names (its body or
 	// media SHA-256 differ, or it could not be read), so the card shows no
 	// preview and says to refuse.
@@ -119,6 +129,45 @@ type StepUpCard struct {
 	// is pasted into that session (internal/api session_wake_requests.go).
 	RaisedByHost    string `json:"raised_by_host,omitempty"`
 	RaisedBySession string `json:"raised_by_session,omitempty"`
+}
+
+// StepUpContext is what a reply draft's card says it answers: who wrote it,
+// its text (cut to MaxStepUpContextRunes), when it was written or else
+// received (RFC 3339), and where (an
+// absolute http(s) URL) — or Missing: its officer did not provide it, and
+// the card says so (muster never fetches it).
+type StepUpContext struct {
+	Author    string `json:"author,omitempty"`
+	Text      string `json:"text,omitempty"`
+	WrittenAt string `json:"written_at,omitempty"`
+	// ReceivedAt (RFC 3339), on a context with no WrittenAt, is when muster
+	// received the message the text came from — not when it was written, and
+	// the card says "received".
+	ReceivedAt string `json:"received_at,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Missing    bool   `json:"missing,omitempty"`
+	// Cut: Text is only the start of the text (set by the card's Clean).
+	Cut bool `json:"cut,omitempty"`
+}
+
+// StepUpContextMissing is the line a reply's card (and its question) carries
+// for a reply filed without the post it answers.
+const StepUpContextMissing = "The post this replies to was not provided, so it is not shown: check the target before you approve."
+
+// Line is c as the one paragraph of the card's question (Text): "In reply
+// to @ada: …" with an excerpt of its text, or the missing line.
+func (c *StepUpContext) Line() string {
+	if c == nil {
+		return ""
+	}
+	if c.Missing {
+		return StepUpContextMissing
+	}
+	who := "In reply to"
+	if c.Author != "" {
+		who += " " + c.Author
+	}
+	return who + ": " + stepUpLine(c.Text, MaxStepUpContextLineRunes)
 }
 
 // StepUpMedium is one medium of a draft a card shows: its index among the
@@ -177,6 +226,10 @@ func (c *StepUpCard) Text() string {
 		head += "\n" + c.About
 	}
 	parts := []string{head}
+	if l := c.Context.Line(); l != "" {
+		// What a reply answers, before the reply itself.
+		parts = append(parts, l)
+	}
 	if c.Preview != "" {
 		parts = append(parts, c.Preview)
 	}
@@ -224,6 +277,36 @@ func stepUpBlock(field, s string, max int) (string, error) {
 		return "", fmt.Errorf("%w: a step-up card's %s is longer than %d characters", ErrInvalid, field, max)
 	}
 	return out, nil
+}
+
+// cleanStepUpContext is c as a card stores it: every field sanitised and
+// cut (the file header: a long part is cut, never refused), the text a block
+// of at most MaxStepUpContextRunes, the URL kept only when it is an absolute
+// http(s) one (fence.WebURL), a time only when it is RFC 3339 (the written
+// one, else the received one).
+func cleanStepUpContext(c StepUpContext) *StepUpContext {
+	if c.Missing {
+		return &StepUpContext{Missing: true}
+	}
+	out := StepUpContext{Author: stepUpLine(c.Author, MaxStepUpAskerRunes), URL: fence.WebURL(strings.TrimSpace(c.URL))}
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.WrittenAt)); err == nil {
+		out.WrittenAt = t.UTC().Format(time.RFC3339)
+	} else if t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.ReceivedAt)); err == nil {
+		out.ReceivedAt = t.UTC().Format(time.RFC3339)
+	}
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(c.Text, "\r\n", "\n"), "\r", "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(fence.Sanitize(l), " ")
+	}
+	text := strings.Trim(strings.Join(lines, "\n"), "\n ")
+	if utf8.RuneCountInString(text) > MaxStepUpContextRunes {
+		text, out.Cut = fence.Cut(text, MaxStepUpContextRunes-1), true
+	}
+	out.Text = text
+	if out.Text == "" {
+		return &StepUpContext{Missing: true}
+	}
+	return &out
 }
 
 // CleanStepUp is c as an ask stores it (the file header's rules): every field
@@ -276,6 +359,12 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 	if len(c.Media) > 0 && out.DraftID == 0 {
 		return nil, fmt.Errorf("%w: a step-up card's media are a draft's", ErrInvalid)
 	}
+	if c.Context != nil {
+		if out.DraftID == 0 {
+			return nil, fmt.Errorf("%w: a step-up card's reply context is a draft's", ErrInvalid)
+		}
+		out.Context = cleanStepUpContext(*c.Context)
+	}
 	for _, m := range c.Media {
 		if m.N < 0 {
 			return nil, fmt.Errorf("%w: a step-up card's medium index is negative", ErrInvalid)
@@ -293,6 +382,7 @@ func CleanStepUp(c *StepUpCard) (*StepUpCard, error) {
 		out.Preview, out.Venue, out.Media = "", "", nil
 		out.Platform, out.Target, out.Handle = "", "", ""
 		out.Parts, out.Excerpt = 0, ""
+		out.Context = nil
 	}
 	return &out, nil
 }

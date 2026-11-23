@@ -435,6 +435,8 @@ func (s *Server) stepUpDraftCard(ctx context.Context, args string, card *attenti
 		}
 	}
 	card.Preview, card.Media = post.Preview, post.Media
+	// What a reply answers, above it on every face (draft_reply_context.go).
+	card.Context = draftStepUpContext(dc)
 }
 
 // draftPostCard is draft dc as the post its step-up card previews: its
@@ -609,6 +611,9 @@ func stepUpCardHTML(c *attention.StepUpCard) string {
 		b.WriteString(`<p role="alert" class="rounded-2xl bg-s1 px-4 py-3 text-base font-semibold text-fg ring-1 ring-line" data-stepup-changed>` + esc(stepUpChangedNote) + `</p>
 `)
 	case c.DraftID > 0 && (c.Preview != "" || len(c.Media) > 0):
+		if c.Context != nil {
+			b.WriteString(replyContextQuoteHTML(*c.Context, false, c.Context.Cut))
+		}
 		b.WriteString(stepUpPostHTML(c, false))
 	case c.Preview != "":
 		b.WriteString(`<div class="flex min-w-0 flex-col gap-2 rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-stepup-preview>
@@ -940,6 +945,9 @@ func stepUpFeedHTML(c *attention.StepUpCard) string {
 		b.WriteString(`<p role="alert" class="` + ui.StepUpFeedChangedClass + `" data-stepup-changed>` + esc(stepUpChangedNote) + `</p>
 `)
 	case c.DraftID > 0 && (c.Preview != "" || len(c.Media) > 0):
+		if c.Context != nil {
+			b.WriteString(replyContextQuoteHTML(*c.Context, true, false))
+		}
 		b.WriteString(stepUpPostHTML(c, true))
 	case c.Preview != "":
 		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-stepup-preview data-stepup-preview-text>` + stepUpMarkedHTML(strings.Join(stepUpParagraphs(c.Preview), "\n\n")) + `</p>
