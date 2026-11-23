@@ -117,7 +117,9 @@ func (s *Server) wakeOfficerDraftDecided(ctx context.Context, d plugins.Draft, v
 // reason, body and plan in it as in any owner rejection (draftEndFor). Its
 // item was finished already, so only the follow-up is filed, bounded and held
 // like any other, and once: a draft's follow-up that exists in any state is
-// the answer. Every other wake: nothing (its Retry delivery is the owner's).
+// the answer. It names no session (the one that was not reached), so the
+// officer owns the redraft. Every other wake: nothing (its Retry delivery is
+// the owner's).
 func (s *Server) wakeNotDelivered(ctx context.Context, w sessionwake.Wake) {
 	if w.Kind != sessionwake.KindOfficerDraftDecided || w.Decision != sessionwake.DecisionRejected || s.officerStore == nil ||
 		s.ext.Plugins == nil || w.Owner <= 0 {
@@ -132,6 +134,11 @@ func (s *Server) wakeNotDelivered(ctx context.Context, w sessionwake.Wake) {
 	if e.FollowUp == nil {
 		return
 	}
+	// 🔴 THE SESSION WAS NOT REACHED, SO THE REDRAFT IS THE OFFICER'S ALONE: its
+	// follow-up names no session (builtin.DraftEnd.NoRequester), or every later
+	// decision on it would wait another day (wakeGiveUp) for the same session
+	// before coming back here.
+	e.NoRequester = true
 	if had, err := s.officerStore.SubjectItems(octx, w.Owner, e.FollowUp.Kind, e.FollowUp.SubjectKey); err != nil || len(had) > 0 {
 		return
 	}
