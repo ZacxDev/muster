@@ -73,11 +73,44 @@ ARG CLAUDE_CODE_VERSION=2.1.296
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl openssh-client \
+ && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl openssh-client ripgrep \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \
  && claude --version | grep -F "${CLAUDE_CODE_VERSION}"
+
+# opencode: the runtime of the chief's OpenRouter side chats, which ccd runs as
+# a server per session beside the Claude Code CLIs (cmd/ccd/opencode.go).
+#
+# 🔴 PINNED BY VERSION AND DIGEST, like the CLI above: ccd drives its HTTP API
+# (session create, prompt, messages, MCP status, interrupt) and generates its
+# config, so a floating binary is a different program on every rebuild. Bump
+# deliberately: the version, both digests (sha256 of upstream's release asset
+# opencode-linux-<arch>.tar.gz, github.com/anomalyco/opencode), then
+# `ccd opencode-check` (cc-smoke step 13) on the new binary. It is upstream's
+# single bun-compiled, glibc-linked executable; it is not npm's opencode-ai,
+# whose latest is still the archived v1 line. ripgrep (above) is on PATH
+# because opencode's file tools use it.
+ARG OPENCODE_VERSION=2.3.2
+ARG OPENCODE_SHA256_AMD64=563b5d663637226b6e3bb4bb6803281bc39b0d2cd88db06d674b6420aab009b0
+ARG OPENCODE_SHA256_ARM64=9d10185acdb72336e086e699ca363a6065f410fd3c1caed0dc8046e95ac06ccb
+ARG TARGETARCH
+ENV OPENCODE_VERSION=${OPENCODE_VERSION} \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) asset=x64; sum="${OPENCODE_SHA256_AMD64}" ;; \
+      arm64) asset=arm64; sum="${OPENCODE_SHA256_ARM64}" ;; \
+      *) echo "no opencode release for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/opencode.tgz "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${asset}.tar.gz"; \
+    echo "${sum}  /tmp/opencode.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/opencode.tgz -C /usr/local/bin opencode; \
+    rm -f /tmp/opencode.tgz; \
+    chmod 0755 /usr/local/bin/opencode; \
+    HOME=/tmp/opencode-version opencode --version | grep -F "${OPENCODE_VERSION}"; \
+    rm -rf /tmp/opencode-version
 
 # The `hq` context (above) lands in its own directory, and ONLY a file named
 # `hq` is linked onto PATH: anything else a context carries stays inert, and

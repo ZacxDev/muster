@@ -2306,6 +2306,12 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	// The AGENT'S owner, not the request's: on a team agent the typer is a
 	// member and the entry is the team's.
 	s.markAgentActive(turnPanelOwner(ctx, a), a.Name, "thinking")
+	// An OpenRouter session whose budget is spent is answered with the budget
+	// card, before anything is sent (chief_session_cap.go).
+	if card, ok := s.chiefSessionCapBefore(ctx, session); ok {
+		s.markAgentIdle(a.Name)
+		return card, nil
+	}
 	pc := &agents.PartCollector{}
 	collect := func(ev agents.StreamEvent) {
 		pc.Observe(ev)
@@ -2322,6 +2328,11 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)
 	if err != nil {
+		// A turn the budget cut off mid-way (the proxy's 400 ended it) is
+		// answered with the card too, and what the turn wrote before it.
+		if card, ok := s.chiefSessionCapAfter(ctx, session, err); ok {
+			return append(pc.Parts(), card...), nil
+		}
 		return nil, err
 	}
 	parts := pc.Parts()

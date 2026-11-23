@@ -206,12 +206,10 @@ type LimitParks interface {
 // session of its own, e.g. an officer instance's chat lane), "" for ccd's
 // primary CLI. A park is per lane: one lane's success or busy says nothing
 // about another lane's menu.
-func turnLane(ctx context.Context) string {
-	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Header != nil {
-		return r.Header.Get(agents.HeaderCCSession)
-	}
-	return ""
-}
+//
+// An opencode session's turn is its own lane too (agents.TurnLane), never
+// "": its success must not clear the primary CLI's park.
+func turnLane(ctx context.Context) string { return agents.TurnLane(ctx) }
 
 // UseLimitParks installs the limit-park board (cmd/muster-server, beside the
 // usage poller that feeds it its readings). A second call replaces the first.
@@ -460,6 +458,13 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	// unreachable — the mutation sweep showed it could be deleted with every
 	// test green — so it is not here pretending to guard something.
 	if err == nil || g.accounts == nil || t.account == "" {
+		return err
+	}
+	// 🔴 AN OPENCODE SESSION'S FAILURE MARKS NO CLAUDE ACCOUNT. Its model is an
+	// OpenRouter one, reached through muster's proxy on the chief sessions'
+	// key: a 429 or a refused key there says nothing about the chief's Claude
+	// subscription, and marking it would fail every agent on it over.
+	if agents.IsOpencodeTurn(ctx) {
 		return err
 	}
 	var rt *agents.RuntimeError

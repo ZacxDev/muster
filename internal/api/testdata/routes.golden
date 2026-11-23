@@ -85,6 +85,7 @@ GET /api/asks/summary
 GET /api/attention/summary
 GET /api/cc-accounts/usage
 GET /api/chief/openrouter-models
+GET /api/chief/openrouter-models/options
 GET /api/device/config
 GET /api/device/web
 GET /api/directories

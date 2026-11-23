@@ -118,6 +118,14 @@ func newSessPG(t *testing.T, daily, session float64) *sessPG {
 // newSessPGWith is newSessPG with a provider that answers after delay.
 func newSessPGWith(t *testing.T, daily, session float64, delay time.Duration) *sessPG {
 	t.Helper()
+	return newSessPGChiefs(t, daily, session, delay, false)
+}
+
+// newSessPGChiefs is newSessPGWith whose two chiefs are claude-code agents
+// (on account acct-one) when claudeCode is set: the kind an opencode side
+// chat runs beside (chief_opencode_pg_test.go). Kind is fixed at creation.
+func newSessPGChiefs(t *testing.T, daily, session float64, delay time.Duration, claudeCode bool) *sessPG {
+	t.Helper()
 	p := &sessPG{up: newSessProvider(t, sessPGCost, delay), logs: &llmLogs{}}
 	p.f = newConnFixtureWith(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		ext.ChiefPrefs = chiefLLMPrefs{}
@@ -139,8 +147,12 @@ func newSessPGWith(t *testing.T, daily, session float64, delay time.Duration) *s
 	}
 	agent := func(owner int64, name, display, tok string) int64 {
 		var id int64
-		if err := p.f.pool.QueryRow(p.sys, `INSERT INTO agents (owner_id, name, namespace, hooks_token, display_name)
-			VALUES ($1, $2, $3, $4, $5) RETURNING id`, owner, name, "ns-"+name, tok, display).Scan(&id); err != nil {
+		kind, account := "gateway", ""
+		if claudeCode && display == ChiefDisplayName {
+			kind, account = "claude-code", "acct-one"
+		}
+		if err := p.f.pool.QueryRow(p.sys, `INSERT INTO agents (owner_id, name, namespace, hooks_token, display_name, kind, cc_account)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, owner, name, "ns-"+name, tok, display, kind, account).Scan(&id); err != nil {
 			t.Fatalf("seed agent %s: %v", name, err)
 		}
 		t.Cleanup(func() {

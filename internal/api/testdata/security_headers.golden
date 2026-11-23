@@ -43,6 +43,7 @@ GET /api/asks/summary	csp1	pp2
 GET /api/attention/summary	csp1	pp2
 GET /api/cc-accounts/usage	csp1	pp2
 GET /api/chief/openrouter-models	csp1	pp2
+GET /api/chief/openrouter-models/options	csp1	pp2
 GET /api/device/config	csp1	pp2
 GET /api/device/web	csp1	pp2
 GET /api/directories	csp1	pp2

@@ -929,8 +929,12 @@ available in the Compose stack.
 
 A picker for the runtime (and Claude model) of each chief chat session:
 `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, with a `claude-code` chief
-([chief.md](chief.md#sessions-on-more-than-one-runtime)). Not available in the
-Compose stack. **Check:** `chief session runtimes: ON (…)`.
+([chief.md](chief.md#sessions-on-more-than-one-runtime)). Add `opencode`
+(`claude-code,opencode`) for side chats on any OpenRouter model, which also
+needs `MUSTER_CHIEF_SESSIONS_OPENROUTER=1` and its key
+([chief.md](chief.md#openrouter-sessions-on-opencode)). Not available in the
+Compose stack. **Check:** `chief session runtimes: ON (…)`, and for opencode
+`opencode is offered to the admin's chief` (or the line saying why it is not).
 
 ### Chief nudges
 

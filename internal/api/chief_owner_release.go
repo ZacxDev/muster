@@ -444,25 +444,15 @@ func (s *Server) chiefsGate(ctx context.Context, n notes.Note) ([]string, string
 
 // onlyTheOwnersLaneWorks is "" when, of the CLIs in act, the owner's lane is
 // listed and every OTHER one is idle; else the refusal. lane "" is ccd's
-// primary CLI.
+// primary CLI. The verdict is agents.OnlyTheOwnersLaneWorks's (one rule, so
+// ccd's tests can pin their /v1/clis answer against it).
 func onlyTheOwnersLaneWorks(act agents.CLIActivity, lane string) string {
-	found := false
-	for _, c := range act.CLIs {
-		own := c.Known && ((lane == "" && c.Primary) || (lane != "" && !c.Primary && c.Lane == lane))
-		if own {
-			found = true
-			continue
-		}
-		if c.Unaccounted {
-			return chiefReleaseUnaccountedCLI
-		}
-		if c.Status != agents.CLIStatusIdle {
-			return chiefReleaseOtherCLIBusy
-		}
-	}
-	if !found {
-		// The owner's own CLI is not in the answer: ccd cannot see what it
-		// must, so nothing it says about the others is trusted.
+	switch agents.OnlyTheOwnersLaneWorks(act, lane) {
+	case agents.LaneVerdictUnaccounted:
+		return chiefReleaseUnaccountedCLI
+	case agents.LaneVerdictOtherBusy:
+		return chiefReleaseOtherCLIBusy
+	case agents.LaneVerdictOwnerMissing:
 		return chiefReleaseCLIsUnknown
 	}
 	return ""

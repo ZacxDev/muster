@@ -573,8 +573,17 @@ type lanes struct {
 	// ccd's own workspace, never the primary.
 	jobBypass bool
 
+	// ocCfg runs opencode sessions (opencode.go); nil when ccd runs none, and
+	// ocOff then says why.
+	ocCfg *ocConfig
+	ocOff string
+
 	mu  sync.Mutex
 	set map[string]*lane // by laneID
+	// oc is the running opencode lanes, by laneID (opencode.go). They count
+	// against max with the Claude lanes, and either kind may be stopped for
+	// the other at the cap.
+	oc map[string]*ocLane
 
 	// runs counts the lanes' run goroutines still going, stopped or not, so a
 	// test can wait for every one of them to end (stopAll) before the next
@@ -678,13 +687,29 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 				Message: fmt.Sprintf("session %q: its MCP config could not be written: %v", key, err)}
 		}
 	}
+	if _, ok := l.oc[id]; ok {
+		l.mu.Unlock()
+		return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+			Message: fmt.Sprintf("session %q runs in opencode, not a Claude Code CLI: a session's runtime is fixed", key)}
+	}
 	var evict *lane
+	var evictOC *ocLane
 	stuck := false
 	// A pinned lane (the chief's primary) is started whatever the cap, and is
 	// not counted against it.
 	if !mode.pinned && l.unpinnedLocked() >= l.max {
-		evict, stuck = l.pickEvictLocked(ephemeral)
-		if evict == nil {
+		if ephemeral {
+			// A check stops only another check lane, never an opencode one.
+			evict, stuck = l.pickEvictLocked(true)
+		} else {
+			evict, stuck, evictOC = l.pickAnyEvictLocked()
+		}
+		switch {
+		case evictOC != nil:
+			delete(l.oc, evictOC.id)
+		case evict != nil:
+			delete(l.set, evict.id)
+		default:
 			l.mu.Unlock()
 			if ephemeral {
 				return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
@@ -693,7 +718,6 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 			return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
 				Message: fmt.Sprintf("%v (%d; CCD_MAX_SESSIONS) — retry when one finishes", errLanesFull, l.max)}
 		}
-		delete(l.set, evict.id)
 	}
 	ln := l.newLane(id, key, model, workdir)
 	ln.ephemeral, ln.toolless, ln.mcpSession, ln.mcpSecret = ephemeral, mode.toolless, mode.mcpSession, mode.mcpSecret
@@ -704,6 +728,10 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 	ln.reserved = 1
 	l.set[id] = ln
 	l.mu.Unlock()
+	if evictOC != nil {
+		log.Printf("ccd: stopping idle opencode session %s (%s) to start %s: at most %d run at once", evictOC.id, evictOC.key, id, l.max)
+		evictOC.stop()
+	}
 	if evict != nil {
 		if stuck {
 			since, _ := evict.srv.awaitingSince()
@@ -724,9 +752,10 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 }
 
 // unpinnedLocked is how many running lanes count against maxLanes: every one
-// but the pinned. Caller holds l.mu.
+// but the pinned — every opencode lane included (none is ever pinned).
+// Caller holds l.mu.
 func (l *lanes) unpinnedLocked() int {
-	n := 0
+	n := len(l.oc)
 	for _, ln := range l.set {
 		if !ln.pinned {
 			n++
@@ -761,13 +790,20 @@ func (l *lanes) setPinnedLocked(ln *lane, pinned bool) {
 // l.mu; each stop is lane.stop's bounded teardown, as release's is.
 func (l *lanes) trimLocked() {
 	for l.max > 0 && l.unpinnedLocked() > l.max {
-		ev, _ := l.pickEvictLocked(false)
-		if ev == nil {
+		ev, _, oc := l.pickAnyEvictLocked()
+		switch {
+		case oc != nil:
+			delete(l.oc, oc.id)
+			log.Printf("ccd: stopping idle opencode session %s (%s): more sessions run than the cap (%d)", oc.id, oc.key, l.max)
+			// Off the lock: an opencode server's stop waits for it to exit.
+			go oc.stop()
+		case ev != nil:
+			delete(l.set, ev.id)
+			log.Printf("ccd: stopping idle session %s (%s): more sessions run than the cap (%d) since the pinned primary moved", ev.id, ev.key, l.max)
+			ev.stop()
+		default:
 			return
 		}
-		delete(l.set, ev.id)
-		log.Printf("ccd: stopping idle session %s (%s): more sessions run than the cap (%d) since the pinned primary moved", ev.id, ev.key, l.max)
-		ev.stop()
 	}
 }
 

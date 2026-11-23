@@ -75,6 +75,12 @@ func ChatCompletionsURL(ep provision.Endpoint) string {
 // otherwise discard every delta that already arrived. A bad STATUS, by contrast,
 // means the turn never started and is an error.
 func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey, model string, messages []ChatMessageIn, emit func(delta string)) (string, error) {
+	// 🔴 AN OPENCODE SESSION'S TURN NEVER TAKES THIS PATH: ccd serves it on
+	// /v1/chat/completions with its primary Claude CLI, the one CLI that path
+	// has. Refused before anything is sent, whoever calls.
+	if opencodeRoute(ctx) {
+		return "", ErrOpencodeUnsupported
+	}
 	reqBody, err := json.Marshal(map[string]any{
 		"model":    model,
 		"messages": messages,

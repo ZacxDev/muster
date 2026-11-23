@@ -71,7 +71,9 @@ import (
 // the chevron and highlight (both keyed on aria-expanded) would drop under an
 // open popover. A trigger without the attribute is left without it.
 //
-// A request started from inside a menu closes it as the request STARTS, so a
+// A request started from inside a menu closes it as the request STARTS — unless
+// its element is marked MenuKeepOpenAttr (a search that fills the menu itself:
+// the "+" menu's OpenRouter field) — so a
 // request that fails (and morphs nothing) does not leave it open; so does a
 // tap on an item marked data-menu-close (one that opens a sheet or a dialog). Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
@@ -83,6 +85,10 @@ import (
 // Bound once per document (__musterFloatingMenu), like every other script here:
 // htmx re-executes in-body <script> tags on each boosted swap.
 func floatingMenuScript() g.Node { return staticScript(floatingMenuScriptSrc) }
+
+// MenuKeepOpenAttr marks an element whose htmx requests do not close the
+// floating menu they start in (see above).
+const MenuKeepOpenAttr = "data-menu-keep-open"
 
 // floatingMenuScriptSrc is the path floatingMenuScript's code is served at, /static/js/floating-menu.js (static_script.go).
 var floatingMenuScriptSrc = staticJS("floating-menu", `
@@ -187,6 +193,10 @@ var floatingMenuScriptSrc = staticJS("floating-menu", `
   document.addEventListener('scroll', placeAll, { capture: true, passive: true });
   document.addEventListener('htmx:beforeRequest', function (e) {
     var el = e.target;
+    // A request that only fills the menu itself (the OpenRouter model
+    // search's matches, data-menu-keep-open) keeps it open: closing it would
+    // hide the very answer it asked for.
+    if (el && el.closest && el.closest('[` + MenuKeepOpenAttr + `]')) return;
     var m = el && el.closest && el.closest('[data-floating-menu]');
     if (m && isOpen(m)) { try { m.hidePopover(); } catch (err) {} }
   });

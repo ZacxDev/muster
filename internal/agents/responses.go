@@ -295,6 +295,11 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
+	// An opencode session's turn goes to ccd's opencode path (turnroute.go).
+	url, err = routedResponsesURL(ctx, url)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, err
@@ -327,6 +332,11 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	defer resp.Body.Close()
 	observeTurnRoute(req, resp)
 	if resp.StatusCode == http.StatusNotFound {
+		if opencodeRoute(ctx) {
+			// 🔴 NEVER ErrResponsesUnsupported here: its callers retry the turn
+			// toolless on the Claude CLI (ErrOpencodeUnsupported).
+			return nil, ErrOpencodeUnsupported
+		}
 		return nil, ErrResponsesUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {

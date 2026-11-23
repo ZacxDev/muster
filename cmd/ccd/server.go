@@ -227,6 +227,9 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	// An opencode session's turn (opencode.go): a path of its own, so a ccd
+	// without it answers 404 rather than running the turn in a Claude CLI.
+	mux.HandleFunc("POST "+opencodeResponsesPath, s.handleOpencodeResponses)
 	// The primary's transcript, incrementally (transcript_route.go).
 	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
 	// This pod's Claude usage per session and UTC hour (usage_route.go).
@@ -1179,6 +1182,11 @@ type health struct {
 	// on a ccd that says it (internal/api officerChatLanes.Supports). True
 	// whenever ccd runs lanes.
 	MCPSessionLanes bool `json:"mcp_session_lanes,omitempty"`
+	// OpencodeLanes are the opencode sessions' servers (opencode.go), and
+	// Opencode says whether this ccd runs them ("" when it does, else why
+	// not: no binary, no muster connector). Reported, never gating.
+	OpencodeLanes []ocLaneHealth `json:"opencode_lanes,omitempty"`
+	Opencode      string         `json:"opencode,omitempty"`
 	authSnapshot
 }
 
@@ -1235,6 +1243,11 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		h.Lanes = s.lanes.health()
 		h.ToollessLanes = true
 		h.MCPSessionLanes = true
+		h.OpencodeLanes = s.lanes.ocHealth()
+		h.Opencode = "on"
+		if s.lanes.ocCfg == nil {
+			h.Opencode = "off: " + s.lanes.ocOff
+		}
 	}
 	h.NewConversation = true
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))

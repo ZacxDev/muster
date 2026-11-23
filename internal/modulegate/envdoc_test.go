@@ -80,6 +80,9 @@ var environCallSites = map[string]string{
 	"cmd/ccd/compose.go": "copies the whole environment to the entrypoint it runs as a child, minus " +
 		"CCD_SPEC_DIR and CCD_LISTEN, plus the spec's env and secrets, its own CCD_LISTEN and " +
 		"CCD_APPROVE_UNANSWERED=deny; the one variable it reads back from that list by name, CCD_TMUX_SOCKET, is documented",
+	"cmd/ccd/opencode.go": "hands an opencode lane's server an ALLOW-LIST of the environment (opencodeEnvAllowed: " +
+		"the shell basics and every MUSTER_ / GIT_ / LC_ variable, so no provider key or Claude token passes) plus its " +
+		"own XDG/TMPDIR/OPENCODE_* settings; it reads no variable by name from it",
 }
 
 // TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa is the gate.

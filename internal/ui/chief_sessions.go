@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"strconv"
+	"strings"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -38,7 +41,7 @@ func sessionRuntimeLine(sess SessionView) g.Node {
 	}
 	text := sess.RuntimeLabel
 	if sess.Model != "" {
-		text += " · " + sess.Model
+		text += " · " + strings.TrimPrefix(sess.Model, OpenRouterModelPrefix)
 	}
 	return Span(
 		g.Attr(sessionRuntimeAttr, sess.Runtime),
@@ -116,14 +119,29 @@ func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeM
 func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, path, formAttr, button string, extra ...g.Node) []g.Node {
 	var forms []g.Node
 	for _, rt := range runtimes {
-		// claude-code is the one session runtime (agents.SessionRuntimes): its
-		// model is one of the Claude aliases.
-		if rt.Runtime != "claude-code" {
+		// claude-code's model is one of the Claude aliases; opencode's is any
+		// OpenRouter model, found by search (openRouterModelField).
+		var field g.Node
+		switch rt.Runtime {
+		case "claude-code":
+			opts := make([]g.Node, 0, len(claudeModels))
+			for _, m := range claudeModels {
+				opts = append(opts, Option(Value(m), g.Text(m)))
+			}
+			field = Select(
+				Name("model"),
+				g.Attr("aria-label", rt.Label+" model"),
+				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60"),
+				g.Group(opts),
+			)
+		case OpenRouterRuntime:
+			field = openRouterModelField(formAttr[len("data-"):] + "-" + strconv.Itoa(len(forms)))
+		default:
 			continue
 		}
-		opts := make([]g.Node, 0, len(claudeModels))
-		for _, m := range claudeModels {
-			opts = append(opts, Option(Value(m), g.Text(m)))
+		align := "items-center"
+		if rt.Runtime == OpenRouterRuntime {
+			align = "items-start"
 		}
 		forms = append(forms, Form(
 			g.Attr(formAttr, rt.Runtime),
@@ -132,15 +150,10 @@ func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, pat
 			hx("hx-swap", "innerHTML"),
 			g.Group(extra),
 			hx("hx-disabled-elt", "find button, find select"),
-			Class("flex items-center gap-2"),
+			Class("flex "+align+" gap-2"),
 			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
-			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),
-			Select(
-				Name("model"),
-				g.Attr("aria-label", rt.Label+" model"),
-				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60"),
-				g.Group(opts),
-			),
+			Span(Class("w-20 shrink-0 pt-3 text-xs leading-none text-fg2"), g.Text(rt.Label)),
+			field,
 			Button(
 				Type("submit"),
 				Class("press min-h-[40px] shrink-0 rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90 disabled:opacity-60"),
