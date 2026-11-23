@@ -317,8 +317,10 @@ const (
 	// on its own line and the actions row under it.
 	AskFormAnswerRowClass = "flex min-w-0 flex-col gap-2"
 	// AskFormBoxActionsClass is the row under the answer box: the mic (and
-	// its waveform and ↑ while it records), then Answer and Dismiss.
-	AskFormBoxActionsClass = "flex min-w-0 flex-wrap items-center justify-end gap-2"
+	// its ↑ while it records), then Answer and Dismiss — ONE row that never
+	// wraps, so the ↑ stands where Answer stands. (The waveform is on the
+	// box's own line: it takes the box's place while recording.)
+	AskFormBoxActionsClass = "flex min-w-0 items-center justify-end gap-2"
 	AskFormInputClass      = AskFormFitClass + " min-h-[44px] min-w-0 flex-1 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
 	// AskFormAnswerInputClass is the answer box on its own line: the full
 	// width of the card (AskFormInputClass sizes a box sharing a row).

@@ -643,18 +643,23 @@ func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 		send += " " + ui.AsksSendDisabledClass
 		sendAttrs = ` aria-disabled="true" data-asks-send`
 	}
-	mic, note := "", ""
+	wave, mic, note := "", "", ""
 	if it.dictate != "" || p.micOff && it.dictateOff {
 		// answerMic: the real mic, or — the ask page only (micOff), with no
 		// dictation on the server — the muted one linking to how to turn it on.
-		mic = ui.DictateWaveHTML(it.dictate, ids.mic) +
-			answerMic(it.dictate, p.micOff && it.dictateOff, input, ids.mic+"-note", ids.mic) +
+		// 🔴 THE WAVEFORM TAKES THE BOX'S PLACE while it records (the box is
+		// hidden then), so it is on the BOX's line, never in the actions row:
+		// there it made the row wrap, and the ↑ — which stands in for Answer
+		// while recording, so a tap landing just after the recording ends
+		// lands on Answer — was a row above Answer (e2e dictation.spec.ts).
+		wave = ui.DictateWaveHTML(it.dictate, ids.mic)
+		mic = answerMic(it.dictate, p.micOff && it.dictateOff, input, ids.mic+"-note", ids.mic) +
 			ui.DictateSendHTML(it.dictate, ids.mic, submit, ui.DictateSendPill)
 		note = ui.DictateNoteHTML(it.dictate, ids.mic+"-note", "")
 	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormAnswerRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormAnswerInputClass + `"></textarea>` +
-		`<div class="` + ui.AskFormBoxActionsClass + `" data-asks-answer-actions>` +
+		wave + `<div class="` + ui.AskFormBoxActionsClass + `" data-asks-answer-actions>` +
 		mic + `<button type="submit" id="` + submit + `" class="` + send + `"` + sendAttrs + `>` + sendLabel + `</button>` + p.dismiss + `</div></div>
 ` + note)
 	if it.multi {
