@@ -50,7 +50,7 @@ func TestThePlusMenuOffersOpenRouterWhereOffered(t *testing.T) {
 	if form == "" {
 		t.Fatalf("no OpenRouter form in the \"+\" menu:\n%s", html)
 	}
-	for _, want := range []string{`value="opencode"`, openRouterSearchAttr, ">Start<", ChiefSideChatPath(7)} {
+	for _, want := range []string{`value="opencode"`, openRouterSearchAttr, MenuKeepOpenAttr, ">Start<", ChiefSideChatPath(7)} {
 		if !strings.Contains(form, want) {
 			t.Errorf("the \"+\" OpenRouter form lacks %s", want)
 		}

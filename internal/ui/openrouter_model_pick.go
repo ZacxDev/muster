@@ -50,6 +50,8 @@ func openRouterModelField(id string) g.Node {
 			Type("text"),
 			Name("model"),
 			g.Attr(openRouterSearchAttr, ""),
+			// Its search fills the "+" menu it may sit in: the menu stays open.
+			g.Attr(MenuKeepOpenAttr, ""),
 			g.Attr("required", ""),
 			g.Attr("autocomplete", "off"),
 			g.Attr("spellcheck", "false"),
