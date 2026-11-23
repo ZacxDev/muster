@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -153,22 +152,10 @@ func assertDraftControls(t *testing.T, face, html string, f *stepUpDraftFixture,
 // 🔴 RED AT origin/main: both faces drew only "Confirm this on your phone."
 func TestAStepUpCardAboutADraftDrawsTheDraftsDecision(t *testing.T) {
 	f := newStepUpDraftFixture(t, "approve")
-	card := feedCard(f.page(t, attentionPath), f.card)
-	if card == "" {
-		t.Fatal("the step-up card is not on the Open feed")
-	}
-	assertDraftControls(t, "the Open feed's card", card, f, attentionPath)
-	// 🔴 THE SAME CONTROLS AS THE DRAFTS TAB'S: the card holds exactly what the
-	// one shared function draws for this draft in this place.
-	dc, err := f.plugins.DraftCard(f.asOwner, f.draft.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The place is the card's own: its id rides on the forms (a decision lands
-	// on the card settled) and names the reason box, beside the server's mic.
-	at := cardPlace{back: attentionPath, card: f.card, dictate: f.srv.dictatePath(), dictateOff: f.srv.dictateOff()}
-	if shared := draftDecisionHTML(dc, time.Now(), at); !strings.Contains(card, shared) {
-		t.Errorf("the feed card's controls are not draftDecisionHTML's:\n%s", shared)
+	// CHANGED (one draft, one card: asks_drafts.go): the Open feed no longer
+	// draws the card — its draft's own card on the Drafts tab does.
+	if card := feedCard(f.page(t, attentionPath), f.card); card != "" {
+		t.Fatalf("the step-up card is its own card on the Open feed:\n%s", card)
 	}
 	page := f.page(t, askPagePath(f.card))
 	assertDraftControls(t, "the card's page", page, f, askPagePath(f.card))
@@ -187,7 +174,7 @@ func TestAStepUpCardAboutADraftDrawsTheDraftsDecision(t *testing.T) {
 // approvable) after it.
 func TestARejectStepUpCardLeadsWithTheDraftsReject(t *testing.T) {
 	f := newStepUpDraftFixture(t, "reject")
-	card := feedCard(f.page(t, attentionPath), f.card)
+	card := f.page(t, askPagePath(f.card)) // CHANGED: not on the Open feed (one draft, one card)
 	if !strings.Contains(card, askStepUpDraftRejectLine) {
 		t.Fatalf("the reject card's line: %s", card)
 	}
@@ -285,7 +272,7 @@ func TestAnotherOwnersStepUpCardNeverGetsTheDraftControls(t *testing.T) {
 	// And the owner still gets them on their own card.
 	owner := f.owner
 	f.srv.sessionUserOverride = func(*http.Request) int64 { return owner }
-	assertDraftControls(t, "the owner's card", feedCard(f.page(t, attentionPath), f.card), f, attentionPath)
+	assertDraftControls(t, "the owner's card's page", f.page(t, askPagePath(f.card)), f, askPagePath(f.card))
 }
 
 // approveForm reports whether html holds draft id's Approve form.
@@ -307,9 +294,8 @@ func longWords(seed string, n int) string {
 
 // TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows: 🔴 what is approved
 // is what is seen. A thread (several X posts) shows only its first post on
-// the Open feed, so its feed card has NO Approve — a "Review and approve" link
-// to the card's page instead, and Reject — while its page, which draws every
-// post, has Approve. A body past the card's preview bound is an excerpt on
+// the Open feed — so its request is drawn on its draft's card (one draft,
+// one card), which draws every post, as its page does: both have Approve. A body past the card's preview bound is an excerpt on
 // every face, so its page has no Approve either — a link to the Drafts tab's
 // card, which draws the whole text. A single short post keeps Approve on the
 // feed (TestAStepUpCardAboutADraftDrawsTheDraftsDecision).
@@ -318,18 +304,14 @@ func longWords(seed string, n int) string {
 func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
 	t.Run("a thread", func(t *testing.T) {
 		f := newStepUpDraftFixtureFor(t, "approve", "x", longWords("first", 200)+"\n---8<---\n"+longWords("second", 200)+"\n---8<---\n"+longWords("third", 200))
-		card := feedCard(f.page(t, attentionPath), f.card)
-		if card == "" || !strings.Contains(card, "data-stepup-thread-more") {
-			t.Fatalf("the fixture is not a thread on the feed: %s", card)
+		// CHANGED (one draft, one card): the thread's request has no feed
+		// face of its own; its draft's card, which draws every post, has
+		// Approve.
+		if card := feedCard(f.page(t, attentionPath), f.card); card != "" {
+			t.Fatalf("the thread's request is its own card on the Open feed: %s", card)
 		}
-		if approveForm(card, f.draft.ID) {
-			t.Error("the thread's feed card draws Approve, which binds posts it does not show")
-		}
-		if !strings.Contains(card, `href="`+askPagePath(f.card)+`"`) || !strings.Contains(card, "data-draft-review>Review and approve</a>") {
-			t.Errorf("the thread's feed card has no Review and approve link to its page: %s", card)
-		}
-		if !strings.Contains(card, "data-draft-reject>Reject</button>") || !strings.Contains(card, askStepUpDraftReviewLine) {
-			t.Errorf("the thread's feed card lost Reject or its line")
+		if tab := draftCardOf(f.page(t, "/attention?tab=drafts"), f.draft.ID); !approveForm(tab, f.draft.ID) || !strings.Contains(tab, "third") {
+			t.Errorf("the thread's draft card lacks Approve or a post: %s", tab)
 		}
 		if page := f.page(t, askPagePath(f.card)); !approveForm(page, f.draft.ID) {
 			t.Error("the thread's page, which draws every post, has no Approve")
@@ -369,8 +351,8 @@ func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if card := feedCard(f.page(t, attentionPath), other.ID); card == "" || approveForm(card, f.draft.ID) {
-			t.Errorf("a card showing another text draws Approve (or is missing): %q", card)
+		if card := feedCard(f.page(t, attentionPath), other.ID); approveForm(card, f.draft.ID) {
+			t.Errorf("a card showing another text draws Approve: %q", card)
 		}
 		if page := f.page(t, askPagePath(other.ID)); approveForm(page, f.draft.ID) {
 			t.Error("its page draws Approve")

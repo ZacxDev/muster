@@ -249,15 +249,16 @@ for (const vp of [
   });
 }
 
-// THE OPEN TAB'S STEP-UP CARD ABOUT A DRAFT CARRIES THE DRAFT'S OWN DECISION
-// (internal/api stepup_draft_actions.go; the operator: "there is no button to
-// approve the asks in the ui anymore … I could do it from the drafts page, but
-// that's confusing"). A confirmation card a host session filed for a draft
-// ("Post to X? · Draft #N") stays phone-only for its own Confirm/Refuse, but
-// draws the draft's Approve and send and Reject — the Drafts tab's — so a tap
-// on the Open tab approves the draft, the card settles in its place, and the
-// browser stays on the Open tab (never the Drafts tab).
-// 🔴 RED AT origin/main: the card drew only "Confirm this on your phone."
+// ONE DRAFT, ONE CARD (internal/api asks_drafts.go; the operator: "it feels
+// redundant to have a draft and a confirm ask, i should just approve the
+// draft directly"). A confirmation card a host session filed for a draft
+// ("Post to X? · Draft #N") stays phone-only for its own Confirm/Refuse, and
+// is drawn ON THE DRAFT'S OWN CARD on the Drafts tab — a line naming the
+// request and its "Ask #N" chip, a link to the card's page — and not also as
+// its own card on the Open tab. Approve and send there decides the draft and
+// closes the card.
+// CHANGED: these tests pinned the request as its own Open-tab card carrying
+// the draft's decision, settling in place there.
 const stepup = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/stepupfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 const OPEN_POST = 'Launch day: the new release is out.\n\nRead the notes on the blog.';
@@ -267,14 +268,12 @@ for (const vp of [
   { name: 'phone 390×844', key: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1440×900', key: 'desktop', use: { viewport: { width: 1440, height: 900 } } },
 ]) {
-  test.describe(`the Open tab's draft step-up card, ${vp.name}`, () => {
+  test.describe(`a session's request on the draft's own card, ${vp.name}`, () => {
     test.use(vp.use);
     test.afterAll(() => {
       stepup('clear', '1');
     });
-    // CHANGED: this test pinned "the card leaves the feed"; a decided card now
-    // stays in its place, settled (internal/api asks_done.go).
-    test('Approve and send on the Open tab approves the draft and the card settles in place', async ({ page }, testInfo) => {
+    test('the request is on the Drafts card, not the Open tab; Approve and send there closes it', async ({ page }, testInfo) => {
       const x = `e2e-openapprove-${vp.key}-${stamp}`;
       plugins.push(x);
       const draftID = fix('outbound', '1', agentName, x, 'x', OPEN_POST, 'launch/hero-1.png');
@@ -282,40 +281,35 @@ for (const vp of [
       await page.route(/\/plugins\/drafts\/\d+\/media\/\d+$/, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: pngBytes }));
       await signIn(page, origin);
       await page.goto(`${origin}/attention`);
-      const card = page.locator(`li#ask-${cardID}`);
+      await expect(page.locator('#attention-items'), 'the Open tab is drawn').toBeAttached();
+      await expect(page.locator(`li#ask-${cardID}`), 'the request is not its own Open card').toHaveCount(0);
+
+      await page.goto(`${origin}/attention?tab=drafts`);
+      const card = page.locator(`li#draft-${draftID}`);
       await expect(card).toBeVisible();
-      const controls = card.locator(`[data-asks-stepup-draft][data-draft-id="${draftID}"]`);
-      await expect(controls.locator('[data-ask-stepup-phone]')).toHaveText('Approve here, or confirm on your phone.');
-      const approve = controls.locator('[data-draft-approve]');
+      await expect(card.locator(`[data-draft-request][data-ask-id="${cardID}"]`)).toContainText('asked to approve and send this. Decide it here, or confirm on your phone.');
+      const chip = card.locator(`[data-draft-asks] a[data-id-link][data-id="${cardID}"]`);
+      await expect(chip).toHaveText(`Ask #${cardID}`);
+      await expect(chip).toHaveAttribute('href', `/attention/asks/${cardID}`);
+      await expect(card.locator('[data-id-copy]')).toHaveText(`Draft #${draftID}`);
+      const approve = card.locator('[data-draft-approve]');
       await expectFullLabel(approve, 'Approve and send');
-      await expect(controls.locator('[data-draft-reject]')).toBeVisible();
-      // The card's own Confirm/Refuse are never drawn: it is answered only on the phone.
+      // The step-up card's own Confirm/Refuse are never drawn in the browser.
       await expect(card.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(0);
-      await expect(card.getByRole('button', { name: 'Refuse', exact: true })).toHaveCount(0);
       await noSidewaysScroll(page);
       await card.scrollIntoViewIfNeeded();
-      const before = testInfo.outputPath(`open-approve-${vp.key}-before.png`);
+      const before = testInfo.outputPath(`draft-request-${vp.key}-before.png`);
       await page.screenshot({ path: before });
-      await testInfo.attach(`open-approve-${vp.key}-before.png`, { path: before, contentType: 'image/png' });
-      if (shotDir) await page.screenshot({ path: `${shotDir}/open-${vp.key}-before.png` });
+      await testInfo.attach(`draft-request-${vp.key}-before.png`, { path: before, contentType: 'image/png' });
+      if (shotDir) await page.screenshot({ path: `${shotDir}/draft-request-${vp.key}-before.png` });
 
       await (vp.key === 'phone' ? approve.tap() : approve.click());
-      const settled = page.locator(`li#ask-${cardID}[data-asks-settled]`);
-      await expect(settled).toBeVisible();
-      await expect(settled.locator('[data-asks-outcome-state]')).toHaveText('Approved in the web UI');
-      await expect(settled.locator('[data-draft-approve]'), 'nothing left to decide on it').toHaveCount(0);
-      // Still the Open tab: no navigation to the Drafts tab or its Archived view.
-      expect(new URL(page.url()).pathname).toBe('/attention');
-      expect(new URL(page.url()).searchParams.get('tab')).toBeNull();
-      const after = testInfo.outputPath(`open-approve-${vp.key}-after.png`);
-      await page.screenshot({ path: after });
-      await testInfo.attach(`open-approve-${vp.key}-after.png`, { path: after, contentType: 'image/png' });
-      if (shotDir) await page.screenshot({ path: `${shotDir}/open-${vp.key}-after.png` });
-
-      // The draft itself is approved (read on the Archived view, afterwards).
-      await page.goto(`${origin}/attention?tab=archived&draft=${draftID}`);
-      await expect(page.locator(`[data-draft-id="${draftID}"]`).first()).toHaveAttribute('data-draft-status', 'approved');
-      // And the card is answered, saying where it was decided.
+      // The decision lands on the card, in Archived, approved, naming no open request.
+      const decided = page.locator(`li#draft-${draftID}[data-draft-status="approved"]`);
+      await expect(decided).toBeVisible();
+      await expect(decided.locator('[data-draft-request]')).toHaveCount(0);
+      await expect(decided.locator(`[data-draft-asks] a[data-id="${cardID}"]`), 'its ask chip stays').toBeVisible();
+      // The card is answered, saying where it was decided.
       await page.goto(`${origin}/attention/asks/${cardID}`);
       await expect(page.locator('[data-ask-closed] [data-ask-answer]')).toContainText('Approved in the web UI');
     });
@@ -324,33 +318,30 @@ for (const vp of [
 
 // THE OPERATOR'S PATH (operator report: a card rejected with a reason
 // vanished, so its "View in session" could no longer be reached): a "Reject
-// this draft?" step-up card on
-// the Open tab, rejected with a reason typed and dictated into its reason box.
+// this draft?" request, now on its draft's own card on the Drafts tab,
+// rejected with a reason typed and dictated into its reason box.
 //
+//   - the request line says it asks to reject, and Reject leads;
 //   - the reason box is a textarea that grows with its text and stops at its
 //     cap (8rem, scrolling inside past it), heights measured before and after;
 //   - its mic is the answer boxes' mic, and a dictated transcript lands in the
 //     box (/transcribe answered in the page: the fake microphone records a
 //     tone, and the text is this test's);
-//   - after Reject the card is STILL ON SCREEN, settled, in view: "Rejected in
-//     the web UI", the reason, and "View in session", which opens the drafting
-//     agent's page;
-//   - the Done tab lists it, with the reason.
-//
-// 🔴 RED AT the branch base: an <input> that never grows, no mic, and after
-// Reject the card was gone from the page.
+//   - after Reject the draft's card shows it rejected with the reason;
+//   - the Done tab lists the closed request with the reason and a working
+//     "View in session".
 const REJECT_POST = 'Big launch: everything is half off today only.\n\nClick now.';
 const DICTATED = 'lead with the fix';
 for (const vp of [
   { name: 'phone 390×844', key: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1440×900', key: 'desktop', use: { viewport: { width: 1440, height: 900 } } },
 ]) {
-  test.describe(`rejecting a draft on the Open tab, ${vp.name}`, () => {
+  test.describe(`rejecting a requested draft, ${vp.name}`, () => {
     test.use({ ...vp.use, permissions: ['microphone'] });
     test.afterAll(() => {
       stepup('clear', '1');
     });
-    test('the card stays, settled, with the reason; View in session works; Done lists it', async ({ page }, testInfo) => {
+    test('the draft is rejected with the reason; Done lists the request; View in session works', async ({ page }) => {
       const x = `e2e-openreject-${vp.key}-${stamp}`;
       plugins.push(x);
       const draftID = fix('outbound', '1', agentName, x, 'x', REJECT_POST, 'launch/hero-1.png');
@@ -363,10 +354,11 @@ for (const vp of [
         await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${DICTATED} ` });
       });
       await signIn(page, origin);
-      await page.goto(`${origin}/attention`);
-      const card = page.locator(`li#ask-${cardID}`);
+      await page.goto(`${origin}/attention?tab=drafts`);
+      const card = page.locator(`li#draft-${draftID}`);
       await expect(card).toBeVisible();
-      const boxID = `draft-reason-${draftID}-ask-${cardID}`;
+      await expect(card.locator(`[data-draft-request][data-ask-id="${cardID}"]`)).toContainText('asked to reject this');
+      const boxID = `draft-reason-${draftID}`;
       const box = card.locator(`textarea#${boxID}`);
       await expect(box).toHaveAttribute('name', 'reason');
       await expect(box).toHaveAttribute('maxlength', /^\d+$/);
@@ -402,40 +394,28 @@ for (const vp of [
       expect(transcribed, 'one recording transcribed').toBe(1);
       const reason = (await box.inputValue()).trim();
 
-      // REJECT: the card stays, settled, in view.
+      // REJECT: the draft's card, rejected, with the reason.
       const reject = card.locator('[data-draft-reject]');
       await (vp.key === 'phone' ? reject.tap() : reject.click());
-      const settled = page.locator(`#attention-items > li#ask-${cardID}[data-asks-settled]`);
-      await expect(settled).toBeVisible();
-      await expect(settled).toBeInViewport();
-      await expect(settled.locator('[data-asks-outcome-state]')).toHaveText('Rejected in the web UI');
-      await expect(settled.locator('[data-asks-reason]')).toHaveText(`Your reason: ${reason}`);
-      await expect(settled.locator('[data-draft-reject]'), 'nothing left to decide on it').toHaveCount(0);
-      // The address no longer names it: a reload is the one that lets it go.
-      expect(new URL(page.url()).searchParams.get('settled')).toBeNull();
+      const decided = page.locator(`li#draft-${draftID}[data-draft-status="rejected"]`);
+      await expect(decided).toBeVisible();
+      await expect(decided.locator('[data-draft-reason]')).toHaveText(`Your reason: ${reason}`);
+      await expect(decided.locator('[data-draft-reject]'), 'nothing left to decide on it').toHaveCount(0);
       await noSidewaysScroll(page);
-      const shot = testInfo.outputPath(`open-reject-${vp.key}-settled.png`);
-      await page.screenshot({ path: shot });
-      await testInfo.attach(`open-reject-${vp.key}-settled.png`, { path: shot, contentType: 'image/png' });
 
-      // VIEW IN SESSION works: the drafting agent's page.
-      const view = settled.locator('[data-asks-view-session]');
-      await expect(view).toHaveText('View in session');
-      await expect(view).toHaveAttribute('href', `/agents/${agentName}`);
-      await (vp.key === 'phone' ? view.tap() : view.click());
-      // (The agent's page opens on its latest session: ?session=N.)
-      await expect(page).toHaveURL(new RegExp(`^${origin}/agents/${agentName}(\\?session=\\d+)?$`));
-
-      // THE DONE TAB lists it, with the reason.
+      // THE DONE TAB lists the closed request, with the reason and its session.
       await page.goto(`${origin}/attention`);
-      await expect(page.locator(`#attention-items > li#ask-${cardID}`), 'a reload takes it off the Open tab').toHaveCount(0);
+      await expect(page.locator(`#attention-items > li#ask-${cardID}`)).toHaveCount(0);
       await page.getByRole('tab', { name: 'Done', exact: true }).click();
       await expect(page).toHaveURL(`${origin}/attention?tab=done`);
       const done = page.locator(`#answered-${cardID}`);
       await expect(done).toBeVisible();
       await expect(done.locator('[data-asks-outcome-state]')).toHaveText('Rejected in the web UI');
       await expect(done.locator('[data-asks-reason]')).toHaveText(`Your reason: ${reason}`);
-      await expect(done.locator('[data-asks-view-session]')).toHaveAttribute('href', `/agents/${agentName}`);
+      const view = done.locator('[data-asks-view-session]');
+      await expect(view).toHaveAttribute('href', `/agents/${agentName}`);
+      await (vp.key === 'phone' ? view.tap() : view.click());
+      await expect(page).toHaveURL(new RegExp(`^${origin}/agents/${agentName}(\\?session=\\d+)?$`));
     });
   });
 }

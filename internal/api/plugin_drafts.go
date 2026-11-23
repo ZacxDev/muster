@@ -1041,6 +1041,18 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		`" data-draft-status="` + esc(string(d.Status)) + `">
 ` + ui.AsksHeadHTML(ui.AsksHead{Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+stepUpHiddenHTML(who)+`</span>`, age), Chip: ui.DraftIDChipHTML(d.ID)}) + `
 `)
+	// Its confirm asks, under the id chip (draftConfirmAsksHTML): the asks
+	// whose step-up card is bound to this draft, each a link to its page.
+	if a := draftConfirmAsksHTML(c); a != "" {
+		b.WriteString(a + "\n")
+	}
+	// A session's open request to decide it (asks_drafts.go, ONE DRAFT, ONE
+	// CARD): drawn here, its own card left off the Open feed. A request to
+	// reject leads with Reject, as its step-up card did.
+	if line := draftRequestHTML(c); line != "" {
+		b.WriteString(line + "\n")
+		p.rejectLead = p.rejectLead || c.Request.Reject
+	}
 	pills := []string{
 		`<span class="` + ui.AsksPillClass + ` whitespace-normal" data-draft-state>` + esc(draftStatusText(d)) + `</span>`,
 	}

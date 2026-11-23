@@ -56,7 +56,10 @@ func (s *Server) asksPage(ctx context.Context, items []attentionItem, rd asksRea
 		carded[it.card.agentID] = true
 	}
 	rows, n = s.episodeRowsHTMLExcept(ctx, rd, now, carded)
-	return append(s.pageAttentionItems(items, rd.hosts), approvals...), rows, n
+	// 🔴 ONE DRAFT IS ONE CARD too: a session's request to decide a draft
+	// is drawn on the draft's own card (withoutDraftRequests), never also
+	// as its own.
+	return append(withoutDraftRequests(s.pageAttentionItems(items, rd.hosts)), approvals...), rows, n
 }
 
 // approvalKey is an approval-blocked agent's item key (approvalItems).

@@ -57,8 +57,12 @@ func doneSection(page string) string {
 func TestRejectingAStepUpCardsDraftLeavesItSettledInPlace(t *testing.T) {
 	f := newStepUpDraftFixture(t, "reject")
 	cid, did := strconv.FormatInt(f.card, 10), strconv.FormatInt(f.draft.ID, 10)
-	open := feedCard(f.page(t, attentionPath), f.card)
-	// The reject form carries the card it is drawn on.
+	// CHANGED (one draft, one card): the request is drawn on its draft's
+	// card, not on the Open feed; its page's reject form carries the card.
+	if c := feedCard(f.page(t, attentionPath), f.card); c != "" {
+		t.Fatalf("the request is its own card on the Open feed:\n%s", c)
+	}
+	open := f.page(t, askPagePath(f.card))
 	if !strings.Contains(open, `<input type="hidden" name="card" value="`+cid+`">`) {
 		t.Fatalf("the card's reject form does not carry the card:\n%s", open)
 	}
@@ -331,8 +335,8 @@ func TestTheDoneTabListsEverythingClosedPagedFilteredAndAliased(t *testing.T) {
 }
 
 // TestTheRejectReasonIsAGrowingTextareaThatTakesDictation: every face that
-// draws a draft's reason — a step-up card on the Open feed, the same draft on
-// the Drafts tab, the card's page — draws a TEXTAREA (one line, growing to the
+// draws a draft's reason — the draft on the Drafts tab (where a session's
+// request to decide it is drawn too), the request's page — draws a TEXTAREA (one line, growing to the
 // answer box's cap: ui.AskFormFitClass), still name="reason" and bounded at
 // plugins.MaxDecisionReasonRunes, each with an id of its own. With dictation
 // on, each has the mic for ITS box and the page has the dictation script; with
@@ -352,10 +356,12 @@ func TestTheRejectReasonIsAGrowingTextareaThatTakesDictation(t *testing.T) {
 	}
 	faces := func() map[string][2]string {
 		asks := f.page(t, attentionPath)
+		// CHANGED (one draft, one card: asks_drafts.go): the request is no
+		// longer its own card on the Open feed; its draft's card on the
+		// Drafts tab and the card's page are the faces.
 		return map[string][2]string{
-			"the Open feed's card": {feedCard(asks, f.card), cardBox},
-			"the Drafts tab":       {pageBetween(asks, "asks-tabs-panel-drafts", ""), tabBox},
-			"the card's page":      {f.page(t, askPagePath(f.card)), cardBox},
+			"the Drafts tab":  {pageBetween(asks, "asks-tabs-panel-drafts", ""), tabBox},
+			"the card's page": {f.page(t, askPagePath(f.card)), cardBox},
 		}
 	}
 	// Dictation off (no speech-to-text service): the box, no live mic.
@@ -384,9 +390,10 @@ func TestTheRejectReasonIsAGrowingTextareaThatTakesDictation(t *testing.T) {
 	if page := f.page(t, askPagePath(f.card)); !strings.Contains(page, "window.__musterDictate") {
 		t.Error("the card's page has no dictation script")
 	}
-	// One id per box on the page: the two faces of one draft never share one.
-	if n := strings.Count(asks, `id="`+cardBox+`"`); n != 1 {
-		t.Errorf("the card's box id is on the page %d times", n)
+	// One id per box on the page: the draft's card is drawn once, and the
+	// request draws no second box (one draft, one card).
+	if n := strings.Count(asks, `id="`+cardBox+`"`); n != 0 {
+		t.Errorf("the card's box id is on the Asks page %d times", n)
 	}
 	if n := strings.Count(asks, `id="`+tabBox+`"`); n != 1 {
 		t.Errorf("the Drafts tab's box id is on the page %d times", n)

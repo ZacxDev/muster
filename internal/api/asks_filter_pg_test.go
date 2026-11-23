@@ -101,9 +101,13 @@ func newFiltFix(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *filtFix
 	f.sessionAsk = f.mirrorAsk(t, "Publish the release notes now?").ID
 	f.mktAsk = mk(1, attention.New{Asker: officer(filtMarketing), Question: "Approve the launch tagline?", Options: []string{"Approve", "Rewrite"}})
 	f.mktDraft = draft(1, f.op.ID, filtMarketing, "We launched today.")
+	// A card that no longer matches its draft (Changed): it stays its own card
+	// on the Open feed — a request that still matches is drawn on its draft's
+	// card instead (asks_drafts.go, one draft, one card) — and is sourced by
+	// its draft all the same.
 	f.mktCard = mk(1, attention.New{Asker: attention.Asker{System: true, Label: "step-up"}, Options: []string{"Confirm", "Refuse"},
-		StepUp: &attention.StepUpCard{Tool: "plugin_draft_decide", Title: "Post to X? · Draft #" + strconv.FormatInt(f.mktDraft, 10), Why: "Launch announcement",
-			Asker: "work:1", Preview: "We launched today.", Venue: "X", Platform: "x", Target: "post", DraftID: f.mktDraft, Details: "A session asks to approve the draft."}})
+		StepUp: &attention.StepUpCard{Tool: "plugin_draft_decide", Title: "This draft changed since it was asked · Draft #" + strconv.FormatInt(f.mktDraft, 10), Why: "Launch announcement",
+			Asker: "work:1", Preview: "We launched today.", Venue: "X", Platform: "x", Target: "post", DraftID: f.mktDraft, Changed: true, Details: "A session asks to approve the draft."}})
 	f.memberMkt = mk(f.member, attention.New{Asker: officer(filtMarketing), Question: "MEMBER: approve their tagline?"})
 	f.memberSales = mk(f.member, attention.New{Asker: officer("sales:zeta"), Question: "MEMBER: call the lead?"})
 	f.memberDraft = draft(f.member, f.worker.ID, "sales:zeta", "MEMBER: the sales post.")

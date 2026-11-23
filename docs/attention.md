@@ -205,7 +205,7 @@ plugin drafts are numbered apart, so a bare number could be either.
 | Card | Shows |
 |---|---|
 | An ask or notice on **Open**, on **Done**, and its own page's header | **Ask #859** |
-| A draft on **Drafts** | **Draft #484** |
+| A draft on **Drafts** | **Draft #484**, and under it a linked **Ask #…** chip for each of your asks whose step-up card is about the draft (its confirm asks: open ones first, then newest, at most three, then **+N**). Each opens that ask's page; a draft with none shows **Draft #484** alone |
 | An agent's question on **Log** | **Ask #859** (the muster ask it records; a question asked in chat or with a picker has no muster ask, so no id) |
 | A step-up card for a draft | **Ask #…** like any ask, and its title ends **· Draft #484** ([what a card shows](mirroring.md#what-a-card-shows)) |
 | A search result | its **Ask #** or **Draft #** |
@@ -475,6 +475,22 @@ again, and the address follows):
   answer boxes' microphone while dictation is on (its ✓ puts the transcript
   in the box; nothing is sent before Reject). The reason is shown on the
   decided draft, and on its step-up card when settled and on the Done tab.
+- **A session's request is on the draft's own card.** When a mirrored
+  session calls `plugin_draft_decide` on your behalf, muster files a step-up
+  card that only your paired phone can sign ([mirroring.md](mirroring.md)).
+  One draft is one card: that request is drawn on the draft's card here — a
+  line saying who asked and what (*work:1 asked to approve and send this.*,
+  or *… asked to reject this: <reason>.*, the session's words flagged like
+  any untrusted text), with its **Ask #…** chip — and is **not** also its own
+  card on the Open tab, nor counted twice in the open count. A request to
+  reject leads with **Reject**. Deciding the draft here is your own decision
+  (the same Approve and send or Reject as any draft): it closes the request,
+  the session that asked is told once (*… was settled when you approved the
+  draft it is about on another door …*), and a Confirm on the phone afterwards
+  is refused. Nothing about the gate changes: the browser still cannot answer
+  the step-up card, and the session cannot decide the draft without your
+  phone. A card that no longer matches its draft (*This draft changed since
+  it was asked*) is not a request to decide it, and stays on the Open tab.
 - **Archived** — every draft that is no longer pending, moved here the moment
   you approve or reject it, or it is replaced by a newer draft or expires. Each
   shows its live status: approved and waiting for the plugin to collect it,
