@@ -566,10 +566,11 @@ so links to it hold; the chip row it named is gone.) On a mirrored window's
 two session views, `/mirror/view` and `/mirror/terminal`, the header carries an
 **Open** button beside the Rendered | Terminal switch, and its panel's
 **Previews** tab opens the owner's live `viewer` plugin. (The same button and
-panel carry the session's [pages](pages.md#a-sessions-pages), in a Pages tab;
-its count is the previews plus the pages.) A window with no rendered view
+panel carry the session's [pages](pages.md#a-sessions-pages), in a Pages tab,
+and its [asks](attention.md#a-sessions-asks), in an Asks tab; its count is the
+previews plus the pages plus the open asks.) A window with no rendered view
 opens on `/mirror/terminal`, so the button is on both. An agent's page
-(`/agents/{name}`) has the button for its pages only: an agent has no
+(`/agents/{name}`) has the button for its pages and asks only: an agent has no
 previews.
 
 - **Where it sits.** In the header row at every width, beside the switch: an

@@ -205,6 +205,12 @@ type focusSpec struct {
 	// HistoryTitles, when set, are written BEFORE the History ones, oldest
 	// first, each a change: earlier focuses with titles a spec can search by.
 	HistoryTitles []string `json:"historyTitles"`
+	// TitleSteps, when set, are written AFTER the History ones and before the
+	// focus itself, oldest first: earlier steps of the focus's OWN title, each
+	// with its own description (a change, so each is a history row), so the
+	// history holds a run of one title (the "What it worked on" grouping,
+	// focus.spec.ts's agent dialog).
+	TitleSteps []string `json:"titleSteps"`
 	// AgeHours, when > 0, backdates the focus that many hours (its
 	// agent_focus.updated_at; its history is left as written), so a spec can
 	// see a title's age ("· 2d") and a stale one.
@@ -267,6 +273,11 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: fmt.Sprintf("Earlier focus %02d", i),
 				Description: fmt.Sprintf("What the session was doing at step %d.", i), Source: focus.SourceSummarizer}); err != nil {
 				return fmt.Errorf("focus history %s: %w", sub, err)
+			}
+		}
+		for _, d := range sp.TitleSteps {
+			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: d, Source: focus.SourceSummarizer}); err != nil {
+				return fmt.Errorf("focus step %s: %w", sub, err)
 			}
 		}
 		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer,

@@ -229,8 +229,8 @@ func TestTheRenderedViewTabsYourMessagesWithFocusHistory(t *testing.T) {
 func TestTheAgentPageHasAFocusHistoryDialog(t *testing.T) {
 	v := sampleAgentDetailView()
 	v.FocusHistory = FocusHistoryPath("agent:42", "")
-	// The control is an item of the header's ⋯ menu (historyMenuItems),
-	// which a page with an agent card draws.
+	// The control is the header's own button (agentHeaderTools), not an item
+	// of its ⋯ menu, which a page with an agent card draws.
 	v.Card = AgentCardView{ID: 42, Name: v.Name}
 	var b strings.Builder
 	if err := RenderAgentDetail(&b, v, featuresAllOn); err != nil {
@@ -244,8 +244,11 @@ func TestTheAgentPageHasAFocusHistoryDialog(t *testing.T) {
 	if attrOf(btn, "aria-controls") != "focus-history" || attrOf(btn, "aria-haspopup") != "dialog" || attrOf(btn, "aria-expanded") != "false" {
 		t.Error("the control is not tied to its dialog")
 	}
-	if !insideTag(btn, "header") || attrOf(btn, "role") != "menuitem" {
-		t.Error("the control is not the page header's ⋯ menu item")
+	if !insideTag(btn, "header") || attrOf(btn, "role") == "menuitem" || !hasAttr(btn.Parent, "data-header-tools") {
+		t.Error("the control is not one of the page header's tools")
+	}
+	if menu := byID(doc, AgentMenuID); menu == nil || findAttr(menu, "data-focus-history-open") != nil {
+		t.Errorf("the ⋯ menu (%v) holds a What it worked on item", menu)
 	}
 	if more := findAttr(dlg, "data-focus-history-more"); more == nil || attrOf(more, "data-href") != v.FocusHistory {
 		t.Error("the dialog does not load the agent's history")

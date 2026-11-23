@@ -661,6 +661,38 @@ decide the draft, when a newer draft for the same message supersedes it, and
 when it expires (checked every 30 seconds, including drafts notified before a
 restart).
 
+### A session's asks
+
+**The session's Open panel lists its asks.** The **Open** button in a
+session's header (the one that holds its [previews and pages](pages.md#a-sessions-pages))
+also counts the session's open asks, and is drawn for a session that has
+asked anything, even with no previews or pages. Its panel's **Asks** tab
+lists the session's asks: the open ones first, newest first, each marked
+*Waiting on your answer*, then the answered ones, newest first, each with its
+answer. Tap one to open its own page (`/attention/asks/<id>`), where an open one
+is answered. Nothing is answered in the tab itself, and nothing is drawn on the
+session page until the panel is opened.
+
+- **Whose:** an agent's page lists that agent's asks; a mirrored window lists
+  the asks of every session it runs now (its Claude Code sessions, or its
+  opencode session), on its own machine.
+- **Only yours:** the list names you as the owner, so a team's ask is not
+  listed even when you can read it, and a team session's window lists none.
+- **Left out:** a session's question to its chief, a notice, and an ask
+  dismissed or expired without an answer. At most 50 are listed; past that
+  the tab's last line, **More on the Asks page**, opens the Asks page filtered
+  to the session (`/attention?from=…`). The button's numbers are counted, not
+  capped.
+- **The count is the open ones.** A session whose asks are all answered still
+  draws the button, without a count. On a phone, the page of an agent of your
+  own leaves out its header's count badge (below): the Open button counts the
+  same open asks, and the header's room goes to the title. A team agent's page
+  keeps the badge at every width, because it also counts the team's asks
+  waiting on you, which the button does not.
+
+Routes: `GET /ui/mirror/session-asks?host=&session=&window=` and
+`GET /ui/agents/{name}/session-asks` (`internal/api/session_asks.go`).
+
 ### Suggested replies to an ask
 
 A question gets up to three **suggested replies**, made by the same engine and

@@ -1,7 +1,6 @@
 import { Page } from '@playwright/test';
 import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
-import { menuItem } from '../lib/menu';
 import { switcherSearchPort } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
@@ -417,7 +416,7 @@ for (const vp of [
       await ready(page);
       await openView(page);
       const sheet = page.locator('#chat-index');
-      await (await menuItem(page, '#chat-index-open')).click();
+      await page.locator('header #chat-index-open').click();
       await expect(sheet).toBeVisible();
       // Focus is on the sheet's close button (not a text field): "/" opens the search.
       await page.keyboard.press('/');

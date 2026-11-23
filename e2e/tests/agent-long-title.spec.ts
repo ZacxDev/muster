@@ -31,9 +31,9 @@ const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
 // Inside the 60-character budget, but wider than a 390px header leaves the
-// title, and narrower than a 1280px one. (50 characters: since Chat history and
-// Focus history moved into the ⋯ menu, a 390px header's first row leaves the
-// title room for ~30.)
+// title, and narrower than a 1280px one. (50 characters: with Chat history and
+// What it worked on compact in the row below `sm`, a 390px header's first row
+// leaves the title room for ~13.)
 const medium = 'Fix the importer retry backoff and the queue drain';
 const short = 'Short';
 

@@ -92,6 +92,7 @@ var teamAgentRoutes = map[string]teamAgentRule{
 	"GET /ui/agents/{name}/task":               teamAgentRead,
 	"GET /ui/agents/{name}/open-button":        teamAgentRead, // the VIEWER's own pages of the agent (owner-only rows)
 	"GET /ui/agents/{name}/session-pages":      teamAgentRead, // the same
+	"GET /ui/agents/{name}/session-asks":       teamAgentRead, // the VIEWER's own asks of the agent (the store names the owner)
 	"GET /api/agents/{name}/account-failovers": teamAgentRead, // machine door
 	"GET /api/agents/{name}/messages":          teamAgentRead, // machine door
 	"POST /api/agents/{name}/messages":         teamAgentRead, // machine door

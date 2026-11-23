@@ -490,11 +490,12 @@ viewer never does.
 
 When you look at a session, the pages it made are a tap away. The session's
 header has one **Open** button (an icon and a count on a phone) that counts
-its [previews](previews.md#what-you-do) and its pages together, and opens a
-panel with two tabs, **Previews** and **Pages** (swipe between them on a
-phone). It is drawn whenever the session has either. Pages need no viewer
-plugin. The panel opens on the tab that has something; when both do, on the
-one you used last on this browser.
+its [previews](previews.md#what-you-do), its pages and its
+[open asks](attention.md#a-sessions-asks) together, and opens a panel with
+three tabs, **Previews**, **Pages** and **Asks** (swipe between them on a
+phone). It is drawn whenever the session has any of them. Pages need no viewer
+plugin. The panel opens on a tab that has something: the one you used last on
+this browser when it has, otherwise the first that has.
 
 The **Pages** tab lists the pages the session **created**, newest first, each
 with its current version and whether it has a live link. Tap one to read it in

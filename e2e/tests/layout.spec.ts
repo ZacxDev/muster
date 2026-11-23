@@ -64,6 +64,13 @@ test('no main page scrolls sideways at 360px', async ({ page }) => {
 // 40px hold is actually tested: internal/ui/composer_rows_test.go
 // (TestComposerButtonsAre40px) and e2e/tests/uploads.spec.ts (and the 320px
 // case in chief-in-view.spec.ts).
+// 🔴 AND A SECOND: an agent page's header tools — New chat, Chat history and
+// What it worked on, in its [data-header-tools] box — are 36px WIDE (still
+// 44px tall) below `sm`, so the title keeps its room with all three in the
+// row (operator ask on #999, "the icon buttons can be compact";
+// internal/ui agentHeaderTools). They are held to 36×44 here: the width
+// alone is relaxed, and only for those three, never another header control.
+// Where they are measured against the title: e2e/tests/session-open.spec.ts.
 const controlsJS = `(() => {
   const vis = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect();
     return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 0 && r.height > 0 &&
@@ -75,7 +82,8 @@ const controlsJS = `(() => {
     const r = e.getBoundingClientRect();
     const rowButton = (e.tagName === 'BUTTON' || e.tagName === 'A') && e.closest('#mv-button-row') && !e.closest('[popover]');
     const min = rowButton || composer.has(e.id) ? 40 : 44;
-    if (r.width < min || r.height < min) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' ' + JSON.stringify((e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 30)));
+    const minW = e.closest('header [data-header-tools]') && innerWidth < 640 ? 36 : min;
+    if (r.width < minW || r.height < min) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' ' + JSON.stringify((e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 30)));
   }
   return out;
 })()`;

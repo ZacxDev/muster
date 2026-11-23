@@ -440,7 +440,10 @@ A `claude-code` agent's page has one header row. Its Terminal, its Claude
 account, its account-switch line and its worker pool are in the header's ⋯
 menu; Terminal opens the terminal view over the chat, as a mirrored session's
 switch does. The terminal page has the Rendered | Terminal switch back to the
-chat.
+chat. **New chat**, **Chat history** and **What it worked on** are buttons of
+the header row itself, on every agent's page (on a phone each is a narrower
+36px button, so the title keeps its room); a chief's page has its one list
+button instead, which opens its messages and what it worked on.
 
 ## Creating an agent without the chief
 
