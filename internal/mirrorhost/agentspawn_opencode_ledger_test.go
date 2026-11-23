@@ -20,6 +20,11 @@ import (
 // undo (openCodeSpawn.removeSession), for a session it created. The test fails
 // when either set grows OR shrinks (docs/design/chief-dispatch.md 3.6).
 //
+// The one other creator is not on any host: ccd's opencode lane
+// (cmd/ccd/opencode.go lanes.runOCTurn) creates its OWN session, in the
+// opencode server it started for a chief side chat in the chief's pod — never
+// on a host's shared server, which ccd holds no credential for.
+//
 // It counts calls in files that import opencodehost, by the enclosing function
 // — so another package's own CreateSession (the agents store's) is not one.
 func TestOnlyTheLauncherAndTheSpawnCreateOrRemoveOpenCodeSessions(t *testing.T) {
@@ -96,6 +101,7 @@ func TestOnlyTheLauncherAndTheSpawnCreateOrRemoveOpenCodeSessions(t *testing.T) 
 		want   []string
 	}{
 		{"CreateSession", []string{
+			"cmd/ccd/opencode.go lanes.runOCTurn",
 			"cmd/muster-mirror/opencode_launch.go runOpenCodeLaunch",
 			"cmd/muster-mirror/opencode_launch.go runOpenCodeLaunch",
 			"internal/mirrorhost/agentspawn_opencode.go openCodeSpawn.createSession",
