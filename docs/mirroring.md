@@ -1914,11 +1914,12 @@ starts.
 What it costs: on such a machine your own sessions' other owner-authority
 calls are cards too. Deciding in muster's web UI (Attention, Connectors, the
 Reply drafts tab) is never gated.
-A `plugin_draft_decide` card is drawn on the Asks page **on its draft's own
-card** on the Drafts tab (one draft, one card: [attention.md](attention.md#the-reply-drafts-tab)),
-not also as its own card on the Open tab; your Approve or Reject there decides
-the draft, closes the card and tells the session that asked. The phone's
-Confirm still works until then, and is refused as not open after.
+A `plugin_draft_decide` card is drawn on the Asks page **as its draft's own
+card** — on the Open tab in the card's place, and on the Drafts tab — naming
+the request ([attention.md](attention.md#the-reply-drafts-tab)); your Approve or
+Reject there decides the draft, closes the card and tells the session that
+asked. The phone's Confirm still works until then, and is refused as not open
+after.
 
 Separately, every owner-authority tool — the decisions **and the reads above**,
 whose answers carry outside parties' messages — refuses a session muster

@@ -475,22 +475,26 @@ again, and the address follows):
   answer boxes' microphone while dictation is on (its ✓ puts the transcript
   in the box; nothing is sent before Reject). The reason is shown on the
   decided draft, and on its step-up card when settled and on the Done tab.
-- **A session's request is on the draft's own card.** When a mirrored
-  session calls `plugin_draft_decide` on your behalf, muster files a step-up
-  card that only your paired phone can sign ([mirroring.md](mirroring.md)).
-  One draft is one card: that request is drawn on the draft's card here — a
-  line saying who asked and what (*work:1 asked to approve and send this.*,
-  or *… asked to reject this: <reason>.*, the session's words flagged like
-  any untrusted text), with its **Ask #…** chip — and is **not** also its own
-  card on the Open tab, nor counted twice in the open count. A request to
-  reject leads with **Reject**. Deciding the draft here is your own decision
-  (the same Approve and send or Reject as any draft): it closes the request,
-  the session that asked is told once (*… was settled when you approved the
-  draft it is about on another door …*), and a Confirm on the phone afterwards
-  is refused. Nothing about the gate changes: the browser still cannot answer
-  the step-up card, and the session cannot decide the draft without your
-  phone. A card that no longer matches its draft (*This draft changed since
-  it was asked*) is not a request to decide it, and stays on the Open tab.
+- **A session's request is the draft's own card.** When a mirrored session
+  calls `plugin_draft_decide` on your behalf, muster files a step-up card that
+  only your paired phone can sign ([mirroring.md](mirroring.md)). One draft is
+  one card on each tab: on **Open**, in the request's place, muster draws the
+  draft's card — its post, **Approve and send** and **Reject** — with a line
+  saying who asked and what (*work:1 asked to approve and send this.*, or
+  *… asked to reject this: <reason>.*, the session's words flagged like any
+  untrusted text) and the request's **Ask #…** chip; on **Drafts** the draft's
+  card says the same. Several requests for one draft are one card with every
+  chip, and the open count counts the draft once. A request to reject leads
+  with **Reject**. Deciding there is your own decision on the draft: it
+  closes every request for it (on Open the card stays in its place,
+  settled), the session that asked is told once (*… was settled when you
+  approved the draft it is about on another door …*), and a Confirm on the
+  phone afterwards is refused. Nothing about the gate changes: the browser
+  still cannot answer the step-up card, and the session cannot decide the
+  draft without your phone. A request whose draft you cannot decide here is
+  drawn as its step-up card, and a card that no longer matches its draft
+  (*This draft changed since it was asked*) is not a request to decide it:
+  both stay their own card on Open.
 - **Archived** — every draft that is no longer pending, moved here the moment
   you approve or reject it, or it is replaced by a newer draft or expires. Each
   shows its live status: approved and waiting for the plugin to collect it,

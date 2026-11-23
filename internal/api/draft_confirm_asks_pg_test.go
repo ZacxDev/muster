@@ -163,16 +163,18 @@ func TestTheDraftsTabNamesEachDraftsConfirmAsks(t *testing.T) {
 // TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt is the operator's
 // "it feels redundant to have a draft and a confirm ask, i should just approve
 // the draft directly": a session's plugin_draft_decide on the owner's machine
-// files a step-up card (the phone must sign it). On the Asks page it is ONE
-// card — the draft's own, on the Drafts tab, naming the request and its ask's
-// chip — and not also its own card on the Open feed, nor counted twice. The
-// gate is unchanged: the browser still cannot answer the card. The owner's own
-// Approve on the draft's card decides the draft, closes the card, and the
-// session that asked is told exactly once; the phone's Confirm afterwards is
-// refused.
+// files a step-up card (the phone must sign it). On each tab it is ONE card:
+// the DRAFT's own — its post, its web Approve and Reject, a line naming the
+// request and the request's chip — on the Open feed in the request's place
+// (the operator: "i was on the main asks page, i could do it from the drafts
+// page, but thats confusing") and on the Drafts tab as the draft. The gate is
+// unchanged: the browser still cannot answer the card. The owner's Approve on
+// the Open card decides the draft and lands on the request settled in place;
+// the session that asked is told exactly once; the phone's Confirm afterwards
+// is refused.
 //
-// 🔴 RED AT origin/main: the card was on the Open feed as well, and the
-// draft's card did not name it.
+// 🔴 RED AT origin/main: the Open feed drew the bare step-up card and the
+// draft's card named no request.
 func TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt(t *testing.T) {
 	f := newStepUpDraftFixture(t, "approve")
 	att := attention.NewPG(f.pool)
@@ -182,23 +184,6 @@ func TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt(t *testing.T) {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_wakes WHERE owner_id = $1`, f.owner)
 	})
 	cid, did := strconv.FormatInt(f.card, 10), strconv.FormatInt(f.draft.ID, 10)
-
-	countRE := regexp.MustCompile(`data-asks-open-count[^>]*>(\d+) open<`)
-	open := f.page(t, attentionPath)
-	if c := feedCard(open, f.card); c != "" {
-		t.Errorf("the request is its own card on the Open feed too:\n%s", c)
-	}
-	n := countRE.FindStringSubmatch(open)
-	if n == nil {
-		t.Fatalf("no open count on the page")
-	}
-	before, _ := strconv.Atoi(n[1])
-
-	drafts := f.page(t, "/attention?tab=drafts")
-	card := draftCardOf(drafts, f.draft.ID)
-	if card == "" {
-		t.Fatalf("the draft has no card on the Drafts tab")
-	}
 	filed, err := att.Get(f.asOwner, f.card)
 	if err != nil || filed.StepUp == nil {
 		t.Fatalf("the card: %+v %v", filed, err)
@@ -208,18 +193,46 @@ func TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt(t *testing.T) {
 		who = html.EscapeString(filed.StepUp.Asker)
 	}
 	line := `<p class="break-words text-sm text-fg2" data-draft-request data-ask-id="` + cid + `">` + who + draftRequestApprove + draftRequestDecide + `</p>`
-	if !strings.Contains(card, line) {
-		t.Errorf("the draft's card does not name the request (%s):\n%s", line, card)
+
+	countRE := regexp.MustCompile(`data-asks-open-count[^>]*>(\d+) open<`)
+	page := f.page(t, attentionPath)
+	openFeed := pageBetween(page, "attention-items", "attention-answered")
+	draftsTab := pageBetween(page, "asks-tabs-panel-drafts", "")
+	for tab, body := range map[string]string{"the Open feed": openFeed, "the Drafts tab": draftsTab} {
+		if n := strings.Count(body, `data-draft-id="`+did+`"`); n != 1 {
+			t.Errorf("%s draws draft %s %d times, want once", tab, did, n)
+		}
+	}
+	// THE OPEN FEED: the request's place holds the draft's own card.
+	card := feedCard(page, f.card)
+	if card == "" || !strings.Contains(card, "data-asks-request-draft") || !strings.Contains(card, `data-draft-id="`+did+`"`) {
+		t.Fatalf("the Open feed does not draw the request as its draft's card:\n%s", card)
+	}
+	if strings.Contains(openFeed, "data-asks-stepup-row") {
+		t.Errorf("the Open feed draws the bare step-up card too")
+	}
+	for _, want := range []string{line, `action="/plugins/drafts/` + did + `/approve"`, `<input type="hidden" name="card" value="` + cid + `">`,
+		`<input type="hidden" name="return" value="` + attentionPath + `">`, `data-stepup-post`} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the Open card lacks %q:\n%s", want, card)
+		}
 	}
 	if chips := askChipLinks(t, card); len(chips) != 1 || chips[0].id != f.card || chips[0].href != "/attention/asks/"+cid {
-		t.Errorf("the draft's card's ask chips: %+v; want Ask #%s", chips, cid)
+		t.Errorf("the Open card's ask chips: %+v; want Ask #%s", chips, cid)
 	}
-	if strings.Count(drafts, `data-draft-id="`+did+`"`) != 1 {
-		t.Errorf("draft %s is drawn %d times on the Drafts page", did, strings.Count(drafts, `data-draft-id="`+did+`"`))
+	// THE DRAFTS TAB: the same draft, the same request line and chip.
+	dcard := draftCardOf(draftsTab, f.draft.ID)
+	if !strings.Contains(dcard, line) || !strings.Contains(dcard, `action="/plugins/drafts/`+did+`/approve"`) {
+		t.Errorf("the Drafts tab's card does not name the request (%s):\n%s", line, dcard)
 	}
-	if !strings.Contains(card, `action="/plugins/drafts/`+did+`/approve"`) {
-		t.Fatalf("the draft's card offers no Approve:\n%s", card)
+	if chips := askChipLinks(t, dcard); len(chips) != 1 || chips[0].id != f.card {
+		t.Errorf("the Drafts tab card's ask chips: %+v; want Ask #%s", chips, cid)
 	}
+	n := countRE.FindStringSubmatch(page)
+	if n == nil {
+		t.Fatalf("no open count on the page")
+	}
+	before, _ := strconv.Atoi(n[1])
 
 	// The gate: the browser cannot answer the card.
 	if _, err := f.srv.answerAskFrom(probeOwner(f.routeFixture), f.card, hostDecisionConfirm, attention.AnswerSource{}); !errors.Is(err, errHostDecisionNeedsPhone) {
@@ -229,11 +242,11 @@ func TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt(t *testing.T) {
 		t.Fatalf("the card after the browser's try: %+v %v", a, err)
 	}
 
-	// The owner approves the draft on its own card.
-	w := f.ownerForm(t, "/plugins/drafts/"+did+"/approve", url.Values{"body_sha256": {sha(f.body)},
+	// The owner approves the draft on the Open card, as its form posts.
+	w := f.ownerForm(t, "/plugins/drafts/"+did+"/approve", url.Values{"return": {attentionPath}, "card": {cid}, "body_sha256": {sha(f.body)},
 		"media_sha256": {sha("launch/hero-7") + "," + sha("launch/demo-8")}}, sessionCookieFor(f.srv))
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("the approve: %d %s", w.Code, w.Body)
+	if landing := "/attention?settled=" + cid + "#ask-" + cid; w.Code != http.StatusSeeOther || w.Header().Get("Location") != landing {
+		t.Fatalf("the approve: %d to %q, want 303 to %q (%s)", w.Code, w.Header().Get("Location"), landing, w.Body)
 	}
 	if r := f.row(t, f.draft.ID); r.status != "approved" {
 		t.Fatalf("the draft after the approve: %+v", r)
@@ -265,5 +278,37 @@ func TestADraftsOpenRequestIsOneCardAndTheOwnersDecisionClosesIt(t *testing.T) {
 		t.Error("no open count after the approve")
 	} else if c, _ := strconv.Atoi(n[1]); c >= before {
 		t.Errorf("the open count went %d -> %d; want it to fall (the draft decided)", before, c)
+	}
+}
+
+// TestARequestWhoseDraftIsPastTheDraftsTabsCutIsStillDecidableFromOpen: NO
+// REQUEST IS HIDDEN. A draft past the Drafts tab's window (newer pending
+// drafts fill its pluginDraftsShown, and the queue's own draft items) has no
+// card there; its session's request is still on the Open feed as the draft's
+// own card, with its Approve, and counted (no draft item stands for it).
+func TestARequestWhoseDraftIsPastTheDraftsTabsCutIsStillDecidableFromOpen(t *testing.T) {
+	f := newStepUpDraftFixture(t, "approve")
+	sys := authz.System(context.Background())
+	if _, err := f.pool.Exec(sys, `INSERT INTO plugin_reply_drafts (owner_id, agent_id, agent_name, body, expires_at, plugin_id, venue, target_kind, officer)
+		SELECT $1, $2, 'a', 'newer post ' || g, now() + interval '1 hour', $3, 'example.forum', 'post', 'example:main' FROM generate_series(1, $4::int) g`,
+		f.owner, f.chief.ID, f.plugin.ID, 2*pluginDraftsShown); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(sys, `DELETE FROM plugin_reply_drafts WHERE owner_id = $1 AND body LIKE 'newer post %'`, f.owner)
+	})
+	cid, did := strconv.FormatInt(f.card, 10), strconv.FormatInt(f.draft.ID, 10)
+	page := f.page(t, attentionPath)
+	if c := draftCardOf(pageBetween(page, "asks-tabs-panel-drafts", ""), f.draft.ID); c != "" {
+		t.Fatalf("control: the draft is still in the Drafts tab's window:\n%s", c)
+	}
+	card := feedCard(page, f.card)
+	if card == "" || !strings.Contains(card, "data-asks-request-draft") || !approveForm(card, f.draft.ID) ||
+		!strings.Contains(card, `<input type="hidden" name="card" value="`+cid+`">`) {
+		t.Fatalf("the request of draft %s is not decidable from Open:\n%s", did, card)
+	}
+	if got := asksPendingOf(f.asOwner, foldDraftRequests([]attentionItem{{Kind: attentionKindAsk, Key: attentionAskKey(f.card), AskID: f.card, systemAsk: true,
+		stepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, DraftID: f.draft.ID}}}), 0); got != 1 {
+		t.Errorf("a request with no draft item beside it counts %d, want 1", got)
 	}
 }

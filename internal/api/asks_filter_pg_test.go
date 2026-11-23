@@ -101,13 +101,9 @@ func newFiltFix(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *filtFix
 	f.sessionAsk = f.mirrorAsk(t, "Publish the release notes now?").ID
 	f.mktAsk = mk(1, attention.New{Asker: officer(filtMarketing), Question: "Approve the launch tagline?", Options: []string{"Approve", "Rewrite"}})
 	f.mktDraft = draft(1, f.op.ID, filtMarketing, "We launched today.")
-	// A card that no longer matches its draft (Changed): it stays its own card
-	// on the Open feed — a request that still matches is drawn on its draft's
-	// card instead (asks_drafts.go, one draft, one card) — and is sourced by
-	// its draft all the same.
 	f.mktCard = mk(1, attention.New{Asker: attention.Asker{System: true, Label: "step-up"}, Options: []string{"Confirm", "Refuse"},
-		StepUp: &attention.StepUpCard{Tool: "plugin_draft_decide", Title: "This draft changed since it was asked · Draft #" + strconv.FormatInt(f.mktDraft, 10), Why: "Launch announcement",
-			Asker: "work:1", Preview: "We launched today.", Venue: "X", Platform: "x", Target: "post", DraftID: f.mktDraft, Changed: true, Details: "A session asks to approve the draft."}})
+		StepUp: &attention.StepUpCard{Tool: "plugin_draft_decide", Title: "Post to X? · Draft #" + strconv.FormatInt(f.mktDraft, 10), Why: "Launch announcement",
+			Asker: "work:1", Preview: "We launched today.", Venue: "X", Platform: "x", Target: "post", DraftID: f.mktDraft, Details: "A session asks to approve the draft."}})
 	f.memberMkt = mk(f.member, attention.New{Asker: officer(filtMarketing), Question: "MEMBER: approve their tagline?"})
 	f.memberSales = mk(f.member, attention.New{Asker: officer("sales:zeta"), Question: "MEMBER: call the lead?"})
 	f.memberDraft = draft(f.member, f.worker.ID, "sales:zeta", "MEMBER: the sales post.")
@@ -249,10 +245,12 @@ func TestOneTapOnASourceKeepsOnlyItsItemsOnEveryTab(t *testing.T) {
 	if got := idsIn(pageBetween(page, "asks-drafts-pending", "asks-drafts-archived-toggle"), "draft-"); len(got) != 1 || !got[f.mktDraft] {
 		t.Errorf("Drafts under Marketing lists %v, want only %d", got, f.mktDraft)
 	}
-	// THE ONE OPEN COUNT over what the filter keeps: its question, its
-	// step-up card and its pending draft.
-	if !strings.Contains(page, ui.AsksOpenCountHTML(3)) {
-		t.Error("the open count is not the filtered list's 3")
+	// THE ONE OPEN COUNT over what the filter keeps: its question and its
+	// pending draft — the step-up card is a session's request to decide that
+	// draft, drawn as the draft's own card, and counted once with it.
+	// CHANGED: it counted 3 (one draft, one card: asks_drafts.go).
+	if !strings.Contains(page, ui.AsksOpenCountHTML(2)) {
+		t.Error("the open count is not the filtered list's 2")
 	}
 	chip, _ := sourceChip(t, page, filtMkt)
 	if !chip.active || chip.href != "/attention" {

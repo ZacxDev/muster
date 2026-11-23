@@ -1037,7 +1037,11 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	// THE OPEN CARD'S HEAD (ui.AsksHeadHTML): who drafted it and how long
 	// ago, its id chip. No kind badge: the preview's own head says where it
 	// goes and what it is ("X · New post", "<inbox> · Reply to a message").
-	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-draft-id="` + id +
+	anchor, feed := draftCardAnchor(d.ID), ""
+	if p.feedKey != "" {
+		anchor, feed = p.feedKey, ` data-attention-item data-kind="`+attentionKindAsk+`" data-asks-request-draft`
+	}
+	b.WriteString(`<li id="` + esc(anchor) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + feed + ` tabindex="-1" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
 ` + ui.AsksHeadHTML(ui.AsksHead{Who: ui.AsksWhoHTML(`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+stepUpHiddenHTML(who)+`</span>`, age), Chip: ui.DraftIDChipHTML(d.ID)}) + `
 `)
@@ -1047,8 +1051,9 @@ func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 		b.WriteString(a + "\n")
 	}
 	// A session's open request to decide it (asks_drafts.go, ONE DRAFT, ONE
-	// CARD): drawn here, its own card left off the Open feed. A request to
-	// reject leads with Reject, as its step-up card did.
+	// CARD): drawn here, on the Drafts tab and on the Open feed in the
+	// request's place. A request to reject leads with Reject, as its step-up
+	// card did.
 	if line := draftRequestHTML(c); line != "" {
 		b.WriteString(line + "\n")
 		p.rejectLead = p.rejectLead || c.Request.Reject

@@ -175,6 +175,11 @@ func taskCardParts(text string) (title, rest string) {
 // expand. The way to the session is the footer's "View in session", at the
 // card's bottom whether it is expanded or not.
 func askFeedCardHTML(it attentionItem, now time.Time) string {
+	// A session's request to decide a draft: its draft's own card, in its
+	// place (asks_drafts.go, ONE DRAFT, ONE CARD).
+	if merged := askMergedDraftCardHTML(it, now); merged != "" {
+		return merged
+	}
 	esc := html.EscapeString
 	var b strings.Builder
 	kind, label := askFeedBadge(it)
