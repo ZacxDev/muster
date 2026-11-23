@@ -6,8 +6,9 @@
 -- open. Renumber again if a later number lands first (the contiguity test,
 -- internal/db migrate_contiguous_test.go, fails on a gap).
 --
--- The Open button's slot re-reads a window's ask counts every 10 s while its
--- tab is shown, by host and the session keys the window runs, in ANY state
+-- The Open button's slot re-reads a window's ask counts — on every change of
+-- the queue its page hears, and every 10 s on a page that hears none (the
+-- Terminal view) — by host and the session keys the window runs, in ANY state
 -- (open and answered). idx_attention_asks_open covers only open rows, and an
 -- agent's asks already have idx_attention_asks_agent; without this, a
 -- window's read scanned every ask its owner ever had.

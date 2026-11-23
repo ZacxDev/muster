@@ -69,7 +69,9 @@ func (s *Server) sessionAsks(ctx context.Context, q attention.SessionAsksQuery) 
 
 // sessionAskCounts is how many of the asks sessionAsks would list for q are
 // open, and how many there are (uncapped): the Open button's numbers, read
-// as counts (the button's slot polls every 10 s; the rows are the tab's).
+// as counts (the button's slot re-reads them on every change of the queue the
+// page hears, and every 10 s where it hears none — ui slotTrigger; the rows
+// are the tab's).
 // Zero with the queue off, for a q that names no session, or on a store
 // error (logged).
 func (s *Server) sessionAskCounts(ctx context.Context, q attention.SessionAsksQuery) (open, total int) {

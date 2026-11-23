@@ -818,3 +818,41 @@ async function menuKeepsItsActions(page: Page): Promise<void> {
 function page_(title: string, sid: string): string {
   return fix('page', OWNER, title, '0', rig.host, sid, '1', '0', '0');
 }
+
+// THE OPEN BUTTON'S ASK COUNT FOLLOWS THE QUEUE WHILE THE PAGE IS OPEN, at
+// 390×844, on a window's two views (agent pages: attention-delivery.spec.ts).
+// The Rendered view hears the queue through its asks badge's own stream
+// (AttentionLiveScript's asks:changed); the Terminal view has no badge and no
+// stream, so its slot polls (ui PluginChips.AsksPoll). Here an ask is filed
+// for @4's session (by the fixture: a write, with no event of its own) and a
+// throwaway ask of another session is answered through the queue's route
+// (which is an event), then the new ask is answered the same way: the count
+// goes 1 → 2 → 1 with no reload. RED with the slot's trigger reduced to "".
+test.describe('the Open button follows the queue live (390×844)', () => {
+  const answer = async (page: Page, id: string, text: string) => {
+    const r = await page.request.post(origin + `/attention/asks/${id}/answer`, { form: { answer: text }, headers: { Origin: origin }, maxRedirects: 0 });
+    expect(r.status(), `answer ${id}`).toBe(303);
+  };
+  for (const view of ['rendered', 'terminal'] as const) {
+    test(`the mirrored ${view} view: an ask filed and then answered moves the count 1 → 2 → 1`, async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      const url = view === 'rendered' ? viewOf('@4') : `/mirror/terminal?${q('@4')}`;
+      await page.goto(origin + url);
+      let loads = 0;
+      page.on('framenavigated', (f) => { if (f === page.mainFrame()) loads++; });
+      const count = page.locator('header #preview-toggle');
+      await expect(count).toHaveAttribute('data-open-asks', '1');
+      const fresh = fix('sessask', OWNER, '0', rig.host, SD, '5', `Live ${view} question ${stamp}`);
+      const other = fix('sessask', OWNER, '0', rig.host, SZ, '5', `Live ${view} nudge ${stamp}`);
+      madeAsks.push([OWNER, fresh], [OWNER, other]);
+      // The Rendered view moves on an event: the queue's answer of another
+      // session's ask. The Terminal view moves on its poll, event or not.
+      if (view === 'rendered') await answer(page, other, 'ok');
+      await expect(count).toHaveAttribute('data-open-asks', '2', { timeout: 25_000 });
+      await answer(page, fresh, 'done');
+      await expect(count).toHaveAttribute('data-open-asks', '1', { timeout: 25_000 });
+      expect(loads, 'the page was not reloaded').toBe(0);
+    });
+  }
+});

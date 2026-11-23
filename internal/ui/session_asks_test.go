@@ -167,3 +167,38 @@ func TestTheMirroredViewsHeaderHasNoMenuAndNoHome(t *testing.T) {
 		t.Error("the view still has a More actions control")
 	}
 }
+
+// TestTheOpenSlotFollowsThePagesSourceOfTheQueue: the slot re-reads on its
+// page's asks badge's refresh (the agent page's htmx swap into the badge;
+// the Rendered view's asks:changed) and polls only with previews or pages to
+// count, or on a page with no source of the queue (the Terminal view). The
+// behaviour is e2e's (session-open.spec's and attention-delivery.spec's live
+// cases, red with the trigger emptied); this pins which page gets which.
+func TestTheOpenSlotFollowsThePagesSourceOfTheQueue(t *testing.T) {
+	trigger := func(page string) string {
+		t.Helper()
+		el := byID(parseFragment(t, page), "preview-slot")
+		if el == nil {
+			t.Fatal("no slot")
+		}
+		return attrOf(el, "hx-trigger")
+	}
+	asks := &PluginChips{Host: "ws", Session: "main", Window: "@1", AsksOn: true}
+	follow := "htmx:afterSwap from:#" + AskerAsksBadgeID
+	rendered := trigger(renderString(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1", Plugins: asks})))
+	if !strings.Contains(rendered, follow) || !strings.Contains(rendered, "asks:changed from:document") || strings.Contains(rendered, "every ") {
+		t.Errorf("the Rendered view's slot, asks alone: %q (no poll expected)", rendered)
+	}
+	term := trigger(renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", Plugins: asks})))
+	if !strings.Contains(term, "every "+previewPollEvery) {
+		t.Errorf("the Terminal view's slot, asks alone: %q (a poll expected: it has no source)", term)
+	}
+	if asks.AsksPoll {
+		t.Error("the Terminal view's poll leaked into the shared PluginChips")
+	}
+	pages := trigger(renderString(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1",
+		Plugins: &PluginChips{Host: "ws", Session: "main", Window: "@1", AsksOn: true, PagesOn: true}})))
+	if !strings.Contains(pages, "every "+previewPollEvery) || !strings.Contains(pages, follow) {
+		t.Errorf("with pages on: %q (the poll and the badge's cue expected)", pages)
+	}
+}

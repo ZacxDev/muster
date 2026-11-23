@@ -174,6 +174,36 @@ test('the operator answers the chief on /attention and the chief\'s session rece
 // Asks page filtered to the chief's asks; the operator taps an option there,
 // the card leaves, and the chief's session receives the answer as a turn —
 // once.
+// THE CATCH-UP: an ask filed while the page's stream is down (its event
+// missed) still reaches the Open button, by the asks badge's own catch-up
+// (askerAsksRefresh, once a minute), which the button follows
+// (htmx:afterSwap on the badge, ui slotTrigger). The stream is held down from
+// the page's load (/events refused), so no event can carry it; at 390×844,
+// where the button is the only count drawn. RED with the slot's trigger
+// reduced to "": the button kept 1.
+test('the Open button catches up with an ask whose event the page missed (390×844)', async ({ page }) => {
+  test.setTimeout(150_000);
+  await signIn(page, origin);
+  await page.route('**/events', (r) => r.abort());
+  await page.goto(origin + '/agents/' + chiefName);
+  await expect(page.locator('#chat-form')).toBeVisible();
+  const open = page.locator('header #preview-toggle');
+  // No open ask yet draws no button (nothing to count); one is drawn bare
+  // or counted otherwise.
+  const drawn = (await open.count()) > 0;
+  const before = drawn ? Number((await open.getAttribute('data-open-asks')) ?? '0') : 0;
+  const asked = await mcpCall('attention_ask', { question: `Missed while asleep (${stamp})?` });
+  const id = (JSON.parse(asked.text) as { id: number }).id;
+  // No event reaches the page: nothing moves at once.
+  await page.waitForTimeout(3_000);
+  if (!drawn) await expect(open).toHaveCount(0);
+  else await expect(open).toHaveAttribute('data-open-asks', String(before));
+  // The badge's catch-up (within its minute) re-reads, and the button with it.
+  await expect(open, 'the Open button caught up').toHaveAttribute('data-open-asks', String(before + 1), { timeout: 75_000 });
+  const r = await page.request.post(origin + `/attention/asks/${id}/answer`, { form: { answer: 'caught up' }, headers: { Origin: origin }, maxRedirects: 0 });
+  expect(r.status()).toBe(303);
+});
+
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
@@ -197,6 +227,10 @@ for (const vp of [
       await page.waitForURL(onChief);
       const count = page.locator('header [data-asker-asks-link]');
       await expect(count).toHaveAttribute('data-count', '1');
+      // The Open button counts the same open ask — on a phone the only count
+      // drawn (ui agentAsksBadge) — and follows the queue with the badge.
+      const open = page.locator('header #preview-toggle');
+      await expect(open).toHaveAttribute('data-open-asks', '1');
       await expect(page.locator('#asker-asks'), 'no asks block').toHaveCount(0);
       await expect(page.locator(`#ask-${id}`), 'no ask card on the chief\'s page').toHaveCount(0);
 
@@ -214,6 +248,7 @@ for (const vp of [
       const id2 = (JSON.parse(second.text) as { id: number }).id;
       await expect(count).toHaveAttribute('data-count', '2', { timeout: 15_000 });
       await expect(shell).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      await expect(open, 'the Open button follows a new ask').toHaveAttribute('data-open-asks', '2', { timeout: 15_000 });
       const answered = await page.request.post(origin + `/attention/asks/${id2}/answer`, {
         form: { answer: 'later' },
         headers: { Origin: origin },
@@ -221,6 +256,7 @@ for (const vp of [
       });
       expect(answered.status()).toBe(303);
       await expect(count).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+      await expect(open, 'the Open button follows an answer').toHaveAttribute('data-open-asks', '1', { timeout: 15_000 });
       await expect(shell).toHaveAttribute('data-count', '1', { timeout: 15_000 });
       expect(navigations, 'the page was not reloaded').toBe(0);
       page.off('framenavigated', nav);

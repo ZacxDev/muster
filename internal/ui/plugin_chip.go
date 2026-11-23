@@ -242,6 +242,10 @@ type PluginChips struct {
 	// agent's page, whose badge also counts the team's asks waiting on the
 	// viewer.
 	AsksCoverBadge bool
+	// AsksPoll: the page has no live source of the queue's changes (no asks
+	// badge, no stream — the mirrored Terminal view), so the slot polls for
+	// its asks (slotTrigger). Set by the page that draws it.
+	AsksPoll bool
 	// Agent is a dispatched agent's name on ITS page (no window, no
 	// previews): the button's and the list's routes are the agent's.
 	Agent string
@@ -255,22 +259,42 @@ func (c *PluginChips) on() bool { return c != nil && (len(c.Chips) > 0 || c.Page
 
 // slotTrigger is when the slot re-reads the button.
 //
-// 🔴 ASKS ARE EVENT-DRIVEN; ONLY PREVIEWS AND PAGES ARE POLLED. An ask's
-// arrival or answer is the queue's own event — the SSE event the agent page's
-// badge refresh relays to <body> (askerAsksRefresh), and the asks:changed a
-// mirrored view's live badge dispatches on document (AttentionLiveScript) —
-// so the button follows it with no poll. Previews (the host's counts) and
-// pages have no such event, so the 10 s poll stays, exactly as before, while
-// there is a viewer plugin or the pages feature is on. A session page with
-// asks alone polls nothing: drawing the slot on every session page for its
-// asks had added a request every 10 s to every one of them (e2e
-// telemetry.spec: 12 batches a minute from one open view, against its 6).
+// 🔴 ASKS FOLLOW THE PAGE'S ASKS BADGE; ONLY PREVIEWS AND PAGES ARE POLLED.
+// A page whose header has the asks badge keeps that badge live on the
+// queue's event, with a catch-up (a reconnect, a wake, once a minute), and
+// the button re-reads whenever the badge does:
+//   - the agent page's badge is an htmx refresh (askerAsksRefresh: the SSE
+//     event and every 60 s) into #asker-asks-badge, so its htmx:afterSwap
+//     there is the button's cue — the catch-up included, which the bare SSE
+//     event is not (a stream that missed an event while asleep sent none);
+//   - the mirrored Rendered view's badge is its own stream's
+//     (AttentionLiveScript), which dispatches asks:changed on document on
+//     every refresh: the event, a reconnect's catch-up, once a minute.
+//
+// A page with NO such source (c.AsksPoll: the mirrored Terminal view, and its
+// copy kept in the view swap's frame, draw no badge and open no stream) polls
+// every previewPollEvery instead, as every slot did before. So does every
+// page while there are previews or pages to count, which have no event.
+// Otherwise nothing is polled: drawing the slot on every session page for its
+// asks had added a request every 10 s to each (e2e telemetry.spec: 12
+// batches a minute from one open view, against its 6).
 func (c *PluginChips) slotTrigger() string {
-	t := "sse:" + askerAsksEvent + " from:body delay:50ms, asks:changed from:document delay:50ms"
-	if c.previewsOn() || c.PagesOn {
+	t := "htmx:afterSwap from:#" + AskerAsksBadgeID + " delay:50ms, asks:changed from:document delay:50ms"
+	if c.previewsOn() || c.PagesOn || c.AsksPoll {
 		t += ", every " + previewPollEvery + " [!document.hidden]"
 	}
 	return t
+}
+
+// withAsksPoll is c for a page with no live source of the queue's changes
+// (AsksPoll); nil stays nil.
+func withAsksPoll(c *PluginChips) *PluginChips {
+	if c == nil {
+		return nil
+	}
+	cc := *c
+	cc.AsksPoll = true
+	return &cc
 }
 
 // previewsOn: there is a viewer plugin to open the window's previews with.
