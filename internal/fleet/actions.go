@@ -145,6 +145,14 @@ const (
 	PushEvery = 30 * time.Minute
 )
 
+// ExpiresAt is when a proposal made at created expires: ProposalTTL after it.
+// The one rule the card's "expires in …", the tap and the draw all read
+// (internal/api fleetExpire, fleetApprove).
+func ExpiresAt(created time.Time) time.Time { return created.Add(ProposalTTL) }
+
+// Expired reports whether a proposal made at created has expired at now.
+func Expired(created, now time.Time) bool { return !now.Before(ExpiresAt(created)) }
+
 // --- the fixed texts --------------------------------------------------------
 //
 // 🔴 BYTE FOR BYTE (docs/chief.md "Fleet proposals"; the plan's §4.2 and
