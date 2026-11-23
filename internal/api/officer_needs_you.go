@@ -242,15 +242,24 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 	if count == 0 {
 		b.WriteString(`<p class="text-sm text-fg2" id="officer-needs-none">Nothing from it waits on you.</p>`)
 	}
+	// "Show session" on each item (officer_origin.go): the session that made
+	// it, at the moment; an older item, its instance's session as a whole.
+	first := s.officerFirstInstance(sc.Owner, v.ID)
 	if len(n.drafts) > 0 {
 		// THE Asks page's cards and their routes (draftListHTMLIn): a
 		// decision posts where it does there, and comes back here.
-		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + draftListHTMLIn(n.drafts, "", s.withDictation(cardPlace{back: back})) + `</ul>`)
+		list := draftListHTMLIn(n.drafts, "", s.withDictation(cardPlace{back: back}))
+		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-drafts>` + s.withDraftShowSessions(ctx, sc, v.ID, list, n.drafts, first) + `</ul>`)
 	}
 	if len(n.asks) > 0 {
+		origins := s.askOrigins(ctx, sc.Owner, n.asks)
 		items := make([]attentionItem, 0, len(n.asks))
 		for _, a := range n.asks {
-			items = append(items, askItem(a))
+			it := askItem(a)
+			o := origins[a.ID]
+			href := s.officerOriginHref(ctx, sc, v.ID, o, first)
+			it.showSession = showSessionHTML(href, momentHref(href))
+			items = append(items, it)
 		}
 		sortAttentionItems(items)
 		// THE answer form (askAnswerFormHTML, through the session pages'
@@ -260,7 +269,7 @@ func (s *Server) needsYouHTML(ctx context.Context, sc officerScope, v declaredOf
 		b.WriteString(`<ul class="flex flex-col gap-2" data-needs-asks>` + attentionItemsHTMLTo(items, time.Now(), back) + `</ul>`)
 	}
 	for _, rf := range n.refusals {
-		b.WriteString(refusalCardHTML(sc, v.ID, rf, controllable, s.officerNow()))
+		b.WriteString(refusalCardHTML(sc, v.ID, rf, controllable, s.officerNow(), s.refusalShowSessionHTML(ctx, sc, v.ID, rf, first)))
 	}
 	b.WriteString(`</section>`)
 	return b.String()
@@ -300,7 +309,7 @@ func refusalBy(by string) string {
 // refusalCardHTML is one refusal waiting on its owner: what was refused, why
 // (the plugin's or muster's own words, as filed), what the officer did with
 // it, and — for a viewer who may write — Re-file (at a time) and Drop.
-func refusalCardHTML(sc officerScope, officer string, rf builtin.Refusal, writable bool, now time.Time) string {
+func refusalCardHTML(sc officerScope, officer string, rf builtin.Refusal, writable bool, now time.Time, showSession string) string {
 	esc := html.EscapeString
 	item := strconv.FormatInt(rf.Item, 10)
 	where := ""
@@ -326,6 +335,7 @@ func refusalCardHTML(sc officerScope, officer string, rf builtin.Refusal, writab
 	}
 	b.WriteString(ui.InfoSheetHTML(ui.InfoSheet{ID: "refusal-" + item + "-info", Label: "Details of this refusal", Heading: "Details",
 		Lead: "What muster records for this refusal:", Code: code}))
+	b.WriteString(showSession)
 	if writable {
 		action := esc(officersPagePath + "/" + url.PathEscape(officer) + "/refusals/" + item)
 		b.WriteString(`<form method="POST" action="` + action + `/refile" class="flex flex-col gap-2" data-refusal-refile>` + sc.ownerField() + `

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/itemorigin"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 )
@@ -80,6 +81,11 @@ func (a officerAsker) Raise(ctx context.Context, o officers.Officer, about built
 		return 0, officerDecision(http.StatusConflict, "too_many_asks", err.Error())
 	case err != nil:
 		return 0, err
+	}
+	// Where it was asked from: the bound caller's (itemorigin), never a
+	// value from the call's arguments.
+	if origin, ok := itemorigin.Resolve(ctx); ok {
+		s.recordAskOrigin(s.attentionPrincipal(ctx, o.Owner), o.Owner, ask.ID, origin)
 	}
 	s.officerAskFiled(officerPushAsk, ask)
 	return ask.ID, nil
@@ -312,7 +318,25 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 		}
 		return
 	}
+	if n.Recipient == n.Owner {
+		// Where the escalating call was made, recorded on the owner's own
+		// notice only (builtin.noticesFor): the ask's origin_* (0185).
+		s.recordAskOrigin(rctx, n.Owner, a.ID, n.Origin)
+	}
 	s.officerAskFiled(officerPushEscalation, a)
+}
+
+// recordAskOrigin writes origin o (the officer tool dispatcher's bound
+// caller's, internal/itemorigin) on owner's ask askID it just raised
+// (builtin.Store.SetAskOrigin), logging a failure: the ask stands, and its
+// "Show session" then opens the instance's session as a whole.
+func (s *Server) recordAskOrigin(ctx context.Context, owner, askID int64, o itemorigin.Origin) {
+	if o.AgentID <= 0 || s.officerStore == nil {
+		return
+	}
+	if err := s.officerStore.SetAskOrigin(ctx, owner, askID, o); err != nil {
+		s.logger.Printf("officers: record where ask %d was made: %v", askID, err)
+	}
 }
 
 // officerEscalationTail ends every escalation ask: what answering does.

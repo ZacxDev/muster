@@ -195,6 +195,9 @@ type attentionItem struct {
 	// noActions: its notification offers no chips and no signed answer
 	// actions (a chief proposal's card, proposalCardFiled). Not serialised.
 	noActions bool
+	// showSession is an officer's ask's "Show session" button on its
+	// officer's page (officer_origin.go), "" everywhere else. Not serialised.
+	showSession string
 	// Key is the item's stable id: its DOM id, its notification tag's suffix.
 	Key  string `json:"key"`
 	Kind string `json:"kind"`
@@ -2201,6 +2204,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(officerContextHTML(it.Context))
+	b.WriteString(it.showSession)
 	b.WriteString(pageAskOpenHTML(it.pageOpen))
 	switch {
 	case it.Kind == attentionKindNotice:

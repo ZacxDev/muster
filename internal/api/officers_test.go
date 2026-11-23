@@ -1072,17 +1072,36 @@ func (g *blockingChat) Chat(ctx context.Context, _ agents.Agent, _, _ string, _ 
 }
 
 // recordingAgents wraps officerAgents to count transcript rows.
+// recordingAgents counts the transcript rows LEFT on the agent: a row the
+// re-prompt stores first and takes back (an unsent turn, DeleteChatMessage)
+// is not left.
 type recordingAgents struct {
 	*officerAgents
 	rows int
+	next int64
+	live map[int64]bool
 	mu   sync.Mutex
 }
 
 func (r *recordingAgents) AddChatMessage(_ context.Context, m agents.ChatMessage) (agents.ChatMessage, error) {
 	r.mu.Lock()
-	r.rows++
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if r.live == nil {
+		r.live = map[int64]bool{}
+	}
+	r.next++
+	m.ID = r.next
+	r.live[m.ID] = true
+	r.rows = len(r.live)
 	return m, nil
+}
+
+func (r *recordingAgents) DeleteChatMessage(_ context.Context, _, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.live, id)
+	r.rows = len(r.live)
+	return nil
 }
 
 // TestShutdownMidRepromptReleasesTheClaim: a re-prompt send in flight when
@@ -1139,8 +1158,8 @@ func TestAnUnsentRepromptRecordsNoTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.s.WaitForOfficerReprompts()
-	if rec.rows != 2 {
-		t.Fatalf("a delivered re-prompt recorded %d rows, want 2 (user + reply)", rec.rows)
+	if rec.rows != 2 || rec.next != 3 {
+		t.Fatalf("a delivered re-prompt left %d rows (%d stored in all), want 2 (user + reply) after the unsent one's row was taken back", rec.rows, rec.next)
 	}
 }
 

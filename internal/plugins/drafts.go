@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/itemorigin"
 )
 
 // REPLY DRAFTS (plugin_reply_drafts, migration 0016): the chief drafts a
@@ -184,6 +185,12 @@ type Draft struct {
 	// (migration 0182, reply_context.go): an outside party's words, UNTRUSTED.
 	// nil for every other draft, and for a reply filed without one.
 	ReplyContext *ReplyContext `json:"replyContext,omitempty"`
+	// Origin is where an officer's instance filed it from (migration 0185:
+	// the instance, its session, the moment); zero for a draft no officer
+	// instance filed, and for every draft filed before 0185. Read-only: the
+	// outbound filing writes it from its context alone (internal/itemorigin);
+	// a retry successor carries its root's.
+	Origin itemorigin.Origin `json:"-"`
 	// Retry is what the store DECIDED about a retry in the transaction that
 	// recorded this draft's failed result (FinishDraft), like Refusal: never
 	// stored, never read back. internal/api acts on it.
@@ -637,7 +644,8 @@ const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
 	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason,
-	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from, reply_context`
+	retry_of, attempt, not_before, retry_last_detail, nothing_sent, auto_from, reply_context,
+	origin_agent_id, origin_session_id, origin_message_id`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
@@ -645,11 +653,14 @@ func draftDest(d *Draft, st *string) []any {
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
 		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason,
-		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom, &d.ReplyContext}
+		&d.RetryOf, &d.Attempt, &d.NotBefore, &d.RetryLastDetail, &d.NothingSent, &d.AutoFrom, &d.ReplyContext,
+		(*zeroIfNull)(&d.Origin.AgentID), (*zeroIfNull)(&d.Origin.SessionID), (*zeroIfNull)(&d.Origin.MessageID)}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
-// message_id (0121), so Draft.MessageID stays an int64 and 0 means "none".
+// message_id (0121), so Draft.MessageID stays an int64 and 0 means "none";
+// and the origin_* ids (0185). Plain columns, never coalesce(): prefixed()
+// qualifies draftCols by splitting it on commas.
 type zeroIfNull int64
 
 func (z *zeroIfNull) Scan(src any) error {
@@ -659,7 +670,7 @@ func (z *zeroIfNull) Scan(src any) error {
 	case int64:
 		*z = zeroIfNull(v)
 	default:
-		return fmt.Errorf("plugins: message_id is %T", src)
+		return fmt.Errorf("plugins: a nullable bigint column is %T", src)
 	}
 	return nil
 }

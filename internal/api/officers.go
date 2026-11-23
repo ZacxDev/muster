@@ -1206,8 +1206,10 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	if !ok {
 		return ctx
 	}
+	// The turn's own prompt row is recorded once ccd accepts the turn, last,
+	// so it chains to whichever acceptance callback the paths below set.
 	if !o.FreshSessionPerItem() {
-		return s.unbriefedFirstTurn(ctx, o, a)
+		return s.registerOfficerTurn(s.unbriefedFirstTurn(ctx, o, a), a)
 	}
 	// Set, never a map literal: a literal key is not canonicalised ("CC"), and
 	// Header.Get — applyTurnRoute's read — would never find it.
@@ -1215,7 +1217,7 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	h.Set(agents.HeaderCCNewConversation, "1")
 	name := a.Name
 	ctx = agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
-	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) { s.officerConversationAccepted(name, acc) })
+	return s.registerOfficerTurn(agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) { s.officerConversationAccepted(name, acc) }), a)
 }
 
 // officerConversationAccepted is ccd's acceptance of a turn OfficerTurnContext
@@ -1233,6 +1235,33 @@ func (s *Server) officerConversationAccepted(name string, acc agents.TurnAccepta
 	s.logger.Printf("officers: %s: 🔴 its ccd took a fresh_session_per_item turn but did not confirm a new conversation (no %s on its answer): "+
 		"it predates that header, and the turn runs in the conversation the CLI already had. Its claims stay refused after its current item, and muster "+
 		"sends it no further turn until it is started again on a claude-code-agent image from this version", name, agents.HeaderCCNewConversationSession)
+}
+
+// registerOfficerTurn records officer instance a's running turn's input —
+// its prompt row, which the door stored before the send and put on ctx
+// (agents.TurnInputRow: the kickoff deliverer, Reprompt) — in the registry
+// (turnInputs) the pod's CLI calling /mcp is read by: the moment an item the
+// turn makes points at (officer_origin.go). ctx unchanged when the door
+// stored no row first.
+//
+// 🔴 ONLY ONCE ccd ACCEPTS THE TURN (agents.WithTurnAccepted: its 103 says
+// the CLI took the text), never before the send. A turn ccd refuses before
+// typing (409 busy, 503 not_ready) is not a turn, and Reprompt takes its row
+// back: registered before, a call in that window would have pointed at a row
+// about to be deleted. The record ends when ctx does (both doors cancel it
+// when the turn ends). It chains to the acceptance callback ctx already
+// carries, as acceptedAfterQueued does.
+func (s *Server) registerOfficerTurn(ctx context.Context, a agents.Agent) context.Context {
+	id := agents.TurnInputRow(ctx)
+	if id <= 0 || a.ID <= 0 {
+		return ctx
+	}
+	agent, prev := a.ID, ctx
+	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) {
+		agents.MarkTurnAccepted(prev, acc)
+		end := s.turnInputs.begin(agent, id)
+		context.AfterFunc(prev, end)
+	})
 }
 
 // unbriefedFirstTurn is OfficerTurnContext for an instance of a pool that
@@ -1396,18 +1425,38 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		if sendCtx.Err() != nil || s.streams.context().Err() != nil {
 			return
 		}
-		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(sendCtx, fresh), turn)
+		// THE TURN'S PROMPT ROW FIRST, as the kickoff's (agentkickoff): the
+		// turn runs with its own input recorded (OfficerTurnContext,
+		// registerOfficerTurn), which is the moment an item it makes points
+		// at ("Show session", officer_origin.go). A send refused before
+		// anything was typed takes the row back below.
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
+		prompt, perr := s.ext.Agents.AddChatMessage(pctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		pcancel()
+		turnCtx := sendCtx
+		if perr == nil {
+			turnCtx = agents.WithTurnInputRow(sendCtx, prompt.ID)
+		}
+		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(turnCtx, fresh), turn)
 		defer cancel()
 		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
+		bctx, bcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
+		defer bcancel()
 		if unsent := agentgateway.Unsent(err); unsent != "" {
 			// Refused before anything was typed (ccd's 409 busy, 503
-			// not_ready): not a turn, so nothing goes on the transcript.
+			// not_ready): not a turn, so nothing stays on the transcript.
+			if perr == nil {
+				if derr := s.ext.Agents.DeleteChatMessage(bctx, fresh.ID, prompt.ID); derr != nil {
+					s.logger.Printf("officers: %s: take back the unsent re-prompt's row %d: %v", name, prompt.ID, derr)
+				}
+			}
 			s.logger.Printf("officers: %s: re-prompt not sent (%s); the next pass tries again", name, unsent)
 			return
 		}
-		bctx, bcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
-		defer bcancel()
-		_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		if perr != nil {
+			// Its row could not be stored first: stored now, as before.
+			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		}
 		if reply != "" {
 			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 		}
@@ -1966,6 +2015,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// holder (officerCallerName), so its reads are its chat item's and its
 	// item verbs reach that item only; and it takes no queue work.
 	caller := officerCallerName(ctx, a)
+	// 🔴 WHERE THIS CALL IS MADE FROM, BOUND TO ITS CALLER (officer_origin.go):
+	// an ask or a draft it makes records this instance, its session and the
+	// moment (migration 0185) — never anything the arguments say.
+	ctx = s.withOfficerOrigin(ctx, a)
 	if chat, lane := chatLaneCall(ctx); lane {
 		switch name {
 		case officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,

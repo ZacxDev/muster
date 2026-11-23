@@ -743,9 +743,14 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 			fresh.ID, fresh.Name, provenance)
 	}
 
-	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
+	// The first turn's prompt row, stored before the send: its id rides on
+	// the turn's context (agents.WithTurnInputRow), so the turn's context
+	// hook (Config.TurnContext) can record the running turn's own input.
+	if row, err := d.store.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
-	})
+	}); err == nil {
+		ctx = agents.WithTurnInputRow(ctx, row.ID)
+	}
 	if d.outcome != nil {
 		d.outcome.TurnStarted(parent, fresh)
 		// 🔴 CLOSED ON EVERY PATH, HERE, NOT PER RETURN. A turn left open reads

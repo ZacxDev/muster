@@ -148,12 +148,20 @@ func (s *PGStore) fileRetryTx(ctx context.Context, tx pgx.Tx, failed Draft, afte
 		INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, status, expires_at, decided_at, approved_at,
 		                                 check_state, checked_at, plugin_id, venue, target_kind, target_ref, media_refs, media, officer,
 		                                 officer_item_id, approved_body_sha256, approved_media_sha256, because_ref, contact_id, outreach_reason,
-		                                 retry_of, attempt, not_before, retry_last_detail, auto_from, reply_context)
+		                                 retry_of, attempt, not_before, retry_last_detail, auto_from, reply_context,
+		                                 origin_agent_id, origin_session_id, origin_message_id)
 		SELECT f.owner_id, NULL, f.agent_id, f.agent_name, f.body, 'approved', f.expires_at, f.decided_at, f.approved_at,
 		       f.check_state, f.checked_at, f.plugin_id, f.venue, f.target_kind, f.target_ref, f.media_refs, f.media, f.officer,
 		       f.officer_item_id, f.approved_body_sha256, f.approved_media_sha256, f.because_ref, f.contact_id, f.outreach_reason,
 		       coalesce(f.retry_of, f.id), f.attempt + 1, now() + make_interval(secs => $2), f.detail,
-		       CASE WHEN $3 THEN f.attempt + 1 ELSE f.auto_from END, f.reply_context
+		       CASE WHEN $3 THEN f.attempt + 1 ELSE f.auto_from END, f.reply_context,
+		       -- Where its root was filed from (0185), carried as it is: the
+		       -- moment only while that message is still in its session, so a
+		       -- message deleted since (retention) cannot fail the retry on
+		       -- the officer_origin_is_owners trigger.
+		       f.origin_agent_id, f.origin_session_id,
+		       CASE WHEN EXISTS (SELECT 1 FROM chat_messages m WHERE m.id = f.origin_message_id AND m.session_id = f.origin_session_id)
+		            THEN f.origin_message_id END
 		  FROM plugin_reply_drafts f
 		 WHERE f.id = $1 AND f.status = 'failed' AND f.nothing_sent AND now() + make_interval(secs => $2) < f.expires_at
 		RETURNING `+draftCols, failed.ID, after.Seconds(), manual))
