@@ -241,16 +241,48 @@ for (const vp of [
       await expect(pal(page)).toHaveCSS('transform', 'none');
       await expect(pal(page)).toHaveCSS('opacity', '1');
       const vh = vp.use.viewport.height;
+      // 🔴 EVERY BOX FROM ONE SNAPSHOT, TAKEN IN ONE TASK OF THE PAGE. The
+      // palette redraws its list WHOLE (render(): the old rows dropped, new
+      // ones built) each time something lands after the keystroke — the find
+      // answer, DEBOUNCE ms on, and on a phone the sidebar's agent rows (htmx,
+      // fetched as the drawer opens). A locator's boundingBox() finds its
+      // element and measures it in separate round trips, so a redraw between
+      // the two measured a row already dropped: null, and CI's
+      // "Cannot read properties of null (reading 'y')" on the rows' line.
+      // Measured here in one evaluate, no redraw can fall between two boxes,
+      // and every box is of the same list. A missing element is reported by
+      // name, not as a TypeError.
+      type Box = { x: number; y: number; width: number; height: number };
+      const snap = await page.evaluate(() => {
+        const box = (e: Element | null): Box | null => {
+          if (!e || !e.isConnected || !e.getClientRects().length) return null;
+          const r = e.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        };
+        const q = (s: string) => box(document.querySelector(s));
+        const opts = document.querySelectorAll('#switcher-search-results [role="option"]');
+        return {
+          inp: q('#switcher-search-input'),
+          res: q('#switcher-search-results'),
+          field: q('[data-palette-field]'),
+          pills: q('#switcher-search-types'),
+          o0: box(opts[0] ?? null),
+          o1: box(opts[1] ?? null),
+          box: q('#switcher-search'),
+        };
+      });
+      const laid = (name: keyof typeof snap): Box => {
+        const b = snap[name];
+        expect(b, `${name} is on the page and laid out`).not.toBeNull();
+        expect(b!.height, `${name} has a height`).toBeGreaterThan(0);
+        return b!;
+      };
       // The input and the results first: they are on the page at any build.
-      const inp = (await input(page).boundingBox())!;
-      const res = (await list(page).boundingBox())!;
+      const inp = laid('inp');
+      const res = laid('res');
       if (vp.phone) expect(inp.y, 'the input is below the results').toBeGreaterThanOrEqual(res.y + res.height - 0.5);
       else expect(inp.y + inp.height, 'the input is above the results').toBeLessThanOrEqual(res.y + 0.5);
-      const field = (await page.locator('[data-palette-field]').boundingBox({ timeout: 2000 }))!;
-      const pills = (await page.locator('#switcher-search-types').boundingBox({ timeout: 2000 }))!;
-      const o0 = (await options(page).nth(0).boundingBox())!;
-      const o1 = (await options(page).nth(1).boundingBox())!;
-      const box = (await pal(page).boundingBox())!;
+      const [field, pills, o0, o1, box] = (['field', 'pills', 'o0', 'o1', 'box'] as const).map(laid);
       if (vp.phone) {
         expect(res.y + res.height, 'the results end above the pills').toBeLessThanOrEqual(pills.y + 0.5);
         expect(pills.y + pills.height, 'the pills end above the input').toBeLessThanOrEqual(field.y + 0.5);
@@ -266,6 +298,38 @@ for (const vp of [
       await expect(options(page).nth(0)).toHaveAttribute('aria-selected', 'true');
       await input(page).press(vp.phone ? 'ArrowUp' : 'ArrowDown');
       await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true');
+    });
+
+    // 🔴 REGRESSION: the sidebar's agent rows landing (htmx, nav_agents.go)
+    // redraw the open palette's list, and that redraw put the highlight back
+    // on the first row — so a highlight the operator had moved jumped back
+    // under them (and Enter opened the wrong result). The rows land on the
+    // drawer's open, on agent and attention events, and every 60s. A server
+    // answer already kept the highlight; now the sidebar's rows do too.
+    test('the sidebar’s rows landing keep the highlighted result', async ({ page }) => {
+      await open(page);
+      await input(page).pressSequentially('a');
+      await expect(options(page).nth(1)).toBeVisible();
+      await input(page).press(vp.phone ? 'ArrowUp' : 'ArrowDown');
+      await expect(options(page).nth(1)).toHaveAttribute('aria-selected', 'true');
+      const href = await options(page).nth(1).getAttribute('data-href');
+      expect(href, 'the second row has a target').toBeTruthy();
+      // The sidebar asked for its rows again, and the swap awaited — the
+      // palette's own afterSwap listener was bound first, so it has run.
+      const swapped = await page.evaluate(() => new Promise<number>((done) => {
+        const old = document.querySelector('#switcher-search-results [role="option"]');
+        document.addEventListener('htmx:afterSwap', function on(e: Event) {
+          const t = (e as CustomEvent).detail?.target as Element | undefined;
+          if (t?.id !== 'sidebar-agents-list') return;
+          document.removeEventListener('htmx:afterSwap', on);
+          setTimeout(() => done(old && !old.isConnected ? 1 : 0), 0);
+        });
+        document.dispatchEvent(new Event('muster:nav-open'));
+      }));
+      expect(swapped, 'CONTROL: the swap redrew the list (its old first row is gone)').toBe(1);
+      const sel = page.locator('#switcher-search-results [role="option"][aria-selected="true"]');
+      await expect(sel).toHaveCount(1);
+      await expect(sel).toHaveAttribute('data-href', href!);
     });
   });
 }
