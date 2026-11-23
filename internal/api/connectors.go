@@ -1145,10 +1145,11 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 	var shared sharedApproval
 	if approve {
 		shared = s.shareApproval(ctx, g, via)
-		// An officer's items the pending grant refused are re-run now
-		// (officer_connector_rerun.go): THE approval of an officer's grant.
-		s.goRerunBlocked(ctx, g)
 	}
+	// An officer's items the pending grant refused are settled now
+	// (officer_connector_rerun.go, settleGrantBlocks): re-run on THE approval
+	// of an officer's grant, settled without a re-run on its denial.
+	s.goSettleGrantBlocks(ctx, g)
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(id, 10))
 	return g, shared, nil
 }

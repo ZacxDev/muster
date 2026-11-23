@@ -1088,18 +1088,30 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   `no_action`, or is still open, claimed or waiting, is skipped. HQ enqueues
   a new item of the same subject, or answers the live / newer item that
   already carries the work.
+- **At the denial.** Denying the grant (the same `decideConnectorGrant`)
+  settles every block on it and re-runs none: a re-run would be refused the
+  same connector. A revoked grant's blocks are settled the same way.
 - **Bounded.** Only items recorded within the last **7 days**
   (`officers.RerunWindow`): an operator approves within a working week, and
-  older blocked work has a newer event of its own. At most **10** re-runs
-  per approval (`officers.RerunMaxPerApproval`), the rest logged and left
-  for a later approval. Every item HQ re-ran, and every one skipped, is
-  settled and never looked at again: a second approval of the same grant
+  older blocked work has a newer event of its own. A block recorded before
+  the window is settled, not re-run. At most **10** re-runs per pass
+  (`officers.RerunMaxPerApproval`), the rest logged and left unsettled for
+  the block sweep's next pass. Every item HQ re-ran, and every one skipped,
+  is settled and never looked at again: a second approval of the same grant
   re-runs nothing.
+- **Gone.** An item HQ lists in no status, with every list read to its end,
+  is gone (the queue drain's rule): its block is settled, nothing re-run.
 - **Degrades.** An HQ without the route (older than civ-hq #891) answers
   404: muster logs it and goes on to the next item, and the block stays
-  UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
-  An item HQ does not list in any status stays unsettled too. A builtin
+  UNSETTLED, so the block sweep re-runs it once HQ has the route. An item
+  not found before a list's page bound stays unsettled too. A builtin
   officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+- **One rule, one lock.** The approval, the denial, the route below and the
+  block sweep all settle a grant through `settleGrantBlocks`, under a
+  per-grant lock: two of them racing never read one block unsettled at once,
+  so it is never re-run twice. (Across two muster replicas HQ's rerun
+  answers a repeat with the item that carries the work: a request, never a
+  second item.)
 - **Reads only what it needs, a small page at a time.** How each recorded
   item stands is read by paging each status list to its end, the short live
   lists first and HQ's done history last (open, claimed, waiting, escalated,
@@ -1112,13 +1124,20 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   item not found before it is logged as such (not as absent from HQ); it
   stays unsettled. (It used to read pages of 100, and one page of 100 large escalated
   items was over the cap: the whole re-run gave up and nothing was re-run.)
-- **Not retried.** When the record or HQ's items cannot be read, the re-run
-  logs one line naming the grant and why; the blocked items stay unsettled
-  for the grant's next approval or the route below.
+- **The block sweep.** At boot and every 30 minutes
+  (`api.ConnectorBlockSweepInterval`), muster reads, for each officer, the
+  grants it has an unsettled block on, and settles each decided one by the
+  same rule: an approved grant's blocks are re-run (bounded as above), a
+  denied or revoked grant's settled; a pending grant is left. It is what
+  settles a block an approval could not (HQ unreadable at the time, a re-run
+  HQ failed), and blocks left by a decision made before decisions settled
+  them: an approved grant is never approved again, so nothing else would.
+- **When a read fails.** When the record or HQ's items cannot be read, the
+  re-run logs one line naming the grant and why; the blocked items stay
+  unsettled for the block sweep's next pass or the route below.
 - **Re-run by hand.** `POST /ui/connector-grants/{id}/rerun` re-runs an
   APPROVED officer grant's still-unsettled blocked items exactly as its
-  approval does: for an approval whose re-run could not read HQ, or one made
-  before a fix. It needs a signed-in session from muster's own origin (for
+  approval does, at once rather than at the sweep's next pass. It needs a signed-in session from muster's own origin (for
   example `fetch('/ui/connector-grants/32/rerun', {method: 'POST'})` from a
   muster page's console). It answers `202` and logs each item; `409` for a
   grant that is not approved or not an officer instance's, `404` for one you
