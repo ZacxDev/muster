@@ -224,3 +224,51 @@ func TestTheSweepPassIsSerialisedWithAnApprovalPerGrant(t *testing.T) {
 		t.Fatalf("re-run requests %+v; want exactly one for item %s", got, item)
 	}
 }
+
+// TestTheSweepSettlesTheBlocksOfADeletedGrant: a grant deleted with its agent
+// or connector leaves its blocks behind (they carry no foreign key). The sweep
+// settles them, re-running none, instead of reading them every pass.
+func TestTheSweepSettlesTheBlocksOfADeletedGrant(t *testing.T) {
+	r := newRerunRig(t)
+	item := r.held("example-org/example-infra#6501")
+	r.refuse(officers.GitHubConnector)
+	r.hq.Escalate(item)
+	r.conn.mu.Lock()
+	delete(r.conn.grants, rrGitHub)
+	r.conn.mu.Unlock()
+	r.s.sweepConnectorBlocks(context.Background())
+	if n := r.blocks(rrGitHub); n != 0 {
+		t.Fatalf("%d blocks on the deleted grant after the sweep, want 0; log:\n%s", n, r.logs.String())
+	}
+	if got := r.hq.Reruns(); len(got) != 0 {
+		t.Fatalf("the sweep re-ran %+v under a deleted grant", got)
+	}
+}
+
+// TestTheSweepBacksOffAGrantWhoseReadStoppedAtThePageBound: a blocked item
+// not found before the page bound stays unsettled, and its read is up to
+// MaxStatusPages requests. The sweep does not repeat it on the next pass; it
+// reads it again once the back-off has passed.
+func TestTheSweepBacksOffAGrantWhoseReadStoppedAtThePageBound(t *testing.T) {
+	r := newRerunRig(t)
+	item := r.held("example-org/example-infra#6601")
+	r.refuse(officers.GitHubConnector)
+	r.hq.Forget(item)
+	r.addDone(officers.MaxStatusPages*officers.StatusPageLimit + 10)
+	r.approve(rrGitHub)
+	if r.blocks(rrGitHub) != 1 {
+		t.Fatalf("fixture: %d blocks, want 1 left unsettled at the bound", r.blocks(rrGitHub))
+	}
+	reads := func() int { return len(r.hq.Requests()) }
+	before := reads()
+	r.s.sweepConnectorBlocks(context.Background())
+	if n := reads() - before; n != 0 {
+		t.Fatalf("the next pass made %d HQ requests, want 0 (backed off)", n)
+	}
+	r.advance(boundedBackoff + time.Minute)
+	before = reads()
+	r.s.sweepConnectorBlocks(context.Background())
+	if n := reads() - before; n == 0 {
+		t.Fatal("control: past the back-off the pass read HQ nothing")
+	}
+}

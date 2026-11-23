@@ -54,7 +54,8 @@ const RerunWindow = 7 * 24 * time.Hour
 // for days can collect many blocks (an instance that claims item after item
 // and is refused on each), and a burst of re-runs would wake the whole pool
 // at once against the officer's budget. Ten covers the largest batch measured
-// (five items on one grant) twice over; the rest are logged, never sent.
+// (five items on one grant) twice over; the rest are logged and left
+// unsettled, and the block sweep sends up to ten more on each later pass.
 const RerunMaxPerApproval = 10
 
 // GrantRerunKey is HQ's idempotency key for re-runs caused by approving grant
@@ -237,14 +238,23 @@ func (s *PGConnectorBlockStore) SettleBlock(ctx context.Context, officer string,
 	return err
 }
 
+// ownBlock limits a sweep's read and bulk settle to the acting owner's own
+// blocks (muster.uid, as the owner_id default writes it). A person who is a
+// team member reads the team's rows too (team_read); when both declare the
+// same officer id, the person's sweep would otherwise name the team's grants,
+// which it cannot read, and could settle the team's blocks.
+const ownBlock = `owner_id = NULLIF(current_setting('muster.uid', true), '')::bigint`
+
 // SettleBlocks implements ConnectorBlockStore.
 func (s *PGConnectorBlockStore) SettleBlocks(ctx context.Context, officer string, grant int64, before, at time.Time) (int, error) {
 	var b *time.Time
 	if !before.IsZero() {
 		b = &before
 	}
+	// Only the acting owner's own rows (ownBlock): row-level security also
+	// shows a person their team's rows, which are the team's to settle.
 	tag, err := s.pool.Exec(ctx, `UPDATE officer_connector_blocks SET settled_at = $4
-		WHERE officer = $1 AND grant_id = $2 AND settled_at IS NULL AND ($3::timestamptz IS NULL OR blocked_at < $3)`,
+		WHERE officer = $1 AND grant_id = $2 AND settled_at IS NULL AND ($3::timestamptz IS NULL OR blocked_at < $3) AND `+ownBlock,
 		officer, grant, b, at)
 	if err != nil {
 		return 0, err
@@ -255,7 +265,7 @@ func (s *PGConnectorBlockStore) SettleBlocks(ctx context.Context, officer string
 // UnsettledGrants implements ConnectorBlockStore.
 func (s *PGConnectorBlockStore) UnsettledGrants(ctx context.Context, officer string, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `SELECT DISTINCT grant_id FROM officer_connector_blocks
-		WHERE officer = $1 AND settled_at IS NULL ORDER BY grant_id LIMIT $2`, officer, limit)
+		WHERE officer = $1 AND settled_at IS NULL AND `+ownBlock+` ORDER BY grant_id LIMIT $2`, officer, limit)
 	if err != nil {
 		return nil, err
 	}

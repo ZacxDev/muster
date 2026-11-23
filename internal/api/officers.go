@@ -159,6 +159,10 @@ type officerRuntime struct {
 	// operator's re-run route and the block sweep never read a block
 	// unsettled while another of them is re-running it.
 	grantLocks sync.Map
+	// sweepBackoff is, per "officer grant", until when the block sweep
+	// leaves an approved grant alone after a read that stopped at the page
+	// bound (time.Time; noteBounded).
+	sweepBackoff sync.Map
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.

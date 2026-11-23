@@ -242,6 +242,38 @@ func (s *Server) settleGrantBlocks(ctx context.Context, rt *officerRuntime, o of
 	return nil
 }
 
+// settleGoneGrant settles every block of officer o on grant id, which no
+// longer exists, under the grant's lock.
+func (s *Server) settleGoneGrant(octx context.Context, rt *officerRuntime, o officers.Officer, id int64) {
+	mu := rt.grantLock(o.ID, id)
+	mu.Lock()
+	defer mu.Unlock()
+	n, err := rt.connectorBlocks().SettleBlocks(octx, o.ID, id, time.Time{}, rt.clock())
+	if err != nil {
+		s.logger.Printf("officers: block sweep: %s's blocks on deleted grant %d could not be settled: %v", o.ID, id, err)
+		return
+	}
+	s.logger.Printf("officers: block sweep: grant %d no longer exists: %s's %d blocked item(s) settled, none re-run", id, o.ID, n)
+}
+
+// boundedBackoff is how long the block sweep leaves an approved grant alone
+// after a pass whose read stopped at officers.MaxStatusPages with a blocked
+// item not found: such a read is up to MaxStatusPages HQ requests, and
+// repeating it every pass for the whole window costs HQ thousands a day for
+// one grant. The approval and the operator's route are never backed off.
+const boundedBackoff = 6 * time.Hour
+
+// noteBounded records that grant's read for officer stopped at the page bound.
+func (rt *officerRuntime) noteBounded(officer string, grant int64) {
+	rt.sweepBackoff.Store(officer+" "+strconv.FormatInt(grant, 10), rt.clock().Add(boundedBackoff))
+}
+
+// sweepBackedOff reports whether the sweep skips grant for officer now.
+func (rt *officerRuntime) sweepBackedOff(officer string, grant int64) bool {
+	until, ok := rt.sweepBackoff.Load(officer + " " + strconv.FormatInt(grant, 10))
+	return ok && rt.clock().Before(until.(time.Time))
+}
+
 // ConnectorBlockSweepInterval is how often the block sweep runs (its first
 // pass at boot). Half an hour: a block it settles waited on a decision that
 // already happened, so minutes do not matter, and each pass reads HQ only for
@@ -304,8 +336,18 @@ func (s *Server) sweepConnectorBlocks(ctx context.Context) {
 		}
 		for _, id := range grants {
 			g, err := s.ext.Connectors.GetGrant(octx, id)
+			if errors.Is(err, connectors.ErrNotFound) {
+				// The grant is gone (its agent or connector was deleted):
+				// nothing can re-run under it, so its blocks are settled
+				// rather than read on every pass.
+				s.settleGoneGrant(octx, rt, o, id)
+				continue
+			}
 			if err != nil {
 				s.logger.Printf("officers: block sweep: %s's grant %d could not be read, its blocks stay as they are: %v", o.ID, id, err)
+				continue
+			}
+			if g.Status == connectors.StatusApproved && rt.sweepBackedOff(o.ID, id) {
 				continue
 			}
 			// A pending grant is left as it is: settleGrantBlocks' rule.
@@ -391,6 +433,9 @@ func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officer
 		return fmt.Errorf("HQ's items: %w", err)
 	}
 	status := read.Of
+	if len(read.Bounded) > 0 {
+		rt.noteBounded(o.ID, g.ID)
+	}
 	for _, st := range read.Bounded {
 		s.logger.Printf("officers: grant %d approved: %s's %s list read stopped at the page bound (%d pages of up to %d) with items left; a blocked item beyond it is not known to be gone",
 			g.ID, o.ID, st, officers.MaxStatusPages, officers.StatusPageLimit)
