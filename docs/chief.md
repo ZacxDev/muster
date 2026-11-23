@@ -267,7 +267,10 @@ A team (see [design/team-sharing.md](design/team-sharing.md)) can own a chief.
 Its members see it. Operators and managers can type to it, and viewers can
 only read. It has one shared conversation: a member's message goes to the
 chief's primary chat and to no other thread. Each turn runs as the team, after
-muster re-reads the member's role.
+muster re-reads the member's role. The chat shows who typed each message: a
+small label with the member's display name over each typed message ("You" on
+your own, `user #<id>` for an account with no display name). A personal chat
+shows no labels.
 
 🔴 **Team members have to trust each other.** This is the team trust model,
 an accepted risk, and no code enforces it. A team operator or manager can steer

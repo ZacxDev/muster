@@ -1086,6 +1086,16 @@ rule the later phases' rows will meet.
     latest). A member's send or chat socket naming any other session of it
     (an archived thread, a side chat, a plugin thread) gets 403
     (`resolveTurnSession`). Reading another thread is still allowed.
+  - **The room shows who typed each message.** Every renderer of the chat
+    (the page, the chief panel, the chat-log refetch, the socket's echo of a
+    sent message) draws a label over each typed user line, read from the
+    row's existing `typed_by`: the member's display name, "You" on the
+    viewer's own lines, and `user #<id>` for an account with no display name
+    or none at all. Never an email: viewers read the labels too. Escaped,
+    capped at 40 characters (`ui.TyperNameMax`). A personal chat draws none
+    (`chatTypers`, `internal/api/chat_typers.go`; pinned by
+    `TestATeamChatNamesWhoTypedEachLine`, `TestAPersonalChatDrawsNoTyperLabel`
+    and `TestTheLiveChatPathCarriesTheTyper`).
   - **A member's message answers the agent's open asks only once it is
     sent.** For the owner, the asks are still answered at the door. For a
     member, they are answered after the fresh role check passes and the
