@@ -73,9 +73,8 @@ test.afterAll(async () => {
   await new Promise<void>((r) => (catalog ? catalog.close(() => r()) : r()));
 });
 
-// openThreads opens the chief panel (its toggle is delegated on the document)
-// and then its thread list. The same steps as chief-runtimes.spec.ts.
-async function openThreads(page: Page) {
+// openPanel opens the chief panel (its toggle is delegated on the document).
+async function openPanel(page: Page) {
   if ((await page.locator('#chief-panel').getAttribute('data-chief-panel-open')) !== '1') {
     await page.evaluate(() => {
       const b = document.createElement('button');
@@ -87,6 +86,12 @@ async function openThreads(page: Page) {
     await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
   }
   await expect(page.locator('#chief-thread-search')).toBeAttached({ timeout: 15_000 });
+}
+
+// openThreads opens the chief panel and then its thread list (which covers
+// the strip). The same steps as chief-runtimes.spec.ts.
+async function openThreads(page: Page) {
+  await openPanel(page);
   await page.locator('label[for="chief-threads"]').first().click();
   await expect(page.locator('#chief-thread-search')).toBeVisible();
 }
@@ -139,7 +144,8 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
 test('"+": an OpenRouter model picked in the strip menu opens a side chat on it', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
-  await openThreads(page);
+  // The panel only: its thread list would cover the strip and its "+".
+  await openPanel(page);
   const plus = page.locator('#chief-panel button[popovertarget="chief-panel-new-chat-menu"]');
   await plus.click();
   const menu = page.locator('#chief-panel-new-chat-menu');
