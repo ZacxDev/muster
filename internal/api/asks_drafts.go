@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"errors"
+	"html"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	g "maragu.dev/gomponents"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -222,10 +225,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return nil, nil, false
 	}
 	now := time.Now()
-	s.withDraftAgentNames(ctx, cards)
-	s.withDraftOfficerNames(cards)
-	s.withRetryOpen(ctx, cards)
-	s.withWakeLines(ctx, cards)
+	s.withDraftCardReads(ctx, cards)
 	pending, archived = splitDraftCards(cards, now)
 	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
@@ -244,14 +244,272 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return pending, archived, true
 	}
 	one := []plugins.DraftCard{c}
-	s.withDraftOfficerNames(one)
-	s.withRetryOpen(ctx, one)
-	s.withWakeLines(ctx, one)
+	s.withDraftCardReads(ctx, one)
 	c = one[0]
 	if p, _ := splitDraftCards([]plugins.DraftCard{c}, now); len(p) == 1 {
 		return append([]plugins.DraftCard{c}, pending...), archived, true
 	}
 	return pending, append([]plugins.DraftCard{c}, archived...), true
+}
+
+// draftConfirmAsksShown is how many confirm-ask chips a draft card draws;
+// the rest are a "+N".
+const draftConfirmAsksShown = 3
+
+// withConfirmAsks sets each card's confirm asks (display only): the reader's
+// OWN asks whose step-up card is bound to the draft, at most
+// draftConfirmAsksShown, open first then newest, and their count — and the
+// newest OPEN session request among them (draftRequestOf), which the card
+// draws in place of its own Open-feed card. ONE read for every card
+// (attention.Store.ConfirmAsksForDrafts), never one per card. A read that
+// fails draws each card with its draft id alone.
+func (s *Server) withConfirmAsks(ctx context.Context, cards []plugins.DraftCard) {
+	if s.ext.Attention == nil || len(cards) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(cards))
+	for _, c := range cards {
+		ids = append(ids, c.Draft.ID)
+	}
+	got, err := s.ext.Attention.ConfirmAsksForDrafts(ctx, ids, draftConfirmAsksShown)
+	if err != nil {
+		s.logger.Printf("asks: drafts' confirm asks: %v", err)
+		return
+	}
+	for i := range cards {
+		c, ok := got[cards[i].Draft.ID]
+		if !ok {
+			continue
+		}
+		cards[i].ConfirmAsks = c.Total
+		for _, a := range c.Asks {
+			cards[i].ConfirmAskIDs = append(cards[i].ConfirmAskIDs, a.ID)
+			if cards[i].Request == nil && cards[i].Draft.Status == plugins.DraftPending {
+				cards[i].Request = draftRequestOf(a)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ONE DRAFT, ONE CARD. A session that calls plugin_draft_decide on the
+// owner's behalf files a step-up card (host_stepup_card.go) that only the
+// owner's paired phone may answer. The owner saw that card on the Open feed
+// AND the draft on the Drafts tab ("it feels redundant to have a draft and a
+// confirm ask, i should just approve the draft directly").
+//
+// So the request is drawn AS ITS DRAFT'S OWN CARD (draftCardHTMLIn): the
+// draft's preview and its web decision, a line naming what the session
+// asked (draftRequestHTML) and the chips of its confirm asks. On the Drafts
+// tab that is the draft's card; on the Open feed it is drawn in the
+// request's place (askMergedDraftCardHTML) — the Open feed keeps a way to
+// decide it ("i was on the main asks page, i could do it from the drafts
+// page, but thats confusing"). Several open requests for one draft are ONE
+// Open card, the newest's, carrying every chip (foldDraftRequests). THE ONE
+// OPEN COUNT counts the draft once: a request is not counted beside its
+// draft's own item in the same list (uncountedRequests).
+//
+// The owner's decision there is the draft's own web decision (decideDraftAs),
+// which settles every open step-up card about the draft and tells the session
+// that asked (settleDraftStepUps, wakeStepUpsSettledBy). 🔴 NOTHING ABOUT THE
+// GATE CHANGES: the card is still answered only from the phone
+// (hostDecisionForAnswer), and a session still cannot decide the draft
+// without that signature. 🔴 NO REQUEST IS HIDDEN: a request is folded only
+// into another request for the same draft, which is drawn; one whose draft
+// the reader cannot decide is drawn as its step-up card, as before.
+//
+// A card that no longer matches its draft (StepUpCard.Changed: "Refuse") is
+// not a request to decide it, and stays its own step-up card.
+// ---------------------------------------------------------------------------
+
+// stepUpRequestsDraft reports whether step-up card c is a session's request
+// to decide its draft that still matches the draft: THE one rule of which
+// cards the draft's own card draws.
+func stepUpRequestsDraft(c *attention.StepUpCard) bool {
+	return c != nil && c.Tool == pluginDraftDecideTool && c.DraftID > 0 && !c.Changed
+}
+
+// draftRequestOf is ask a as its draft's request, nil when it is not an open
+// one (stepUpRequestsDraft, isStepUpCard).
+func draftRequestOf(a attention.Ask) *plugins.DraftRequest {
+	// An open ask past its expiry that no sweep has moved yet is closed, as
+	// the store reads it (attention cols).
+	if a.Status != attention.Open || !a.ExpiresAt.IsZero() && !a.ExpiresAt.After(time.Now()) || !isStepUpCard(a) {
+		return nil
+	}
+	return draftRequestFor(a.ID, a.StepUp)
+}
+
+// draftRequestFor is step-up card c of ask id as its draft's request, nil
+// for a card that is not one (stepUpRequestsDraft).
+func draftRequestFor(id int64, c *attention.StepUpCard) *plugins.DraftRequest {
+	if !stepUpRequestsDraft(c) {
+		return nil
+	}
+	r := &plugins.DraftRequest{AskID: id, Asker: strings.TrimSpace(c.Asker), Reject: stepUpRejects(c)}
+	if r.Reject {
+		why := strings.TrimPrefix(c.Why, stepUpRejectWhy)
+		if why != c.Why {
+			r.Reason = strings.TrimSpace(strings.TrimPrefix(why, ":"))
+		}
+	}
+	return r
+}
+
+// draftRequestItem reports whether item it is a session's open request to
+// decide a draft (stepUpRequestsDraft over a card muster filed).
+func draftRequestItem(it attentionItem) bool {
+	return it.Kind == attentionKindAsk && it.systemAsk && stepUpRequestsDraft(it.stepUp)
+}
+
+// foldDraftRequests is items with every draft's open requests folded into
+// ONE item, the newest (the one the draft's card names: withConfirmAsks
+// reads open first, newest first), which carries the others (folded) — so a
+// feed that cannot draw that item as the draft's card (askMergedDraftCardHTML
+// "": the draft unreadable to the reader, or no longer pending) draws every
+// one of them as it was (askFeedCardHTML). Every other item is as it was, in
+// its place.
+func foldDraftRequests(items []attentionItem) []attentionItem {
+	newest := map[int64]int64{}
+	for _, it := range items {
+		if draftRequestItem(it) && it.AskID > newest[it.stepUp.DraftID] {
+			newest[it.stepUp.DraftID] = it.AskID
+		}
+	}
+	if len(newest) == 0 {
+		return items
+	}
+	folded := map[int64][]attentionItem{}
+	for _, it := range items {
+		if draftRequestItem(it) && it.AskID != newest[it.stepUp.DraftID] {
+			folded[it.stepUp.DraftID] = append(folded[it.stepUp.DraftID], it)
+		}
+	}
+	out := items[:0:0]
+	for _, it := range items {
+		if draftRequestItem(it) {
+			if it.AskID != newest[it.stepUp.DraftID] {
+				continue
+			}
+			it.folded = folded[it.stepUp.DraftID]
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// uncountedRequests is items without each request whose draft's own item is
+// in items too: THE ONE OPEN COUNT counts that draft once. Over the list
+// being counted, so a filter that keeps the request and not its draft
+// counts the request.
+func uncountedRequests(items []attentionItem) []attentionItem {
+	drafts := map[string]bool{}
+	for _, it := range items {
+		if it.Kind == attentionKindPlugin && strings.HasPrefix(it.Key, "draft-") {
+			drafts[it.Key] = true
+		}
+	}
+	if len(drafts) == 0 {
+		return items
+	}
+	out := items[:0:0]
+	for _, it := range items {
+		if draftRequestItem(it) && drafts[draftKey(it.stepUp.DraftID)] {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// askMergedDraftCardHTML is request item it's card on the Open feed: its
+// draft's own card (draftCardHTMLIn), keyed as the request, its forms
+// returning here and carrying the request (cardPlace.card: a decision lands
+// on it settled in place), naming it as the request. "" when it is not a
+// request whose draft the reader may decide now (the feed then draws its
+// step-up card).
+func askMergedDraftCardHTML(it attentionItem, now time.Time) string {
+	if !draftRequestItem(it) || it.stepUpDraft == nil || it.stepUpDraft.Draft.Status != plugins.DraftPending {
+		return ""
+	}
+	c := *it.stepUpDraft
+	c.Request = draftRequestFor(it.AskID, it.stepUp)
+	if !slices.Contains(c.ConfirmAskIDs, it.AskID) && len(c.ConfirmAskIDs) < draftConfirmAsksShown {
+		c.ConfirmAskIDs = append([]int64{it.AskID}, c.ConfirmAskIDs...)
+		c.ConfirmAsks = max(c.ConfirmAsks, len(c.ConfirmAskIDs))
+	}
+	place := cardPlace{back: attentionPath, card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff, feedKey: it.Key}
+	place.requestContext, place.requestFooter = askRequestPartsHTML(it, now)
+	// THE FEED'S FACE: its head links to the request's page (where the video
+	// plays full size), and its media are the feed's thumbnails; its text is
+	// whole, and its Approve binds the body and media it is drawn from.
+	place.headHref, place.feedMedia = firstNonBlank(it.page, askPagePath(it.AskID)), true
+	return draftCardHTMLIn(c, now, place)
+}
+
+// The words of a draft card's request line (draftRequestHTML).
+const (
+	draftRequestSession = "A session"
+	draftRequestApprove = " asked to approve and send this."
+	draftRequestReject  = " asked to reject this"
+	draftRequestDecide  = " Decide it here, or confirm on your phone."
+)
+
+// draftRequestHTML is a draft card's request line: who asked (the session's
+// name, flagged as untrusted text is: stepUpHiddenHTML), what, and the
+// reason a rejection gives. "" for a card with none.
+func draftRequestHTML(c plugins.DraftCard) string {
+	r := c.Request
+	if r == nil {
+		return ""
+	}
+	who := html.EscapeString(draftRequestSession)
+	if r.Asker != "" {
+		who = stepUpHiddenHTML(r.Asker)
+	}
+	what := html.EscapeString(draftRequestApprove)
+	if r.Reject {
+		what = html.EscapeString(draftRequestReject)
+		if r.Reason != "" {
+			what += ": " + stepUpHiddenHTML(r.Reason)
+		}
+		what += "."
+	}
+	return `<p class="break-words text-sm text-fg2" data-draft-request data-ask-id="` + strconv.FormatInt(r.AskID, 10) + `">` + who + what +
+		html.EscapeString(draftRequestDecide) + `</p>`
+}
+
+// draftConfirmAsksHTML is a draft card's confirm asks, beside its id chip:
+// each a link chip to its ask's page ("Ask #940"), then "+N" for those not
+// drawn. "" for a draft with none.
+func draftConfirmAsksHTML(c plugins.DraftCard) string {
+	if len(c.ConfirmAskIDs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="-mt-2 flex flex-wrap items-center justify-end gap-x-1" role="group" aria-label="Asks confirming this draft" data-draft-asks>`)
+	for _, id := range c.ConfirmAskIDs {
+		b.WriteString(ui.AskIDLinkChipHTML(id, askPagePath(id)))
+	}
+	b.WriteString(ui.IDMoreHTML(c.ConfirmAsks - len(c.ConfirmAskIDs)))
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// withDraftCardReads is every read a draft's card is drawn from beyond its
+// row, for cards together — each a batch over all of them, never a read per
+// card: who drafted it (withDraftAgentNames, withDraftOfficerNames), whether
+// a retry is open (withRetryOpen), where a decision went (withWakeLines) and
+// its confirm asks (withConfirmAsks). 🔴 ONE READER FOR EVERY FACE: the Drafts
+// tab's cards (readDraftViews) and a request's draft on the Open feed and its
+// page (stepUpDraftsFor) both read through it, so the same draft draws the
+// same head, wake line and chips wherever it is drawn.
+func (s *Server) withDraftCardReads(ctx context.Context, cards []plugins.DraftCard) {
+	s.withDraftAgentNames(ctx, cards)
+	s.withDraftOfficerNames(cards)
+	s.withRetryOpen(ctx, cards)
+	s.withWakeLines(ctx, cards)
+	s.withConfirmAsks(ctx, cards)
 }
 
 // withDraftAgentNames sets each card's AgentDisplay: the drafting agent's
@@ -637,3 +895,41 @@ const asksPageScript = `<script>
   });
 })();
 </script>`
+
+// stepUpSessionKey is the session that raised step-up card a (its host and
+// session), "" for none: one wake line per session per decision.
+func stepUpSessionKey(a attention.Ask) string {
+	if a.StepUp == nil || a.StepUp.RaisedBySession == "" {
+		return ""
+	}
+	return a.StepUp.RaisedByHost + "/" + a.StepUp.RaisedBySession
+}
+
+// dismissDraftRequestsWith closes, after the owner's Dismiss of request a, every
+// other open request for a's draft — the requests its draft's Open card stood
+// for (foldDraftRequests) — and tells each session that raised one, once, that
+// it was dismissed (wakeDismissed). The draft itself is left pending.
+func (s *Server) dismissDraftRequestsWith(ctx context.Context, a attention.Ask) {
+	if s.ext.Attention == nil || a.Status != attention.Cancelled || !isStepUpCard(a) || !stepUpRequestsDraft(a.StepUp) {
+		return
+	}
+	asks, err := s.ext.Attention.Search(ctx, attention.Search{DraftID: a.StepUp.DraftID, Limit: attention.MaxSearchResults})
+	if err != nil {
+		s.logger.Printf("asks: dismiss draft %d's requests: %v", a.StepUp.DraftID, err)
+		return
+	}
+	told := map[string]bool{stepUpSessionKey(a): true}
+	for _, b := range asks {
+		if b.ID == a.ID || draftRequestOf(b) == nil || b.StepUp.DraftID != a.StepUp.DraftID {
+			continue
+		}
+		c, err := s.cancelAsk(ctx, b.ID)
+		if err != nil {
+			continue
+		}
+		if k := stepUpSessionKey(c); k == "" || !told[k] {
+			told[k] = true
+			s.wakeDismissed(ctx, c)
+		}
+	}
+}

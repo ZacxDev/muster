@@ -693,6 +693,10 @@ type Store interface {
 	// Search is the caller's OWN asks (never a team's it can also read, never
 	// one put to the chief) matching q, newest first (search.go).
 	Search(ctx context.Context, q Search) ([]Ask, error)
+	// ConfirmAsksForDrafts is, per draft, the caller's OWN asks whose step-up
+	// card confirms it: at most n ids, open first then newest, and the count
+	// — one read for every draft on a page (search.go).
+	ConfirmAsksForDrafts(ctx context.Context, draftIDs []int64, n int) (map[int64]DraftConfirmAsks, error)
 
 	// SessionAsks is the caller's OWN open and answered asks raised by one
 	// session (never a team's, never one put to the chief, never a notice),

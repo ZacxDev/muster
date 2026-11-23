@@ -421,6 +421,32 @@ type DraftCard struct {
 	WakeRetryID    int64
 	WakeRetryLabel string
 	WakeStepUp     bool
+	// ConfirmAskIDs is the reader's OWN confirm asks of this draft — the
+	// attention asks whose step-up card is bound to it — at most
+	// internal/api draftConfirmAsksShown of them, open first then newest;
+	// ConfirmAsks is how many there are in all. Set by the reader for display
+	// only (internal/api withConfirmAsks); nil and 0 draw only the draft's id.
+	ConfirmAskIDs []int64
+	ConfirmAsks   int
+	// Request is the newest OPEN confirm ask of those — a session's
+	// plugin_draft_decide request, waiting on the owner's phone — that this
+	// card draws in its place (internal/api withConfirmAsks: one draft, one
+	// card); nil for none.
+	Request *DraftRequest
+}
+
+// DraftRequest is a session's open request to decide a draft (its step-up
+// card), as the draft's own card names it. Asker and Reason are the session's
+// words: UNTRUSTED.
+type DraftRequest struct {
+	// AskID is the step-up card's ask.
+	AskID int64
+	// Asker names the session that asked ("" for unnamed).
+	Asker string
+	// Reject: it asks to reject the draft, with Reason ("" for none); else
+	// to approve it.
+	Reject bool
+	Reason string
 }
 
 // OutreachPerson is an outreach draft's person as its card draws them: what

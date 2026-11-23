@@ -77,6 +77,20 @@ type cardPlace struct {
 	// "" for no mic; dictateOff draws the muted mic in its place (answerMic).
 	dictate    string
 	dictateOff bool
+	// feedKey, when set, draws the draft's card AS an Open-feed item: the
+	// card of a session's request to decide it (askMergedDraftCardHTML),
+	// keyed as that request's ask (attentionAskKey) so the feed's keys, its
+	// live refresh and a decision's settled landing find it.
+	feedKey string
+	// requestContext and requestFooter are, on that Open-feed card, the
+	// request's own context row (its why, its ⓘ) and footer (View in
+	// session, Dismiss and its form): askRequestPartsHTML.
+	requestContext, requestFooter string
+	// headHref is that card's head link (the request's page: a tap on the
+	// card, its media thumbnails included, opens it), and feedMedia draws
+	// its media as the feed's thumbnails (stepUpPostHTMLWith).
+	headHref  string
+	feedMedia bool
 }
 
 // backField is the place's hidden `return` field ("" on the Asks page), and

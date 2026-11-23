@@ -127,7 +127,14 @@ func assertDraftControls(t *testing.T, face, html string, f *stepUpDraftFixture,
 		`<input type="hidden" name="return" value="` + back + `">`,
 		`data-draft-approve>Approve and send</button>`,
 		`data-draft-reject>Reject</button>`,
-		askStepUpDraftLine,
+	}
+	// The line above them: on the Open feed the request is its draft's own
+	// card, naming what the session asked (one draft, one card:
+	// asks_drafts.go); on the card's page the step-up card's own line.
+	if strings.Contains(html, "data-asks-request-draft") {
+		want = append(want, draftRequestApprove+draftRequestDecide)
+	} else {
+		want = append(want, askStepUpDraftLine)
 	}
 	for _, w := range want {
 		if !strings.Contains(html, w) {
@@ -188,7 +195,9 @@ func TestAStepUpCardAboutADraftDrawsTheDraftsDecision(t *testing.T) {
 func TestARejectStepUpCardLeadsWithTheDraftsReject(t *testing.T) {
 	f := newStepUpDraftFixture(t, "reject")
 	card := feedCard(f.page(t, attentionPath), f.card)
-	if !strings.Contains(card, askStepUpDraftRejectLine) {
+	// CHANGED: the request is its draft's own card (one draft, one card), so
+	// its line names the request.
+	if !strings.Contains(card, draftRequestReject+".") || !strings.Contains(card, "data-asks-request-draft") {
 		t.Fatalf("the reject card's line: %s", card)
 	}
 	ri, ai := strings.Index(card, "data-draft-reject>"), strings.Index(card, "data-draft-approve>")
@@ -306,10 +315,11 @@ func longWords(seed string, n int) string {
 }
 
 // TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows: 🔴 what is approved
-// is what is seen. A thread (several X posts) shows only its first post on
-// the Open feed, so its feed card has NO Approve — a "Review and approve" link
-// to the card's page instead, and Reject — while its page, which draws every
-// post, has Approve. A body past the card's preview bound is an excerpt on
+// is what is seen. On the Open feed a request is its draft's own card, which
+// draws the whole draft — every post of a thread, the whole of a long text —
+// so its Approve binds what it shows (CHANGED: the feed drew the step-up card,
+// a thread's first post only, with "Review and approve"). The card's page,
+// which draws every post, has Approve. A body past the card's preview bound is an excerpt on
 // every face, so its page has no Approve either — a link to the Drafts tab's
 // card, which draws the whole text. A single short post keeps Approve on the
 // feed (TestAStepUpCardAboutADraftDrawsTheDraftsDecision).
@@ -318,18 +328,20 @@ func longWords(seed string, n int) string {
 func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
 	t.Run("a thread", func(t *testing.T) {
 		f := newStepUpDraftFixtureFor(t, "approve", "x", longWords("first", 200)+"\n---8<---\n"+longWords("second", 200)+"\n---8<---\n"+longWords("third", 200))
+		// CHANGED (one draft, one card: asks_drafts.go): the feed draws the
+		// request as its draft's own card, which shows EVERY post, so it has
+		// Approve — bound to the whole draft it shows.
 		card := feedCard(f.page(t, attentionPath), f.card)
-		if card == "" || !strings.Contains(card, "data-stepup-thread-more") {
-			t.Fatalf("the fixture is not a thread on the feed: %s", card)
+		if card == "" || !strings.Contains(card, "data-asks-request-draft") || strings.Contains(card, "data-stepup-thread-more") {
+			t.Fatalf("the thread's request is not its draft's whole card on the feed: %s", card)
 		}
-		if approveForm(card, f.draft.ID) {
-			t.Error("the thread's feed card draws Approve, which binds posts it does not show")
+		for _, post := range []string{"first0", "second0", "third0"} {
+			if !strings.Contains(card, post) {
+				t.Errorf("the thread's feed card does not show the post starting %s", post)
+			}
 		}
-		if !strings.Contains(card, `href="`+askPagePath(f.card)+`"`) || !strings.Contains(card, "data-draft-review>Review and approve</a>") {
-			t.Errorf("the thread's feed card has no Review and approve link to its page: %s", card)
-		}
-		if !strings.Contains(card, "data-draft-reject>Reject</button>") || !strings.Contains(card, askStepUpDraftReviewLine) {
-			t.Errorf("the thread's feed card lost Reject or its line")
+		if !approveForm(card, f.draft.ID) || !strings.Contains(card, `name="body_sha256" value="`+sha(f.body)+`"`) {
+			t.Error("the thread's feed card has no Approve bound to the whole draft")
 		}
 		if page := f.page(t, askPagePath(f.card)); !approveForm(page, f.draft.ID) {
 			t.Error("the thread's page, which draws every post, has no Approve")
@@ -351,8 +363,11 @@ func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
 		if !strings.Contains(page, "data-draft-reject>Reject</button>") {
 			t.Error("the excerpted card's page lost Reject")
 		}
-		if card := feedCard(f.page(t, attentionPath), f.card); approveForm(card, f.draft.ID) {
-			t.Error("the excerpted card's feed face draws Approve")
+		// CHANGED: on the feed the request is its draft's own card, which
+		// draws the whole text — so Approve is there, bound to all of it.
+		if card := feedCard(f.page(t, attentionPath), f.card); !approveForm(card, f.draft.ID) || strings.Contains(card, "data-stepup-excerpt") ||
+			!strings.Contains(card, `name="body_sha256" value="`+sha(f.body)+`"`) {
+			t.Error("the excerpted request's feed card is not the draft's whole card with its Approve")
 		}
 	})
 	t.Run("a card whose preview is not the draft", func(t *testing.T) {
@@ -369,8 +384,23 @@ func TestAStepUpCardDrawsApproveOnlyWhereTheWholeDraftShows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if card := feedCard(f.page(t, attentionPath), other.ID); card == "" || approveForm(card, f.draft.ID) {
-			t.Errorf("a card showing another text draws Approve (or is missing): %q", card)
+		// CHANGED: on the feed the two requests for the draft are ONE card,
+		// its draft's own (one draft, one card) — the draft's own text, its
+		// Approve bound to that text, never the other card's preview — with
+		// both requests' chips.
+		page := f.page(t, attentionPath)
+		card := feedCard(page, other.ID)
+		if card == "" || feedCard(page, f.card) != "" {
+			t.Fatalf("the two requests are not one card on the feed (newest %d): %q / %q", other.ID, card, feedCard(page, f.card))
+		}
+		if strings.Contains(card, "Not the draft&#39;s text at all.") || strings.Contains(card, "Not the draft's text at all.") ||
+			!strings.Contains(card, `name="body_sha256" value="`+sha(f.body)+`"`) {
+			t.Errorf("the merged card shows the other card's preview, or its Approve is not bound to the draft's text: %s", card)
+		}
+		for _, id := range []int64{f.card, other.ID} {
+			if !strings.Contains(card, `data-id-link data-id-kind="ask" data-id="`+strconv.FormatInt(id, 10)+`"`) {
+				t.Errorf("the merged card has no chip for ask %d", id)
+			}
 		}
 		if page := f.page(t, askPagePath(other.ID)); approveForm(page, f.draft.ID) {
 			t.Error("its page draws Approve")

@@ -783,6 +783,15 @@ func stepUpPostKindHTML(c *attention.StepUpCard, parts int) string {
 // 🔴 NO MEDIA TYPE, SIZE OR HASH ON ANY FACE: a medium's type only picks
 // <img> or <video>, and its hash stays in the stored parts (the binding).
 func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
+	return stepUpPostHTMLWith(c, feed, false)
+}
+
+// stepUpPostHTMLWith is stepUpPostHTML; thumbs draws the whole post's media
+// as the Asks feed's thumbnails (a video's first frame under a play mark, no
+// player) — the face of a draft's card on the Open feed
+// (askMergedDraftCardHTML), whose text is whole but whose media follow the
+// feed's rule.
+func stepUpPostHTMLWith(c *attention.StepUpCard, feed, thumbs bool) string {
 	esc := html.EscapeString
 	c = stepUpWithVenue(c)
 	parts, total := stepUpPostParts(c)
@@ -856,7 +865,10 @@ func stepUpPostHTML(c *attention.StepUpCard, feed bool) string {
 		}
 		if ms := on[i]; len(ms) > 0 {
 			grid, img := ui.StepUpMediaClass, stepUpMediumOne
-			if len(ms) > 1 {
+			switch {
+			case thumbs:
+				grid, img = ui.StepUpFeedMediaClass, stepUpMediumThumb
+			case len(ms) > 1:
 				grid += " " + ui.StepUpMediaTwoUpClass
 				img = stepUpMediumTile
 			}

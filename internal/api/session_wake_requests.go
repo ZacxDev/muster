@@ -328,10 +328,19 @@ func (s *Server) wakeStepUpsSettledBy(ctx context.Context, d plugins.Draft, via 
 	if err != nil {
 		return
 	}
+	// ONE LINE PER SESSION PER DECISION: a session that raised several cards
+	// for the draft is told once (the newest: Search reads newest first).
+	told := map[string]bool{}
 	for _, a := range asks {
 		if !isStepUpCard(a) || a.StepUp.DraftID != d.ID || a.Status != attention.Answered ||
 			a.Answer == hostDecisionConfirm || a.Answer == hostDecisionRefuse || strings.TrimSpace(a.Answer) != answer {
 			continue
+		}
+		if k := stepUpSessionKey(a); k != "" {
+			if told[k] {
+				continue
+			}
+			told[k] = true
 		}
 		s.wakeStepUpDecided(ctx, a, dec)
 	}
