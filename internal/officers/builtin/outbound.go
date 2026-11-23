@@ -208,6 +208,13 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 			} else if err != nil {
 				return out, err
 			}
+			if e.Item > 0 {
+				// The session that asked for the item asked for its redraft too
+				// (inheritRequesterTx): the follow-up's own draft wakes it.
+				if err := inheritRequesterTx(ctx, tx, owner, e.Officer, e.Item, out.FollowUp); err != nil {
+					return out, err
+				}
+			}
 			if claimable >= e.Max {
 				if _, err := tx.Exec(ctx, `UPDATE officer_items SET blocked = true WHERE id = $1`, out.FollowUp); err != nil {
 					return out, err
