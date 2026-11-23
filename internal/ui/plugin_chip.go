@@ -253,6 +253,26 @@ type PluginChips struct {
 // the panel are drawn.
 func (c *PluginChips) on() bool { return c != nil && (len(c.Chips) > 0 || c.PagesOn || c.AsksOn) }
 
+// slotTrigger is when the slot re-reads the button.
+//
+// 🔴 ASKS ARE EVENT-DRIVEN; ONLY PREVIEWS AND PAGES ARE POLLED. An ask's
+// arrival or answer is the queue's own event — the SSE event the agent page's
+// badge refresh relays to <body> (askerAsksRefresh), and the asks:changed a
+// mirrored view's live badge dispatches on document (AttentionLiveScript) —
+// so the button follows it with no poll. Previews (the host's counts) and
+// pages have no such event, so the 10 s poll stays, exactly as before, while
+// there is a viewer plugin or the pages feature is on. A session page with
+// asks alone polls nothing: drawing the slot on every session page for its
+// asks had added a request every 10 s to every one of them (e2e
+// telemetry.spec: 12 batches a minute from one open view, against its 6).
+func (c *PluginChips) slotTrigger() string {
+	t := "sse:" + askerAsksEvent + " from:body delay:50ms, asks:changed from:document delay:50ms"
+	if c.previewsOn() || c.PagesOn {
+		t += ", every " + previewPollEvery + " [!document.hidden]"
+	}
+	return t
+}
+
 // previewsOn: there is a viewer plugin to open the window's previews with.
 func (c *PluginChips) previewsOn() bool { return c != nil && len(c.Chips) > 0 }
 
@@ -396,8 +416,10 @@ func RenderOpenButton(w io.Writer, o OpenCounts) error {
 }
 
 // previewButtonSlot is the header's slot: the button as the page was drawn,
-// re-read every previewPollEvery while the tab is shown. Hidden while empty
-// (empty:hidden: an empty slot takes no room and adds no gap to its row).
+// re-read on the queue's event (slotTrigger) and, while there are previews or
+// pages to count, every previewPollEvery while the tab is shown. Hidden while
+// empty (empty:hidden: an empty slot takes no room and adds no gap to its
+// row).
 func previewButtonSlot(c *PluginChips) g.Node {
 	if !c.on() {
 		return nil
@@ -406,7 +428,7 @@ func previewButtonSlot(c *PluginChips) g.Node {
 		ID("preview-slot"),
 		Class("inline-flex shrink-0 empty:hidden"),
 		hx("hx-get", c.buttonSrc()),
-		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden]"),
+		hx("hx-trigger", c.slotTrigger()),
 		hx("hx-swap", "innerHTML"),
 		hx("hx-target", "this"),
 		OpenButton(c.counts()),
@@ -539,7 +561,16 @@ func previewPanel(c *PluginChips) g.Node {
 				Span(g.Attr("data-page-version", ""), Class(sessionPageChipClass)),
 				A(g.Attr("data-page-full", ""), Href("#"), Target("_top"), Class(btn+" text-accent"), g.Text("Open full page")),
 			),
-			IFrame(
+			// 🔴 A PLACEHOLDER, NOT A FRAME, UNTIL A PAGE IS OPENED: the script
+			// makes the frame from it (loadInto copies its attributes, the
+			// sandbox first, onto a new <iframe>) and parks it back here when
+			// the page is left. An idle about:blank frame was drawn on every
+			// session page once the Open panel listed asks, and a same-origin
+			// frame is a document of its own — it runs a page's per-document
+			// scripts and its pagehide (e2e: update.spec's load count,
+			// switcher-dock.spec's bfcache record and dictation.spec's frames
+			// each read it as the page's own).
+			Div(
 				g.Attr("data-page-frame", ""),
 				g.Attr("sandbox", SessionPageSandbox),
 				g.Attr("title", "Page"),
@@ -836,6 +867,17 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // navigations in the frame (an app's pushState, a link it follows) still
   // add entries, which outlive the frame (docs/plugins.md).
   function load(url) { loadInto(frame(), url); }
+  // parkFrame puts a placeholder (a <div> with the frame's attributes) in
+  // place of a frame: its document ends, and no idle frame is left behind.
+  function parkFrame(old) {
+    if (!old || old.tagName !== 'IFRAME') return;
+    var d = document.createElement('div');
+    for (var i = 0; i < old.attributes.length; i++) {
+      var a = old.attributes[i];
+      if (a.name !== 'src') d.setAttribute(a.name, a.value);
+    }
+    old.replaceWith(d);
+  }
   function loadInto(old, url) {
     if (!old) return;
     var f = document.createElement('iframe');
@@ -1366,7 +1408,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (!v || v.hidden) return;
     v.hidden = true;
     if (list) list.hidden = false;
-    loadInto(v.querySelector('[data-page-frame]'), 'about:blank');
+    parkFrame(v.querySelector('[data-page-frame]'));
     if (quiet !== true) { loadPages(); var f = list && list.querySelector('[data-session-page]'); if (f) f.focus({ preventScroll: true }); }
   }
   document.addEventListener('click', function (ev) {

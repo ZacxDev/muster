@@ -225,11 +225,25 @@ for (const vp of [
       expect(navigations, 'the page was not reloaded').toBe(0);
       page.off('framenavigated', nav);
 
-      // The tap: the Asks page filtered to the chief's asks.
-      await Promise.all([
-        page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
-        vp.use.hasTouch ? count.tap() : count.click(),
-      ]);
+      // The tap: the Asks page filtered to the chief's asks. 🔴 On a phone the
+      // badge is not drawn on an agent of the viewer's own (operator decision
+      // on #999: the Open button counts the same asks, ui agentAsksBadge) —
+      // it is still on the page and refreshed live, as above — so its link
+      // is followed there, and the Open button's count checked in its place.
+      if (vp.use.viewport.width < 640) {
+        await expect(count).toBeHidden();
+        await expect(page.locator('header #preview-toggle')).toHaveAttribute('data-open-asks', '1', { timeout: 15_000 });
+        const href = await count.getAttribute('href');
+        await Promise.all([
+          page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
+          page.goto(origin + href!),
+        ]);
+      } else {
+        await Promise.all([
+          page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === 'agent:' + chiefName),
+          count.click(),
+        ]);
+      }
       // Whose asks these are: the chief's chip, active; and ONE predicate —
       // the badge's last number (1) is the number of cards the tap lists.
       await expect(page.locator('[data-asks-chips] a[aria-current="true"][data-asks-chip="from"]')).toHaveCount(1);
