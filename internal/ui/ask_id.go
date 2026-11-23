@@ -56,6 +56,29 @@ func DraftIDChipHTML(id int64) string {
 	return idChipHTML("draft", id, DraftIDLabel(id))
 }
 
+// AskIDLinkChipHTML is ask id's chip as a LINK to href, its page ("Ask
+// #859", the chip's look): a chip that names another card (a draft's confirm
+// asks, on its Drafts card) opens it rather than copying. Not a copy chip (no
+// data-id-copy): the id script leaves it a link. "" for no id.
+func AskIDLinkChipHTML(id int64, href string) string {
+	if id <= 0 {
+		return ""
+	}
+	label := AskIDLabel(id)
+	return `<a href="` + html.EscapeString(href) + `" class="` + IDChipClass + ` underline-offset-2 hover:underline" data-id-link data-id-kind="ask" data-id="` +
+		strconv.FormatInt(id, 10) + `" aria-label="Open ` + html.EscapeString(label) + `">` + html.EscapeString(label) + `</a>`
+}
+
+// IDMoreHTML is the muted "+N" after a capped row of id chips: n more not
+// drawn. "" for n ≤ 0.
+func IDMoreHTML(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return `<span class="shrink-0 whitespace-nowrap px-1 text-xs font-medium tabular-nums text-fg2" data-id-more="` + strconv.Itoa(n) + `" title="` +
+		strconv.Itoa(n) + ` more">+` + strconv.Itoa(n) + `</span>`
+}
+
 func idChipHTML(kind string, id int64, label string) string {
 	return `<span class="` + IDChipClass + `" data-id-copy="` + html.EscapeString(label) + `" data-id-kind="` + kind + `" data-id="` +
 		strconv.FormatInt(id, 10) + `">` + html.EscapeString(label) + `</span>`

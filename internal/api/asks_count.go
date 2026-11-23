@@ -24,9 +24,11 @@ import (
 // Asks page's items (pageAttentionItems — a waiting window session state
 // covers is one of its stalled rows instead), reply drafts included, without
 // the asks the reader only watches (waitingOnReader), plus session state's
-// stalled rows (episodes: episodeRowsHTML's count).
+// stalled rows (episodes: episodeRowsHTML's count). A session's request to
+// decide a draft is the draft's own card, so it is not counted beside the
+// draft (uncountedRequests).
 func asksPendingOf(ctx context.Context, pageItems []attentionItem, episodes int) int {
-	return len(waitingOnReader(ctx, pageItems)) + episodes
+	return len(waitingOnReader(ctx, uncountedRequests(pageItems))) + episodes
 }
 
 // asksPendingCount is asksPendingOf over a fresh read of ctx's principal's
@@ -56,7 +58,9 @@ func (s *Server) asksPage(ctx context.Context, items []attentionItem, rd asksRea
 		carded[it.card.agentID] = true
 	}
 	rows, n = s.episodeRowsHTMLExcept(ctx, rd, now, carded)
-	return append(s.pageAttentionItems(items, rd.hosts), approvals...), rows, n
+	// 🔴 ONE DRAFT IS ONE CARD too: a draft's open requests are one item,
+	// drawn as the draft's own card and counted once (foldDraftRequests).
+	return append(foldDraftRequests(s.pageAttentionItems(items, rd.hosts)), approvals...), rows, n
 }
 
 // approvalKey is an approval-blocked agent's item key (approvalItems).

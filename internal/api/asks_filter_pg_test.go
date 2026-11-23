@@ -245,10 +245,12 @@ func TestOneTapOnASourceKeepsOnlyItsItemsOnEveryTab(t *testing.T) {
 	if got := idsIn(pageBetween(page, "asks-drafts-pending", "asks-drafts-archived-toggle"), "draft-"); len(got) != 1 || !got[f.mktDraft] {
 		t.Errorf("Drafts under Marketing lists %v, want only %d", got, f.mktDraft)
 	}
-	// THE ONE OPEN COUNT over what the filter keeps: its question, its
-	// step-up card and its pending draft.
-	if !strings.Contains(page, ui.AsksOpenCountHTML(3)) {
-		t.Error("the open count is not the filtered list's 3")
+	// THE ONE OPEN COUNT over what the filter keeps: its question and its
+	// pending draft — the step-up card is a session's request to decide that
+	// draft, drawn as the draft's own card, and counted once with it.
+	// CHANGED: it counted 3 (one draft, one card: asks_drafts.go).
+	if !strings.Contains(page, ui.AsksOpenCountHTML(2)) {
+		t.Error("the open count is not the filtered list's 2")
 	}
 	chip, _ := sourceChip(t, page, filtMkt)
 	if !chip.active || chip.href != "/attention" {

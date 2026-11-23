@@ -313,7 +313,11 @@ type attentionItem struct {
 	// what the filter chips name the card by (readAskSources), with no second
 	// read.
 	stepUpDraftRead bool
-	stepUpDraftSrc  *draftSource
+	// folded is, on a draft's newest open request, its draft's other open
+	// requests (foldDraftRequests): drawn with it as one card when its draft
+	// is, else each as its own.
+	folded         []attentionItem
+	stepUpDraftSrc *draftSource
 	// Context is what a builtin officer's ask is about (attention.Ask's,
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
@@ -2688,6 +2692,9 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	// The owner's Dismiss: a mirrored session that asked is told no answer is
 	// coming (session_wake.go).
 	s.wakeDismissed(r.Context(), a)
+	// A request drawn as its draft's card stood for every open request for
+	// that draft: they are dismissed together (asks_drafts.go).
+	s.dismissDraftRequestsWith(r.Context(), a)
 	if asksCardRequest(r) {
 		s.writeSettledCard(w, r.Context(), a)
 		return

@@ -249,15 +249,19 @@ for (const vp of [
   });
 }
 
-// THE OPEN TAB'S STEP-UP CARD ABOUT A DRAFT CARRIES THE DRAFT'S OWN DECISION
-// (internal/api stepup_draft_actions.go; the operator: "there is no button to
+// THE OPEN TAB DRAWS A SESSION'S REQUEST AS THE DRAFT'S OWN CARD (internal/api
+// asks_drafts.go, ONE DRAFT, ONE CARD; the operator: "there is no button to
 // approve the asks in the ui anymore … I could do it from the drafts page, but
-// that's confusing"). A confirmation card a host session filed for a draft
-// ("Post to X? · Draft #N") stays phone-only for its own Confirm/Refuse, but
-// draws the draft's Approve and send and Reject — the Drafts tab's — so a tap
-// on the Open tab approves the draft, the card settles in its place, and the
-// browser stays on the Open tab (never the Drafts tab).
-// 🔴 RED AT origin/main: the card drew only "Confirm this on your phone."
+// that's confusing", then "it feels redundant to have a draft and a confirm
+// ask, i should just approve the draft directly"). A confirmation card a host
+// session filed for a draft ("Post to X? · Draft #N") stays phone-only for its
+// own Confirm/Refuse; in its place the Open tab draws the DRAFT's card — its
+// post, its Approve and send and Reject, a line naming the request and the
+// request's "Ask #N" chip — so a tap on the Open tab approves the draft, the
+// card settles in its place, and the browser stays on the Open tab. The Drafts
+// tab draws the same draft once, naming the same request.
+// CHANGED: the Open tab drew the step-up card with the draft's controls under
+// "Approve here, or confirm on your phone."
 const stepup = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/stepupfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 const OPEN_POST = 'Launch day: the new release is out.\n\nRead the notes on the blog.';
@@ -282,13 +286,23 @@ for (const vp of [
       await page.route(/\/plugins\/drafts\/\d+\/media\/\d+$/, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: pngBytes }));
       await signIn(page, origin);
       await page.goto(`${origin}/attention`);
-      const card = page.locator(`li#ask-${cardID}`);
+      const card = page.locator(`li#ask-${cardID}[data-asks-request-draft][data-draft-id="${draftID}"]`);
       await expect(card).toBeVisible();
-      const controls = card.locator(`[data-asks-stepup-draft][data-draft-id="${draftID}"]`);
-      await expect(controls.locator('[data-ask-stepup-phone]')).toHaveText('Approve here, or confirm on your phone.');
+      await expect(page.locator(`#attention-items [data-draft-id="${draftID}"]`), 'one card for the draft on Open').toHaveCount(1);
+      await expect(card.locator(`[data-draft-request][data-ask-id="${cardID}"]`)).toContainText('asked to approve and send this. Decide it here, or confirm on your phone.');
+      const chip = card.locator(`[data-draft-asks] a[data-id-link][data-id="${cardID}"]`);
+      await expect(chip).toHaveText(`Ask #${cardID}`);
+      await expect(chip).toHaveAttribute('href', `/attention/asks/${cardID}`);
+      await expect(card.locator('[data-stepup-post]')).toBeVisible();
+      const controls = card;
       const approve = controls.locator('[data-draft-approve]');
       await expectFullLabel(approve, 'Approve and send');
       await expect(controls.locator('[data-draft-reject]')).toBeVisible();
+      // The Drafts tab draws the same draft once, naming the same request.
+      const drafted = page.locator(`li#draft-${draftID}`);
+      await expect(drafted).toHaveCount(1);
+      await expect(drafted.locator(`[data-draft-request][data-ask-id="${cardID}"]`)).toHaveCount(1);
+      await expect(drafted.locator(`[data-draft-asks] a[data-id="${cardID}"]`)).toHaveCount(1);
       // The card's own Confirm/Refuse are never drawn: it is answered only on the phone.
       await expect(card.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(0);
       await expect(card.getByRole('button', { name: 'Refuse', exact: true })).toHaveCount(0);
@@ -366,6 +380,8 @@ for (const vp of [
       await page.goto(`${origin}/attention`);
       const card = page.locator(`li#ask-${cardID}`);
       await expect(card).toBeVisible();
+      // The request, on its draft's own card (one draft, one card).
+      await expect(card.locator(`[data-draft-request][data-ask-id="${cardID}"]`)).toContainText('asked to reject this');
       const boxID = `draft-reason-${draftID}-ask-${cardID}`;
       const box = card.locator(`textarea#${boxID}`);
       await expect(box).toHaveAttribute('name', 'reason');

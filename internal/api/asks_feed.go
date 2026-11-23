@@ -175,6 +175,21 @@ func taskCardParts(text string) (title, rest string) {
 // expand. The way to the session is the footer's "View in session", at the
 // card's bottom whether it is expanded or not.
 func askFeedCardHTML(it attentionItem, now time.Time) string {
+	// A session's request to decide a draft: its draft's own card, in its
+	// place (asks_drafts.go, ONE DRAFT, ONE CARD).
+	if merged := askMergedDraftCardHTML(it, now); merged != "" {
+		return merged
+	}
+	if len(it.folded) > 0 {
+		// Not drawn as its draft's card: each request as its own.
+		folded := it.folded
+		it.folded = nil
+		out := askFeedCardHTML(it, now)
+		for _, f := range folded {
+			out += askFeedCardHTML(f, now)
+		}
+		return out
+	}
 	esc := html.EscapeString
 	var b strings.Builder
 	kind, label := askFeedBadge(it)
@@ -435,6 +450,41 @@ func askFeedSessionHref(it attentionItem) string {
 		return it.Link
 	}
 	return ""
+}
+
+// askRequestPartsHTML is, for a session's request drawn as its draft's card
+// on the Open feed (askMergedDraftCardHTML), the parts the request's own
+// card drew: its context row (why, ⓘ) and its footer — View in session and
+// Dismiss without answering, with Dismiss's form. Dismiss closes every open
+// request for the draft and leaves the draft pending
+// (dismissDraftRequestsWith).
+func askRequestPartsHTML(it attentionItem, now time.Time) (context, footer string) {
+	esc := html.EscapeString
+	var links []string
+	if href := askFeedSessionHref(it); href != "" {
+		links = append(links, `<a href="`+esc(href)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>`+askViewInSession+`</a>`)
+	}
+	inner, info := asksCardContextInner(it, now), attentionPlaceSheetHTML(it, it.Key)
+	if inner == "" && info != "" {
+		links = append(links, info)
+		info = ""
+	}
+	context = asksCardContextRow(inner, info)
+	id := strconv.FormatInt(it.AskID, 10)
+	dismissForm, dismiss := "ask-"+id+"-dismiss", ""
+	if it.watchOnly == "" {
+		dismiss = askDismissButton(dismissForm, "Dismiss without answering")
+	}
+	if len(links) > 0 || dismiss != "" {
+		footer = `<div class="` + ui.AsksCardFooterClass + `" data-asks-footer>` + strings.Join(links, "") + `<span class="flex-1"></span>` + dismiss + `</div>
+`
+	}
+	if dismiss != "" {
+		action := attentionPath + `/asks/` + id + `/cancel`
+		footer += `<form id="` + dismissForm + `" method="POST" action="` + action + `" hidden` + asksCardFormAttrs(it.Key, action) + `></form>
+`
+	}
+	return context, footer
 }
 
 // askOptionsShortRunes is the longest option label laid out two to a row:
