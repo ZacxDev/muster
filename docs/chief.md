@@ -893,9 +893,11 @@ What applies on both:
 ### OpenRouter sessions, budget
 
 A side chat of the admin's chief may run on **any OpenRouter model**, with its
-own key and a muster-enforced budget. This is the spend door alone; no session
-runtime sends to it yet, so it does nothing until one does. It is off unless
-`MUSTER_CHIEF_SESSIONS_OPENROUTER=1` ([configuration](configuration.md)).
+own key and a muster-enforced budget. This section is the spend door every
+such session's model calls go through; the session itself runs in opencode in
+the chief's pod ([OpenRouter sessions on opencode](#openrouter-sessions-on-opencode)).
+It is off unless `MUSTER_CHIEF_SESSIONS_OPENROUTER=1`
+([configuration](configuration.md)).
 
 - **How a request is recognised.** The session's runtime in the chief's pod
   calls `POST /llm/v1/messages` with the chief's muster token
@@ -1191,6 +1193,7 @@ fixed for the session's life:
 |---|---|---|
 | (none) | the chief's own | the chief's own runtime. On a `claude-code` chief, the one CLI `ccd` has always run. Every session that existed before migration 0030 is one of these. |
 | `claude-code` | a Claude model (`opus`, `sonnet`, `haiku`, or a model id) | a Claude Code CLI of its own in the chief's pod, started with `--model`. Needs a `claude-code` chief. |
+| `opencode` | any OpenRouter model, stored as `openrouter/<catalogue id>` | an opencode server of its own in the chief's pod, its model calls through muster's [spend door](#openrouter-sessions-budget). Needs a `claude-code` chief, `MUSTER_CHIEF_SESSIONS_OPENROUTER=1`, and the admin's chief. See [OpenRouter sessions on opencode](#openrouter-sessions-on-opencode). |
 
 Open one from the chief panel: its thread list has a **New session** picker.
 Each thread names its runtime and model. The route underneath is
@@ -1237,6 +1240,89 @@ thread list).
 muster offers has the name of one of its built-in tools. `agents_list` was such
 a name and is now `fleet_list` on every runtime; a test pins every chief tool
 against the runtime's built-in names.
+
+### OpenRouter sessions on opencode
+
+A side chat of the admin's chief can run on **any OpenRouter model**, in
+[opencode](https://github.com/anomalyco/opencode) beside the chief's Claude Code
+CLIs. Every model call goes through muster's
+[spend door](#openrouter-sessions-budget), on its own key and budget.
+
+**Turning it on.** All three:
+
+- `MUSTER_CHIEF_SESSIONS_OPENROUTER=1` with `MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY`
+  (the spend door);
+- `opencode` in `MUSTER_CHIEF_SESSION_RUNTIMES` (for example `claude-code,opencode`);
+- a chief image that carries opencode (`claude-code-agent` from this release on;
+  restart the chief with **Stop → Start** to pick it up). `ccd`'s `/healthz`
+  says `"opencode": "on"`, or why it is off.
+
+The picker offers **OpenRouter** only to the admin's `claude-code` chief, and
+only while the spend door is on: the same checks the door makes. When
+`opencode` is named but the door is off, muster boots, the picker shows Claude
+Code only, and the boot log says why.
+
+**Choosing a model.** New session, **Continue in a new session** and the strip's
+**+** menu each have an **OpenRouter** row with a search field. Type part of a
+model's name or id; the matches (name, id, list price per million tokens,
+context) come from OpenRouter's catalogue, ranked fuzzily. Tap one, then
+**Start** (or **Continue**). Typing an exact catalogue id works without the
+search. The model is stored as `openrouter/<id>` and checked against the
+catalogue as the [spend door](#openrouter-sessions-budget) describes. The chip
+and the thread list show the model's name.
+
+**What runs the session.** `ccd` starts an `opencode serve` of its own for the
+session, on loopback, and drives it over opencode's HTTP API:
+
+- Its turns arrive on their own path, `POST /v1/opencode/responses`, with
+  `X-Muster-OC-Session` and `X-Muster-OC-Model`. A chief image that predates
+  opencode sessions answers that path `404`, and the turn fails with "restart
+  the chief on an image that has them". It never reaches a Claude CLI.
+- Its only provider is muster's proxy door (`$MUSTER_CONNECT_URL/llm/v1`, the
+  `anthropic-compatible` provider), with the agent's own muster token and the
+  session's key in its headers. The OpenRouter key never enters the pod.
+- Its tools are the chief's, over the same MCP door, named `muster_<tool>`
+  (and `hq_<tool>`). Its instructions are the chief's, with every tool name
+  rewritten to that spelling, after a short preamble that names the model and
+  asks it to propose writes rather than make them unasked. That request is a
+  convention, not enforcement.
+- Every opencode permission is allowed except its `question` tool, which would
+  hang a turn nobody can answer. A repository's own `opencode.json` is ignored.
+- opencode's data (its copy of the conversation) is kept under
+  `/data/opencode/<lane>`, so after the server is stopped (at the cap, by a pod
+  restart) the next turn resumes the same conversation.
+- It counts against `CCD_MAX_SESSIONS` with the Claude Code lanes. At the cap,
+  the least recently used idle session of either kind is stopped for a new one.
+- A turn has a deadline (the turn budget). opencode retries a failing model
+  call indefinitely, so at the deadline `ccd` interrupts the turn and answers
+  `504`.
+
+**Who is working (owner_asked).** `ccd`'s `GET /v1/clis` lists every opencode
+session (busy while it runs a turn, by `ccd`'s own count or by opencode's) and
+any other `opencode` process as unaccounted. So a gate is released, or a
+`route_many` passes `owner_asked`, only while every other session in the pod,
+opencode ones included, is idle. A turn you type in an opencode session can
+pass it too, under the same rule.
+
+**When the budget is spent.** Before each turn muster checks the caps. When
+they leave no room, nothing is sent: the chat shows a card with what your
+chief's OpenRouter sessions spent today, the daily cap, when it resets
+(00:00 UTC) and **Continue in a new session** onto a Claude model. A turn the
+cap cuts off midway (the door refuses one of its requests) ends the same way.
+
+**What the session writes is labelled.** Its MCP calls name the session
+(`X-Muster-OC-Session`). Every audit row written during such a call
+carries `session_model` and `session_key` in its detail, and each call also
+writes a `chief_session.tool_call` row (`{tool, ok, agent_id}`, plus
+those two). A call naming a session that is not one of this chief's opencode
+sessions is refused. ⚠ Anything in the pod can send that header, as it can
+the spend door's. The worst a forgery does is put another of the same chief's
+OpenRouter sessions' model on a write's label.
+
+**What it is not.** It is not the primary chat, and it gets no deliveries, as
+for every side chat. It does not read `CLAUDE.md` files, which opencode does not
+load. Claude Code features the instructions mention (subagents, its todo
+list) may not exist there.
 
 ## Primary and side chats
 
@@ -1289,6 +1375,11 @@ transcript in the chief panel. There is no sheet or dialog for them:
   newest side chat is reused only when it is on the model you picked. Without
   that setting, **+** opens a chat at once as before, and the route refuses a
   model (`400`) rather than open a chat on one you did not get.
+- **Pick an OpenRouter model from +.** Where the `opencode` runtime is offered
+  ([OpenRouter sessions on opencode](#openrouter-sessions-on-opencode)), the
+  menu also has an **OpenRouter model** field: type part of a name, tap a
+  match, then **Start**. The chip's tag shows the model's name (for example
+  `deepseek-v4.1-flash`; its title is the full catalogue id).
 - **Archived (n)** is the last chip. Tap it to show the archived chats' chips
   in the strip, and again to hide them. The chat you are on is never hidden
   there.

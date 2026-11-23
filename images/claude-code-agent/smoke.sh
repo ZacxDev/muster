@@ -56,8 +56,11 @@
 #      CLAUDE_PROJECT_DIR = the checkout);
 #  12. with a repository that cannot be cloned, /healthz stays 200 and reports
 #      why, and no CLI session is started.
+#  13. the pinned opencode is on PATH with ripgrep, and `ccd opencode-check`
+#      runs an opencode lane end to end against a FAKE muster in ccd itself.
 #
-# ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
+# ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN TO
+# A REAL MODEL (step 13's turns go to a fake muster inside ccd):
 # nothing here needs the provider's API. Without any token the CLI stops at its
 # login-method screen and never fires SessionStart, so a deliberately INVALID
 # token is supplied when none is set. Resuming a conversation that has real turns
@@ -448,4 +451,19 @@ echo "cc-smoke: an unclonable repository keeps the CLI stopped and /healthz 200"
 kill "$ep" 2>/dev/null || true
 tmux kill-server 2>/dev/null || true
 unset GIT_CONFIG_GLOBAL
+
+# 13. opencode lanes (cmd/ccd/opencode.go): the pinned binary is on PATH, and
+# `ccd opencode-check` drives a lane end to end on it against a FAKE muster
+# served inside ccd (a fake proxy door and MCP door on loopback): a turn's
+# text and tokens, the token and session key on the model call, the generated
+# instructions in the system prompt, muster's tools as muster_<tool>, a tool
+# call over MCP naming its session, /v1/clis busy then idle, and a budget
+# refusal ending the turn. No credential, no real model, nothing off loopback.
+opencode --version | grep -qF "$OPENCODE_VERSION" || fail "opencode is not the pinned $OPENCODE_VERSION: $(opencode --version 2>&1)"
+command -v rg >/dev/null || fail "ripgrep (opencode's file search) is not on PATH"
+if ! out="$(timeout 300 ccd opencode-check 2>&1)"; then
+  fail "ccd opencode-check: $out"
+fi
+printf '%s\n' "$out" | sed 's/^/cc-smoke: opencode: /'
+[[ "$out" == *'ccd opencode-check: PASS'* ]] || fail "ccd opencode-check did not pass: $out"
 echo "cc-smoke: PASS"
