@@ -288,7 +288,9 @@ asset with it (their bytes are under the page's own prefix, [below](#files)).
 
 ## Share links
 
-A link is `https://<MUSTER_PUBLIC_URL>/s/<token>`, where the token is 256
+A link is `https://<MUSTER_PUBLIC_URL>/s/<token>` (or under
+`MUSTER_PAGES_PUBLIC_URL`, [for people outside your
+network](#sharing-with-people-outside-your-network)), where the token is 256
 random bits. It serves the page's current version until it is revoked. A link
 that is unknown, waiting for approval, declined or revoked answers 404 with one
 body, whichever it is.
@@ -343,6 +345,45 @@ reusable link beside them. ⚠ An agent's link **is** in that agent's
 transcript, and so with its model provider: `page_share_request`'s result
 carries it. Treat a link an agent shared as shared with whatever sees that
 session.
+
+### Sharing with people outside your network
+
+A default install is reachable only over your own network (your tailnet), so
+a link under `MUSTER_PUBLIC_URL` does not open for a client outside it. To
+let it, turn on the **public pages listener**: a port of its own that serves
+share links and nothing else.
+
+```sh
+MUSTER_PAGES_PUBLIC_LISTEN=:8108
+MUSTER_PAGES_PUBLIC_URL=https://pages.example.com
+```
+
+([configuration](configuration.md#muster-server-optional-features)). Then
+**you** make that port reachable from outside: a reverse proxy, a tunnel or
+Tailscale Funnel pointed at it. muster only opens the port. Keep everything
+else as it is: the rest of muster stays on your network.
+
+- **What it serves**: a link's page (`/s/<token>`), its content and its
+  images and video, a viewer's submit and upload, and the shell's logo and
+  icon. That list is one list in the code (`api.PagesPublicRoutes`). Every
+  other path is a 404 there, including `/`, `/api/`, sign-in, `/plugin/`,
+  MCP, `/health` and `/metrics`.
+- **No credential crosses it.** Cookies and credential headers are taken off
+  every request before muster sees it, and no response sets a cookie, so
+  your own signed-in browser gets nothing more there than a stranger does.
+  There is no CORS on it.
+- **The links you hand on** (Share, an agent's `page_share_request`, the
+  page's screen) are written under `MUSTER_PAGES_PUBLIC_URL`. Your own view
+  of a page and every other link stay under `MUSTER_PUBLIC_URL`. A token
+  works on both listeners, so a link handed on earlier keeps working on your
+  network.
+- **The same limits apply**: the rate limits, caps and refusals in
+  [Limits](#limits) are the share routes' own, on either listener. They are
+  counted per client address, so behind a proxy or tunnel set
+  [`MUSTER_TRUSTED_PROXIES`](configuration.md#client-addresses-behind-a-proxy),
+  or every viewer shares the proxy's one address.
+- Prefer a hostname of its own for `MUSTER_PAGES_PUBLIC_URL`, not muster's:
+  a page link's shell then shares no origin with your muster.
 
 ### When an agent shares
 

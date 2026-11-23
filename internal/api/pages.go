@@ -681,9 +681,16 @@ func pagePath(id int64) string { return pagesPath + "/" + strconv.FormatInt(id, 
 
 // pageLinkURL is a NEW link's address, the once it is shown (the link
 // CreateLink just returned holds its token; no stored link does): absolute
-// under MUSTER_PUBLIC_URL, else a path on this server.
+// under MUSTER_PAGES_PUBLIC_URL when the public pages listener is on, else
+// under MUSTER_PUBLIC_URL, else a path on this server. It is the one place a
+// link's address is made, so the owner's Share, an agent's tools and the
+// page's screen all hand on the same one.
 func (s *Server) pageLinkURL(l pages.Link) string {
-	return strings.TrimRight(s.ext.PublicURL, "/") + pages.LinkPath(l.Token)
+	base := s.ext.PublicURL
+	if s.ext.PagesPublicURL != "" {
+		base = s.ext.PagesPublicURL
+	}
+	return strings.TrimRight(base, "/") + pages.LinkPath(l.Token)
 }
 
 // pageViewPath is the owner's own view of page id (ui.PageViewPath).

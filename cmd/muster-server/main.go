@@ -243,7 +243,10 @@ type app struct {
 	// (api.MetricsHandler); nil unless MUSTER_METRICS_PORT is set. /metrics is
 	// on no other listener.
 	metrics *http.Server
-	pool    *pgxpool.Pool
+	// pagesPublic is the listener that serves share links and nothing else
+	// (api.PagesPublicSurface); nil unless MUSTER_PAGES_PUBLIC_LISTEN is set.
+	pagesPublic *http.Server
+	pool        *pgxpool.Pool
 	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
 	// declares none.
 	officers *officers.Reconciler
@@ -367,6 +370,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Provisioner reproduces that defect exactly.
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
 		PublicURL:            cfg.PublicURL,
+		PagesPublicURL:       cfg.PagesPublicURL,
 		PluginOrigins:        cfg.PluginOrigins,
 		ClientAddr:           cfg.ClientAddr,
 	}
@@ -1204,6 +1208,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
+	if cfg.PagesPublicListen != "" {
+		a.pagesPublic = &http.Server{
+			Addr:              cfg.PagesPublicListen,
+			Handler:           api.PagesPublicSurface(handler),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
+	}
 	if cfg.MetricsPort != 0 {
 		a.metrics = &http.Server{
 			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.MetricsPort)),
@@ -1379,7 +1390,7 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
-	var connectLn, browserLn, metricsLn net.Listener
+	var connectLn, browserLn, metricsLn, pagesPublicLn net.Listener
 	if a.connect != nil {
 		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
 			ln.Close()
@@ -1405,13 +1416,23 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 			return fmt.Errorf("listen %s (%s): %w", a.metrics.Addr, envMetricsPort, err)
 		}
 	}
+	if a.pagesPublic != nil {
+		if pagesPublicLn, err = net.Listen("tcp", a.pagesPublic.Addr); err != nil {
+			for _, l := range []net.Listener{ln, connectLn, browserLn, metricsLn} {
+				if l != nil {
+					l.Close()
+				}
+			}
+			return fmt.Errorf("listen %s (%s): %w", a.pagesPublic.Addr, envPagesPublicListen, err)
+		}
+	}
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 4)
+	serveErr := make(chan error, 5)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
@@ -1432,6 +1453,13 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 		go func() {
 			a.logger.Printf("muster metrics listener on %s (%s; /metrics only)", metricsLn.Addr(), envMetricsPort)
 			serveErr <- a.metrics.Serve(metricsLn)
+		}()
+	}
+	if pagesPublicLn != nil {
+		go func() {
+			a.logger.Printf("muster public pages listener on %s (%s; share links only, written under %s)",
+				pagesPublicLn.Addr(), envPagesPublicListen, a.cfg.PagesPublicURL)
+			serveErr <- a.pagesPublic.Serve(pagesPublicLn)
 		}()
 	}
 
@@ -1654,6 +1682,11 @@ func (a *app) shutdown() {
 	if a.metrics != nil {
 		if err := a.metrics.Shutdown(drainCtx); err != nil {
 			a.logger.Printf("metrics listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
+	}
+	if a.pagesPublic != nil {
+		if err := a.pagesPublic.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("public pages listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
 	// The machine jobs this process accepted and will now never finish: fail
@@ -1927,6 +1960,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			envMetricsPort, a.cfg.MetricsPort)
 	} else {
 		l.Printf("metrics: OFF — %s is unset, so /metrics is served on no port", envMetricsPort)
+	}
+	if a.cfg.PagesPublicListen != "" {
+		l.Printf("public pages listener: ON — %s=%s serves share links and nothing else, and links are written under %s=%s; "+
+			"making that port reachable from outside is the operator's step", envPagesPublicListen, a.cfg.PagesPublicListen,
+			envPagesPublicURL, a.cfg.PagesPublicURL)
+	} else {
+		l.Printf("public pages listener: OFF — %s and %s are unset, so share links are served only on muster's own listeners, "+
+			"under %s", envPagesPublicListen, envPagesPublicURL, envPublicURL)
 	}
 
 	if reason := a.cfg.serviceWriteRefusal(); reason != "" {
