@@ -1954,14 +1954,27 @@ phone.* Each runs a **passkey ceremony for that one decision**:
    one card together decide it once: the other is told *This card was
    already decided.*
 
-🔴 **A recent sign-in is not enough.** A session that signed in a minute ago
-still runs the ceremony: the proof is the assertion made for that card, never
-the session's freshness. A prompt made for one card cannot decide another,
-and a challenge is never honoured twice. A team's card is held to the
-phone's rule: only an operator or a manager of the team decides it.
+🔴 **A recent sign-in is not enough, and neither is a password.** A session
+that signed in a minute ago still runs the ceremony: the proof is the
+assertion made for that card, never the session's freshness. A prompt made
+for one card cannot decide another, and a challenge is never honoured twice.
+**The passkey must be one that may approve cards:** a passkey added with the
+password alone may not ([adding a passkey](auth.md#adding-a-passkey)), so a
+password never reaches card approval by adding one. A team files no step-up
+card, so there is no team rule here. A card only the phone decides (*Add a
+passkey to your account?*) offers no Confirm in the browser.
+
+The page fetches a card's passkey options when you reach for a button (a
+press), never when it draws the card, and runs the prompt in the tap itself,
+as Safari requires. A tap that comes before the options are fetched says
+*Getting ready. Tap again.* and prompts nothing. A Confirm that lands while
+the phone is recording its own answer to the same card is told to try again,
+not that the card was decided: the phone's write may still fail and leave the
+card open.
 
 An account with no passkey sees the phone line and where a passkey is added
-(**Account → Passkeys**); a server without passkeys (password mode, or
+(**Account → Passkeys**). One whose passkeys were all added with the password
+alone sees the phone line and how to add one that may approve cards; a server without passkeys (password mode, or
 GoTrue's passkeys off) shows the phone line alone. A browser that cannot run
 WebAuthn puts the phone line back. Both doors write one `stepup.decided` audit
 row naming the card, the tool, the answer and the door (`phone` or

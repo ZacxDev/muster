@@ -307,6 +307,8 @@ type Server struct {
 	// stepUpCards is the browser door's state for deciding those cards with a
 	// passkey: the challenges minted per card (stepup_web_confirm.go).
 	stepUpCards stepUpCardWeb
+	// passkeyEnrol is the enrolment gate's tickets (passkey_enrol.go).
+	passkeyEnrol passkeyEnrolState
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 

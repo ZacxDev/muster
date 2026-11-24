@@ -261,6 +261,9 @@ POST /account/notifications/codename
 POST /account/notifications/tmux
 POST /account/pages/agent-share
 POST /account/passkeys/options
+POST /account/passkeys/proof/options
+POST /account/passkeys/proof/phone
+POST /account/passkeys/proof/verify
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
 POST /account/push/preferences

@@ -592,7 +592,8 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 - You manage your passkeys at **Account → Passkeys** (`/account/passkeys`).
   The link is on the Account page of every gotrue-mode server, whether or not
   GoTrue reports passkeys as enabled; with them off the page says so. Adding
-  one needs a sign-in from the last five minutes.
+  one needs a sign-in from the last five minutes, and more: see
+  [Adding a passkey](#adding-a-passkey).
 - Signing in with a passkey needs no username. The sign-in page offers three
   ways:
   - **Autofill.** The email field is `autocomplete="username webauthn"`, and
@@ -666,6 +667,44 @@ neither `signalAllAcceptedCredentials` nor `signalUnknownCredential`;
 its id), then removes the old ones, leaving at most one without an id. An
 admin can also remove all of a user's passkeys (**Admin → Users → Remove
 passkeys**) and have the person add them again.
+
+### Adding a passkey
+
+A passkey can approve a [step-up card](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey)
+in the browser, which otherwise only the paired phone can do. So adding one
+needs more than the password: 🔴 **a password alone never reaches card
+approval.**
+
+- **The account already has a passkey, or a paired phone with a step-up
+  key:** adding another needs, besides a sign-in from the last five minutes,
+  one of these proofs for that browser session:
+  - **a passkey you already have.** The passkeys page asks for it
+    (`POST /account/passkeys/proof/options`, then `…/proof/verify`), with user
+    verification, as the step-up confirm does;
+  - **your paired phone.** The page files a step-up card, *Add a passkey to
+    your account?* (`POST /account/passkeys/proof/phone`). Only the phone's
+    Confirm answers it; a passkey in the browser cannot. The page waits for
+    the Confirm, then you tap **Add a passkey on this device** again.
+
+  The proof allows one passkey, added from that browser session, within ten
+  minutes. Without it, both the options and the add answer
+  `403 proof_required`, naming the proofs the account can give.
+- **The account has neither:** there is nothing to prove with, so the password
+  adds the first passkey, as before. That passkey signs in and confirms
+  "Confirm it's you" like any other, but **it cannot approve a step-up card**.
+  A card shows the phone line and says why.
+- **Which passkeys may approve a card.** Every passkey added records it: one
+  added with the phone's Confirm may, one added with the password alone may
+  not, and one added with a passkey proof takes the standing of the passkey
+  that proved it. A passkey added before muster recorded this keeps working
+  as it did, card approval included. muster writes that record before it
+  answers the add. If the write fails, it removes the passkey it just added
+  and refuses, because a passkey with no record would read as an older one.
+- **Every passkey added pushes you "A passkey was added to your account"**, on
+  every device registered for push, whatever your notification settings say:
+  a person holding only your password could turn them off first. The
+  `user.passkey_added` audit row records the proof (`passkey`, `phone` or
+  `password`) and whether the passkey may approve cards.
 
 ### Passkeys in the Android app
 

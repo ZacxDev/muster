@@ -68,6 +68,14 @@ func (f *Fake) NewChallenge(registrationFor string) string {
 
 // FailAdminUserGet makes the next n GET /admin/users/{id} calls (the user's
 // app_metadata, AdminAppMetadata) answer 500.
+// LastPasskeySessionID is the session the last passkey sign-in verify
+// minted, "" for none.
+func (f *Fake) LastPasskeySessionID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastPasskeySID
+}
+
 func (f *Fake) FailAdminUserGet(n int) {
 	f.mu.Lock()
 	f.adminUserGetFailures = n
@@ -208,6 +216,7 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 		pk.LastUsedAt = &now
 		sid := newUUID()
 		f.sessions[sid] = &session{user: u.ID, amr: f.amrLocked("passkey")}
+		f.lastPasskeySID = sid
 		at, rt := f.issueLocked(sid, "")
 		f.writeSessionLocked(w, at, rt, u)
 	case r.Method == http.MethodPost && p == "/passkeys/registration/options":

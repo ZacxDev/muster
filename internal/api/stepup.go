@@ -328,7 +328,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := r.Context()
 	me := authz.MustFrom(ctx).UserID
-	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey confirm", func(pk sessionPasskey) signinOutcome {
+	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey confirm", true, func(pk sessionPasskey) signinOutcome {
 		// The same sub is the same muster user (users.gotrue_sub is unique), so
 		// what is left to check is what a sign-in checks: still a muster
 		// account, not disabled.
@@ -387,14 +387,28 @@ type sessionPasskey struct {
 // The same sign-in limiter as the password confirm, under the session's
 // account: a re-proof is an authentication attempt, and a held session must
 // not be a way to try credentials faster than /login allows.
+//
+// keepUnspent says whether a refusal before GoTrue saw the challenge may tell
+// the page its challenge is still good (challenge_unspent: true,
+// stepUpRefuseUnspent): true only where the caller has not itself spent its
+// own binding of that challenge — the step-up confirm. A card decision or an
+// enrolment proof spent its binding first, so the challenge is NOT reusable
+// there, and the flag is never sent.
 func (s *Server) verifySessionPasskey(w http.ResponseWriter, r *http.Request, creds gotrueCreds, challengeID string, credential json.RawMessage,
-	what string, then func(sessionPasskey) signinOutcome) {
+	what string, keepUnspent bool, then func(sessionPasskey) signinOutcome) {
+	refuse := func(status int, msg string) {
+		if keepUnspent {
+			s.stepUpRefuseUnspent(w, status, msg)
+			return
+		}
+		s.writeJSON(w, status, map[string]any{"error": msg})
+	}
 	ctx := r.Context()
 	me := authz.MustFrom(ctx).UserID
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: me}, ip, s.gt.now())
 	if !ok {
-		s.stepUpRefuseUnspent(w, http.StatusTooManyRequests, stepUpThrottled)
+		refuse(http.StatusTooManyRequests, stepUpThrottled)
 		return
 	}
 	outcome := outcomeUnjudged
@@ -402,7 +416,7 @@ func (s *Server) verifySessionPasskey(w http.ResponseWriter, r *http.Request, cr
 	flags, canonical, err := gotrue.CanonicalAssertion(credential)
 	if err != nil {
 		outcome = outcomeFailed
-		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
+		refuse(http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	// 🔴 THE UV GUARD. A passkey that only proved PRESENCE is "whoever is
@@ -410,7 +424,7 @@ func (s *Server) verifySessionPasskey(w http.ResponseWriter, r *http.Request, cr
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
 		s.logger.Printf("stepup: refused a %s without user verification for user %d (from %s)", what, me, ip)
-		s.stepUpRefuseUnspent(w, http.StatusUnauthorized, PasskeyNoUVRefusal)
+		refuse(http.StatusUnauthorized, PasskeyNoUVRefusal)
 		return
 	}
 	sess, err := s.gt.Client.PasskeySignInVerify(ctx, ip, challengeID, canonical)
@@ -431,7 +445,11 @@ func (s *Server) verifySessionPasskey(w http.ResponseWriter, r *http.Request, cr
 	// handed to anyone.
 	end := func() {
 		ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = s.gt.Client.Logout(ectx, ip, sess.AccessToken, gotrue.ScopeLocal)
+		if err := s.gt.Client.Logout(ectx, ip, sess.AccessToken, gotrue.ScopeLocal); err != nil {
+			// Not swallowed: a session that was not signed out stays valid
+			// at GoTrue until it expires (no cookie of it was set anywhere).
+			s.logger.Printf("stepup: sign out the session a %s minted for user %d: %v", what, me, err)
+		}
 		cancel()
 	}
 	c, err := s.gt.Verifier.Verify(sess.AccessToken)

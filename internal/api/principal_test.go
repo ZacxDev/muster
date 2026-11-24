@@ -275,6 +275,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/features",
 		"POST /account/passkeys/options",
 		"POST /account/passkeys/verify",
+		// The enrolment gate's proofs (passkey_enrol.go): the session's own
+		// account, re-proven by its passkey or its phone.
+		"POST /account/passkeys/proof/options",
+		"POST /account/passkeys/proof/verify",
+		"POST /account/passkeys/proof/phone",
 		"POST /account/passkeys/{id}/delete",
 		"POST /admin/users/{id}/passkeys/delete",
 		// muster-native Web Push: the subscribe flow and the account page's

@@ -103,6 +103,9 @@ cookie POST /account/notifications/codename
 cookie POST /account/notifications/tmux
 cookie POST /account/pages/agent-share
 cookie POST /account/passkeys/options
+cookie POST /account/passkeys/proof/options
+cookie POST /account/passkeys/proof/phone
+cookie POST /account/passkeys/proof/verify
 cookie POST /account/passkeys/verify
 cookie POST /account/passkeys/{id}/delete
 cookie POST /account/push/preferences

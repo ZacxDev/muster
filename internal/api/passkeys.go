@@ -120,6 +120,10 @@ func (s *Server) registerPasskeyRoutes(mux Mux) {
 	mux.HandleFunc("GET /account/passkeys", s.requireSession(s.handleAccountPasskeys))
 	mux.HandleFunc("POST /account/passkeys/options", s.requireSession(s.handlePasskeyAddOptions))
 	mux.HandleFunc("POST /account/passkeys/verify", s.requireSession(s.handlePasskeyAddVerify))
+	// The enrolment gate's proofs (passkey_enrol.go).
+	mux.HandleFunc("POST /account/passkeys/proof/options", s.requireSession(s.handlePasskeyProofOptions))
+	mux.HandleFunc("POST /account/passkeys/proof/verify", s.requireSession(s.handlePasskeyProofVerify))
+	mux.HandleFunc("POST /account/passkeys/proof/phone", s.requireSession(s.handlePasskeyProofPhone))
 	mux.HandleFunc("POST /account/passkeys/{id}/delete", s.requireSession(s.handlePasskeyDelete))
 }
 
@@ -370,9 +374,14 @@ func (s *Server) setPasskeyFlag(ctx context.Context, sub, id string, flags map[s
 		}
 		return
 	}
-	all := s.passkeyFlags(ctx, sub)
-	if all == nil {
-		all = map[string]map[string]any{}
+	// 🔴 NEVER WRITE OVER RECORDS THAT COULD NOT BE READ: the write replaces
+	// every passkey's record, and a passkey whose record is lost reads as one
+	// that predates the enrolment rule — one that may decide step-up cards
+	// (passkey_enrol.go). A failed read writes nothing.
+	all, err := s.passkeyRecords(ctx, sub)
+	if err != nil {
+		s.logger.Printf("passkeys: could not read the recorded passkey flags, so none were written: %v", err)
+		return
 	}
 	if flags == nil {
 		delete(all, id)
@@ -452,6 +461,11 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 `+b.String()+`
 <p class="text-sm text-fg2" id="passkey-status" role="status" aria-live="polite"></p>
 <button type="button" id="passkey-add" class="`+adminButton+`">Add a passkey on this device</button>
+<div id="passkey-proof" hidden class="flex flex-col gap-2">
+<p class="text-sm text-fg2" id="passkey-proof-why">To add a passkey, first confirm it is you: with a passkey you already have, or on your paired phone.</p>
+<button type="button" id="passkey-proof-passkey" hidden class="`+adminButton+`">Confirm with a passkey you have</button>
+<button type="button" id="passkey-proof-phone" hidden class="`+adminQuiet+`">Confirm on my phone</button>
+</div>
 <form id="passkey-reauth" hidden class="flex flex-col gap-2">
 <p class="text-sm text-fg2">To add a passkey, enter your password again.</p>
 <label for="passkey-password" class="text-sm font-medium text-fg">Password</label>
@@ -494,14 +508,18 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 	if !ok || s.refuseStaleCredentialChange(w, r) {
 		return
 	}
-	var o gotrue.PasskeyOptions
-	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
-		o, err = s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), accessToken)
-		return err
-	})
-	if s.answerUserTokenRefreshFailure(w, r, err) {
+	// 🔴 THE ENROLMENT GATE (passkey_enrol.go): a ticket, or an account with
+	// nothing to prove with.
+	need, err := s.passkeyEnrolNeed(r.Context(), creds, clientIP(r))
+	if err != nil {
+		s.logger.Printf("passkeys: the enrolment gate could not read the account: %v", err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": PasskeyEnrolUnchecked})
 		return
 	}
+	if s.refuseEnrolNeed(w, need) {
+		return
+	}
+	o, err := s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), creds.access)
 	if err != nil {
 		s.writeGoTrueRefusal(w, "registration options", err, "A passkey cannot be added right now.")
 		return
@@ -528,6 +546,21 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
 		return
 	}
+	// 🔴 THE ENROLMENT GATE again, at the add itself (passkey_enrol.go).
+	uid := authz.MustFrom(r.Context()).UserID
+	need, err := s.passkeyEnrolNeed(r.Context(), creds, clientIP(r))
+	if err != nil {
+		s.logger.Printf("passkeys: the enrolment gate could not read user %d's account: %v", uid, err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": PasskeyEnrolUnchecked})
+		return
+	}
+	if s.refuseEnrolNeed(w, need) {
+		return
+	}
+	vouched, proof := false, "password"
+	if need.ticket != nil {
+		vouched, proof = need.ticket.vouched, need.ticket.proof
+	}
 	flags, canonical, err := gotrue.CanonicalAttestation(body.Credential)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
@@ -549,20 +582,28 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeGoTrueRefusal(w, "a passkey registration", err, "That passkey could not be added.")
 		return
 	}
-	rec := map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible}
+	if need.ticket != nil {
+		s.passkeyEnrol.spend(enrolKey(uid, creds))
+	}
+	rec := map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible, passkeyVouchedKey: vouched}
 	// The credential id too: GoTrue does not return it, and the Signal API
-	// needs it (passkey_signal.go).
+	// and the card decision (assertionMayDecideCards) need it.
 	if id, err := gotrue.AttestationCredentialID(canonical); err == nil {
 		rec[passkeyCredIDKey] = id
 	}
-	s.setPasskeyFlag(r.Context(), creds.claims.Subject, p.ID, rec)
-	uid := authz.MustFrom(r.Context()).UserID
-	if s.gt.Accounts != nil {
-		_ = s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: uid, Via: authz.ViaSession}, "user.passkey_added",
-			users.UserObject(uid), map[string]any{"passkey_id": p.ID, "ip": clientIP(r)})
+	// 🔴 RECORDED, OR NOT KEPT (passkey_enrol.go).
+	if err := s.recordAddedPasskey(r.Context(), creds.claims.Subject, p.ID, rec); err != nil {
+		s.logger.Printf("passkeys: user %d's new passkey could not be recorded (%v); removing it", uid, err)
+		if derr := s.gt.Client.DeletePasskey(context.WithoutCancel(r.Context()), clientIP(r), creds.access, p.ID); derr != nil {
+			s.logger.Printf("passkeys: remove user %d's unrecorded passkey %s: %v", uid, p.ID, derr)
+		}
+		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": PasskeyEnrolRecordFail})
+		return
 	}
-	s.logger.Printf("passkeys: user %d added a passkey", uid)
-	s.writeJSON(w, http.StatusOK, map[string]any{"id": p.ID})
+	s.auditPasskeyAdded(r.Context(), uid, p.ID, clientIP(r), proof, vouched)
+	s.logger.Printf("passkeys: user %d added a passkey (proof: %s; decides step-up cards: %t)", uid, proof, vouched)
+	s.notifyPasskeyAdded(r.Context(), uid)
+	s.writeJSON(w, http.StatusOK, map[string]any{"id": p.ID, "decides_cards": vouched})
 }
 
 func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {

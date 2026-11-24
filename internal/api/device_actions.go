@@ -370,6 +370,11 @@ func (s *Server) askActionResult(w http.ResponseWriter, r *http.Request, c devic
 	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotice):
 		outcome = actionCodeNotOpen
 		s.actionRefuse(w, http.StatusConflict, actionCodeNotOpen, attentionErrText(err, a))
+	case errors.Is(err, errHostDecisionBusy):
+		// A step-up card another door is deciding this moment: retryable
+		// (its write may fail and put the decision back).
+		outcome = actionCodeFailed
+		s.actionRefuse(w, http.StatusServiceUnavailable, actionCodeFailed, strings.TrimPrefix(err.Error(), "step-up: "))
 	case errors.Is(err, attention.ErrInvalid):
 		outcome = actionCodeInvalidAnswer
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeInvalidAnswer, attentionErrText(err, a))

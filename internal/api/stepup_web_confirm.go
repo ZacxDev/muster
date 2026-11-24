@@ -53,13 +53,20 @@ import (
 // binding, the sign-in limiter); the decision is answerAskFrom →
 // hostDecisionForAnswer, the phone's own — owner-scoped, a closed card runs
 // nothing, the card claimed before its call runs, so a phone and a browser
-// racing decide it once and the other is told it was already decided. The
+// racing decide it once: the other is told to retry while the winner records
+// its answer (that write may yet fail and reopen the card), then that it was
+// decided. The
 // session GoTrue minted for the ceremony is signed out at once: the ceremony
 // decides the card and makes no session fresh.
 //
-// A TEAM'S QUESTION is held to the phone door's own rule (teamPhoneAskRefusal:
-// an operator or a manager of the team, on a fresh read), before any
-// challenge is minted and again before the decision.
+// 🔴 ONLY A PASSKEY THAT MAY DECIDE CARDS (passkey_enrol.go): one added with
+// the password alone is refused here, so a password alone never reaches card
+// approval. A card only the phone decides (hostDecision.phoneOnly: adding a
+// passkey) offers no browser decision at all.
+//
+// A team files no step-up card (every tool in hostStepUpTools is refused to a
+// team token: TestEveryMirrorToolIsClassifiedForATeamHost), so there is no
+// team rule here: the pending decision's owner check is the whole of it.
 // ---------------------------------------------------------------------------
 
 // stepUpCardPasskeyPath is card id's passkey decision route prefix (the page's
@@ -97,10 +104,11 @@ type stepUpCardWeb struct {
 	has        map[string]passkeyHeld
 }
 
-// passkeyHeld is one cached answer of whether an account has a passkey.
+// passkeyHeld is one cached answer of what an account's passkeys allow on a
+// card (stepUpWebAccount).
 type passkeyHeld struct {
-	has bool
-	at  time.Time
+	offer stepUpWebOffer
+	at    time.Time
 }
 
 // mint records challenge ch as minted for user's decision of card.
@@ -143,23 +151,23 @@ func (c *stepUpCardWeb) spend(ch string, now time.Time) (stepUpCardChallenge, bo
 	return v, true
 }
 
-func (c *stepUpCardWeb) cachedHas(sub string, now time.Time) (bool, bool) {
+func (c *stepUpCardWeb) cachedOffer(sub string, now time.Time) (stepUpWebOffer, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	h, ok := c.has[sub]
 	if !ok || now.Sub(h.at) > stepUpPasskeyCacheFor {
-		return false, false
+		return 0, false
 	}
-	return h.has, true
+	return h.offer, true
 }
 
-func (c *stepUpCardWeb) rememberHas(sub string, has bool, now time.Time) {
+func (c *stepUpCardWeb) rememberOffer(sub string, offer stepUpWebOffer, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.has == nil {
 		c.has = map[string]passkeyHeld{}
 	}
-	c.has[sub] = passkeyHeld{has: has, at: now}
+	c.has[sub] = passkeyHeld{offer: offer, at: now}
 }
 
 // forget drops what is cached about sub's passkeys (one was added or
@@ -249,13 +257,16 @@ const (
 	StepUpCardClosed      = "This card is closed, so its request was dropped and nothing ran."
 	StepUpCardLost        = "This card's request was lost when muster restarted: nothing ran, and the session must ask again."
 	StepUpCardNotACard    = "That is not a confirmation card."
+	StepUpCardBusy        = "This card is being decided right now. Try again in a moment."
+	StepUpCardPhoneOnly   = "This card is confirmed only on your paired phone."
+	StepUpCardUnvouched   = "That passkey was added with your password alone, so it cannot approve a card. Confirm on your phone, or add a passkey confirmed on your phone."
 )
 
 // stepUpCardRefusal is why ctx's principal may not decide card id in the
 // browser now — "" when it may — with its status and the phone door's refusal
 // code where one applies: not theirs (row-level security reads another
-// owner's ask as missing), not a step-up card, a team's question they do not
-// operate, settled, or its decision lost.
+// owner's ask as missing), not a step-up card, one only the phone decides,
+// settled, being decided right now (retry), or its decision lost.
 func (s *Server) stepUpCardRefusal(ctx context.Context, id int64) (string, int) {
 	if s.ext.Attention == nil {
 		return "No such question.", http.StatusNotFound
@@ -270,9 +281,6 @@ func (s *Server) stepUpCardRefusal(ctx context.Context, id int64) (string, int) 
 	case !isStepUpCard(a):
 		return StepUpCardNotACard, http.StatusBadRequest
 	}
-	if err := s.teamPhoneAskRefusal(ctx, id); err != nil {
-		return TeamAskPhoneNotOperator, http.StatusForbidden
-	}
 	switch {
 	case stepUpCardDecided(a):
 		return StepUpCardDecided, http.StatusConflict
@@ -282,11 +290,13 @@ func (s *Server) stepUpCardRefusal(ctx context.Context, id int64) (string, int) 
 	d, ok := s.hostDecisions.peek(id)
 	switch {
 	case !ok && s.hostDecisions.isDeciding(id):
-		return StepUpCardDecided, http.StatusConflict
+		return StepUpCardBusy, http.StatusConflict
 	case !ok:
 		return StepUpCardLost, http.StatusGone
 	case d.owner != requestOwner(ctx):
 		return "No such question.", http.StatusNotFound
+	case d.phoneOnly:
+		return StepUpCardPhoneOnly, http.StatusForbidden
 	}
 	return "", 0
 }
@@ -307,15 +317,25 @@ func (s *Server) handleStepUpCardPasskeyOptions(w http.ResponseWriter, r *http.R
 		return
 	}
 	ip := clientIP(r)
-	list, err := s.gt.Client.Passkeys(r.Context(), ip, creds.access)
+	list, err := s.accountPasskeys(r.Context(), ip, creds)
 	if err != nil {
 		s.writeGoTrueRefusal(w, "the passkey list (card decision)", err, PasskeysOffRefusal)
 		return
 	}
-	s.stepUpCards.rememberHas(creds.claims.Subject, len(list) > 0, s.stepUpNow())
 	if len(list) == 0 {
 		// No passkey, no challenge (as the step-up confirm's options).
 		s.writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+	// Nor for an account none of whose passkeys may decide a card.
+	may, err := s.accountMayDecideCards(r.Context(), creds.claims.Subject, list)
+	if err != nil {
+		s.logger.Printf("step-up: read the passkey records of user %d: %v", authz.MustFrom(r.Context()).UserID, err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
+		return
+	}
+	if !may {
+		s.writeJSON(w, http.StatusOK, map[string]any{"available": false, "error": StepUpCardUnvouched})
 		return
 	}
 	o, err := s.gt.Client.PasskeySignInOptions(r.Context(), ip)
@@ -373,9 +393,22 @@ func (s *Server) handleStepUpCardPasskeyVerify(w http.ResponseWriter, r *http.Re
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": StepUpCardOtherPrompt})
 		return
 	}
-	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey decision", func(pk sessionPasskey) signinOutcome {
+	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey decision", false, func(pk sessionPasskey) signinOutcome {
 		// The ceremony decides this card; it makes no session fresh.
 		pk.end()
+		// 🔴 A PASSKEY ADDED WITH THE PASSWORD ALONE DECIDES NO CARD
+		// (passkey_enrol.go).
+		may, err := s.assertionMayDecideCards(ctx, creds.claims.Subject, body.Credential)
+		if err != nil {
+			s.logger.Printf("step-up: read the passkey records of user %d for card %d: %v", me, id, err)
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
+			return outcomeSucceeded
+		}
+		if !may {
+			s.logger.Printf("step-up: refused card %d to user %d: the passkey was added with the password alone", id, me)
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": StepUpCardUnvouched})
+			return outcomeSucceeded
+		}
 		dctx := withStepUpPasskeyDecision(ctx, id, pk.at)
 		a, err := s.answerAskFrom(dctx, id, body.Answer, attention.AnswerSource{})
 		if err != nil {
@@ -402,12 +435,12 @@ func stepUpCardDecisionRefusal(err error) (string, int) {
 	switch {
 	case errors.Is(err, errHostDecisionDecided):
 		return StepUpCardDecided, http.StatusConflict
+	case errors.Is(err, errHostDecisionBusy):
+		return StepUpCardBusy, http.StatusConflict
 	case errors.Is(err, errHostDecisionClosed), errors.Is(err, attention.ErrNotOpen):
 		return StepUpCardClosed, http.StatusConflict
 	case errors.Is(err, errHostDecisionLost):
 		return StepUpCardLost, http.StatusGone
-	case errors.Is(err, errTeamAskNotOperator):
-		return TeamAskPhoneNotOperator, http.StatusForbidden
 	case errors.Is(err, attention.ErrNotFound):
 		return "No such question.", http.StatusNotFound
 	case errors.Is(err, attention.ErrInvalid):
@@ -428,6 +461,10 @@ const (
 	stepUpWebPhoneOnly stepUpWebOffer = iota
 	// stepUpWebNoPasskey: the phone line, and where a passkey is added.
 	stepUpWebNoPasskey
+	// stepUpWebUnvouched: the account's passkeys were all added with the
+	// password alone (passkey_enrol.go): the phone line, and how to add one
+	// that may decide cards.
+	stepUpWebUnvouched
 	// stepUpWebPasskey: Confirm and Refuse, each behind a passkey ceremony.
 	stepUpWebPasskey
 )
@@ -442,24 +479,30 @@ func (s *Server) stepUpWebAccount(ctx context.Context) stepUpWebOffer {
 		return stepUpWebPhoneOnly
 	}
 	now := s.stepUpNow()
-	if has, ok := s.stepUpCards.cachedHas(creds.claims.Subject, now); ok {
-		if has {
-			return stepUpWebPasskey
-		}
-		return stepUpWebNoPasskey
+	if offer, ok := s.stepUpCards.cachedOffer(creds.claims.Subject, now); ok {
+		return offer
 	}
 	// muster's own read while drawing a page, not a request of the client's:
 	// named as the server, as its other reads of GoTrue are.
-	list, err := s.gt.Client.Passkeys(ctx, "muster-server", creds.access)
+	list, err := s.accountPasskeys(ctx, "muster-server", creds)
 	if err != nil {
 		s.logger.Printf("step-up: read the passkeys of user %d for their cards: %v", requestOwner(ctx), err)
 		return stepUpWebPhoneOnly
 	}
-	s.stepUpCards.rememberHas(creds.claims.Subject, len(list) > 0, now)
+	offer := stepUpWebNoPasskey
 	if len(list) > 0 {
-		return stepUpWebPasskey
+		may, err := s.accountMayDecideCards(ctx, creds.claims.Subject, list)
+		if err != nil {
+			s.logger.Printf("step-up: read the passkey records of user %d for their cards: %v", requestOwner(ctx), err)
+			return stepUpWebPhoneOnly
+		}
+		offer = stepUpWebUnvouched
+		if may {
+			offer = stepUpWebPasskey
+		}
 	}
-	return stepUpWebNoPasskey
+	s.stepUpCards.rememberOffer(creds.claims.Subject, offer, now)
+	return offer
 }
 
 // stepUpWebFor is what card id's line offers ctx's reader, given what their
@@ -469,7 +512,7 @@ func (s *Server) stepUpWebFor(ctx context.Context, account stepUpWebOffer, id in
 	if account != stepUpWebPasskey {
 		return account
 	}
-	if d, ok := s.hostDecisions.peek(id); !ok || d.owner != requestOwner(ctx) {
+	if d, ok := s.hostDecisions.peek(id); !ok || d.owner != requestOwner(ctx) || d.phoneOnly {
 		return stepUpWebPhoneOnly
 	}
 	return stepUpWebPasskey
@@ -479,6 +522,7 @@ func (s *Server) stepUpWebFor(ctx context.Context, account stepUpWebOffer, id in
 const (
 	askStepUpPasskeyLine = "Confirm here with your passkey, or on your phone."
 	askStepUpPasskeyHint = "To confirm here instead, add a passkey under "
+	askStepUpUnvouched   = "Your passkeys were added with your password alone, so they cannot approve a card. To confirm here, add one confirmed on your phone under "
 )
 
 // askStepUpWebHTML is a step-up card's line in place of its options and
@@ -490,8 +534,12 @@ const (
 // page); size is the line's text size class.
 func askStepUpWebHTML(id int64, offer stepUpWebOffer, back, size string) string {
 	switch offer {
-	case stepUpWebNoPasskey:
-		return askStepUpPhoneHTML(size) + `<p class="break-words text-xs text-fg2" data-ask-stepup-passkey-hint>` + askStepUpPasskeyHint +
+	case stepUpWebNoPasskey, stepUpWebUnvouched:
+		hint := askStepUpPasskeyHint
+		if offer == stepUpWebUnvouched {
+			hint = askStepUpUnvouched
+		}
+		return askStepUpPhoneHTML(size) + `<p class="break-words text-xs text-fg2" data-ask-stepup-passkey-hint>` + hint +
 			`<a href="` + accountPasskeysPath + `" class="font-semibold text-accent underline">Account → Passkeys</a>.</p>`
 	case stepUpWebPasskey:
 	default:
@@ -508,13 +556,20 @@ func askStepUpWebHTML(id int64, offer stepUpWebOffer, back, size string) string 
 		`</div><p role="alert" class="break-words text-sm text-st-error-fg" hidden data-stepup-error></p></div>`
 }
 
-// stepUpCardScript runs a step-up card's Confirm and Refuse: the card's
-// options are fetched when the reader reaches for a button (pointerdown,
-// focus), so the tap reaches navigator.credentials without a round trip in
-// between (ui.PasskeyPrefetchJS says why); the tap runs the passkey prompt,
-// posts the assertion with the answer, and on success loads the page the
-// server names (the card, settled). A browser that cannot run WebAuthn gets
-// the phone line back and no buttons. Delegated on the document, so a card a
+// stepUpCardScript runs a step-up card's Confirm and Refuse.
+//
+// 🔴 THE PROMPT IS CALLED IN THE TAP ITSELF. WebKit grants WebAuthn only
+// inside a user gesture, and an await on the network between the tap and
+// navigator.credentials.get can outlive it (a NotAllowedError that reads as
+// a cancel). So the card's options are fetched when the person REACHES for a
+// button (pointerdown — never on mere focus or page load, so no challenge is
+// minted for a card nobody touches), and the tap calls
+// navigator.credentials.get synchronously when they are already here. A tap
+// whose options are not here yet (a keyboard Enter, a slow network) starts the
+// fetch and says "Getting ready — tap again" rather than awaiting it and
+// prompting outside the gesture. On success the page loads the one the server
+// names (the card, settled). A browser that cannot run WebAuthn gets the
+// phone line back and no buttons. Delegated on the document, so a card a
 // live refresh draws later is covered.
 const stepUpCardScript = `<script>
 (function () {
@@ -527,46 +582,56 @@ const stepUpCardScript = `<script>
     if (line) line.textContent = line.getAttribute('data-phone-line') || line.textContent;
     if (btns) btns.hidden = true;
   }
-  function options(b, fresh) {
-    var id = b.getAttribute('data-card'), p = pre[id];
-    if (!fresh && p && mpkFresh(p)) return p;
-    p = pre[id] = mpkPrefetch(b.getAttribute('data-path') + '/options');
+  // fetchOptions starts one /options fetch for box b and keeps its answer on
+  // the prefetch (p.answer) once it lands, so a tap can read it synchronously.
+  function fetchOptions(b) {
+    var id = b.getAttribute('data-card');
+    var p = pre[id] = mpkPrefetch(b.getAttribute('data-path') + '/options');
+    p.promise.then(function (o) { p.answer = o; }, function () { p.failed = true; });
     return p;
   }
-  function reach(ev) {
-    var b = boxOf(ev.target);
+  document.addEventListener('pointerdown', function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('[data-stepup-decide]') : null, b = boxOf(btn);
     if (!b || mpkMissing() || busy[b.getAttribute('data-card')]) return;
-    options(b, false);
-  }
-  document.addEventListener('pointerdown', reach, true);
-  document.addEventListener('focusin', reach, true);
-  document.addEventListener('click', async function (ev) {
+    var p = pre[b.getAttribute('data-card')];
+    if (!p || !mpkFresh(p) || p.failed) fetchOptions(b);
+  }, true);
+  document.addEventListener('click', function (ev) {
     var btn = ev.target && ev.target.closest ? ev.target.closest('[data-stepup-decide]') : null, b = boxOf(btn);
     if (!btn || !b) return;
     ev.preventDefault();
     var id = b.getAttribute('data-card');
     if (busy[id]) return;
     if (mpkMissing()) { phoneOnly(b); say(b, 'This browser cannot use a passkey here. Confirm on your phone.'); return; }
+    var p = pre[id];
+    if (!p || !mpkFresh(p) || p.failed) { fetchOptions(b); say(b, 'Getting ready. Tap again.'); return; }
+    if (!p.answer) { say(b, 'Getting ready. Tap again.'); return; }
+    var o = p.answer;
+    // A challenge is used once: the next tap fetches another.
+    delete pre[id];
+    if (!o.ok) { say(b, (o.data && o.data.error) || 'The passkey prompt could not be started. Try again.'); return; }
+    if (!o.data.available || !o.data.challenge_id) {
+      phoneOnly(b);
+      say(b, (o.data && o.data.error) || 'This account has no passkey that can approve a card. Confirm on your phone.');
+      return;
+    }
     busy[id] = true;
     b.setAttribute('aria-busy', 'true');
     say(b, '');
     function done(msg) { busy[id] = false; b.removeAttribute('aria-busy'); say(b, msg); }
-    var p = options(b, false), o;
-    // A challenge is used once: the next tap fetches another.
-    delete pre[id];
-    try { o = await p.promise; } catch (e) { done('muster could not be reached. Try again.'); return; }
-    if (!o.ok) { done((o.data && o.data.error) || 'The passkey prompt could not be started. Try again.'); return; }
-    if (!o.data.available || !o.data.challenge_id) { phoneOnly(b); done('This account has no passkey. Add one under Account, Passkeys, or confirm on your phone.'); return; }
-    var cred;
-    try { cred = await navigator.credentials.get({ publicKey: mpkRequestOptions(o.data.options) }); }
-    catch (e) { done(mpkCancelled(e) ? 'The passkey was cancelled. Nothing was decided.' : 'The passkey could not be used (' + (e && e.name || 'error') + '). Nothing was decided.'); return; }
-    var v;
-    try {
-      v = await mpkPost(b.getAttribute('data-path') + '/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred),
-        answer: btn.getAttribute('data-stepup-decide'), 'return': b.getAttribute('data-return') });
-    } catch (e) { done('muster could not be reached. Nothing was decided: try again.'); return; }
-    if (v.ok) { window.location.assign((v.data && v.data.next) || window.location.href); return; }
-    done((v.data && v.data.error) || 'That could not be decided. Try again.');
+    // 🔴 CALLED HERE, IN THE TAP, before any await.
+    var ask;
+    try { ask = navigator.credentials.get({ publicKey: mpkRequestOptions(o.data.options) }); }
+    catch (e) { done('The passkey could not be used (' + (e && e.name || 'error') + '). Nothing was decided.'); return; }
+    ask.then(function (cred) {
+      return mpkPost(b.getAttribute('data-path') + '/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred),
+        answer: btn.getAttribute('data-stepup-decide'), 'return': b.getAttribute('data-return') }).then(function (v) {
+        if (v.ok) { window.location.assign((v.data && v.data.next) || window.location.href); return; }
+        done((v.data && v.data.error) || 'That could not be decided. Try again.');
+      }, function () { done('muster could not be reached. Nothing was decided: try again.'); });
+    }, function (e) {
+      done(mpkCancelled(e) ? 'The passkey was cancelled. Nothing was decided.' : 'The passkey could not be used (' + (e && e.name || 'error') + '). Nothing was decided.');
+    });
   });
 })();
 </script>

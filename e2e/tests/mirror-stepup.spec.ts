@@ -554,12 +554,28 @@ async function signOut(page: Page) {
 // addPasskey registers a passkey for the signed-in account on this page's
 // authenticator. It needs a sign-in from the last FIVE minutes — that window
 // did not lengthen — so every caller has just signed in.
+//
+// 🔴 IT REMOVES THE ACCOUNT'S EARLIER PASSKEYS FIRST. Each test runs a new
+// virtual authenticator against the same admin, and an account that already
+// has a passkey adds another only with a proof (internal/api
+// passkey_enrol.go) its old passkeys — on authenticators long gone — cannot
+// give. With none left (and no phone paired), the password adds the first.
 async function addPasskey(page: Page) {
   await page.goto(browserURL + '/account/passkeys');
+  await removeAllPasskeys(page);
   await expect(page.locator('#passkey-add')).toBeVisible();
-  const before = await page.locator('#passkey-list [data-passkey-id]').count();
   await page.locator('#passkey-add').click();
-  await expect(page.locator('#passkey-list [data-passkey-id]'), 'the new passkey is listed').toHaveCount(before + 1);
+  await expect(page.locator('#passkey-list [data-passkey-id]'), 'the new passkey is listed').toHaveCount(1);
+}
+
+// removeAllPasskeys removes every passkey listed on /account/passkeys.
+async function removeAllPasskeys(page: Page) {
+  for (let i = 0; i < 50; i++) {
+    const rm = page.locator('#passkey-list [data-passkey-id] button', { hasText: 'Remove' }).first();
+    if ((await rm.count()) === 0) return;
+    await Promise.all([page.waitForURL(browserURL + '/account/passkeys'), rm.click()]);
+  }
+  throw new Error('passkeys kept coming back');
 }
 
 // sendFrom opens the rendered view and returns its composer plus a live list of
@@ -2023,7 +2039,9 @@ for (const size of [
 // stepup_web_confirm.go), every hop real: a session's attention_answer reaches
 // muster's /mirror/mcp from a host this muster does not mirror (a REMOTE
 // caller: always gated), so it files a confirmation card and runs nothing.
-// The owner opens the card's page — signed in a moment ago, which is NOT
+// The owner's passkey is one their paired phone allowed them to add (a
+// password alone adds one that cannot approve a card), the phone played here
+// by a P-256 key that signs the device actions. The owner opens the card's page — signed in a moment ago, which is NOT
 // enough — and taps Confirm: the page runs a passkey ceremony for that card on
 // Chromium's virtual authenticator, the REAL GoTrue verifies the assertion,
 // and the card closes as confirmed with its held call run once. A ceremony
@@ -2065,11 +2083,66 @@ test.describe('a step-up card confirmed in the browser with a passkey (390×844)
     fix('clear', '1');
   });
 
+  // The paired phone, played here: a P-256 step-up key, paired through the
+  // account's pairing code, which signs the device actions as the app does.
+  type Phone = { id: number; token: string; key: crypto.KeyObject };
+  async function pairPhone(page: Page): Promise<Phone> {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const code = await page.request.post(browserURL + '/account/devices/pair', { headers: { Origin: browserURL } });
+    expect(code.status(), await code.text()).toBe(200);
+    const paired = await page.request.post(browserURL + '/api/device/pair', {
+      data: {
+        code: (await code.json()).code, name: 'e2e step-up phone', app_version: '0.2.0',
+        stepup_pubkey: publicKey.export({ type: 'spki', format: 'der' }).toString('base64'), stepup_key_type: 'biometric', stepup_key_level: 'strongbox',
+      },
+    });
+    expect(paired.status(), await paired.text()).toBe(201);
+    const j = await paired.json();
+    return { id: j.device.id, token: j.token, key: privateKey };
+  }
+  // phoneAnswers signs and sends the phone's answer to ask id.
+  async function phoneAnswers(page: Page, phone: Phone, id: number, answer: string) {
+    const auth = { Authorization: 'Bearer ' + phone.token };
+    const ch = await page.request.post(browserURL + '/api/device/challenge', {
+      headers: auth, data: { action: 'ask_answer', target: String(id), text_sha256: crypto.createHash('sha256').update(answer).digest('hex') },
+    });
+    expect(ch.status(), await ch.text()).toBe(200);
+    const { nonce, message } = await ch.json();
+    const signature = crypto.sign('sha256', Buffer.from(message), phone.key).toString('base64');
+    const r = await page.request.post(`${browserURL}/api/device/actions/attention/asks/${id}/answer`, { headers: auth, data: { nonce, signature, answer } });
+    expect(r.status(), await r.text()).toBe(200);
+  }
+  // reachAndTap is a person reaching for a card's button and tapping it: the
+  // press fetches the card's passkey options, and the tap — once they are
+  // here — runs the prompt in the gesture (stepUpCardScript).
+  async function reachAndTap(page: Page, btn: import('@playwright/test').Locator, card: number) {
+    const options = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${card}/stepup/passkey/options`);
+    await btn.dispatchEvent('pointerdown');
+    await options;
+    await btn.tap();
+  }
+
   test('Confirm runs a passkey ceremony for that card, and the card closes confirmed (real GoTrue, virtual authenticator)', async ({ page }, testInfo) => {
     test.setTimeout(180_000);
     const auth = await authenticator(page);
     await signIn(page);
-    await addPasskey(page);
+    // A passkey that may approve cards: one whose adding the paired phone
+    // confirmed (a password alone adds one that may not).
+    await page.goto(browserURL + '/account/passkeys');
+    await removeAllPasskeys(page);
+    const phone = await pairPhone(page);
+    try {
+    await page.goto(browserURL + '/account/passkeys');
+    await expect(page.locator('#passkey-proof-phone')).toBeVisible();
+    await expect(page.locator('#passkey-add')).toBeHidden();
+    const filed = page.waitForResponse((r) => new URL(r.url()).pathname === '/account/passkeys/proof/phone');
+    await page.locator('#passkey-proof-phone').tap();
+    const enrolCard = (await (await filed).json()).card as number;
+    expect(enrolCard, 'the phone confirmation card').toBeGreaterThan(0);
+    await phoneAnswers(page, phone, enrolCard, 'Confirm');
+    await expect(page.locator('#passkey-status')).toHaveText('Confirmed on your phone. Now tap “Add a passkey on this device”.', { timeout: 20_000 });
+    await page.locator('#passkey-add').tap();
+    await expect(page.locator('#passkey-list [data-passkey-id]'), 'the passkey the phone allowed is listed').toHaveCount(1);
     const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', remoteHost], { env: serverEnv() }).toString().trim();
     expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
 
@@ -2101,14 +2174,17 @@ test.describe('a step-up card confirmed in the browser with a passkey (390×844)
       if (body.options) body.options.userVerification = 'discouraged';
       await route.fulfill({ response: resp, json: body });
     });
-    await confirm.tap();
+    await reachAndTap(page, confirm, card);
     await expect(box.locator('[data-stepup-error]')).toContainText('did not verify you');
     expect(fix('status', '1', String(x)), 'a ceremony without user verification ran the call').toBe('open');
     expect(fix('status', '1', String(card))).toBe('open');
     await page.unroute(`**/attention/asks/${card}/stepup/passkey/options`);
     await setUserVerified(auth, true);
 
-    await Promise.all([page.waitForLoadState('load'), confirm.tap()]);
+    // A tap before the options are here asks for another, and prompts nothing.
+    await confirm.tap();
+    await expect(box.locator('[data-stepup-error]')).toHaveText('Getting ready. Tap again.');
+    await reachAndTap(page, confirm, card);
     await expect(page.locator('#ask-live [data-ask-closed]')).toHaveAttribute('data-status', 'answered', { timeout: 20_000 });
     await expect(page.locator('#ask-live [data-ask-answer]')).toContainText('Confirm');
     expect(fix('status', '1', String(card))).toBe('answered Confirm');
@@ -2121,8 +2197,12 @@ test.describe('a step-up card confirmed in the browser with a passkey (390×844)
     await page.goto(browserURL + '/attention');
     const feed = page.locator(`#ask-${card2} [data-ask-stepup-web]`);
     await expect(feed.locator('[data-ask-stepup-phone]')).toHaveText('Confirm here with your passkey, or on your phone.');
-    await feed.getByRole('button', { name: 'Refuse', exact: true }).tap();
+    await reachAndTap(page, feed.getByRole('button', { name: 'Refuse', exact: true }), card2);
     await expect.poll(() => fix('status', '1', String(card2)), { timeout: 20_000 }).toBe('answered Refuse');
     expect(fix('status', '1', String(y)), 'a refused card ran its call').toBe('open');
+    } finally {
+      // The phone goes: a later test's addPasskey must not need it.
+      await page.request.post(`${browserURL}/account/devices/${phone.id}/remove`, { headers: { Origin: browserURL } });
+    }
   });
 });

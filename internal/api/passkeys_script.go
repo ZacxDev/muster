@@ -256,18 +256,38 @@ const passkeySignalJS = `
 // password form is shown instead of the button, and a correct password
 // prefetches again and brings the button back (the person taps it: creating a
 // passkey needs its own gesture).
+//
+// When the server answers proof_required (passkey_enrol.go: the account
+// already has a passkey, or a paired phone), the proof choices are shown
+// instead: a passkey the account has — its prompt called IN the tap, with
+// options fetched when the button is reached for (pointerdown) — or the
+// paired phone, after which the page asks again every few seconds until the
+// phone's Confirm lands. Either way the person then taps Add again: creating
+// the passkey needs its own gesture.
 const passkeyAddJS = ui.PasskeyPrefetchJS + `
 (function () {
   var btn = document.getElementById('passkey-add'), msg = document.getElementById('passkey-status'),
-      form = document.getElementById('passkey-reauth'), pw = document.getElementById('passkey-password');
+      form = document.getElementById('passkey-reauth'), pw = document.getElementById('passkey-password'),
+      proof = document.getElementById('passkey-proof'), byKey = document.getElementById('passkey-proof-passkey'),
+      byPhone = document.getElementById('passkey-proof-phone');
   if (!btn) { return; }
   if (!mpkSupported()) { btn.disabled = true; mpkSay(msg, 'This browser cannot create passkeys.'); return; }
-  var path = '` + accountPasskeysPath + `/options', pre = null;
+  var path = '` + accountPasskeysPath + `/options', pre = null, proofPre = null, polling = null;
   function needReauth(r) { return r.status === 401 && r.data.error === '` + PasskeyReauthRequired + `'; }
+  function needProof(r) { return r.status === 403 && r.data.code === '` + PasskeyProofRequired + `'; }
+  function showProof(r) {
+    btn.hidden = true; proof.hidden = false;
+    var p = r.data.proof || {};
+    byKey.hidden = !p.passkey; byPhone.hidden = !p.phone;
+  }
+  function ready(text) {
+    proof.hidden = true; btn.hidden = false; mpkSay(msg, text);
+  }
   async function load() {
     pre = mpkPrefetch(path);
     var o = await pre.promise;
     if (needReauth(o)) { pre = null; btn.hidden = true; form.hidden = false; }
+    else if (needProof(o)) { pre = null; showProof(o); }
   }
   btn.addEventListener('click', async function () {
     btn.disabled = true; mpkSay(msg, '');
@@ -276,6 +296,7 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
       var o = await pre.promise;
       pre = null;
       if (needReauth(o)) { btn.hidden = true; form.hidden = false; pw.focus(); return; }
+      if (needProof(o)) { showProof(o); return; }
       if (!o.ok) { mpkSay(msg, o.data.error || 'A passkey cannot be added right now.'); return; }
       var pk = o.data.options;
       pk.challenge = mpkB64ToBuf(pk.challenge);
@@ -284,6 +305,7 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
       var cred = await navigator.credentials.create({ publicKey: pk });
       var v = await mpkPost('` + accountPasskeysPath + `/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred) });
       if (needReauth(v)) { btn.hidden = true; form.hidden = false; pw.focus(); return; }
+      if (needProof(v)) { showProof(v); return; }
       if (!v.ok) { mpkSay(msg, v.data.error || 'That passkey could not be added.'); return; }
       location.assign('` + accountPasskeysPath + `');
     } catch (e) {
@@ -292,6 +314,52 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
       btn.disabled = false;
       if (!pre && !btn.hidden) { pre = mpkPrefetch(path); }
     }
+  });
+  // THE PASSKEY PROOF: options fetched when the button is reached for, the
+  // prompt called in the tap itself.
+  function fetchProof() {
+    var p = proofPre = mpkPrefetch('` + accountPasskeysPath + `/proof/options');
+    p.promise.then(function (o) { p.answer = o; }, function () { p.failed = true; });
+  }
+  byKey.addEventListener('pointerdown', function () { if (!proofPre || !mpkFresh(proofPre) || proofPre.failed) fetchProof(); });
+  byKey.addEventListener('click', function () {
+    var p = proofPre;
+    if (!p || !mpkFresh(p) || p.failed) { fetchProof(); mpkSay(msg, 'Getting ready. Tap again.'); return; }
+    if (!p.answer) { mpkSay(msg, 'Getting ready. Tap again.'); return; }
+    proofPre = null;
+    var o = p.answer;
+    if (!o.ok || !o.data.available) { mpkSay(msg, (o.data && o.data.error) || 'No passkey of this account can be used here.'); return; }
+    byKey.disabled = true;
+    var ask;
+    try { ask = navigator.credentials.get({ publicKey: mpkRequestOptions(o.data.options) }); }
+    catch (e) { byKey.disabled = false; mpkSay(msg, 'The passkey could not be used.'); return; }
+    ask.then(function (cred) {
+      return mpkPost('` + accountPasskeysPath + `/proof/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred) }).then(function (v) {
+        byKey.disabled = false;
+        if (!v.ok) { mpkSay(msg, v.data.error || 'That passkey could not confirm it.'); return; }
+        pre = mpkPrefetch(path);
+        ready('Confirmed. Now tap “Add a passkey on this device”.');
+      });
+    }, function (e) {
+      byKey.disabled = false;
+      mpkSay(msg, mpkCancelled(e) ? 'The passkey was cancelled.' : 'The passkey could not be used.');
+    });
+  });
+  // THE PHONE PROOF: a card on the paired phone; then ask again until its
+  // Confirm lands (the options stop answering proof_required).
+  byPhone.addEventListener('click', async function () {
+    byPhone.disabled = true;
+    var r = await mpkPost('` + accountPasskeysPath + `/proof/phone', {});
+    byPhone.disabled = false;
+    if (!r.ok) { mpkSay(msg, r.data.error || 'The confirmation could not be sent to your phone.'); return; }
+    mpkSay(msg, 'Confirm “Add a passkey to your account?” on your phone. This page waits for it.');
+    if (polling) { clearInterval(polling); }
+    var tries = 0;
+    polling = setInterval(async function () {
+      if (++tries > 200) { clearInterval(polling); polling = null; mpkSay(msg, 'No confirmation came from your phone. Try again.'); return; }
+      var p = mpkPrefetch(path), o = await p.promise;
+      if (o.ok) { clearInterval(polling); polling = null; pre = p; ready('Confirmed on your phone. Now tap “Add a passkey on this device”.'); }
+    }, 3000);
   });
   form.addEventListener('submit', async function (ev) {
     ev.preventDefault();

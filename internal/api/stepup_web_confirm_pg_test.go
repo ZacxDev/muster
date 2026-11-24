@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
-	"github.com/ZacxDev/muster/internal/users"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // A STEP-UP CARD DECIDED IN THE BROWSER WITH A FRESH PASSKEY
@@ -35,7 +36,7 @@ const (
 	webCardOtherPrompt = "That passkey prompt was for another card, or has expired. Nothing was decided: try again."
 	webCardDecided     = "This card was already decided. Nothing more was run."
 	webCardClosed      = "This card is closed, so its request was dropped and nothing ran."
-	webCardNotOperator = "this is a team's question: only an operator or a manager of the team answers it"
+	webCardBusy        = "This card is being decided right now. Try again in a moment."
 	webPasskeyLine     = "Confirm here with your passkey, or on your phone."
 	webPhoneLine       = "Confirm this on your phone."
 )
@@ -156,6 +157,18 @@ func TestAStepUpCardIsConfirmedInTheBrowserWithAPasskey(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("the browser's Confirm: %d %s", w.Code, w.Body)
 	}
+	// The ceremony makes no sign-in fresh: the session GoTrue minted for it
+	// is the one signed out, the browser's own is not, and no session cookie
+	// is set on the answer.
+	if sid := r.fake.LastPasskeySessionID(); sid == "" || !r.fake.SessionRevoked(sid) {
+		t.Fatalf("the ceremony's session %q was not signed out", sid)
+	}
+	if own, err := r.fake.Verifier().Verify(r.at); err != nil || r.fake.SessionRevoked(own.SessionID) {
+		t.Fatalf("the browser's own session was signed out (%v)", err)
+	}
+	if ck := setCookies(w)[accessCookieName]; ck != nil {
+		t.Fatalf("the Confirm set a session cookie: %v", ck)
+	}
 	if next := jsonBody(t, w)["next"]; next != "/attention/asks/"+strconv.FormatInt(card, 10) {
 		t.Fatalf("the Confirm's next page: %v", next)
 	}
@@ -181,11 +194,6 @@ func TestAStepUpCardIsConfirmedInTheBrowserWithAPasskey(t *testing.T) {
 	}
 	if n := r.answersTo(x); n != 1 {
 		t.Fatalf("after the retries the held call answered its ask %d times, want once", n)
-	}
-	// The ceremony decides the card and makes no session fresh: every session
-	// GoTrue minted for it was signed out.
-	if n := r.fake.CountCalls(http.MethodPost, "/logout"); n < 1 {
-		t.Fatalf("GoTrue /logout calls = %d: the ceremony's session was not ended", n)
 	}
 }
 
@@ -340,8 +348,8 @@ func (r *webRig) loginAs(t *testing.T, name string) (int64, string, string) {
 
 // TestOnlyTheOwnerDecidesAStepUpCardInTheBrowser: another person — with a
 // passkey of their own — cannot mint a prompt for the owner's card, nor
-// present one; and a TEAM's card is held to the phone door's operator rule: a
-// viewer of the team is refused by name, before any challenge is minted.
+// present one. (A team files no step-up card at all:
+// TestEveryMirrorToolIsClassifiedForATeamHost.)
 func TestOnlyTheOwnerDecidesAStepUpCardInTheBrowser(t *testing.T) {
 	r := newWebRig(t)
 	x, card := r.card(t, "Ship it, decided by someone else?")
@@ -356,48 +364,6 @@ func TestOnlyTheOwnerDecidesAStepUpCardInTheBrowser(t *testing.T) {
 		t.Fatalf("another person ran the owner's call: %+v", got)
 	}
 
-	// A team's card, the owner a viewer of the team.
-	sys := authz.System(context.Background())
-	us := users.NewPG(r.pool)
-	admin := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
-	tm, err := us.CreateTeam(sys, admin, "stepup-web-"+strconv.FormatInt(time.Now().UnixNano(), 36), authz.OperatorUserID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		bg := authz.System(context.Background())
-		for _, q := range []string{`DELETE FROM attention_asks WHERE owner_id = $1`, `DELETE FROM team_members WHERE team_id = $1`,
-			`DELETE FROM audit_log WHERE team_id = $1 OR object = 'team:' || $1::text`, `DELETE FROM users WHERE id = $1`} {
-			_, _ = r.pool.Exec(bg, q, tm.ID)
-		}
-	})
-	if err := us.SetTeamMember(sys, admin, tm.ID, r.uid, authz.TeamViewer); err != nil {
-		t.Fatal(err)
-	}
-	asTeam := authz.WithPrincipal(context.Background(), authz.Principal{UserID: tm.ID, Team: true, Role: authz.RoleMember, Via: authz.ViaAttention})
-	tc, err := r.attn.Create(asTeam, attention.New{Asker: attention.Asker{System: true, Label: hostDecisionLabel},
-		StepUp: &attention.StepUpCard{Tool: attentionAnswerTool, Title: "Answer the team's ask?", Why: "A fixture card of the team's.",
-			Details: "attention_answer {\"id\":1,\"answer\":\"yes\"}"},
-		Options: []string{hostDecisionConfirm, hostDecisionRefuse}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.s.hostDecisions.put(tc.ID, hostDecision{owner: tm.ID, host: hostOffHost, tool: attentionAnswerTool, args: `{"id":1,"answer":"yes"}`})
-	// The owner's session was signed in before the membership: a new one.
-	at, rt := r.login()
-	before := r.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options")
-	if w := r.options(at, rt, tc.ID); w.Code != http.StatusForbidden || errorOf(w) != webCardNotOperator {
-		t.Fatalf("a team viewer's options for the team's card: %d %s, want 403 %q", w.Code, w.Body, webCardNotOperator)
-	}
-	if n := r.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options"); n != before {
-		t.Fatal("a team viewer's refused options minted a challenge")
-	}
-	if got, err := r.attn.Get(asTeam, tc.ID); err != nil || got.Status != attention.Open {
-		t.Fatalf("the team's card after a viewer's attempt: %+v %v", got, err)
-	}
-	if _, ok := r.s.hostDecisions.peek(tc.ID); !ok {
-		t.Fatal("a viewer's refused attempt dropped the team card's decision")
-	}
 }
 
 // TestAClosedStepUpCardCannotBeDecidedInTheBrowser: a card dismissed — even
@@ -456,8 +422,14 @@ func TestAPhoneAndABrowserRacingDecideACardOnce(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("the browser's Confirm: %d %s", w.Code, w.Body)
 		}
-		if phoneCode != http.StatusConflict || phoneBody != "not_open" {
-			t.Fatalf("the racing phone Confirm: %d %s, want 409 not_open", phoneCode, phoneBody)
+		// While the browser's claim is being recorded the phone is told to
+		// retry (the write might yet fail and put the decision back), never
+		// "decided" or "lost"; its retry is told not open.
+		if phoneCode != http.StatusServiceUnavailable || phoneBody != "failed" {
+			t.Fatalf("the racing phone Confirm: %d %s, want 503 failed (retry)", phoneCode, phoneBody)
+		}
+		if code, body := r.confirm(t, card); code != http.StatusConflict || body != "not_open" {
+			t.Fatalf("the phone's retry: %d %s, want 409 not_open", code, body)
 		}
 		if got := r.status(t, r.uid, x); got.Status != attention.Answered || r.answersTo(x) != 1 {
 			t.Fatalf("the call: %+v, answered %d times; want once", got, r.answersTo(x))
@@ -477,12 +449,15 @@ func TestAPhoneAndABrowserRacingDecideACardOnce(t *testing.T) {
 		if code, body := r.confirm(t, card); code != http.StatusOK {
 			t.Fatalf("the phone's Confirm: %d %s", code, body)
 		}
-		if web == nil || web.Code != http.StatusConflict || errorOf(web) != webCardDecided {
+		if web == nil || web.Code != http.StatusConflict || errorOf(web) != webCardBusy {
 			code, body := 0, ""
 			if web != nil {
 				code, body = web.Code, web.Body.String()
 			}
-			t.Fatalf("the racing browser Confirm: %d %s, want 409 %q", code, body, webCardDecided)
+			t.Fatalf("the racing browser Confirm: %d %s, want 409 %q", code, body, webCardBusy)
+		}
+		if again := r.options(r.at, r.rt, card); again.Code != http.StatusConflict || errorOf(again) != webCardDecided {
+			t.Fatalf("the browser's retry: %d %s, want 409 %q", again.Code, again.Body, webCardDecided)
 		}
 		if got := r.status(t, r.uid, x); got.Status != attention.Answered || r.answersTo(x) != 1 {
 			t.Fatalf("the call: %+v, answered %d times; want once", got, r.answersTo(x))
@@ -528,7 +503,7 @@ func TestAPhoneAndABrowserRacingDecideACardOnce(t *testing.T) {
 // TestASecondConfirmWhileTheFirstIsRecordedNeverWithdrawsTheCard: two
 // Confirms of one card from the phone (a double tap, two devices), the second
 // landing while the first is recording its claim. The first runs the call,
-// once; the second is told not open. 🔴 RED BEFORE: the second found no
+// once; the second is told to retry (503 failed), and its retry not open. 🔴 RED BEFORE: the second found no
 // pending decision and the card still open, withdrew it as LOST by a restart,
 // and the first's claim then failed — the owner confirmed and NOTHING ran.
 func TestASecondConfirmWhileTheFirstIsRecordedNeverWithdrawsTheCard(t *testing.T) {
@@ -542,8 +517,11 @@ func TestASecondConfirmWhileTheFirstIsRecordedNeverWithdrawsTheCard(t *testing.T
 	if code, body := r.confirm(t, card); code != http.StatusOK {
 		t.Fatalf("the first Confirm: %d %s, want 200 (the second must not withdraw the card under it)", code, body)
 	}
-	if second != http.StatusConflict || secondCode != "not_open" {
-		t.Fatalf("the second Confirm: %d %s, want 409 not_open", second, secondCode)
+	if second != http.StatusServiceUnavailable || secondCode != "failed" {
+		t.Fatalf("the second Confirm: %d %s, want 503 failed (retry)", second, secondCode)
+	}
+	if code, body := r.confirm(t, card); code != http.StatusConflict || body != "not_open" {
+		t.Fatalf("the second Confirm's retry: %d %s, want 409 not_open", code, body)
 	}
 	if got := r.status(t, r.uid, x); got.Status != attention.Answered || got.Answer != "yes" {
 		t.Fatalf("the held call after a double Confirm: %+v, want answered yes", got)
@@ -693,5 +671,51 @@ func TestEveryPhoneRequestIsLoggedWithItsOutcome(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("the log carries a secret %q:\n%s", secret, out)
 		}
+	}
+}
+
+// TestAPanicWhileRecordingACardsAnswerLeavesItNotBeingDecided: the "being
+// decided" mark is cleared however the claim ends — a panic in the store
+// included — so the card is not answered "being decided, retry" for good.
+func TestAPanicWhileRecordingACardsAnswerLeavesItNotBeingDecided(t *testing.T) {
+	r := newStepUpRaceRig(t)
+	_, card := r.card(t, "Ship it, mid-panic?")
+	r.flaky.mu.Lock()
+	r.flaky.beforeAnswer = func() { panic("store blew up") }
+	r.flaky.mu.Unlock()
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = r.s.hostDecisionForAnswer(asDevice(r.uid), card, hostDecisionConfirm)
+	}()
+	if r.s.hostDecisions.isDeciding(card) {
+		t.Fatal("a panic while recording left the card marked as being decided")
+	}
+}
+
+// TestADraftSettlementRacingThePhoneIsNeverLost: a card about a draft is
+// settled by the draft's decision on another door (settleDraftStepUps) while
+// the phone's Confirm lands. The phone is told to retry — never that a
+// restart lost the card (which withdrew it) — and the card ends settled.
+func TestADraftSettlementRacingThePhoneIsNeverLost(t *testing.T) {
+	r := newStepUpRaceRig(t)
+	const draftID = 990177
+	c, err := r.attn.Create(asUser(r.uid), attention.New{Asker: attention.Asker{System: true, Label: hostDecisionLabel},
+		StepUp: &attention.StepUpCard{Tool: pluginDraftDecideTool, Title: "Post to X? · Draft #990177", Why: "A fixture draft card.",
+			Details: "plugin_draft_decide {\"id\":990177}", DraftID: draftID},
+		Options: []string{hostDecisionConfirm, hostDecisionRefuse}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.s.hostDecisions.put(c.ID, hostDecision{owner: r.uid, tool: pluginDraftDecideTool, args: `{"id":990177}`})
+	var phoneErr error
+	r.flaky.mu.Lock()
+	r.flaky.beforeAnswer = func() { _, _, phoneErr = r.s.hostDecisionForAnswer(asDevice(r.uid), c.ID, hostDecisionConfirm) }
+	r.flaky.mu.Unlock()
+	r.s.settleDraftStepUps(asUser(r.uid), plugins.Draft{ID: draftID, Status: plugins.DraftApproved}, plugins.DraftViaBrowser)
+	if !errors.Is(phoneErr, errHostDecisionBusy) {
+		t.Fatalf("the phone's Confirm during the settlement: %v, want %v", phoneErr, errHostDecisionBusy)
+	}
+	if got := r.status(t, r.uid, c.ID); got.Status != attention.Answered || got.Answer != "Approved in the web UI" {
+		t.Fatalf("the card after the settlement: %+v, want answered by the draft's decision (never withdrawn)", got)
 	}
 }

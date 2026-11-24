@@ -210,11 +210,14 @@ var isolationClasses = map[string]routeClass{
 	"POST /auth/qr":           classPublic,
 	"GET /account/passkeys":   classList,
 	// The feature registry's page: server configuration, the same for every user.
-	"GET /account/features":              classList,
-	"POST /account/passkeys/options":     classList,
-	"POST /account/passkeys/verify":      classList,
-	"POST /account/passkeys/{id}/delete": classParam,
-	"GET /api/whoami":                    classAdmin,
+	"GET /account/features":                classList,
+	"POST /account/passkeys/options":       classList,
+	"POST /account/passkeys/verify":        classList,
+	"POST /account/passkeys/proof/options": classList,
+	"POST /account/passkeys/proof/verify":  classList,
+	"POST /account/passkeys/proof/phone":   classList,
+	"POST /account/passkeys/{id}/delete":   classParam,
+	"GET /api/whoami":                      classAdmin,
 	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
 	// caller's own mirror hosts and server-wide booleans.
 	"GET /api/doctor":         classAdmin,

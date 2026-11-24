@@ -64,15 +64,50 @@ func (w *invWorld) passkeySignIn(credID string, flags byte, opts ...reqOpt) *htt
 
 // addPasskey runs the registration ceremony through muster as the session
 // in cookies, and returns the verify answer.
+//
+// An account that already has a passkey must prove it first (the enrolment
+// gate, passkey_enrol.go): this does, with an assertion of the account's
+// first passkey, so a test of something else adds a second as before. The
+// gate itself is under test in passkey_enrol_pg_test.go.
 func (w *invWorld) addPasskey(credID string, flags byte, cookies reqOpt) *httptest.ResponseRecorder {
 	w.t.Helper()
 	o := postJSON(w.edge, accountPasskeysPath+"/options", map[string]any{}, cookies)
+	if o.Code == http.StatusForbidden && jsonBody(w.t, o)["code"] == "proof_required" {
+		w.proveWithAPasskey(cookies)
+		o = postJSON(w.edge, accountPasskeysPath+"/options", map[string]any{}, cookies)
+	}
 	if o.Code != http.StatusOK {
 		return o
 	}
 	ch, _ := jsonBody(w.t, o)["challenge_id"].(string)
 	return postJSON(w.edge, accountPasskeysPath+"/verify", map[string]any{
 		"challenge_id": ch, "credential": gotruetest.Attestation(credID, flags)}, cookies)
+}
+
+// proveWithAPasskey grants the session in cookies an enrolment ticket with an
+// assertion of its account's first passkey.
+func (w *invWorld) proveWithAPasskey(cookies reqOpt) {
+	w.t.Helper()
+	probe := httptest.NewRequest(http.MethodGet, "/", nil)
+	cookies(probe)
+	ck, err := probe.Cookie("__Host-" + accessCookieName)
+	if err != nil {
+		w.t.Fatal("no session cookie to prove with")
+	}
+	c, err := w.fake.Verifier().Verify(ck.Value)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	pks := w.fake.Passkeys(c.Subject)
+	if len(pks) == 0 {
+		w.t.Fatal("no passkey to prove with")
+	}
+	o := postJSON(w.edge, accountPasskeysPath+"/proof/options", map[string]any{}, cookies)
+	ch, _ := jsonBody(w.t, o)["challenge_id"].(string)
+	if v := postJSON(w.edge, accountPasskeysPath+"/proof/verify", map[string]any{"challenge_id": ch,
+		"credential": gotruetest.Assertion(pks[0].CredentialID, gotruetest.FlagUPUV)}, cookies); v.Code != http.StatusOK {
+		w.t.Fatalf("the enrolment proof: %d %s", v.Code, v.Body)
+	}
 }
 
 // TestAPasskeySignInLandsWithBothCookies is the positive path: the options

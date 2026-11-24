@@ -114,6 +114,7 @@ type Fake struct {
 	adminUserGetFailures int
 	// settingsFailures: the next N GET /settings calls answer 500.
 	settingsFailures int
+	lastPasskeySID   string
 }
 
 // Call is one request the fake served.

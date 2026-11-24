@@ -252,8 +252,22 @@ func (s *Server) settleDraftStepUps(ctx context.Context, d plugins.Draft, via st
 		if a.Status != attention.Open || !a.Asker.System || a.Asker.Label != hostDecisionLabel || a.StepUp == nil || a.StepUp.DraftID != d.ID {
 			continue
 		}
-		s.hostDecisions.take(a.ID)
-		rec, err := s.ext.Attention.Answer(ctx, a.ID, answer)
+		// The same claim as a phone's or a passkey's Confirm
+		// (hostDecisionForAnswer): a door racing this settlement is told the
+		// card is being decided — retry — never that a restart lost it. A
+		// card another door is deciding right now is that door's.
+		// Its decision is dropped either way (the draft is decided): it is
+		// not put back on a failed write, as before.
+		_, claimed := s.hostDecisions.claim(a.ID)
+		if !claimed && s.hostDecisions.isDeciding(a.ID) {
+			continue
+		}
+		rec, err := func() (attention.Ask, error) {
+			if claimed {
+				defer s.hostDecisions.settled(a.ID)
+			}
+			return s.ext.Attention.Answer(ctx, a.ID, answer)
+		}()
 		switch {
 		case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
 			continue
