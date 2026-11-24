@@ -32,6 +32,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // webAskLabel is the asker label of the plain asks `ask` files.
@@ -178,8 +179,7 @@ func run(args []string) error {
 		// What a completed password reset does to the sticky tier (migration
 		// 0188): the account adds its next passkey or step-up phone as a first
 		// factor. For a spec that re-adds a passkey per test on one account.
-		_, err := pool.Exec(authz.System(ctx), `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, owner)
-		return err
+		return users.NewPG(pool).ClearStrongFactor(ctx, owner)
 	case "card", "thread", "lookalike", "answered":
 		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: Title, Why: Why, Asker: Asker,
 			Preview: strings.TrimSpace(Preview), Venue: "X", Platform: "x", Target: "post", DraftID: DraftID,
