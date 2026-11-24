@@ -1424,6 +1424,8 @@ func mirrorViewScript() g.Node {
   // (cc_queued.go) — looked up each time: a patch replaces the element. A
   // view that ended (the window stopped being Claude, the CLI exited) or a
   // snapshot taken back is no claim that anything is still queued.
+  // ccqKeep (cc_queued.go): the region's fold and scroll, kept across a patch.
+` + ccQueuedKeepJS + `
   function clearQueued() {
     var q = document.getElementById('` + ccQueuedID + `');
     if (!q) return;
@@ -1610,7 +1612,11 @@ func mirrorViewScript() g.Node {
       // Only where it is: a subagent card's summary (subagent_cards.go).
       if (op.op === 'patch') {
         var pt = op.id && document.getElementById(op.id);
-        if (pt) pt.replaceWith(frag(op.html));
+        if (pt) {
+          var kept = op.id === '` + ccQueuedID + `' ? ccqKeep() : null;
+          pt.replaceWith(frag(op.html));
+          if (kept) kept();
+        }
         return;
       }
       if (op.op === 'result' && op.id) {
