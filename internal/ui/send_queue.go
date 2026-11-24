@@ -21,6 +21,13 @@ import (
 // routed message or chief nudge (it goes back to the chief); a person's own
 // failure stays until it is retried, deleted, or pruned. A tap on any row's preview shows its whole text (sendQueuePreview).
 //
+// THE LIST IS BOUNDED AND FOLDS (operator ask: several queued messages took
+// "way too much vertical space"): its rows scroll past sendQueueRowsClass's
+// height, and the whole list is a <details> under its count line ("3
+// messages waiting …"), which a tap closes to that one line. Closed stays
+// closed for that window on this device, across the list's re-reads and
+// reloads (sendQueueScript's fold).
+//
 // 🔴 THE QUEUE IS THE SERVER'S, NOT THE PAGE'S. Queue posts the message to
 // SendQueuePath and the server sends it when the target has been idle long
 // enough — with this page closed, or from another device. The list is the
@@ -328,17 +335,43 @@ func SendQueueList(v SendQueueListView) g.Node {
 			)),
 		))
 	}
-	return Div(
+	head := SendQueueHead(open)
+	if open == 0 {
+		head = SendQueueFailedHead(len(v.Items))
+	}
+	return Details(
 		ID("mv-queue-items"),
 		g.If(v.active(), g.Attr("data-active", "")),
-		Class("px-3 pt-2"),
-		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
-			g.Text(SendQueueHead(open)))),
+		// Drawn open; the list's script closes it before it is painted when
+		// the person closed this window's queue (sendQueueScript's fold).
+		g.Attr("open", ""),
+		Class("group/sq px-3 pt-1"),
+		Summary(
+			ID("mv-queue-head"),
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-1.5 rounded-lg text-[11px] font-semibold text-fg2 transition hover:text-fg [&::-webkit-details-marker]:hidden"),
+			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition-transform group-open/sq:rotate-90" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
+			Span(g.Attr("data-queue-count", strconv.Itoa(len(v.Items))), g.Text(head)),
+		),
 		g.If(v.Waiting != "", sendQueueWaiting(v)),
 		g.If(v.Waiting != "", sendQueueWaitingFull()),
-		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
+		Ul(ID(SendQueueRowsID), Class(sendQueueRowsClass), g.Group(rows)),
 	)
 }
+
+// SendQueueClosedKeyPrefix starts the localStorage key under which a window's
+// queue is kept closed on this device ("1"); the rest is the list's URL.
+const SendQueueClosedKeyPrefix = "muster.sendqueue.closed:"
+
+// SendQueueRowsID is the list's rows, the part that scrolls.
+const SendQueueRowsID = "mv-queue-rows"
+
+// sendQueueRowsClass bounds the rows (operator ask: several queued messages
+// took "way too much vertical space"): 8.5rem — two rows and half of a
+// third, so a cut row says there is more to scroll — or a fifth of the
+// screen's height when that is less (a phone on its side). With the head and
+// the waiting line, the whole queue stays under 30% of a 390×844 phone and of
+// a 1280×800 window (e2e send-queue: "a long queue is bounded …").
+const sendQueueRowsClass = "max-h-[min(8.5rem,20dvh)] overflow-y-auto overscroll-contain"
 
 // SendQueueFullLabel is the start of what a screen reader names a row's
 // preview, which a tap opens whole (sendQueuePreview).
@@ -708,7 +741,9 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 // dispatches mv-queued) and when the page is shown again — never while one of
 // its popovers (a row's menu, a row's whole message) is open; it sends each
 // Send now, Cancel, Retry and Delete without leaving the page; it copies a
-// queued message; and it drives the rows' ⋯ menus (sendQueueRowMenu).
+// queued message; it keeps the list folded as the person left it, and its rows
+// scrolled where they were, across every redraw (fold, put); and it drives the
+// rows' ⋯ menus (sendQueueRowMenu).
 func sendQueueScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -762,6 +797,46 @@ func sendQueueScript() g.Node {
   }
   // drawn is what follows every draw of the list.
   function drawn() { copyable(); clocks(); }
+  // THE FOLD (operator ask: the queue "collapsible as well as scrollable").
+  // The list is a <details> the server draws open; whether the person closed
+  // THIS window's queue is kept on this device (localStorage, keyed by the
+  // list's own URL: the window's address), "1" closed and anything else open.
+  // fold applies it in the same task as every draw — the first, before the
+  // pinned composer is shown (composerPinScript runs after this script), and
+  // each re-read's, before the frame — so a poll never opens a closed queue
+  // and nothing is painted open first. A row open for editing (a no-script
+  // Edit came back here) keeps it open, and that is then the state kept: the
+  // edit is what the person is doing.
+  var FOLD = '` + SendQueueClosedKeyPrefix + `' + src;
+  function store() { try { return window.localStorage; } catch (e) { return null; } }
+  function fold() {
+    var d = document.getElementById('mv-queue-items'), s = store();
+    if (!d || !s) return;
+    try {
+      if (editing()) s.removeItem(FOLD);
+      else if (s.getItem(FOLD) === '1') d.open = false;
+    } catch (e) {}
+  }
+  // put draws the list's markup t: folded as the person left it, and its rows
+  // scrolled where they were — a re-read replaces them, which would put them
+  // back at the top under the reader's eyes.
+  function put(t) {
+    var r = document.getElementById('` + SendQueueRowsID + `');
+    var top = r ? r.scrollTop : 0;
+    box.innerHTML = t;
+    fold();
+    r = document.getElementById('` + SendQueueRowsID + `');
+    if (r && top) r.scrollTop = top;
+    drawn();
+  }
+  // toggle does not bubble: taken in the capture phase, like the menus'. The
+  // state stored is the list's as it stands when the event is handled — not
+  // the event's — so the open of a redraw that fold then closed stores closed.
+  box.addEventListener('toggle', function (e) {
+    var d = e.target, s = store();
+    if (!d || d.id !== 'mv-queue-items' || !s || !box.contains(d)) return;
+    try { if (d.open) s.removeItem(FOLD); else s.setItem(FOLD, '1'); } catch (err) {}
+  }, true);
   // editing: a row is open for editing (sendQueueEditRow). The list is not
   // redrawn under it either — that would throw away what is being typed; the
   // edit's own Save, Cancel or running out redraws it (show).
@@ -777,7 +852,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         loading = false;
         if (g !== gen) { load(); return; }
-        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; drawn(); }
+        if (t !== null && !menuOpen() && !editing()) put(t);
         schedule();
       }, function () { loading = false; schedule(); });
   }
@@ -794,8 +869,7 @@ func sendQueueScript() g.Node {
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (t) {
         if (t === null) return;
-        box.innerHTML = t;
-        drawn();
+        put(t);
         armHold();
         var ta = id ? box.querySelector('[data-queue-edit-form] textarea') : null;
         if (ta) { ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }
@@ -1145,6 +1219,7 @@ func sendQueueScript() g.Node {
   });
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
+  fold();
   drawn();
   // A page drawn with a row open for editing (a no-script Edit came back here,
   // and script runs after all): count its hold down too.
@@ -1161,4 +1236,13 @@ func SendQueueHead(open int) string {
 		return "1 message waiting — it sends when Claude is free."
 	}
 	return strconv.Itoa(open) + " messages waiting — they send one at a time, each when Claude is free."
+}
+
+// SendQueueFailedHead is the queue's line when nothing in it is open: only
+// failures not yet handled (n of them) are listed then.
+func SendQueueFailedHead(n int) string {
+	if n == 1 {
+		return "1 message not sent"
+	}
+	return strconv.Itoa(n) + " messages not sent"
 }

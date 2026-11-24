@@ -202,7 +202,10 @@ Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
 menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [chief nudge](chief-nudges.md#live-mode), a relayed answer or muster's line about your decision), **Copy message**
-and **Cancel**. It is pasted into the
+and **Cancel**. A long queue scrolls within a short list, and a tap on its
+count line ("3 messages waiting …") folds it to that one line. A folded queue
+stays folded on that device, for that window, until you tap the line again.
+A queued message is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.
 
