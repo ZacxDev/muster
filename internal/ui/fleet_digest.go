@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -67,8 +68,41 @@ func FleetActionPath(id int64, verb string) string {
 // (?chief=open): the fleet's "N proposals waiting" push's tap.
 const ChiefOpenParam = "chief"
 
-// ChiefOpenURL is a link that opens the chief panel on the home page.
-const ChiefOpenURL = "/?" + ChiefOpenParam + "=open"
+// The fleet links' other parameters, read once by chiefPanelScript as the
+// panel opens and then taken out of the address bar:
+//
+//	fleet=proposed    the digest lands with its Proposed group open (on a
+//	                  phone, its bottom sheet)
+//	proposal=<id>     the proposal it scrolls to and highlights — or, when that
+//	                  one no longer waits, the line saying so (FleetGroupView.Gone)
+//
+// The script asks the card for them (FleetDigestPath?fleet=…&proposal=…).
+const (
+	FleetFocusParam    = "fleet"
+	FleetProposalParam = "proposal"
+)
+
+// fleetLandingPath is where a fleet link opens: the board, whose shell draws
+// the chief panel. 🔴 NOT `/`: home redirects to the chief's own chat page
+// (homeTarget), which has no panel — and the redirect dropped ?chief=open, so
+// the push's tap landed on the chief's chat with no digest at all.
+const fleetLandingPath = "/tasks"
+
+// FleetProposalsURL is the fleet push's (and its Attention notice's) link: the
+// chief panel open on the digest's Proposed group, scrolled to proposal id (0:
+// the newest waiting).
+func FleetProposalsURL(id int64) string {
+	u := fleetLandingPath + "?" + ChiefOpenParam + "=open&" + FleetFocusParam + "=" + FleetGroupProposed
+	if id > 0 {
+		u += "&" + FleetProposalParam + "=" + strconv.FormatInt(id, 10)
+	}
+	return u
+}
+
+// ChiefOpenLanding is where a link to `/` carrying ?chief=open goes instead
+// of home (a push sent before FleetProposalsURL said `/?chief=open`): the
+// board, with the same query, so the panel opens.
+func ChiefOpenLanding(rawQuery string) string { return fleetLandingPath + "?" + rawQuery }
 
 // The card's ids and attributes: what both test tiers read.
 const (
@@ -101,6 +135,14 @@ const (
 	fleetProposalAttr    = "data-fleet-proposal"
 	fleetNoteAttr        = "data-fleet-note"
 	fleetBulkAttr        = "data-fleet-bulk"
+	// fleetHighlightAttr marks the proposal a fleet link asked for (the
+	// panel script scrolls to it); fleetGoneAttr the line saying it no longer
+	// waits; fleetExpiresAttr a card's "expires in …"; fleetClockAttr a time
+	// (unix ms) the script redraws in the reader's clock.
+	fleetHighlightAttr = "data-fleet-highlight"
+	fleetGoneAttr      = "data-fleet-gone"
+	fleetExpiresAttr   = "data-fleet-expires"
+	fleetClockAttr     = "data-fleet-clock"
 	// fleetStepUpSlotID is where the step-up dialog is loaded (ChiefPanel).
 	fleetStepUpSlotID = "fleet-stepup"
 	// ChiefPrefillAttr carries a draft the panel script puts in the chat box
@@ -141,6 +183,12 @@ type FleetGroupView struct {
 	Asks []FleetAskView
 	// Proposals are the Proposed group's cards (fleet proposals).
 	Proposals []FleetProposalView
+	// Gone, on the Proposed group of a card a fleet link asked for, is the
+	// line saying the proposal it named no longer waits ("That proposal
+	// expired"), drawn with " at <GoneAt>." in the reader's own clock (GoneAt
+	// zero: "."). "" for none.
+	Gone   string
+	GoneAt time.Time
 }
 
 // Count is the group's count.
@@ -170,6 +218,14 @@ type FleetProposalView struct {
 	Href string
 	// Age is how long it has waited.
 	Age string
+	// ExpiresIn is how long until it expires ("in 3h"), ExpiresAt when
+	// (internal/fleet ExpiresAt): "expires in 3h (22:07)", the clock the
+	// reader's own. "" draws no line.
+	ExpiresIn string
+	ExpiresAt time.Time
+	// Highlight: the proposal a fleet link asked for (or the newest waiting),
+	// drawn ringed and scrolled to by the panel script.
+	Highlight bool
 	// Editable: the class sends one text (a reassign routes a task first,
 	// and is approved or rejected only).
 	Editable bool
@@ -393,10 +449,12 @@ func fleetSheet(gr FleetGroupView, v FleetDigestView, since string) g.Node {
 
 // fleetGroupBody is a group's open view: its note, its asks, its rows.
 func fleetGroupBody(gr FleetGroupView) g.Node {
+	gone := g.If(gr.Gone != "", fleetGoneLine(gr.Gone, gr.GoneAt))
 	if gr.Count() == 0 {
-		return P(Class("px-1 py-1 text-[11px] text-muted"), g.Text("None."))
+		return g.Group{gone, P(Class("px-1 py-1 text-[11px] text-muted"), g.Text("None."))}
 	}
 	return g.Group{
+		gone,
 		g.If(gr.Note != "", P(Class("px-1 pb-1 text-[11px] text-muted"), g.Text(gr.Note))),
 		Ul(Class("flex flex-col gap-1"),
 			g.Map(gr.Proposals, fleetProposalRow),
@@ -406,6 +464,23 @@ func fleetGroupBody(gr FleetGroupView) g.Node {
 		// in its sheet's footer (fleetSheet).
 		g.If(gr.Key == FleetGroupProposed && len(gr.Proposals) > 0, Div(Class("hidden pt-1 sm:block"), fleetBulk(gr.Proposals))),
 	}
+}
+
+// fleetGoneLine is the line a fleet link's card draws when the proposal it
+// named no longer waits: text, then " at <clock>." (at zero: ".").
+func fleetGoneLine(text string, at time.Time) g.Node {
+	return P(g.Attr(fleetGoneAttr, ""), g.Attr("role", "status"),
+		Class("mb-1 rounded-md bg-st-warning-bg px-2 py-1 text-[11px] text-st-warning-fg"),
+		g.Text(text),
+		g.If(!at.IsZero(), g.Group{g.Text(" at "), fleetClock(at)}),
+		g.Text("."))
+}
+
+// fleetClock is t as a <time> the panel script redraws in the reader's own
+// clock ("22:07"); without script, the server's UTC one ("22:07 UTC").
+func fleetClock(t time.Time) g.Node {
+	return g.El("time", g.Attr(fleetClockAttr, strconv.FormatInt(t.UnixMilli(), 10)),
+		g.Attr("datetime", t.UTC().Format(time.RFC3339)), g.Text(t.UTC().Format("15:04")+" UTC"))
 }
 
 // fleetButton is a card action's button: full width and 44px tall on a phone
@@ -429,13 +504,20 @@ func fleetPost(path string) g.Node {
 // Edit · Reject · Open session.
 func fleetProposalRow(p FleetProposalView) g.Node {
 	id := strconv.FormatInt(p.ID, 10)
+	ring := "ring-1 ring-accent/40"
+	if p.Highlight {
+		ring = "ring-2 ring-accent"
+	}
 	return Li(g.Attr(fleetProposalAttr, id), g.Attr("data-fleet-proposal-subject", p.Subject),
-		Class("flex flex-col gap-1.5 rounded-lg bg-s1 p-2 text-xs ring-1 ring-inset ring-accent/40"),
+		g.If(p.Highlight, g.Group{g.Attr(fleetHighlightAttr, ""), g.Attr("aria-current", "true")}),
+		Class("flex flex-col gap-1.5 rounded-lg bg-s1 p-2 text-xs ring-inset "+ring),
 		Div(Class("flex items-baseline gap-2"),
 			Span(Class("min-w-0 flex-1 truncate font-medium text-fg"), g.Text(p.Session)),
 			Span(g.Attr("data-fleet-verb", ""), Class("shrink-0 font-semibold text-accent"), g.Text(p.Verb)),
 			g.If(p.Age != "", Span(Class("shrink-0 text-muted"), g.Text(p.Age)))),
 		g.If(p.Where != "", P(Class("truncate text-[11px] text-muted"), g.Text(p.Where))),
+		g.If(p.ExpiresIn != "", P(g.Attr(fleetExpiresAttr, ""), Class("text-[11px] text-muted"),
+			g.Text("expires "+p.ExpiresIn+" ("), fleetClock(p.ExpiresAt), g.Text(")"))),
 		g.If(p.Reason != "", P(Class("break-words text-[11px] text-fg2"), g.Text("Why: "+p.Reason))),
 		Div(Class("flex flex-col gap-0.5"),
 			Span(Class("text-[10px] font-semibold uppercase tracking-wide text-muted"), g.Text("Will send")),

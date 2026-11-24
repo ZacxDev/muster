@@ -1098,8 +1098,10 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     }
   }
 
-  // setOpen is the ONE writer of the open key.
-  function setOpen(open) {
+  // setOpen is the ONE writer of the open key. cardLoaded: the digest card was
+  // already fetched for this open (a fleet link's arrival, openFromURL), so it
+  // is not asked for again.
+  function setOpen(open, cardLoaded) {
     var p = panel();
     if (!p) return;
     applyOpen(p, open);
@@ -1114,7 +1116,58 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       // 'from:document' trigger catches it wherever the panel sits.
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
       // The digest card: a real open, so a look.
-      openFleet(true);
+      if (!cardLoaded) openFleet(true);
+    }
+  }
+
+  // --- a fleet link's arrival (FleetProposalsURL) ------------------------------
+  //
+  // ?fleet=proposed[&proposal=<id>]: the card is asked for WITH them
+  // (window.__musterFleetFocus; the server draws the Proposed group open — on a phone,
+  // its sheet — and the proposal highlighted, or the line saying it no longer
+  // waits), and the panel opens only once it has landed, then scrolls to it.
+  //
+  // 🔴 THE CARD LANDS WHILE THE PANEL IS SHUT, SO NOTHING SHIFTS. The shut
+  // panel is translated off the screen, so its card growing to an open group
+  // moves nothing in view; the panel then slides in (a transform, which is no
+  // layout shift) already drawn. Opened first, the desktop's open group would
+  // push the chat down under the reader's eyes (chief-fleet-proposals.spec.ts
+  // measures the arrival). window.__musterFleetFocus is set until that card lands: any
+  // request for the card meanwhile carries it too (htmx:configRequest), so a
+  // second fetch cannot land a closed group over it.
+  if (typeof window.__musterFleetFocus !== 'string') window.__musterFleetFocus = '';
+  function fleetFocusLanded() {
+    var f = fleetSlot();
+    if (!f) return;
+    var chip = f.querySelector('[` + fleetChipAttr + `="` + FleetGroupProposed + `"]');
+    if (chip) chip.setAttribute('aria-expanded', 'true');
+    var marks = f.querySelectorAll('[` + fleetHighlightAttr + `], [` + fleetGoneAttr + `]');
+    for (var i = 0; i < marks.length; i++) {
+      // The card is drawn twice (the desktop group, the phone sheet): the one
+      // on screen.
+      if (marks[i].getClientRects().length === 0) continue;
+      try { marks[i].scrollIntoView({ block: 'nearest' }); } catch (err) {}
+      break;
+    }
+  }
+
+  // fleetClocks draws each <time data-fleet-clock> in the slot (a card's
+  // "expires in 3h (22:07)", "That proposal expired at 22:07") in the
+  // reader's own clock; the server's UTC one stays if it cannot.
+  function fleetClocks() {
+    var f = fleetSlot();
+    if (!f) return;
+    var ts = f.querySelectorAll('time[` + fleetClockAttr + `]');
+    var today = new Date().toDateString();
+    for (var i = 0; i < ts.length; i++) {
+      try {
+        var ms = parseInt(ts[i].getAttribute('` + fleetClockAttr + `'), 10);
+        if (!ms) continue;
+        var d = new Date(ms);
+        ts[i].textContent = d.toDateString() === today
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      } catch (err) {}
     }
   }
 
@@ -1406,6 +1459,28 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       if (!el || el.id !== FLEET_ID || !evt.detail) return;
       var te = evt.detail.triggeringEvent;
       if (te && te.type === FLEET_OPEN_EVENT && te.detail && te.detail.look) evt.detail.path = FLEET_PATH + '?look=1';
+      // A fleet link's arrival not yet landed: every card request carries it.
+      if (window.__musterFleetFocus) evt.detail.path = FLEET_PATH + window.__musterFleetFocus;
+    });
+
+    // The card landed: its clocks in the reader's own; and a fleet link's
+    // arrival, once its card is in, opens the panel and scrolls to the
+    // proposal (see window.__musterFleetFocus).
+    document.addEventListener('htmx:afterSettle', function (evt) {
+      var t = evt && evt.target;
+      if (!t || t.id !== FLEET_ID) return;
+      fleetClocks();
+      if (!window.__musterFleetFocus) return;
+      window.__musterFleetFocus = '';
+      setOpen(true, true);
+      fleetFocusLanded();
+    });
+    document.addEventListener('htmx:responseError', function (evt) {
+      var el = evt && evt.detail && evt.detail.elt;
+      if (!window.__musterFleetFocus || !el || el.id !== FLEET_ID) return;
+      // The card did not come: the panel opens anyway, on whatever it has.
+      window.__musterFleetFocus = '';
+      setOpen(true);
     });
 
     // 🔴 A PROPOSAL'S APPROVAL (OR EDIT) ON A STALE SIGN-IN: the server
@@ -1472,17 +1547,31 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     document.addEventListener('htmx:afterSettle', restore);
   }
 
-  // ?` + ChiefOpenParam + `=open (the fleet's "N proposals waiting" push opens
-  // it): the panel opens, and the parameter leaves the address bar so a
-  // reload does not reopen it.
+  // ?` + ChiefOpenParam + `=open (the fleet's "N proposals waiting" push and
+  // its Attention notice open it, FleetProposalsURL): the panel opens — with
+  // ` + FleetFocusParam + `=` + FleetGroupProposed + `, on the digest's Proposed group (see window.__musterFleetFocus)
+  // — and the parameters leave the address bar so a reload does not reopen it.
   function openFromURL() {
     try {
       var u = new URL(window.location.href);
       if (u.searchParams.get('` + ChiefOpenParam + `') !== 'open') return;
+      var focus = u.searchParams.get('` + FleetFocusParam + `') === '` + FleetGroupProposed + `';
+      var id = parseInt(u.searchParams.get('` + FleetProposalParam + `') || '', 10);
       u.searchParams.delete('` + ChiefOpenParam + `');
+      u.searchParams.delete('` + FleetFocusParam + `');
+      u.searchParams.delete('` + FleetProposalParam + `');
       window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+      var f = fleetSlot(), p = panel();
+      if (!focus || !f || !p || !window.htmx) { setOpen(true); return; }
+      window.__musterFleetFocus = '?look=1&` + FleetFocusParam + `=` + FleetGroupProposed + `' + (isFinite(id) && id > 0 ? '&` + FleetProposalParam + `=' + id : '');
+      // Shut until the card lands (a panel left open is shut for that moment).
+      set(KEY_OPEN, '0');
+      applyOpen(p, false);
+      window.htmx.ajax('GET', FLEET_PATH + window.__musterFleetFocus, { source: f, target: f, swap: 'innerHTML' });
+    } catch (e) {
+      window.__musterFleetFocus = '';
       setOpen(true);
-    } catch (e) {}
+    }
   }
 
   if (document.readyState === 'loading') {

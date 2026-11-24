@@ -1581,3 +1581,286 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     await expect.poll(h.typed, { message: 'sent once the box is clear', timeout: 40_000 }).toEqual([`${pane} after the leftover`]);
   });
 });
+
+// THE LONG QUEUE (operator ask: several queued messages "take up way too much
+// vertical space … it needs to have a max height and also be collapsible as
+// well as scrollable"). On origin/main the rows were bounded at 10rem (160px:
+// three whole rows, so nothing said there was more), the count line could not
+// fold, and every re-read put the rows back at the top: the bound, the kept
+// scroll and the fold each fail there.
+//
+// Claude Code's OWN queue (ui.CCQueued, "Queued in Claude Code") gets the same
+// treatment: on origin/main its region was bounded at 10rem with its count
+// line inside the scroll, its rows unbounded, and it could not fold.
+
+// seedQueue queues n messages tagged tag, of different lengths (one line to
+// two), by the route Queue posts to: the layout is what is under test, not
+// Queue.
+async function seedQueue(page: Page, tag: string, n: number) {
+  for (let i = 0; i < n; i++) {
+    const status = await page.evaluate(
+      async ([host, text]) =>
+        (
+          await fetch('/send-queue', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({ host, session: 'work', window: '@1', text }),
+          })
+        ).status,
+      [newHost, `${tag} #${i} ` + 'words '.repeat(i * 6)],
+    );
+    expect(status, `message ${i} queued`).toBeLessThan(300);
+  }
+}
+// cancelAll cancels every row rs holds, and waits for the list to empty.
+async function cancelAll(page: Page, rs: Locator) {
+  for (const id of await rs.evaluateAll((ls) => ls.map((l) => l.getAttribute('data-queue-id')))) {
+    await page.evaluate(
+      (id) => fetch(`/send-queue/${id}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }),
+      id,
+    );
+  }
+  await expect(rs).toHaveCount(0, { timeout: 20_000 });
+}
+// Claude Code's queue, as the CLI records it in the transcript
+// (internal/cctranscript/queue.go): an enqueue lists a message, a remove
+// (absorbed into the running turn) takes it off.
+const ccOp = (operation: string, content: string) =>
+  JSON.stringify({ type: 'queue-operation', operation, timestamp: '2000-01-01T00:00:00.000Z', sessionId: 's', content }) + '\n';
+const ccText = (tag: string, i: number) => `${tag} #${i} ` + 'words '.repeat(i * 6);
+function ccSeed(tag: string, n: number) {
+  for (let i = 0; i < n; i++) fs.appendFileSync(tr, ccOp('enqueue', ccText(tag, i)));
+}
+function ccClear(tag: string, n: number) {
+  for (let i = 0; i < n; i++) fs.appendFileSync(tr, ccOp('remove', ccText(tag, i)));
+}
+// heightOf is an element's drawn height, 0 when it is not drawn.
+const heightOf = (page: Page, sel: string) =>
+  page.evaluate((s) => {
+    const e = document.querySelector(s);
+    return e ? e.getBoundingClientRect().height : 0;
+  }, sel);
+// tallest records, from before the page's first frame, the most of sel ever
+// drawn: a list painted open and folded after is caught, whatever the timing.
+async function tallest(page: Page, sel: string) {
+  await page.addInitScript((s) => {
+    const w = window as unknown as { tallest: number };
+    w.tallest = 0;
+    const tick = () => {
+      const e = document.querySelector(s);
+      if (e) w.tallest = Math.max(w.tallest, e.getBoundingClientRect().height);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, sel);
+}
+
+for (const vp of [
+  { name: 'phone 390×844 touch', touch: true, use: phone, h: 844 },
+  { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, h: 800 },
+]) {
+  test.describe(`a long queue, ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    test('a long queue is bounded and scrolls, keeps its scroll and its fold across the poll and a reload, and its rows still act', async ({ page }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      await openView(page, newHost);
+      const tag = `long ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      await seedQueue(page, tag, 6);
+      await page.reload();
+      await revealBox(page);
+      const mine = page.locator('#mv-queue [data-queue-id]', { hasText: tag });
+      await expect(mine).toHaveCount(6);
+
+      // 🔴 BOUNDED: the rows at most 8.5rem (136px — two rows and part of a
+      // third), the whole queue (count line, waiting line, rows) under 30% of
+      // the screen, and the rows scroll.
+      const list = page.locator('#mv-queue ul');
+      const box = () =>
+        list.evaluate((u) => ({ h: u.getBoundingClientRect().height, sh: u.scrollHeight, ch: u.clientHeight, top: u.scrollTop }));
+      const m = await box();
+      expect.soft(m.h, 'the rows are bounded').toBeLessThanOrEqual(136.5);
+      expect(m.sh, 'and scroll: there is more than is shown').toBeGreaterThan(m.ch);
+      const whole = await page.locator('#mv-queue').evaluate((q) => q.getBoundingClientRect().height);
+      expect(whole, 'the whole queue is under 30% of the screen').toBeLessThanOrEqual(vp.h * 0.3);
+
+      // replaced waits for the list's next re-read (every 3 s while anything is
+      // queued): the rows are a new element once it has drawn.
+      const replaced = async () => {
+        await list.evaluate((u) => ((u as unknown as { stale: boolean }).stale = true));
+        await expect
+          .poll(() => page.locator('#mv-queue ul').evaluate((u) => !(u as unknown as { stale?: boolean }).stale), {
+            message: 'the list was re-read and redrawn',
+            timeout: 15_000,
+          })
+          .toBe(true);
+      };
+
+      // 🔴 THE POLL KEEPS THE SCROLL: scrolled to the end, a re-read leaves it
+      // there instead of jumping back to the first row.
+      await list.evaluate((u) => (u.scrollTop = u.scrollHeight));
+      const end = (await box()).top;
+      expect(end, 'scrolled down').toBeGreaterThan(0);
+      await replaced();
+      expect.soft((await box()).top, 'the re-read kept the scroll').toBeCloseTo(end, 0);
+
+      // 🔴 FOLD: a tap on the count line hides the rows and leaves that one
+      // line.
+      const head = page.locator('#mv-queue-head');
+      await expect(head).toContainText('6 messages waiting');
+      await press(head, vp.touch);
+      await expect(mine.first(), 'folded: the rows are hidden').toBeHidden();
+      await expect(head).toBeVisible();
+      const folded = await page.locator('#mv-queue').evaluate((q) => q.getBoundingClientRect().height);
+      expect(folded, 'folded to the count line').toBeLessThanOrEqual(56);
+
+      // 🔴 ...AND STAYS FOLDED: across a re-read, and across a reload, with no
+      // layout shift on the reload (the fold is applied before the composer is
+      // shown, never painted open first).
+      await replaced();
+      await expect(mine.first(), 'a re-read does not unfold it').toBeHidden();
+      // No tap until the shift is read: a shift within 500 ms of input is not
+      // counted, so revealing the box first would hide a late fold.
+      await page.reload();
+      await expect(page.locator('#mv-queue-head')).toBeVisible();
+      const shift = await page.evaluate(
+        () =>
+          new Promise<number>((done) => {
+            let sum = 0;
+            new PerformanceObserver((l) => {
+              for (const e of l.getEntries() as unknown as { value: number; hadRecentInput: boolean }[]) if (!e.hadRecentInput) sum += e.value;
+            }).observe({ type: 'layout-shift', buffered: true });
+            setTimeout(() => done(sum), 1000);
+          }),
+      );
+      expect(shift, 'no layout shift on loading a folded queue').toBeLessThan(0.01);
+      await expect(mine.first(), 'a reload does not unfold it').toBeHidden();
+
+      // 🔴 EVERY ROW STILL ACTS: unfolded, the LAST row — below the bound, so
+      // reached only by scrolling — is cancelled through its ⋯ menu.
+      await press(page.locator('#mv-queue-head'), vp.touch);
+      await expect(mine.first(), 'unfolded').toBeVisible();
+      const last = rowIn(page, `${tag} #5`, 'queued');
+      await cancelRow(last, vp.touch);
+      await expect(last, 'the scrolled-to row was cancelled').toHaveCount(0);
+      await expect(mine).toHaveCount(5);
+
+      // Tidy: nothing of this test is left to be sent by a later one.
+      await cancelAll(page, mine);
+      expect(pasted(), 'nothing was sent').toEqual([]);
+    });
+
+    test("Claude Code's own long queue is bounded and scrolls, and keeps its scroll and its fold across a patch and a reload", async ({ page }) => {
+      await busyAndSeen();
+      await tallest(page, '#mv-ccq');
+      await openView(page, newHost);
+      const tag = `cc ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      const region = page.locator('#mv-ccq');
+      const items = region.locator('[data-cc-queued-item]', { hasText: tag });
+      ccSeed(tag, 6);
+      await expect(items, `the host lists them (log:\n${mirrorLog})`).toHaveCount(6, { timeout: 15_000 });
+
+      // 🔴 BOUNDED: the rows at most 136px, the whole region under 30% of
+      // the screen, and the rows scroll.
+      const list = region.locator('ul');
+      const box = () =>
+        list.evaluate((u) => ({ h: u.getBoundingClientRect().height, sh: u.scrollHeight, ch: u.clientHeight, top: u.scrollTop }));
+      const m = await box();
+      expect.soft(m.h, 'the rows are bounded').toBeLessThanOrEqual(136.5);
+      expect.soft(m.sh, 'and scroll: there is more than is shown').toBeGreaterThan(m.ch);
+      expect(await heightOf(page, '#mv-ccq'), 'the whole region is under 30% of the screen').toBeLessThanOrEqual(vp.h * 0.3);
+
+      // patched lists one more message (the host redraws the region whole)
+      // and waits for the new region.
+      let more = 6;
+      const patched = async () => {
+        await region.evaluate((r) => ((r as unknown as { stale: boolean }).stale = true));
+        fs.appendFileSync(tr, ccOp('enqueue', ccText(tag, more++)));
+        await expect
+          .poll(() => page.locator('#mv-ccq').evaluate((r) => !(r as unknown as { stale?: boolean }).stale), {
+            message: 'the region was patched',
+            timeout: 15_000,
+          })
+          .toBe(true);
+      };
+
+      // 🔴 A PATCH KEEPS THE SCROLL.
+      await list.evaluate((u) => (u.scrollTop = u.scrollHeight));
+      const end = (await box()).top;
+      expect.soft(end, 'scrolled down').toBeGreaterThan(0);
+      await patched();
+      expect.soft((await box()).top, 'the patch kept the scroll').toBeCloseTo(end, 0);
+
+      // 🔴 FOLD under the count line.
+      const head = region.locator('summary');
+      await expect(head).toContainText('Queued in Claude Code · 7');
+      await press(head, vp.touch);
+      await expect(items.first(), 'folded: the rows are hidden').toBeHidden();
+      expect(await heightOf(page, '#mv-ccq'), 'folded to the count line').toBeLessThanOrEqual(46);
+
+      // 🔴 ...AND STAYS FOLDED: across a patch, and across a reload — where it
+      // is never drawn open first (tallest: every frame from the first).
+      await patched();
+      await expect(items.first(), 'a patch does not unfold it').toBeHidden();
+      await page.reload();
+      await expect(region.locator('summary')).toContainText('Queued in Claude Code · 8', { timeout: 15_000 });
+      await expect(items.first(), 'a reload does not unfold it').toBeHidden();
+      await page.waitForTimeout(500);
+      const most = await page.evaluate(() => (window as unknown as { tallest: number }).tallest);
+      expect(most, 'never painted open on the reload').toBeLessThanOrEqual(46);
+
+      // Unfolded again, it shows its rows; and the fold is its own — the send
+      // queue's is not touched.
+      await press(region.locator('summary'), vp.touch);
+      await expect(items.first()).toBeVisible();
+      ccClear(tag, more);
+      await expect(region).toBeHidden({ timeout: 15_000 });
+    });
+  });
+}
+
+// 🔴 BOTH LISTS FULL ON A PHONE: Claude Code's queue and muster's, six each,
+// together leave the transcript and the composer usable — at most 40% of the
+// 844px screen between them.
+test.describe('both lists full, phone 390×844 touch', () => {
+  test.use({ ...phone, storageState: { cookies: [], origins: [] } });
+
+  test('both long lists together take at most 40% of the screen, and the transcript and the box stay usable', async ({ page }, info) => {
+    await busyAndSeen();
+    await openView(page, newHost);
+    const tag = `both ${stamp}`;
+    await seedQueue(page, tag, 6);
+    ccSeed(tag, 6);
+    await page.reload();
+    await revealBox(page);
+    const mine = page.locator('#mv-queue [data-queue-id]', { hasText: tag });
+    await expect(mine).toHaveCount(6);
+    await expect(page.locator('#mv-ccq [data-cc-queued-item]', { hasText: tag })).toHaveCount(6, { timeout: 15_000 });
+
+    const h = {
+      ccq: await heightOf(page, '#mv-ccq'),
+      queue: await heightOf(page, '#mv-queue'),
+      log: await heightOf(page, '#mv-log'),
+      compose: await heightOf(page, '#mv-compose'),
+    };
+    info.annotations.push({ type: 'heights', description: JSON.stringify(h) });
+    console.log('both lists full, 390×844:', JSON.stringify(h));
+    expect(h.ccq + h.queue, 'both lists together at most 40% of the screen').toBeLessThanOrEqual(844 * 0.4);
+    expect(h.log, 'the transcript keeps a usable height').toBeGreaterThanOrEqual(844 * 0.2);
+    await expect(page.locator('#mv-input'), 'the box is on screen').toBeInViewport();
+    await expect(page.locator('#mv-send'), 'and so is Send').toBeInViewport();
+
+    // Folding Claude Code's list gives the send queue its whole bound back.
+    const rowsH = () => heightOf(page, '#mv-queue ul');
+    const shared = await rowsH();
+    await press(page.locator('#mv-ccq summary'), true);
+    await expect.poll(rowsH, 'the send queue takes its own bound again').toBeGreaterThan(shared);
+    expect(await rowsH()).toBeLessThanOrEqual(136.5);
+    await press(page.locator('#mv-ccq summary'), true);
+
+    ccClear(tag, 6);
+    await cancelAll(page, mine);
+  });
+});

@@ -267,7 +267,10 @@ A team (see [design/team-sharing.md](design/team-sharing.md)) can own a chief.
 Its members see it. Operators and managers can type to it, and viewers can
 only read. It has one shared conversation: a member's message goes to the
 chief's primary chat and to no other thread. Each turn runs as the team, after
-muster re-reads the member's role.
+muster re-reads the member's role. The chat shows who typed each message: a
+small label with the member's display name over each typed message ("You" on
+your own, `user #<id>` for an account with no display name). A personal chat
+shows no labels.
 
 🔴 **Team members have to trust each other.** This is the team trust model,
 an accepted risk, and no code enforces it. A team operator or manager can steer
@@ -1757,7 +1760,8 @@ the minder either way.)
 
 **The cards.** The digest's **Proposed** group, after Needs you, lists each
 open proposal: the session, the class as a verb ("Continue", "Write handoff,
-then close"), the one-line reason, and **exactly what will be sent**, in full.
+then close"), when it expires ("expires in 3h (10:07 PM)", the time in your
+own clock), the one-line reason, and **exactly what will be sent**, in full.
 
 - **Approve** sends it. It needs a sign-in from the last `MUSTER_STEPUP_WINDOW`
   (usually free); on a stale one muster asks "Confirm it's you" and taps again.
@@ -1795,17 +1799,33 @@ proposals leave the group.
 | a dispatched agent | a turn, as the chief's nudges start one |
 
 **The push.** At most every 30 minutes, and only when a new proposal arrived,
-one push: "N proposals waiting". Tapping it opens the chief panel. Beside it,
-**one** Attention item says the same: each push replaces it with the new count
-(never a second one), and it is withdrawn once no proposal waits. The per-stop
-pushes are unchanged.
+one push, titled "N proposals waiting". Its text names the newest proposal and
+its session, by the name its card shows (at most 40 characters), and counts
+the rest: "Wrap 'muster-asks-ux'? +2 more. Nothing is sent until you approve
+them." It never carries a message's text, and it has no buttons. Each push
+replaces the last on the phone.
+
+Tapping it opens the board (`/tasks?chief=open&fleet=proposed&proposal=<id>`)
+with the chief panel open on the digest's **Proposed group** (on a phone, its
+sheet), scrolled to that proposal and outlined, with its Approve, Edit and
+Reject on screen. If it no longer waits when you get there, a line says so:
+"That proposal expired at 10:07 PM.", "That proposal was already approved at
+…", "…rejected at …", or "That proposal was not sent: its session moved on".
+The newest one still waiting is outlined instead, or the group says "None.".
+An older push's `/?chief=open` opens the board with the panel open too.
+
+Beside the push, **one** Attention item says the same: each push replaces it
+with the new count (never a second one), and it is withdrawn once no proposal
+waits. Tapping it opens the Proposed group the same way, on the newest
+proposal. The per-stop pushes are unchanged.
 
 **The action log**, `fleet_actions` ([schema.md](schema.md)), is append-only:
 one row per proposal with its state (`proposed`, `approved`, `rejected`,
 `expired`, `queued`, `sent`, `failed`, `suppressed:<why>`), and one
 `audit_log` row (`fleet.<class>.<state>`) per change, carrying ids only.
 
-The routes: `POST /ui/chief/fleet/actions/{id}/approve`, `…/edit` (`text=`),
+The routes: `GET /ui/chief/fleet?fleet=proposed&proposal=<id>` (the card as
+the push's tap opens it), `POST /ui/chief/fleet/actions/{id}/approve`, `…/edit` (`text=`),
 `…/reject`, `POST /ui/chief/fleet/bulk` (`op=approve|reject`, `id=` for each
 card) and `GET /ui/chief/fleet/stepup` (the confirm dialog). Each answers 404
 with the flag off.

@@ -363,6 +363,23 @@
 }
 
 /*
+ * BOTH LISTS OF WAITING MESSAGES OPEN AT ONCE — Claude Code's own queue
+ * (internal/ui/cc_queued.go) and muster's send queue (send_queue.go) — share
+ * the room one alone may take: each one's rows are bounded at 6rem (or 12dvh)
+ * instead of queuedRowsBound's 8.5rem (20dvh). Both full and open on a
+ * 390×844 phone, the two each bounded alone took 398px (47% of the screen);
+ * this keeps them under 40% (e2e send-queue: "both lists full"). Folding
+ * either one gives the other its whole bound back.
+ *
+ * ⚠ The chief mode hides the send queue without closing it, so there Claude
+ * Code's list keeps the smaller bound: :has() cannot hold another :has() to
+ * tell.
+ */
+body:has(#mv-ccq-fold[open]):has(#mv-queue-items[open]) :is(#mv-ccq-rows, #mv-queue-rows) {
+  max-height: min(6rem, 12dvh);
+}
+
+/*
  * Chat bubble clamp (internal/ui/bubble_clamp.go). Outside every @layer on
  * purpose: these are attribute selectors with no class, and only a layer's
  * class candidates are what Tailwind matches against the views.

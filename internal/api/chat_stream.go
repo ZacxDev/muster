@@ -183,9 +183,11 @@ func (w *wsChatStream) emit(ev agents.StreamEvent) {
 
 // wsSentEcho is the socket's answer to a message it read from the page: the
 // message's html, drawn as its stored bubble will be, which replaces the
-// plain text the page showed it with the moment it was sent.
-func wsSentEcho(text string) map[string]any {
-	return map[string]any{"type": "sent", "html": ui.ChatMessageHTML("user", text)}
+// plain text the page showed it with the moment it was sent. typer is the
+// label the stored bubble carries (chatTypers: "You" in a team's shared chat,
+// "" in a personal one), so the echo and the refetch draw the same bubble.
+func wsSentEcho(text, typer string) map[string]any {
+	return map[string]any{"type": "sent", "html": ui.TyperLabelHTML(typer) + ui.ChatMessageHTML("user", text)}
 }
 
 // wsWriter writes v to c as JSON, ignoring a failure (a closed socket: the

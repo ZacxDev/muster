@@ -54,6 +54,14 @@ type ChatLine struct {
 	// typed_by) — not a plugin message, a hand-back or muster's own note. Only a
 	// typed line answers a question card (chiefToolCard).
 	Typed bool
+	// TypedBy is the user who typed it (typed_by), 0 for none: what the api
+	// names the line by (Typer). Never drawn itself.
+	TypedBy int64
+	// Typer is the name drawn over a typed user line in a TEAM's shared chat
+	// (chat_typer.go): the member who typed it, "You" for the viewer's own.
+	// "" draws no label — every personal chat, and every line nobody typed.
+	// Set only by internal/api chatTypers.
+	Typer string
 	// Relay is set on a user line muster wrote to relay a plugin message (or a
 	// task event) to the chief: drawn as a collapsed system row (relayRow),
 	// never as the person's bubble. nil for every other line — internal/api
@@ -1640,7 +1648,11 @@ func chatLogInner(v AgentDetailView) g.Node {
 			case len(answered) > 0:
 				content = dedupRelay(content, answered)
 			}
-			items = append(items, logItem{node: chatBubbleUnfolded(m.Role, content, m.ID, v.Mentions, i == newest)})
+			typer := ""
+			if m.Role == "user" {
+				typer = m.Typer
+			}
+			items = append(items, logItem{node: chatBubbleUnfolded(m.Role, content, m.ID, v.Mentions, i == newest, typer)})
 		}
 	}
 	if !marked && len(v.Messages) > 0 {
@@ -2099,12 +2111,13 @@ func momentGoneNote() g.Node {
 }
 
 func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
-	return chatBubbleUnfolded(role, content, id, mx, false)
+	return chatBubbleUnfolded(role, content, id, mx, false, "")
 }
 
 // chatBubbleUnfolded is chatBubble, drawn never folded when whole is set (the
-// chief's newest reply: data-clamp-never, bubble_clamp.go).
-func chatBubbleUnfolded(role, content string, id int64, mx *MentionIndex, whole bool) g.Node {
+// chief's newest reply: data-clamp-never, bubble_clamp.go), with typer's label
+// on top ("" for none: ChatLine.Typer).
+func chatBubbleUnfolded(role, content string, id int64, mx *MentionIndex, whole bool, typer string) g.Node {
 	return chatBubbleOf(role,
 		g.If(whole, g.Attr("data-clamp-never", "")),
 		// data-msg-id: the stable key the bubble clamp remembers an opened
@@ -2114,6 +2127,7 @@ func chatBubbleUnfolded(role, content string, id int64, mx *MentionIndex, whole 
 		// runtime code reads it (nothing converts bubbles any more); the browser
 		// specs count bubbles by it, as they do the mirrored view's.
 		g.Attr("data-md-rendered", ""),
+		typerLabel(typer),
 		chatMessageBody(role, content, mx, false),
 	)
 }

@@ -233,6 +233,13 @@ func (s *Server) ownHostConnected(ctx context.Context) bool {
 // carrying HX-Redirect, because htmx follows a 3xx inside its XHR and would
 // swap the target's body under a `/` left in the address bar.
 func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
+	// 🔴 `/?chief=open…` (a fleet push sent before ui.FleetProposalsURL) is
+	// the chief PANEL, which the chief's own chat page — home — does not
+	// draw: it goes to the board with its query, never home with it dropped.
+	if r.URL.Query().Get(ui.ChiefOpenParam) == "open" {
+		s.redirectTo(w, r, ui.ChiefOpenLanding(r.URL.RawQuery))
+		return
+	}
 	to, err := s.homeTarget(r, s.leaving(r))
 	if err != nil {
 		s.logger.Printf("home: %v (opening /agents)", err)
