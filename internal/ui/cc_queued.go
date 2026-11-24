@@ -27,7 +27,11 @@ import (
 // 🔴 OUTSIDE THE CONVERSATION (#mv-log), so it never pushes the reading
 // position: its appearing shrinks the log's box from below — a reader at the
 // end stays at the end (the page's ResizeObserver), and one scrolled up keeps
-// the same text at the top. Its height is bounded, and scrolls past that.
+// the same text at the top. Its rows are bounded (queuedRowsBound) and scroll
+// past that, and the list folds under its count line ("Queued in Claude Code ·
+// 3"), closed staying closed for that window on that device across every
+// patch and reload (ccQueuedKeepJS) — the send queue's treatment
+// (send_queue.go), under a key of its own.
 
 // ccQueuedID is the region's element id.
 const ccQueuedID = "mv-ccq"
@@ -55,11 +59,69 @@ func CCQueued(list []string) g.Node {
 		ID(ccQueuedID),
 		g.Attr("data-cc-queued", strconv.Itoa(len(list))),
 		g.Attr("aria-label", "Messages queued in Claude Code"),
-		Class("max-h-40 shrink-0 overflow-y-auto border-t border-line px-3 py-2"),
-		P(Class("mb-1 text-right text-[11px] text-muted"), g.Text(label)),
-		Ul(Class("flex flex-col gap-1.5"), g.Group(items)),
+		Class("shrink-0 border-t border-line px-3"),
+		Details(
+			ID(ccQueuedFoldID),
+			// Drawn open; the page closes it in the task that draws it when
+			// the person closed this window's list (ccQueuedKeepJS).
+			g.Attr("open", ""),
+			Class("group/ccq"),
+			Summary(
+				Class("press flex min-h-[44px] cursor-pointer list-none items-center justify-end gap-1.5 rounded-lg text-[11px] text-muted transition hover:text-fg [&::-webkit-details-marker]:hidden"),
+				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition-transform group-open/ccq:rotate-90" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
+				Span(g.Attr("data-cc-queued-head", ""), g.Text(label)),
+			),
+			Ul(ID(ccQueuedRowsID), Class("flex flex-col gap-1.5 pb-2 "+queuedRowsBound), g.Group(items)),
+		),
 	)
 }
+
+// ccQueuedFoldID is the region's fold, and ccQueuedRowsID its rows: the part
+// that scrolls.
+const (
+	ccQueuedFoldID = "mv-ccq-fold"
+	ccQueuedRowsID = "mv-ccq-rows"
+)
+
+// CCQueuedClosedKeyPrefix starts the localStorage key under which a window's
+// list is kept closed on this device ("1"); the rest is the view's socket
+// path (the window's address). Not the send queue's key
+// (SendQueueClosedKeyPrefix): the two lists fold apart.
+const CCQueuedClosedKeyPrefix = "muster.ccqueue.closed:"
+
+// ccQueuedKeepJS defines ccqKeep() in the view's script (mirrorViewScript),
+// called just BEFORE a patch replaces the region; it returns what to call just
+// after, in the same task, so no frame is painted between: the list folded as
+// the person left it, and its rows scrolled where they were (a patch replaces
+// them, which would put them back at the top). The first list a socket hears
+// is a patch too, so a folded list is never painted open on a load.
+//
+// The fold's state is stored from the toggle event (it does not bubble:
+// taken in the capture phase), as the list stands when it is handled — not
+// the event's — so the open of a patch that ccqKeep then closed stores
+// closed.
+var ccQueuedKeepJS = `
+  function ccqKey() {
+    var l = document.getElementById('mv-log');
+    return '` + CCQueuedClosedKeyPrefix + `' + (l ? l.getAttribute('data-ws') || '' : '');
+  }
+  function ccqStore() { try { return window.localStorage; } catch (e) { return null; } }
+  function ccqKeep() {
+    var r = document.getElementById('` + ccQueuedRowsID + `');
+    var top = r ? r.scrollTop : 0;
+    return function () {
+      var d = document.getElementById('` + ccQueuedFoldID + `'), s = ccqStore();
+      try { if (d && s && s.getItem(ccqKey()) === '1') d.open = false; } catch (e) {}
+      var nr = document.getElementById('` + ccQueuedRowsID + `');
+      if (nr && top) nr.scrollTop = top;
+    };
+  }
+  document.addEventListener('toggle', function (e) {
+    var d = e.target, s = ccqStore();
+    if (!d || d.id !== '` + ccQueuedFoldID + `' || !d.isConnected || !s) return;
+    try { if (d.open) s.removeItem(ccqKey()); else s.setItem(ccqKey(), '1'); } catch (err) {}
+  }, true);
+`
 
 // QueuedOps is the host's queued-message list (mirror.Msg.Queued) as the
 // page's DOM operation: the region redrawn ("patch") when the list differs

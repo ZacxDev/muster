@@ -205,6 +205,9 @@ menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [
 and **Cancel**. A long queue scrolls within a short list, and a tap on its
 count line ("3 messages waiting …") folds it to that one line. A folded queue
 stays folded on that device, for that window, until you tap the line again.
+The list of messages Claude Code holds itself ("Queued in Claude Code", under
+the conversation) is bounded, scrolls and folds the same way, on its own. With
+both lists open, each takes a smaller share of the screen.
 A queued message is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.

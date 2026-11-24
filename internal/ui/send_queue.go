@@ -22,7 +22,7 @@ import (
 // failure stays until it is retried, deleted, or pruned. A tap on any row's preview shows its whole text (sendQueuePreview).
 //
 // THE LIST IS BOUNDED AND FOLDS (operator ask: several queued messages took
-// "way too much vertical space"): its rows scroll past sendQueueRowsClass's
+// "way too much vertical space"): its rows scroll past queuedRowsBound's
 // height, and the whole list is a <details> under its count line ("3
 // messages waiting …"), which a tap closes to that one line. Closed stays
 // closed for that window on this device, across the list's re-reads and
@@ -354,7 +354,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 		),
 		g.If(v.Waiting != "", sendQueueWaiting(v)),
 		g.If(v.Waiting != "", sendQueueWaitingFull()),
-		Ul(ID(SendQueueRowsID), Class(sendQueueRowsClass), g.Group(rows)),
+		Ul(ID(SendQueueRowsID), Class(queuedRowsBound), g.Group(rows)),
 	)
 }
 
@@ -365,13 +365,17 @@ const SendQueueClosedKeyPrefix = "muster.sendqueue.closed:"
 // SendQueueRowsID is the list's rows, the part that scrolls.
 const SendQueueRowsID = "mv-queue-rows"
 
-// sendQueueRowsClass bounds the rows (operator ask: several queued messages
-// took "way too much vertical space"): 8.5rem — two rows and half of a
-// third, so a cut row says there is more to scroll — or a fifth of the
-// screen's height when that is less (a phone on its side). With the head and
-// the waiting line, the whole queue stays under 30% of a 390×844 phone and of
-// a 1280×800 window (e2e send-queue: "a long queue is bounded …").
-const sendQueueRowsClass = "max-h-[min(8.5rem,20dvh)] overflow-y-auto overscroll-contain"
+// queuedRowsBound bounds the rows of BOTH lists of waiting messages — this
+// queue's and Claude Code's own (cc_queued.go) — one rule for the two
+// (operator ask: several queued messages took "way too much vertical
+// space"): 8.5rem — two rows and part of a third, so a cut row says there is
+// more to scroll — or a fifth of the screen's height when that is less (a
+// phone on its side). With the head and the waiting line, the whole queue
+// stays under 30% of a 390×844 phone and of a 1280×800 window (e2e
+// send-queue: "a long queue is bounded …"). With BOTH lists open, each is
+// bounded smaller, so the two together stay under 40% of a phone
+// (web/css/input.css, "BOTH LISTS OF WAITING MESSAGES").
+const queuedRowsBound = "max-h-[min(8.5rem,20dvh)] overflow-y-auto overscroll-contain"
 
 // SendQueueFullLabel is the start of what a screen reader names a row's
 // preview, which a tap opens whole (sendQueuePreview).
