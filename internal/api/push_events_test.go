@@ -350,24 +350,27 @@ func TestThePreferencesFormSavesUncheckedAsMuted(t *testing.T) {
 }
 
 // TestNativePushHasOneSendSite: PushService.SendTo is called from sendPush
-// alone, and sendPush only from goNotify (server.go) and the account page's
-// send test (push_routes.go) — so who receives a notification is decided in
-// one place. Positive control: both lists are non-empty.
+// alone, and sendPush only from goNotify (server.go), the account page's send
+// test (push_routes.go) and the passkey-added security notice
+// (passkey_enrol.go notifyPasskeyAdded, which BY DESIGN skips the
+// notification switches: a person holding only the password could turn them
+// off first) — so who receives a notification is decided in one place, its
+// owner. Positive control: both lists are non-empty.
 func TestNativePushHasOneSendSite(t *testing.T) {
 	send := callSitesOf(t, "SendTo")
 	if len(send) != 1 || !strings.Contains(send[0], "push_routes.go") {
 		t.Fatalf("SendTo call sites %v; want exactly one, in sendPush (push_routes.go)", send)
 	}
 	callers := callSitesOf(t, "sendPush")
-	if len(callers) != 2 {
-		t.Fatalf("sendPush call sites %v; want 2 (goNotify, handlePushTest)", callers)
+	if len(callers) != 3 {
+		t.Fatalf("sendPush call sites %v; want 3 (goNotify, handlePushTest, notifyPasskeyAdded)", callers)
 	}
 	var files []string
 	for _, c := range callers {
 		files = append(files, c[:strings.IndexByte(c, ':')])
 	}
 	sort.Strings(files)
-	if strings.Join(files, ",") != "push_routes.go,server.go" {
+	if strings.Join(files, ",") != "passkey_enrol.go,push_routes.go,server.go" {
 		t.Fatalf("sendPush is called from %v", callers)
 	}
 }

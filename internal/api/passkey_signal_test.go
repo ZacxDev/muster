@@ -182,7 +182,9 @@ func TestARegistrationRecordsTheCredentialID(t *testing.T) {
 	gu, _ := w.fake.User(sub)
 	all, _ := gu.AppMetadata[passkeyMetaKey].(map[string]any)
 	got, _ := all[id].(map[string]any)
-	want := map[string]any{"synced": true, "can_sync": true, passkeyCredIDKey: b64url("raw-id-α")}
+	// "vouched": false — an account with no passkey and no phone adds its
+	// first with the password alone (passkey_enrol.go).
+	want := map[string]any{"synced": true, "can_sync": true, passkeyCredIDKey: b64url("raw-id-α"), "vouched": false}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the record: %v, want %v", got, want)
 	}
