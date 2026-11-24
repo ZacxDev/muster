@@ -16,7 +16,8 @@ import (
 // about. So on an account that can prove more (a passkey, or a paired phone
 // with a step-up key), removing one takes the same ticket as adding a passkey
 // (gateCredentialRemoval: a passkey you have, or your phone's Confirm, on
-// Account → Passkeys). An account with neither removes as before, and every
+// Account → Passkeys). An account that has never had either removes as
+// before (the sticky tier, migration 0188), and every
 // device registered for push is told first (the one being removed included).
 //
 // What stays open: a phone removing ITSELF (the app's own unpair, on the
@@ -33,6 +34,12 @@ const (
 	TargetRemovedTitle  = "A notification target was removed from your account"
 	RemovedBody         = "If this was not you, change your password and check Account, Passkeys."
 	PasskeyRemovedTitle = "A passkey was removed from your account"
+	// AdminRemovedPasskeysTitle: an admin removed the account's passkeys.
+	AdminRemovedPasskeysTitle = "An admin removed every passkey from your account"
+	// SignedOutEverywhereTitle: Sign out everywhere, which unpairs every
+	// phone; sent to every device BEFORE it is unpaired.
+	SignedOutEverywhereTitle = "You signed out everywhere: your phones were unpaired"
+	SignedOutEverywhereBody  = "If this was not you, reset your password by email."
 	// PasskeyDeleteProofNeeded: a passkey of the account is deleted with a
 	// proof (passkey_enrol.go).
 	PasskeyDeleteProofNeeded = "To remove a passkey, first confirm below with a passkey you have (the one you are removing will do) or on your paired phone, then remove it within ten minutes."

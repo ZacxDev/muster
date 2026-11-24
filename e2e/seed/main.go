@@ -89,7 +89,9 @@ var accountsReset = []string{
 	// members do. They live two minutes; none is worth keeping.
 	`DELETE FROM signin_requests`,
 	`DELETE FROM users WHERE id <> 1`,
-	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
+	// had_strong_factor_at: a reset account has never had a passkey or a
+	// step-up phone (migration 0188), as a fresh one has not.
+	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin', had_strong_factor_at = NULL WHERE id = 1`,
 }
 
 func run() error {

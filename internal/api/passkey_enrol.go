@@ -241,7 +241,19 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 		return enrolNeed{}, err
 	}
 	n := enrolNeed{passkey: len(list) > 0, phone: phone}
-	n.open = !n.passkey && !n.phone
+	if n.passkey || n.phone {
+		// The sticky tier (migration 0188): an account seen with a factor
+		// stays gated, whatever later empties its rows.
+		s.markStrongFactor(ctx, uid)
+	}
+	// 🔴 "OPEN" ONLY FOR AN ACCOUNT THAT HAS NEVER HAD ONE. The live rows can
+	// be emptied by the password alone (Sign out everywhere unpairs every
+	// phone), so they alone cannot open the first-factor tier.
+	had, err := s.hadStrongFactor(ctx, uid)
+	if err != nil {
+		return enrolNeed{}, err
+	}
+	n.open = !n.passkey && !n.phone && !had
 	return n, nil
 }
 
@@ -316,6 +328,47 @@ func passkeyStandingOf(rec map[string]any, found bool, created, since time.Time)
 		return standingVouched
 	}
 	return standingUnknown
+}
+
+// strongFactorStore is the users store's sticky tier (migration 0188).
+type strongFactorStore interface {
+	HadStrongFactor(ctx context.Context, id int64) (bool, error)
+	MarkStrongFactor(ctx context.Context, id int64) error
+	ClearStrongFactor(ctx context.Context, id int64) error
+}
+
+// hadStrongFactor reports whether account uid has ever had a passkey or a
+// step-up phone. With no store to read it from: false (the live rows decide).
+func (s *Server) hadStrongFactor(ctx context.Context, uid int64) (bool, error) {
+	st, ok := s.ext.Users.(strongFactorStore)
+	if !ok {
+		return false, nil
+	}
+	return st.HadStrongFactor(ctx, uid)
+}
+
+// markStrongFactor records that account uid has a passkey or a step-up
+// phone. A failed write is logged (the live rows still gate until it lands).
+func (s *Server) markStrongFactor(ctx context.Context, uid int64) {
+	st, ok := s.ext.Users.(strongFactorStore)
+	if !ok || uid <= 0 {
+		return
+	}
+	if err := st.MarkStrongFactor(ctx, uid); err != nil {
+		s.logger.Printf("account: mark user %d as having had a strong factor: %v", uid, err)
+	}
+}
+
+// clearStrongFactor reopens account uid's first-factor tier: ONLY a
+// completed password reset calls it (login_invite.go).
+func (s *Server) clearStrongFactor(ctx context.Context, uid int64) {
+	st, ok := s.ext.Users.(strongFactorStore)
+	if !ok {
+		return
+	}
+	if err := st.ClearStrongFactor(ctx, uid); err != nil {
+		s.logger.Printf("reset: clear user %d's strong-factor mark: %v", uid, err)
+	}
 }
 
 // passkeyVouchingSinceStore is the users store's read of migration 0187.

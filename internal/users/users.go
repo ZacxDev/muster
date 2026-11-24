@@ -806,3 +806,26 @@ func (s *PGStore) PasskeyVouchingSince(ctx context.Context) (time.Time, error) {
 	err := s.pool.QueryRow(sys(ctx), `SELECT vouching_since FROM passkey_rules WHERE singleton`).Scan(&at)
 	return at, err
 }
+
+// HadStrongFactor reports whether account id has ever had a passkey or a
+// phone with a step-up key (migration 0188, users.had_strong_factor_at): the
+// enrolment gate's sticky tier (internal/api passkey_enrol.go).
+func (s *PGStore) HadStrongFactor(ctx context.Context, id int64) (bool, error) {
+	var at *time.Time
+	err := s.pool.QueryRow(sys(ctx), `SELECT had_strong_factor_at FROM users WHERE id = $1`, id).Scan(&at)
+	return at != nil, err
+}
+
+// MarkStrongFactor records that account id has a passkey or a phone with a
+// step-up key; a mark already set is kept (its first time).
+func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(sys(ctx), `UPDATE users SET had_strong_factor_at = now() WHERE id = $1 AND had_strong_factor_at IS NULL`, id)
+	return err
+}
+
+// ClearStrongFactor clears account id's mark: ONLY a completed password reset
+// does (its link proves more than the password).
+func (s *PGStore) ClearStrongFactor(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(sys(ctx), `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, id)
+	return err
+}

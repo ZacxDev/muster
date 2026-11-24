@@ -13,6 +13,7 @@
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix draftcard <owner> <draft-id> [reject]  a card about a REAL draft (prints its id)
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix ask <owner>     a plain open ask (yes/no) a gated attention_answer can name (prints its id)
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix status <owner> <id>  an ask's "<status> <answer>"
+//	DATABASE_URL=…_e2e go run ./e2e/stepupfix unmark <owner>  clear the account's sticky factor record (as a reset does)
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix clear <owner>
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check).
@@ -172,6 +173,12 @@ func run(args []string) error {
 		return nil
 	case "clear":
 		_, err := pool.Exec(as, `DELETE FROM attention_asks WHERE asker_label IN ('step-up', $1)`, webAskLabel)
+		return err
+	case "unmark":
+		// What a completed password reset does to the sticky tier (migration
+		// 0188): the account adds its next passkey or step-up phone as a first
+		// factor. For a spec that re-adds a passkey per test on one account.
+		_, err := pool.Exec(authz.System(ctx), `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, owner)
 		return err
 	case "card", "thread", "lookalike", "answered":
 		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: Title, Why: Why, Asker: Asker,

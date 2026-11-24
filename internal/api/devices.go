@@ -259,9 +259,15 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the device could not be removed", http.StatusInternalServerError)
 		return
 	}
-	if !slices.ContainsFunc(list, func(d devices.Device) bool { return d.ID == id }) {
+	i := slices.IndexFunc(list, func(d devices.Device) bool { return d.ID == id })
+	if i < 0 {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
+	}
+	if list[i].HasStepUpKey {
+		// The account has a step-up phone: marked (migration 0188), so
+		// removing it never reopens the first-factor tier.
+		s.markStrongFactor(r.Context(), requestOwner(r.Context()))
 	}
 	// 🔴 Not with the password alone where the account can prove more
 	// (passkey_removal.go).
@@ -362,6 +368,9 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	// The permission is NOT dropped here: it expires with the code, and a
 	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
+	if d.HasStepUpKey {
+		s.markStrongFactor(r.Context(), d.OwnerID) // the sticky tier (migration 0188)
+	}
 	// Every device already registered is told (pairing_gate.go).
 	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
 	w.Header().Set("Cache-Control", "no-store")
@@ -683,8 +692,12 @@ const appBridgeJS = `(function () {
         return;
       }
       if (!res.ok || !data.code) { status.textContent = data.error || ('Pairing failed (' + res.status + ').'); return; }
-      bridge.postMessage(JSON.stringify({ type: 'pair', code: data.code, expires_at: data.expires_at }));
-      status.textContent = 'The app is finishing the pairing.';
+      bridge.postMessage(JSON.stringify({ type: 'pair', code: data.code, expires_at: data.expires_at, stepup_allowed: data.stepup_allowed === true }));
+      // A code minted without the enrolment proof pairs a phone that cannot
+      // confirm requests (pairing_gate.go): say so, and how to do better.
+      status.textContent = data.stepup_allowed === false && data.stepup_note
+        ? 'The app is finishing the pairing. ' + data.stepup_note
+        : 'The app is finishing the pairing.';
     } catch (e) { status.textContent = 'Pairing failed: ' + e.message; }
   });
 })();`

@@ -616,6 +616,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
+	// 🔴 THE ONE THING THAT REOPENS THE FIRST-FACTOR TIER (migration 0188): a
+	// completed reset, whose link proves more than the password. The reset
+	// revoked every paired phone; kept passkeys still gate (live rows).
+	s.clearStrongFactor(r.Context(), u.ID)
 	if !removePasskeys {
 		// What the page says about the kept passkeys depends on whether there
 		// are any (resetDonePath). Counted AFTER the password is set and only

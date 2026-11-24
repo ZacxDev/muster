@@ -673,11 +673,21 @@ passkeys**) and have the person add them again.
 A passkey can approve a [step-up card](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey)
 in the browser, which otherwise only the paired phone can do. So adding one,
 pairing a phone that confirms requests, and removing either need more than
-the password: 🔴 **once an account has a passkey or a paired phone with a
-step-up key, a password alone never reaches card approval.**
+the password: 🔴 **once an account has ever had a passkey or a paired phone
+with a step-up key, a password alone never reaches card approval** — until a
+password reset completes.
+
+"Ever had" is recorded on the account (`users.had_strong_factor_at`,
+migration 0188). It is set when a passkey is added or such a phone paired,
+when muster first sees either on the account, and before any is removed. It
+was backfilled for every account that already had such a phone. Emptying the
+live rows never clears it: Sign out everywhere (which unpairs every phone),
+removing a phone or a passkey, and an admin removing passkeys all leave it
+set. **Only a completed password reset clears it.** Its link proves more than
+the password: an admin mints it for you, or it reaches your email.
 
 The one place the password is enough is an account's **first factor**, on an
-account that has neither:
+account that has never had one:
 
 - its first passkey is added with the password, and it **cannot** approve a
   card (below);
@@ -702,7 +712,7 @@ From then on, every change below takes a proof.
   The proof allows one passkey, added from that browser session, within ten
   minutes. Without it, both the options and the add answer
   `403 proof_required`, naming the proofs the account can give.
-- **The account has neither:** there is nothing to prove with, so the password
+- **The account has never had either:** there is nothing to prove with, so the password
   adds the first passkey, as before. That passkey signs in and confirms
   "Confirm it's you" like any other, but **it cannot approve a step-up card**.
   A card shows the phone line and says why.
@@ -725,7 +735,7 @@ From then on, every change below takes a proof.
   removal fails too, that passkey stays and approves nothing. The record
   writes are serialised per account, so two at once lose neither.
 - **Pairing a phone that confirms requests** (one with a step-up key) takes
-  the same proof once the account has a passkey or such a phone. Confirm on
+  the same proof once the account has had a passkey or such a phone. Confirm on
   Account → Passkeys first; the pairing code shown afterwards may pair a
   step-up key, and the proof is spent. A code minted without the proof says so
   (`stepup_allowed: false`). A phone redeeming that code with a step-up key is
@@ -733,8 +743,8 @@ From then on, every change below takes a proof.
   without a key still pairs read-only. Every pairing pushes every device
   already registered "A phone was paired to your account", whatever your
   notification settings say.
-- **Removing a passkey** takes the same proof once the account has a passkey
-  or a step-up phone. Proving with the passkey you are removing is enough.
+- **Removing a passkey** takes the same proof (the account has one, so it is
+  gated). Proving with the passkey you are removing is enough.
   The removal pushes "A passkey was removed from your account".
 - **The admin pages do not reset or strip the admin's own account.** An admin
   cannot mint a password-reset link for their own account, or remove their
@@ -742,20 +752,33 @@ From then on, every change below takes a proof.
 - **A proof allows one change, used once.** The ticket is taken when it is
   checked, so two adds racing on one ticket add one passkey.
 - **Removing a phone or a notification target** (on Account) takes the same
-  proof on an account that has a passkey or a paired phone with a step-up
-  key. Without the proof the removal is refused and nothing is removed:
+  proof on an account that has, or has ever had, a passkey or a paired phone
+  with a step-up key. Without the proof the removal is refused and nothing is removed:
   confirm on Account → Passkeys (`?confirm=1` opens the proofs), then remove
-  within ten minutes. So a person holding only the password cannot first
-  remove your devices to silence the notice below. On an account with neither,
+  within ten minutes. On an account that has never had a passkey or a
+  step-up phone,
   the removal goes through as before, after every device registered for push
   is told ("A phone was removed from your account"). A removal with the proof
   is announced the same way. Removing a phone or target that does not exist
-  answers 404, spends no proof and announces nothing. These stay open:
+  answers 404, spends no proof and announces nothing. Three things stay
+  open, and none of them reopens the first-factor tier:
   - a phone removing itself from the app;
   - a browser turning off its own notifications;
-  - a password reset, which revokes every paired phone. That is the recovery
-    for a lost phone on an account without a passkey. With a passkey, prove
-    with it and remove the lost phone.
+  - **Sign out everywhere**, a recovery action. It unpairs every phone and
+    drops every push target, so it is announced FIRST, while they still
+    exist ("You signed out everywhere: your phones were unpaired").
+
+  So a person holding only the password can silence your devices only by
+  signing out everywhere. That act is announced on every one of them, and the
+  account stays gated afterwards.
+- **Recovery when no factor is left.** Your phones may be unpaired, your
+  passkeys gone, or your phone's key invalidated (a new fingerprint or face
+  enrolled on it voids its step-up key). On an account that has had one, the
+  way back is a **password reset by email**. It revokes every paired phone and
+  clears the record, and then your next passkey or phone is added as a first
+  factor. The pairing code says so when it may not pair a phone that confirms
+  requests (`stepup_note`), and Account → Devices shows it. With a passkey
+  left, prove with it instead.
 - **Every passkey added pushes you "A passkey was added to your account"** on
   every device registered for push, whatever your notification settings say:
   a person holding only your password could turn them off first. The

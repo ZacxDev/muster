@@ -612,6 +612,7 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": PasskeyEnrolRecordFail})
 		return
 	}
+	s.markStrongFactor(r.Context(), uid)
 	s.auditPasskeyAdded(r.Context(), uid, p.ID, clientIP(r), proof, vouched)
 	s.logger.Printf("passkeys: user %d added a passkey (proof: %s; decides step-up cards: %t)", uid, proof, vouched)
 	s.notifyPasskeyAdded(r.Context(), uid)
@@ -640,6 +641,10 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderAccountPasskeys(w, r, http.StatusNotFound, creds, "That passkey is not one of yours.")
 		return
 	}
+	// The account has a passkey: it is marked as having had a factor
+	// (migration 0188), so deleting this one never reopens the first-factor
+	// tier.
+	s.markStrongFactor(r.Context(), uid)
 	need, err := s.passkeyEnrolNeed(r.Context(), creds, clientIP(r), true)
 	if err != nil {
 		s.renderAccountPasskeys(w, r, http.StatusServiceUnavailable, creds, PasskeyEnrolUnchecked)
@@ -688,6 +693,9 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 		s.renderAdminUsers(w, r, http.StatusConflict, "That user has no login.", "")
 		return
 	}
+	// The account had a passkey: it stays gated after they are removed
+	// (migration 0188), and it is told.
+	s.markStrongFactor(r.Context(), u.ID)
 	n := 0
 	err := s.gt.Accounts.Audited(r.Context(), actorOf(r), "user.passkeys_removed", users.UserObject(u.ID), nil, func() error {
 		var err error
@@ -701,6 +709,9 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 	}
 	s.setPasskeyFlag(r.Context(), u.GotrueSub, "", nil)
 	s.logger.Printf("admin: removed %d passkeys of user %d", n, u.ID)
+	if n > 0 {
+		s.notifySecurity(r.Context(), u.ID, AdminRemovedPasskeysTitle, RemovedBody, accountPasskeysPath)
+	}
 	who := u.Email
 	if who == "" {
 		who = u.DisplayName

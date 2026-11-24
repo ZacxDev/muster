@@ -22,7 +22,10 @@ import (
 //     that minted it held an enrolment ticket (a passkey you have, or your
 //     phone's Confirm), which the mint TAKES; a phone redeeming a code without
 //     it is refused if it brings a step-up key (it may still pair read-only);
-//   - on an account with neither, the first phone pairs with its key on the
+//   - on an account that has NEVER had either (users.had_strong_factor_at,
+//     migration 0188 — Sign out everywhere, which unpairs every phone, does
+//     not clear it; only a completed password reset does), the first phone
+//     pairs with its key on the
 //     password, as before: it is the account's first factor, and it MAY decide
 //     cards (a phone's step-up key is the hardware-bound proof cards were built
 //     on). From then on, the rule above holds.
@@ -37,7 +40,7 @@ import (
 
 // The pairing gate's words.
 const (
-	PairStepUpProofNeeded = "To pair a phone that confirms requests, first confirm on Account, Passkeys with a passkey you have or your paired phone, then show the pairing code again."
+	PairStepUpProofNeeded = "To pair a phone that confirms requests, first confirm on Account, Passkeys with a passkey you have or your paired phone, then show the pairing code again. With neither left (phones unpaired, passkeys gone, or the phone's key invalidated), the way back is a password reset by email."
 	PhonePairedTitle      = "A phone was paired to your account"
 	PhonePairedBody       = "If this was not you, remove it under Account, Devices, and change your password."
 )

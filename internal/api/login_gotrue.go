@@ -400,6 +400,10 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			}
 			s.gt.revoke(sess.user.ID, sess.claims, scope)
 			if signsOutEverywhere(sess.claims, scope) {
+				// Told FIRST, while the phones and push targets still exist:
+				// signing out unpairs them, and a person holding only the
+				// password must not be able to do it unseen.
+				s.notifySecurity(r.Context(), sess.user.ID, SignedOutEverywhereTitle, SignedOutEverywhereBody, "/login")
 				// Signed out of every session: nothing queued from one is sent,
 				// and every paired phone is signed out.
 				if err := s.signedOutEverywhere(r.Context(), sess.user.ID); err != nil {

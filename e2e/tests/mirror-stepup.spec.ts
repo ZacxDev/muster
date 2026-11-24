@@ -124,6 +124,10 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // The admin (user 1) ends this file having had a passkey and a step-up
+  // phone, which the account keeps as a record (migration 0188) in the e2e
+  // database the next spec shares: cleared, as a password reset would.
+  execFileSync('go', ['run', './e2e/stepupfix', 'unmark', '1'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
   if (mirrorProc && mirrorProc.exitCode === null) {
     const done = new Promise((r) => mirrorProc!.once('exit', r));
     mirrorProc.kill('SIGTERM');
@@ -586,6 +590,11 @@ async function removeAllPasskeys(page: Page) {
     const d = await fetch(`${base}/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + admin } });
     expect([200, 204], `GoTrue's admin passkey delete: ${d.status}`).toContain(d.status);
   }
+  // Its passkey gone, the account still counts as one that HAD a factor
+  // (migration 0188): a password adds no passkey to it until a password
+  // reset. The spec does what that reset does to the record, so the next
+  // test's fresh authenticator adds its passkey as the account's first.
+  execFileSync('go', ['run', './e2e/stepupfix', 'unmark', '1'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
   await page.goto(browserURL + '/account/passkeys');
   await expect(page.locator('#passkey-list [data-passkey-id]')).toHaveCount(0);
 }
