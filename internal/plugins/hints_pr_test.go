@@ -18,8 +18,7 @@ func TestAPullRequestHintLineIsExactlyThis(t *testing.T) {
 		"\n| mirror:0b2c3d4e-pr — Mars:2 @ box-1\n" +
 			"|   listed by its pull request acme/infra-config#2855, acme/infra-config branch feat/stage-c-job, last active 2000-01-02T03:04:05Z\n" +
 			"<<<end session-hints nonce=fedcba9876543210>>>\n",
-		"or created or pushed a pull request or branch named in it, as its host's hook reported (its line then says " +
-			"\"listed by its pull request\").",
+		"\n" + hintPrefaceReply + "\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("hint block lacks %q:\n%s", want, got)
@@ -96,7 +95,7 @@ func TestAPullRequestHintStaysWithinTheCapInEveryMode(t *testing.T) {
 					if !strings.Contains(got, "|   listed by its pull request ") {
 						t.Errorf("%q %s %s n=%d: the pull-request line was dropped:\n%s", wide, extra, name, n, got)
 					}
-					if extra == "repo" && !strings.Contains(got, "|   listed by its repo, repo: ") {
+					if extra == "repo" && !strings.Contains(got, "|   listed by its repo ") {
 						t.Errorf("%q %s n=%d: the repo line was dropped:\n%s", wide, name, n, got)
 					}
 					if hintLineCount(got) != 1 {

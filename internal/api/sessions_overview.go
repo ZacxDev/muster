@@ -264,7 +264,7 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 			if !ok {
 				continue // the store filtered on liveness already; belt and braces
 			}
-			sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where}
+			sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where, Matched: mt.Keys}
 			for _, t := range mt.Titles {
 				sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
 			}
@@ -301,6 +301,9 @@ func mergeHints(limit int, lists ...[]plugins.SessionHint) []plugins.SessionHint
 			y := &out[i]
 			if len(y.Titles) == 0 {
 				y.Titles = x.Titles
+			}
+			if len(y.Matched) == 0 {
+				y.Matched = x.Matched
 			}
 			if len(y.PRs) == 0 && len(x.PRs) > 0 {
 				y.PRs, y.LastActive = x.PRs, x.LastActive

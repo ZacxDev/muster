@@ -87,6 +87,12 @@ type Match struct {
 	Subject Subject
 	Terms   int
 	Titles  []TitleAt
+	// Keys is WHY it matched: the message's distinctive terms its history
+	// carries, in the message's order, as the message names them — a
+	// normalised key ("#137", "v0.0.42", "gpuhost-4090-7-12"), a tail key as
+	// "7-12 (of gpuhost-4090-7-12)" (terms.go's TAIL KEYS), and a host and its
+	// own tail once, as the host.
+	Keys []string
 }
 
 // liveHistorySQL is the liveness predicate over agent_focus_history h:
@@ -207,7 +213,7 @@ func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, sinc
 	if limit <= 0 || limit > MaxSearchResults {
 		limit = MaxSearchResults
 	}
-	keys, rest := distinctiveTerms(text, MaxDistinctiveTerms)
+	keys, hostOf, rest := extractTerms(text, MaxDistinctiveTerms, false)
 	if len(keys) == 0 {
 		return []Match{}, nil // nothing distinctive: nothing can be named
 	}
@@ -255,7 +261,7 @@ func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, sinc
 			return nil, errf("match history: %w", err)
 		}
 		sub := Subject{Kind: Kind(kind), Key: key}
-		rowKeys, _ := distinctiveTerms(title+" "+desc, 0)
+		rowKeys := rowTerms(title + " " + desc)
 		var hit []string
 		for _, k := range rowKeys {
 			if want[k] {
@@ -295,12 +301,25 @@ func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, sinc
 	}
 	var out []ranked
 	for _, x := range by {
-		nd := len(x.keys)
+		// One identifier per host: a tail whose host the history carries too
+		// is the host's, counted and listed once (as the host).
+		var why []string
+		for _, k := range keys {
+			if !x.keys[k] || (IsTailKey(k) && x.keys[hostOf[k]]) {
+				continue
+			}
+			if host, ok := hostOf[k]; ok {
+				why = append(why, k[len(tailPrefix):]+" (of "+host+")")
+				continue
+			}
+			why = append(why, k)
+		}
+		nd := len(why)
 		n := nd + len(x.words)
 		if nd < 1 || n < minTerms {
 			continue
 		}
-		out = append(out, ranked{Match: Match{Subject: x.sub, Terms: n, Titles: x.titles}, nd: nd, at: x.newest})
+		out = append(out, ranked{Match: Match{Subject: x.sub, Terms: n, Titles: x.titles, Keys: why}, nd: nd, at: x.newest})
 	}
 	// Most distinctive terms first, then most terms, then most recently
 	// written, then the subject (so the order is total).

@@ -146,6 +146,11 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 		len(h.Sessions[0].Titles) != 1 || h.Sessions[0].Titles[0].Title != "Upgrading node-7k: drain and reboot" {
 		t.Fatalf("hint %+v; want exactly %s with its node-7k focus", h, a)
 	}
+	// Why it is listed reaches the hint: the message's identifier its focus
+	// carries (focus.Match.Keys → SessionHint.Matched).
+	if fmt.Sprint(h.Sessions[0].Matched) != "[node-7k]" {
+		t.Fatalf("the hint's why %q; want [node-7k]", h.Sessions[0].Matched)
+	}
 	// Ordinary mail and a newsletter share common words with these sessions
 	// ("release", "cache", "notes") and name none of them.
 	for _, body := range []string{

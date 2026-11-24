@@ -3115,10 +3115,28 @@ one term however it is spelled; a bare `137` is not one), a version
 (`follow-up` and `sign-up` are not identifiers). An identifier counts once,
 not again as the words it is made of, and a message contributes at most its
 first 20. Common words alone ("update", "next week", "review") name nothing: an
-ordinary mail or a newsletter shares several with almost any session. It appends what it finds to the chief's
-turn, after the message, as a block headed **Sessions that may already be on
-this**: up to three sessions, each with its id, name, host and up to three
+ordinary mail or a newsletter shares several with almost any session.
+
+A **host named with a numbered tail** (`gpuhost-4090-7-12`) also counts by
+that tail (`7-12`). The focus summarizer is told never to quote hostnames, so
+a session working on that host writes "node -7-12" or "7-12", not the name an
+alert spells out in full. A focus row's bare number pair (`-7-12`, `52-110`)
+therefore counts as a host's tail. A message's bare pair does not: "the game
+ended 7-12" names nothing, so a sender cannot name a session by writing
+numbers. A tail is two numbers of at least four characters together (`1-2`
+is prose). A focus that names the host in full carries both the host and its
+tail, and they count once, as the host.
+
+It appends what it finds to the chief's turn, after the message, as a block
+headed **Sessions that may already be on this**: up to three sessions, each
+with its id, name and host, then **why it is listed**, then up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
+Each session listed by its focus has a line *"its focus mentions …"* naming
+up to three of the message's identifiers its focus carries, as the message
+spells them, a tail as `7-12 (of gpuhost-4090-7-12)`. A session listed by its
+pull request or repo says so on its own line (below). The chief can then judge
+relevance by what was shared, not by a title that may name the session's
+larger job.
 
 A session is also listed by **its repo**, whether or not its focus matches:
 an online mirrored Claude Code window, however long it has been idle, whose
@@ -3133,7 +3151,7 @@ These come after the focus matches, within the three; between two windows
 covering as many parts, the more recently active goes first. The
 window label is not matched here: a Claude window's label is its host's
 codename (`<codename>:<n>`), not a task title. Such a session's line says it
-was listed by its repo, with the repo and when it was last active: a session
+was listed by its repo (*"listed by its repo `<repo>`, last active …"*): a session
 open on a job but idle for days has no focus in the window, and
 `sessions_overview` lists only the last 24 hours. The repo name is the host's
 words, inside the fence like the titles. `focus_search` does the same after
@@ -3191,9 +3209,29 @@ closing marker and is fenced under its own nonce, and every message line sits
 behind the message fence's content prefix, so a message that spells the
 block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
-chief's standing instructions tell it to check those sessions, and
-`sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it. A message it acts on
+chief's standing instructions and the block's own preface tell it to check
+those sessions, and `sessions_overview`, before filing a task or drafting a
+reply. They also give it a rule for routing: **a session whose focus mentions
+a specific identifier of the message** (a host, a version, a pull request, a
+file), **or one listed by its pull request, is on it**, and the chief routes
+the message to it with `route_to_session`. That holds **even when the message
+also asks you to decide something**. The chief then routes it as a
+[heads-up](#a-heads-up-for-a-message-whose-answer-is-yours) and raises the
+decision with you as well, so the session gets the context and you still
+decide. A common word or a repo name alone is not proof, and the chief routes
+on one only when the session is clearly on it.
+
+The routing rule is guidance to the chief, not a route muster makes itself.
+The deterministic alternative was considered: muster would route a heads-up
+copy whenever a hint matched. It was not taken for three reasons. First, the
+match is a summarizer's text against the message's words, and on a real
+fleet's alerts short identifiers (`v1`, a domain name) matched several
+unrelated sessions. Second, a route pastes into a session you may be typing
+in. Third, a message has one open route at a time, so an automatic heads-up
+would block the chief's own two-way route of the same message. What muster
+does decide is the structure the rule needs: why each session is listed,
+spelled out on its line, and a heads-up route that cannot answer the sender.
+A message it acts on
 in none of those ways is not left to its judgement: muster puts it in front of
 you itself ([below](#a-message-the-chief-does-not-act-on)).
 
@@ -3500,6 +3538,32 @@ session routing on), and its session hint's routing line is worded for it.
 session (the chief picks from muster's hint and its own tools), only the
 stored message is pasted, fenced, and nothing on this path can reach the
 sender.
+
+### A heads-up for a message whose answer is yours
+
+Some messages that **can** be answered also ask **you** to decide something:
+*"the canary is halted, promote, hold or roll forward?"* The session already
+on that work should know, but its answer must not be the reply. A two-way
+route's answer becomes the reply draft, and it is sent at once to an
+allowlisted sender. So `route_to_session(message_id, subject, heads_up: true)`
+hands the message over as a **heads-up** (`session_routes.heads_up`, migration
+`0186`). A heads-up is one-way (`one_way` is set too, and `0186` refuses a
+heads-up that is not). Everything
+[above](#a-one-way-heads-up-for-a-message-that-cannot-be-answered) holds: the
+answer goes to the chief only, never as a draft, whatever the allowlist says.
+What differs:
+
+- **The paste says A HEADS-UP, NOT A REQUEST TO REPLY**: the decision is
+  yours, nothing the session writes reaches the sender, and the reply, once
+  you have decided, is the chief's to draft.
+- **The message stays answerable.** The chief raises the decision with you
+  (an attention ask), and drafts the reply with `reply_draft` once you have
+  answered. A heads-up that times out comes back as a message the chief can
+  still reply to, with `reply_draft` among its choices.
+- **The chief's own route only**: `heads_up` goes with `message_id` alone (a
+  task or your own request with it is refused as bad arguments), and on a
+  `no_reply` message it changes nothing (that message is already one-way).
+- Your notification says *"(a heads-up: the reply is still yours)"*.
 
 ### You are told where the chief routed it
 

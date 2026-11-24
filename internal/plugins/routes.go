@@ -210,6 +210,15 @@ type Route struct {
 	// route, a review answered through HQ (AnswersViaHQ), which route_reply
 	// never answers (internal/api's answerHQReviewRoute).
 	OneWay bool
+	// HeadsUp marks a ONE-WAY route of a message that CAN be answered (0186):
+	// the chief handed it to the session already on it as a heads-up
+	// (RouteOrigin.HeadsUp, route_to_session's heads_up), because the decision
+	// it asks for is the owner's. Its answer goes to the chief only, as every
+	// one-way route's (AnswersToChief); only the words around it differ — the
+	// sender is not answered THROUGH the session, rather than not at all — and
+	// a hand-back returns a message the chief can still draft a reply to.
+	// Always with OneWay (0186's check).
+	HeadsUp bool
 	// Redraft marks a RouteSendFailed route whose hand-back goes back to the
 	// session it was routed to, to write the reply again (migration 0112),
 	// rather than to the chief: decided once, when it became send_failed
@@ -352,10 +361,17 @@ const RouteViaMCP = "mcp"
 // there was refused by the plugin (RouteSendFailed with Route.Redraft).
 // Refusal is the plugin's reason, which the paste carries (as data); String
 // never spells it.
+//
+// HeadsUp is not WHO made the route but how the chief asked for it: as a
+// one-way heads-up of a message that can be answered (Route.HeadsUp). Only the
+// chief's own route (Via "") takes it; CreateRouteFrom refuses it from any
+// other origin, and it changes nothing for a no_reply message, already
+// one-way. String never spells it: the audit row says heads_up itself.
 type RouteOrigin struct {
 	Via, Host, Session, Thread, PR, HeadSHA string
 	Rule                                    int64
 	Redraft, Refusal                        string
+	HeadsUp                                 bool
 }
 
 // RouteViaRedraft is RouteOrigin.Via for a route muster makes to hand a
@@ -421,14 +437,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, ''), coalesce(target_host, ''), coalesce(paste_sha256, '')`
+	coalesce(pr_head_sha, ''), one_way, heads_up, redraft, coalesce(batch_id, ''), coalesce(target_host, ''), coalesce(paste_sha256, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID, &r.TargetHost, &r.PasteSHA256)
+		&r.PRHeadSHA, &r.OneWay, &r.HeadsUp, &r.Redraft, &r.BatchID, &r.TargetHost, &r.PasteSHA256)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -499,11 +515,18 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule && origin.Via != RouteViaPR) || IsTaskEvent(m)) {
 			return ErrNoReply
 		}
+		if origin.HeadsUp && (origin.Via != "" || IsTaskEvent(m)) {
+			return invalid("only the chief's own route of a message can be a heads-up")
+		}
 		if inFlight != nil {
 			return inFlight
 		}
+		// A heads-up is one-way; on a no_reply message, already one-way, it
+		// is no more than that (HeadsUp marks a message that CAN be answered).
+		headsUp := origin.HeadsUp && !m.NoReply
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil, m.NoReply)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil,
+			m.NoReply || headsUp, headsUp)
 		return err
 	})
 	return r, err
@@ -518,7 +541,7 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin, nil, false)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin, nil, false, false)
 		var pg *pgconn.PgError
 		// Another owner's task (the trigger) and a missing one (the key) alike.
 		if errors.As(err, &pg) && ((pg.Code == "23514" && strings.HasPrefix(pg.Message, "session_routes: owner")) ||
@@ -538,7 +561,7 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 // Only a RouteViaPR origin records its round (pr_head_sha): every other route
 // has none, whatever its origin carries. oneWay marks a no_reply message's
 // route (0087), and its audit row says so.
-func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin, req *RouteRequest, oneWay bool) (Route, error) {
+func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin, req *RouteRequest, oneWay, headsUp bool) (Route, error) {
 	round := ""
 	if origin.Via == RouteViaPR {
 		round = origin.HeadSHA
@@ -550,9 +573,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 		text, sess, batch = &req.Text, &req.SessionID, req.BatchID
 	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way, batch_id, target_host)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12, nullif($13, ''), nullif($14, '')) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay, batch, target.Host))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way, batch_id, target_host, heads_up)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12, nullif($13, ''), nullif($14, ''), $15) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay, batch, target.Host, headsUp))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" ||
 		pg.ConstraintName == "session_routes_one_open_task" || pg.ConstraintName == "session_routes_one_open_request") {
@@ -572,6 +595,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 	}
 	if r.OneWay {
 		detail["one_way"] = true
+	}
+	if r.HeadsUp {
+		detail["heads_up"] = true
 	}
 	if r.BatchID != "" {
 		detail["batch_id"] = r.BatchID
@@ -598,7 +624,7 @@ func (s *PGStore) CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID i
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "request_message_id", "owner_message_id", req.MessageID, target, timeout, RouteOrigin{}, &req, false)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "request_message_id", "owner_message_id", req.MessageID, target, timeout, RouteOrigin{}, &req, false, false)
 		return err
 	})
 	return r, err

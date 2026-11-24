@@ -96,3 +96,38 @@ func TestRestBlanksIdentifiersOnly(t *testing.T) {
 		t.Fatalf("cross-repo rest %q", rest)
 	}
 }
+
+// 🔴 TestAHostCarriesItsNumberedTail: a host named with a numbered tail
+// (gpuhost-4090-7-12) carries that tail as a second key ("~7-12", right after
+// it), because a focus written without hostnames names the host by its tail
+// alone. A row's bare "-7-12" carries the tail key too (rowTerms) — and only a
+// row's: a message's bare number pair is no term (a sender could add them at
+// will), and a tail shorter than four characters ("1-2") is none either.
+func TestAHostCarriesItsNumberedTail(t *testing.T) {
+	for _, c := range []struct {
+		text      string
+		msg, rows []string
+	}{
+		{"gpuhost-4090-7-12 is down", []string{"gpuhost-4090-7-12", "~7-12"}, []string{"gpuhost-4090-7-12", "~7-12"}},
+		{"node -7-12 is at 0/8 GPUs", nil, []string{"~7-12"}},
+		{"nodes 52-110 and -4090-7-12", nil, []string{"~52-110", "~7-12"}},
+		// One numeric part, or a tail of letters: no tail.
+		{"drain node-7k and utf-8 and rack-9-b", []string{"node-7k", "utf-8", "rack-9-b"}, []string{"node-7k", "utf-8", "rack-9-b"}},
+		// Too short to be a host's tail, on either side.
+		{"host-1-2 and 1-2", []string{"host-1-2"}, []string{"host-1-2"}},
+		// A version or a reference is not a pair.
+		{"v1.2.3 and #12-34", []string{"v1.2.3", "#12"}, []string{"v1.2.3", "#12"}},
+	} {
+		msg, _ := distinctiveTerms(c.text, MaxDistinctiveTerms)
+		if fmt.Sprint(msg) != fmt.Sprint(c.msg) {
+			t.Errorf("message %q: %v; want %v", c.text, msg, c.msg)
+		}
+		if rows := rowTerms(c.text); fmt.Sprint(rows) != fmt.Sprint(c.rows) {
+			t.Errorf("row %q: %v; want %v", c.text, rows, c.rows)
+		}
+	}
+	// The tail's SQL prefilter core is the pair itself.
+	if keyCore("~7-12") != "7-12" {
+		t.Fatalf("keyCore(~7-12) = %q", keyCore("~7-12"))
+	}
+}
