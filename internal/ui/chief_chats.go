@@ -16,23 +16,41 @@ import (
 // docs/chief.md#primary-and-side-chats), as the chief page and the chief panel
 // draw them.
 //
-// 🔴 A STRIP OF CHIPS UNDER THE HEADER, NOT A SHEET (an operator ask: "a
-// simpler ui/ux to manage sidechats, no modal"). Both surfaces draw the same
-// strip (chiefChatStrip) over the transcript:
+// 🔴 ONE "SESSIONS" BUTTON AND A DRAWER FROM THE RIGHT, NOT A STRIP OF PILLS
+// (an operator ask: "a slide out from the right side of the screen instead of
+// being big pills at the top"; it replaced the strip of chips that had replaced
+// a sheet). Both surfaces draw the same bar (chiefChatStrip) over the
+// transcript: one small button naming the chat on screen (★ on the primary,
+// its model tag, a dot when ANOTHER chat has an unread reply), which slides a
+// drawer in from the right edge — of the screen on the page, of the panel's
+// column in the panel — listing every chat:
 //
-//	[★ Primary] [side chats, most recent first…] [Archived (n)] … [+]
+//	Sessions                                  ✕
+//	[+ New session]
+//	★ Primary                                 ⋯
+//	side chats, most recent first…  ● sonnet  ⋯
+//	Archived (n) ›   (expands inline)
 //
 // The order is agents.SwitcherOrder's (the server's chiefChatViews hands the
-// sessions over in it); the renderer only places them. A tap on a chip switches
-// to its chat; the chip of the chat on screen is aria-current="true". A side
-// chat's chip carries its unread dot. The archived chats are behind the last
-// chip, "Archived (n)", which expands INLINE into their chips (no dialog). The
-// "+" sits at the strip's end, outside the chips' scroller, so it is on screen
-// however many chats there are. Each chip's actions are in its ⋯ menu (a
-// popover, floatingMenuScript): Fresh primary (with its confirm) on the
-// primary; Make primary and Archive on a side chat; Unarchive on an archived
-// one. A member in a team's shared room (ChiefChatBar.SharedRoom) gets the
-// chips to switch with, and nothing else.
+// sessions over in it); the renderer only places them. A tap on a row switches
+// to its chat and shuts the drawer; the row of the chat on screen is
+// aria-current="true". Each row's actions are in its ⋯ menu (a popover,
+// floatingMenuScript): Fresh primary (with its confirm) on the primary; Make
+// primary and Archive on a side chat; Unarchive on an archived one — and after
+// one of them the drawer is open again on the answer, so the next action is
+// one tap away. A member in a team's shared room (ChiefChatBar.SharedRoom) gets
+// the rows to switch with, and nothing else.
+//
+// 🔴 A DIALOG, AND IT BEHAVES AS ONE: the button carries aria-expanded and
+// aria-controls; the drawer is role="dialog" aria-modal="true", inert and off
+// screen while shut; opening it moves the focus to the chat on screen's row,
+// Tab stays inside it, and Escape, the backdrop and ✕ shut it with the focus
+// back on the button. Escape on an open ⋯ menu is the menu's (the browser's),
+// and an Escape the drawer took is not also the chief panel's.
+//
+// The data attributes keep their chip-era names (data-chief-chip,
+// data-chief-chat-strip, …): they are what both test tiers read, and what they
+// name — a chat's row, the bar — did not change.
 //
 // 🔴 "+" MUST VISIBLY LAND (the operator's "New side chat doesn't work": the
 // server opened the chat and the page moved to it, but nothing on screen said
@@ -205,27 +223,66 @@ func onSurface(surface ChatSurface, path string) string {
 // ChiefNewChatLabel is a chat's chip label until its first line titles it.
 const ChiefNewChatLabel = "New chat"
 
-// chiefArchivedChipText is the "Archived (n)" chip's text for n archived chats.
+// chiefArchivedChipText is the "Archived (n)" toggle's text for n archived chats.
 func chiefArchivedChipText(n int) string {
 	return chiefArchivedLabel + " (" + strconv.Itoa(n) + ")"
 }
 
-// chiefChatStrip is the chief's chats as a strip of chips (see the file's
-// header), for surface: name is the chief's agent name, sessions its chats in
-// agents.SwitcherOrder (primary, side chats by activity, archived), b the chat
-// the view is on. Nothing off a chief's chat.
+// The bar's own vocabulary: its button, the drawer, the drawer's ✕ and its
+// backdrop (valued with the drawer's id).
+const (
+	chiefSessionsOpenAttr     = "data-chief-sessions-open"
+	chiefSessionsDrawerAttr   = "data-chief-sessions-drawer"
+	chiefSessionsCloseAttr    = "data-chief-sessions-close"
+	chiefSessionsBackdropAttr = "data-chief-sessions-backdrop"
+	// chiefSessionsUnreadAttr marks the button's dot: another chat has an
+	// unread reply.
+	chiefSessionsUnreadAttr = "data-chief-sessions-unread"
+)
+
+// ChiefSessionsLabel is the drawer's title, and the start of its button's name.
+const ChiefSessionsLabel = "Sessions"
+
+// chiefSessionsDrawerID is the drawer's element id on surface (one per
+// document: the page has no panel, and the panel's has its own).
+func chiefSessionsDrawerID(surface ChatSurface) string {
+	if surface == ChatSurfaceChiefPanel {
+		return "chief-panel-sessions"
+	}
+	return "chief-sessions"
+}
+
+// chiefChatStrip is the chief's chats as a "Sessions" button and the drawer it
+// opens (see the file's header), for surface: name is the chief's agent name,
+// sessions its chats in agents.SwitcherOrder (primary, side chats by activity,
+// archived), b the chat the view is on. Nothing off a chief's chat.
 //
-// 🔴 ONE ROW, A FIXED HEIGHT: the chips scroll sideways inside it (never wrap),
-// and the row is its final height from its opening tag, so nothing under it
-// moves when a chip is added or the archived ones expand.
+// 🔴 THE BAR IS ITS FINAL HEIGHT FROM ITS OPENING TAG, and the drawer is out of
+// the flow (fixed on the page, absolute over the panel's column), so nothing
+// under the bar moves when the drawer opens, a row is added or the archived ones
+// expand.
+//
+// 🔴 ON THE PANEL THE DRAWER IS `absolute`, NOT `fixed`: ChiefPanel carries a
+// transform, so a fixed descendant would be placed against the panel by a rule
+// this file does not control (chiefThreadList says the same of its sub-view).
+// The panel body's relative column is its containing block, and that column's
+// overflow-hidden clips it while it is slid away.
 func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surface ChatSurface) g.Node {
 	if b == nil {
 		return nil
 	}
 	kind, _ := chiefChatKind(*b)
-	var chips, archived []g.Node
+	var rows, archived []g.Node
 	var archivedIDs []string
-	for _, sess := range sessions {
+	var current *SessionView
+	otherUnread := false
+	for i := range sessions {
+		sess := sessions[i]
+		if sess.Active {
+			current = &sessions[i]
+		} else if sess.Unread {
+			otherUnread = true
+		}
 		// The chat on screen is never hidden behind "Archived (n)", archived or
 		// not (chiefChatViews lists an open archived chat with the side ones).
 		if sess.Archived && !sess.Active {
@@ -233,40 +290,85 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 			archivedIDs = append(archivedIDs, chiefChipID(surface, sess.ID))
 			continue
 		}
-		chips = append(chips, chiefChip(name, b, sess, surface, false))
+		rows = append(rows, chiefChip(name, b, sess, surface, false))
 	}
 	if len(archived) > 0 {
-		chips = append(chips, Li(
-			Class("flex shrink-0 items-center"),
+		rows = append(rows, Li(
+			Class("flex items-center pt-1"),
 			Button(
 				Type("button"),
 				g.Attr(chiefArchivedAttr, ""),
 				g.Attr("aria-expanded", "false"),
-				// The chips it shows and hides.
+				// The rows it shows and hides.
 				g.Attr("aria-controls", strings.Join(archivedIDs, " ")),
-				Class("group press inline-flex h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-xs font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg aria-expanded:bg-s2 aria-expanded:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+				Class("group press inline-flex min-h-[44px] items-center gap-1 whitespace-nowrap rounded-lg px-3 text-xs font-semibold uppercase tracking-wide text-muted transition hover:bg-s2 hover:text-fg aria-expanded:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 				g.Text(chiefArchivedChipText(len(archived))),
 				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition group-aria-expanded:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
 			),
 		))
-		chips = append(chips, archived...)
+		rows = append(rows, archived...)
 	}
+	drawerID := chiefSessionsDrawerID(surface)
+	titleID := drawerID + "-title"
 	pad := "px-2 sm:px-4"
+	backdrop := "fixed inset-0 z-40 bg-black/50"
+	drawer := "fixed inset-y-0 right-0 z-50 w-80 max-w-[88vw] border-l pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
 	if surface == ChatSurfaceChiefPanel {
 		pad = ""
+		backdrop = "absolute inset-0 z-20 rounded-lg bg-black/40"
+		drawer = "absolute inset-y-0 right-0 z-30 w-72 max-w-[92%] rounded-l-lg border-y border-l"
 	}
-	return Nav(
+	return Div(
 		g.Attr(chiefChatStripAttr, ""),
 		g.Attr(chiefChatsAttr, ""),
 		g.Attr(chiefChatKindAttr, kind),
-		g.Attr("aria-label", "Chats"),
-		Class("flex h-[3.25rem] min-w-0 flex-none items-center gap-1.5 "+pad),
-		Ul(
-			g.Attr(chiefChipScrollAttr, ""),
-			Class("flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
-			g.Group(chips),
+		Class("flex h-[3.25rem] min-w-0 flex-none items-center "+pad),
+		chiefSessionsButton(current, drawerID, otherUnread),
+		// The backdrop: a tap on it shuts the drawer. Pointer-only, as the
+		// thread list's is: Escape and ✕ are the keyboard's.
+		Div(
+			g.Attr(chiefSessionsBackdropAttr, drawerID),
+			g.Attr("hidden", ""),
+			g.Attr("aria-hidden", "true"),
+			Class(backdrop),
 		),
-		g.If(!b.SharedRoom, chiefNewChatChip(b, surface)),
+		Div(
+			ID(drawerID),
+			g.Attr(chiefSessionsDrawerAttr, ""),
+			g.Attr("role", "dialog"),
+			g.Attr("aria-modal", "true"),
+			g.Attr("aria-labelledby", titleID),
+			// Shut: inert (out of the tab order and the accessibility tree) and
+			// slid off its edge — not `hidden`, which would leave the slide
+			// nothing to animate from. chiefChipsScript opens and shuts it.
+			g.Attr("inert", ""),
+			g.Attr("data-open", "0"),
+			Class(drawer+" invisible flex translate-x-full flex-col border-line bg-bg shadow-2xl transition-[transform,visibility] duration-200 ease-out"),
+			Div(
+				Class("flex flex-none items-center gap-2 border-b border-line py-1 pl-4 pr-1"),
+				H2(ID(titleID), Class("mr-auto text-sm font-semibold text-fg"), g.Text(ChiefSessionsLabel)),
+				Button(
+					Type("button"),
+					g.Attr(chiefSessionsCloseAttr, ""),
+					g.Attr("aria-label", "Close sessions"),
+					g.Attr("title", "Close sessions"),
+					Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
+				),
+			),
+			Div(
+				Class("flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-2"),
+				g.If(!b.SharedRoom, chiefNewChatChip(b, surface)),
+				Nav(
+					g.Attr("aria-label", "Chief sessions"),
+					Ul(
+						g.Attr(chiefChipScrollAttr, ""),
+						Class("flex flex-col gap-1"),
+						g.Group(rows),
+					),
+				),
+			),
+		),
 		chiefChipsScript(),
 		// The ⋯ menus are placed by floatingMenuScript: the chief page carries
 		// it already; the shell the panel lives in does not (it is bound once
@@ -275,12 +377,55 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 	)
 }
 
-// chiefChip is one chat's chip: a tap switches to it (a boosted link on the
-// page, an hx-get of the panel body in the panel), current when it is the chat
-// on screen, with the ★ on the primary and the unread dot — and, unless the
-// viewer is in a team's shared room, its ⋯ menu BESIDE the link, never inside
-// it: a form in a link is not valid HTML, and a tap meant to open the chat
-// must not archive it. hidden: an archived chat's chip, behind "Archived (n)".
+// chiefSessionsButton is the bar's one control: the chat on screen (★ and
+// "Primary" on the primary, else its title; its model tag), a dot when another
+// chat has an unread reply, and what it opens. Its name is "Sessions: <the
+// chat>" — the visible label inside it, so a voice command naming what is on
+// screen still finds it.
+func chiefSessionsButton(current *SessionView, drawerID string, otherUnread bool) g.Node {
+	label, primary := ChiefSessionsLabel, false
+	var tag g.Node
+	if current != nil {
+		label = textplain.Title(current.Title)
+		if label == "" {
+			label = ChiefNewChatLabel
+		}
+		if current.IsDefault {
+			label, primary = "Primary", true
+		}
+		tag = chiefChipModelTag(*current)
+	}
+	name := ChiefSessionsLabel + ": " + label
+	return Button(
+		Type("button"),
+		g.Attr(chiefSessionsOpenAttr, ""),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-controls", drawerID),
+		g.Attr("aria-label", name),
+		g.Attr("title", name),
+		Class("press inline-flex h-11 min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-lg bg-s1 pl-2.5 pr-2 text-sm font-medium text-fg ring-1 ring-inset ring-line transition hover:bg-s2 aria-expanded:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>`),
+		g.If(primary, Span(g.Attr(sessionDefaultAttr, ""), g.Attr("aria-hidden", "true"), Class("shrink-0 text-accent"), g.Text("★"))),
+		Span(Class("min-w-0 truncate"), g.Text(label)),
+		tag,
+		g.If(otherUnread, Span(
+			g.Attr(chiefSessionsUnreadAttr, ""),
+			g.Attr("role", "img"),
+			g.Attr("aria-label", "Unread replies in other sessions"),
+			Class("h-2 w-2 shrink-0 rounded-full bg-accent"),
+		)),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
+	)
+}
+
+// chiefChip is one chat's row in the drawer: a tap switches to it (a boosted
+// link on the page, an hx-get of the panel body in the panel), current when it
+// is the chat on screen, with the ★ on the primary, its model tag and the
+// unread dot — and, unless the viewer is in a team's shared room, its ⋯ menu
+// BESIDE the link, never inside it: a form in a link is not valid HTML, and a
+// tap meant to open the chat must not archive it. hidden: an archived chat's
+// row, behind "Archived (n)".
 func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurface, hidden bool) g.Node {
 	title := textplain.Title(sess.Title)
 	if title == "" {
@@ -298,9 +443,9 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 		label = "Primary"
 	}
 	id := strconv.FormatInt(sess.ID, 10)
-	cls := "press inline-flex h-11 min-w-0 max-w-[11rem] items-center gap-1.5 whitespace-nowrap rounded-full pl-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "
+	cls := "press flex min-h-[44px] min-w-0 flex-1 items-center gap-1.5 rounded-lg pl-3 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "
 	if b.SharedRoom {
-		cls += "pr-3.5 "
+		cls += "pr-3 "
 	} else {
 		cls += "pr-1 "
 	}
@@ -338,7 +483,7 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 	} else {
 		link = A(Href(AgentSessionHref(name, sess.ID)), common, inner)
 	}
-	ring := "bg-s1 ring-line hover:bg-s2"
+	ring := "ring-transparent hover:bg-s1"
 	if sess.Active {
 		ring = "bg-accent/15 ring-accent/60"
 	}
@@ -348,14 +493,14 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 		g.If(hidden, g.Attr(chiefArchivedChipAttr, "")),
 		g.If(hidden, g.Attr("hidden", "")),
 		g.If(hidden, ID(chiefChipID(surface, sess.ID))),
-		Class("flex h-11 shrink-0 items-center rounded-full ring-1 ring-inset transition "+ring),
+		Class("flex min-h-[44px] items-center rounded-lg ring-1 ring-inset transition "+ring),
 		link,
 		g.If(!b.SharedRoom, chiefChipMenu(b, sess, kind, label, surface)),
 	)
 }
 
-// chiefChipID is the element id of chat sid's chip on surface: an archived
-// chip's, which the "Archived (n)" toggle names in aria-controls.
+// chiefChipID is the element id of chat sid's row on surface: an archived
+// row's, which the "Archived (n)" toggle names in aria-controls.
 func chiefChipID(surface ChatSurface, sid int64) string {
 	if surface == ChatSurfaceChiefPanel {
 		return "chief-panel-chip-" + strconv.FormatInt(sid, 10)
@@ -465,7 +610,10 @@ func chipModelText(model string) string {
 	return model
 }
 
-// chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
+// ChiefNewSessionLabel is the drawer's new-chat control's words (and name).
+const ChiefNewSessionLabel = "New session"
+
+// chiefNewChatChip is the drawer's "+ New session": a new side chat (or the newest one,
 // reused while it is still empty and on the same model: internal/api
 // openSideChat). Its answer moves the view to that chat, with the cursor in its
 // message box (the route's answer asks for it: ComposerFocusParam).
@@ -478,8 +626,12 @@ func chipModelText(model string) string {
 // before.
 func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 	post := chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(b.AgentID)))
-	cls := "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-	plus := Span(g.Attr("aria-hidden", "true"), g.Text("+"))
+	cls := "press flex min-h-[44px] w-full items-center gap-2 rounded-lg bg-s1 px-3 text-left text-sm font-medium text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	// The name is the visible words, "New session".
+	plus := g.Group{
+		Span(g.Attr("aria-hidden", "true"), Class("text-lg leading-none text-accent"), g.Text("+")),
+		Span(g.Text(ChiefNewSessionLabel)),
+	}
 	if len(b.NewChatModels) == 0 && !b.OpenRouter {
 		return Form(
 			post,
@@ -487,8 +639,7 @@ func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 			Button(
 				Type("submit"),
 				g.Attr(chiefSideChatAttr, ""),
-				g.Attr("aria-label", "New side chat"),
-				g.Attr("title", "New side chat"),
+				g.Attr("title", ChiefNewSessionLabel),
 				Class(cls),
 				plus,
 			),
@@ -539,8 +690,7 @@ func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
 			g.Attr("popovertarget", id),
 			g.Attr("aria-haspopup", "menu"),
 			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "New side chat"),
-			g.Attr("title", "New side chat"),
+			g.Attr("title", ChiefNewSessionLabel),
 			Class(cls),
 			plus,
 		),
@@ -564,58 +714,149 @@ func chiefModelLabel(model string) string {
 // plain load or reload of ?session=N never takes the focus.
 const ComposerFocusParam = "focus"
 
-// chiefChipsScript is the strip's behaviour, bound once per document (htmx
-// re-executes it on every swap that brings a strip; the guard leaves only the
-// scroll step to run again):
+// chiefSessionsReopenKey is the sessionStorage key a ⋯ action sets as its
+// request starts, so the answer — a reload of the page (HX-Redirect), a new
+// panel body — opens the drawer again (chiefChipsScript).
+const chiefSessionsReopenKey = "muster.chief.v1.sessions-reopen"
+
+// chiefChipsScript is the drawer's behaviour, bound once per document (htmx
+// re-executes it on every swap that brings a bar; the guard leaves only the
+// re-open step to run again):
 //
-//   - THE CURRENT CHIP IS SCROLLED INTO VIEW on arrival (a phone shows two or
-//     three chips), inside the strip's own scroller — never the page's.
-//   - "Archived (n)" toggles its chats' chips inline (aria-expanded).
+//   - THE BUTTON OPENS ITS DRAWER (aria-controls), the focus moves to the row
+//     of the chat on screen, and Tab is kept inside it while it is open.
+//   - ✕, THE BACKDROP AND ESCAPE SHUT IT, the focus back on the button. The
+//     Escape listener is a CAPTURE listener on document, so it runs before the
+//     chief panel's own (which shuts the whole panel), and it takes the key
+//     (preventDefault, stopPropagation) only when a drawer is open and no
+//     popover is: an open ⋯ menu is the top layer, and its Escape is the
+//     browser's.
+//   - A TAP ON A ROW SHUTS IT as the switch starts (the answer replaces the
+//     bar anyway; shutting at once is what makes the pick feel immediate).
+//   - "Archived (n)" toggles its chats' rows inline (aria-expanded).
+//   - A ⋯ ACTION'S ANSWER OPENS IT AGAIN: the action's request records the
+//     drawer (chiefSessionsReopenKey, sessionStorage, with the time), and the
+//     page or panel body that answers opens it. A record older than 15s, or one
+//     whose request failed, is dropped, so a later load never opens it
+//     unasked.
 func chiefChipsScript() g.Node {
 	return Script(g.Raw(`
 (function () {
-  function reveal() {
-    var ss = document.querySelectorAll('[` + chiefChipScrollAttr + `]');
-    for (var i = 0; i < ss.length; i++) {
-      var sc = ss[i], cur = sc.querySelector('[aria-current="true"]');
-      if (!cur) continue;
-      var chip = cur.closest('[` + chiefChipAttr + `]') || cur;
-      var sr = sc.getBoundingClientRect(), cr = chip.getBoundingClientRect();
-      if (cr.left < sr.left) sc.scrollLeft += cr.left - sr.left - 8;
-      else if (cr.right > sr.right) sc.scrollLeft += cr.right - sr.right + 8;
+  var OPEN = '` + chiefSessionsOpenAttr + `', DRAWER = '` + chiefSessionsDrawerAttr + `';
+  var CLOSE = '` + chiefSessionsCloseAttr + `', BACK = '` + chiefSessionsBackdropAttr + `';
+  var ROW = '` + chiefChatRowAttr + `', MENU = '` + chiefChatMenuAttr + `';
+  var ARCH = '` + chiefArchivedAttr + `', ARCH_ROW = '` + chiefArchivedChipAttr + `';
+  var KEY = '` + chiefSessionsReopenKey + `';
+  function ss() { try { return window.sessionStorage; } catch (e) { return null; } }
+  function clearReopen() { var s = ss(); if (s) { try { s.removeItem(KEY); } catch (e) {} } }
+  function trigger(d) { return document.querySelector('[' + OPEN + '][aria-controls="' + d.id + '"]'); }
+  function isOpen(d) { return d.getAttribute('data-open') === '1'; }
+  function setOpen(d, open, focusBack) {
+    d.setAttribute('data-open', open ? '1' : '0');
+    d.classList.toggle('translate-x-full', !open);
+    d.classList.toggle('invisible', !open);
+    d.classList.toggle('translate-x-0', open);
+    if (open) d.removeAttribute('inert'); else d.setAttribute('inert', '');
+    var bk = document.querySelector('[' + BACK + '="' + d.id + '"]');
+    if (bk) bk.hidden = !open;
+    var t = trigger(d);
+    if (t) t.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      var f = d.querySelector('[' + ROW + '][aria-current="true"]') || d.querySelector('[' + CLOSE + ']');
+      try { if (f) f.focus({ preventScroll: true }); } catch (e) {}
+    } else if (focusBack && t) {
+      try { t.focus({ preventScroll: true }); } catch (e) {}
     }
   }
-  if (window.__musterChiefChips) { reveal(); return; }
-  window.__musterChiefChips = true;
-  // Only a swap that brought a strip (the panel body) scrolls it again: the
-  // page's other swaps (the context chip, the transcript) must not scroll the
-  // strip back under the operator's thumb.
-  document.addEventListener('htmx:afterSettle', function (e) {
-    var t = e.detail && e.detail.target;
-    if (t && t.querySelector && t.querySelector('[` + chiefChatStripAttr + `]')) reveal();
-  });
+  function openDrawer() {
+    var ds = document.querySelectorAll('[' + DRAWER + '][data-open="1"]');
+    return ds.length ? ds[ds.length - 1] : null;
+  }
+  // The focusable controls of d now on screen (a shut ⋯ menu and a hidden
+  // archived row are not).
+  function focusables(d) {
+    var all = d.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])');
+    var out = [];
+    for (var i = 0; i < all.length; i++) if (all[i].getClientRects().length) out.push(all[i]);
+    return out;
+  }
+  // reopen: a ⋯ action's answer has landed; its drawer opens again.
+  function reopen() {
+    var s = ss(), raw = null;
+    if (s) { try { raw = s.getItem(KEY); } catch (e) {} }
+    if (!raw) return;
+    var v = null;
+    try { v = JSON.parse(raw); } catch (e) {}
+    var d = v && v.id && document.getElementById(v.id);
+    if (!v || !(Date.now() - v.t < 15000)) { clearReopen(); return; }
+    if (!d) return;
+    clearReopen();
+    setOpen(d, true);
+  }
+  if (window.__musterChiefSessions) { reopen(); return; }
+  window.__musterChiefSessions = true;
   document.addEventListener('click', function (e) {
-    var b = e.target && e.target.closest && e.target.closest('button[` + chiefArchivedAttr + `]');
-    if (!b) return;
-    var strip = b.closest('[` + chiefChatStripAttr + `]');
-    if (!strip) return;
-    var open = b.getAttribute('aria-expanded') !== 'true';
-    b.setAttribute('aria-expanded', open ? 'true' : 'false');
-    var cs = strip.querySelectorAll('[` + chiefArchivedChipAttr + `]');
-    for (var i = 0; i < cs.length; i++) cs[i].hidden = !open;
-    if (open && cs.length) {
-      var sc = b.closest('[` + chiefChipScrollAttr + `]');
-      var sr = sc.getBoundingClientRect(), last = cs[cs.length - 1].getBoundingClientRect();
-      if (last.right > sr.right) sc.scrollLeft += Math.min(last.right - sr.right + 8, b.getBoundingClientRect().left - sr.left);
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var o = t.closest('[' + OPEN + ']');
+    if (o) {
+      var d0 = document.getElementById(o.getAttribute('aria-controls') || '');
+      if (d0) setOpen(d0, !isOpen(d0), true);
+      return;
     }
+    var c = t.closest('[' + CLOSE + ']');
+    if (c) { var d1 = c.closest('[' + DRAWER + ']'); if (d1) setOpen(d1, false, true); return; }
+    var bk = t.closest('[' + BACK + ']');
+    if (bk) { var d2 = document.getElementById(bk.getAttribute(BACK)); if (d2) setOpen(d2, false, true); return; }
+    var a = t.closest('button[' + ARCH + ']');
+    if (a) {
+      var dr = a.closest('[' + DRAWER + ']');
+      if (!dr) return;
+      var show = a.getAttribute('aria-expanded') !== 'true';
+      a.setAttribute('aria-expanded', show ? 'true' : 'false');
+      var rs = dr.querySelectorAll('[' + ARCH_ROW + ']');
+      for (var i = 0; i < rs.length; i++) rs[i].hidden = !show;
+      return;
+    }
+    var row = t.closest('[' + ROW + ']');
+    if (row) { var d3 = row.closest('[' + DRAWER + ']'); if (d3 && isOpen(d3)) setOpen(d3, false, false); }
   });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', reveal);
-  else reveal();
+  document.addEventListener('keydown', function (e) {
+    var d = openDrawer();
+    if (!d) return;
+    if (e.key === 'Escape') {
+      if (e.defaultPrevented) return;
+      try { if (document.querySelector(':popover-open')) return; } catch (err) {}
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(d, false, true);
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    var f = focusables(d);
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1], at = document.activeElement;
+    var inside = at && d.contains(at);
+    if (e.shiftKey && (at === first || !inside)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (at === last || !inside)) { e.preventDefault(); first.focus(); }
+  }, true);
+  document.addEventListener('htmx:beforeRequest', function (e) {
+    var el = e.target;
+    if (!el || !el.closest || !el.closest('[' + MENU + ']')) return;
+    var d = el.closest('[' + DRAWER + ']');
+    var s = ss();
+    if (!d || !s) return;
+    try { s.setItem(KEY, JSON.stringify({ id: d.id, t: Date.now() })); } catch (err) {}
+  });
+  document.addEventListener('htmx:responseError', clearReopen);
+  document.addEventListener('htmx:sendError', clearReopen);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', reopen);
+  else reopen();
 })();
 `))
 }
 
-// chiefPageStrip is the chief PAGE's strip: a row of its own under the header,
+// chiefPageStrip is the chief PAGE's bar: a row of its own under the header,
 // in the chat column's width. Nothing off a chief's chat.
 func chiefPageStrip(v AgentDetailView) g.Node {
 	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {

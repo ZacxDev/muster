@@ -1591,10 +1591,22 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// session that was latest when it was drawn. If another session has become the latest since, go there —
 	// what the bare URL would have done at tap time. A link without the marker
 	// (the session drawer) means its session and is never moved.
+	//
+	// 🔴 FOR THE CHIEF "WHAT THE BARE URL WOULD HAVE DONE" IS NOT THE LATEST: it
+	// is the chat its owner was on last (chiefOpenSession). Its sidebar row is
+	// this link, and it used to land on the chat a delivery had touched last.
 	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {
-		if latest := s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]; latest != 0 && latest != active.ID {
+		var want int64
+		if s.isChiefAgent(ctx, a) {
+			if open, err := s.chiefOpenSession(ctx, a); err == nil {
+				want = open.ID
+			}
+		} else {
+			want = s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]
+		}
+		if want != 0 && want != active.ID {
 			outcome = "redirect"
-			http.Redirect(w, r, ui.AgentSessionHref(a.Name, latest), http.StatusSeeOther)
+			http.Redirect(w, r, ui.AgentSessionHref(a.Name, want), http.StatusSeeOther)
 			return
 		}
 	}
@@ -1607,8 +1619,12 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if viewRequest(r) {
 		s.outcomeViewed(ctx, a) // a wait not yet told is seen (agent_outcome.go)
 	}
-	// Opening a session clears its unread replies (best-effort).
-	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
+	// Opening a session clears its unread replies (best-effort) — and a real
+	// view (not a prefetch) is the chat the owner is on now, which the chief
+	// opens on next time (chiefOpenSession).
+	if viewRequest(r) {
+		s.markSessionViewed(ctx, active.ID)
+	} else if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
 	}
 	ctx = op.begin("messages")
@@ -1799,13 +1815,19 @@ func (s *Server) resolveSessions(ctx context.Context, a agents.Agent, sessionPar
 			active = sess
 		}
 	}
-	// 🔴 THE CHIEF OPENS ON ITS PRIMARY CHAT, every other agent on its latest
-	// session. The chief's latest is whatever was touched last — a side chat the
-	// owner left, an old thread — while the primary is where every delivery
-	// lands (chief_chats.go).
+	// 🔴 THE CHIEF OPENS ON THE CHAT ITS OWNER WAS ON LAST (chiefOpenSession:
+	// the last viewed, else the primary), every other agent on its latest
+	// session. The chief's LATEST is whatever was touched last — and every
+	// delivery touches the primary — so it is not where the owner was.
+	// A ?session= that names no chat of this agent (a stale link) is the
+	// primary, as before: it named something, just not something that is here.
 	chief := s.isChiefAgent(ctx, a)
 	if active.ID == 0 && chief {
-		active, _ = s.primarySession(ctx, a)
+		if sessionParam == "" {
+			active, _ = s.chiefOpenSession(ctx, a)
+		} else {
+			active, _ = s.primarySession(ctx, a)
+		}
 	}
 	if active.ID == 0 {
 		active, _ = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)

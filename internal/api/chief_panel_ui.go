@@ -120,10 +120,12 @@ func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWri
 			s.logger.Printf("chief: elect the default session of %d: %v", a.ID, err)
 		}
 	}
+	// 🔴 NO ?session= IS "WHERE THE OWNER WAS LAST", ON EITHER SURFACE
+	// (resolveSessions → chiefOpenSession): the panel's body asks with none on
+	// every open, so it opens on the chat the owner left on the chief page too.
+	// The body drawn is the chat the owner is on now.
 	active, sessions, listErr := s.resolveSessions(ctx, a, sessionParam)
-	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
-		s.logger.Printf("chief: mark session %d read: %v", active.ID, err)
-	}
+	s.markSessionViewed(ctx, active.ID)
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
 	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
