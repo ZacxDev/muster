@@ -2120,6 +2120,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusPolicyViolation, truncate(why, 120))
 	})()
 
+	// The label of this socket's own lines: "You" in a team's shared chat
+	// (chatTypers), none in a personal one.
+	echoTyper := ""
+	if teamChat(ctx, agentOwnerID(a)) {
+		echoTyper = chatTyperYou
+	}
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
@@ -2147,7 +2153,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// The page drew the message as plain text the moment it sent it; this is
 		// its html (agentChatScript's 'sent'), sent for every message read, so the
 		// page's queue of waiting bubbles and these echoes stay one to one.
-		_ = wsWriteJSON(ctx, c, wsSentEcho(in.Text))
+		_ = wsWriteJSON(ctx, c, wsSentEcho(in.Text, echoTyper))
 		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
 		// message the gate refuses (the agent is being replaced) starts no turn,
 		// so it must not answer the agent's asks either.

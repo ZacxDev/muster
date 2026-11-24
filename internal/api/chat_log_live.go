@@ -30,7 +30,7 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName,
-			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0, Relay: relayOf(m)})
+			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0, TypedBy: m.TypedBy, Relay: relayOf(m)})
 	}
 	return lines
 }
@@ -89,10 +89,12 @@ func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, ses
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
 	// The chief's chat: its replies draw session cards (session_cards.go) and
 	// its newest reply is never folded (ui.AgentDetailView.UnfoldNewest).
-	_, chief, err := s.agentIsChief(ctx, session.AgentID)
+	a, chief, err := s.agentIsChief(ctx, session.AgentID)
 	if err != nil {
 		s.logger.Printf("chat log: agent %d: could not decide whether it is the chief: %v", session.AgentID, err)
 	}
+	// A team's shared chat names who typed each line (chatTypers).
+	s.chatTypers(ctx, agentOwnerID(a), v.Messages)
 	v.UnfoldNewest = chief
 	v.Mentions = s.chatMentionIndex(ctx, chief)
 	for _, l := range v.Messages {
