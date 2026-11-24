@@ -16,6 +16,7 @@ GET /account/credentials	csp1	pp2
 GET /account/devices/live	csp1	pp2
 GET /account/features	csp1	pp2
 GET /account/passkeys	csp1	pp2
+GET /account/passkeys/proof/status	csp1	pp2
 GET /account/teams	csp1	pp2
 GET /account/tokens	csp1	pp2
 GET /admin/apps	csp1	pp2
