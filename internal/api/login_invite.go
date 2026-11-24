@@ -549,6 +549,8 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// ResetCredentials also REVOKES every personal API token the user holds, in
 	// the cutoff's transaction (accounts PR 6): a reset is what someone does
 	// after a credential leaked, and a token is a credential.
+	// Told FIRST, while its phones are still paired (the reset unpairs them).
+	s.notifySecurity(r.Context(), u.ID, ResetLinkUsedTitle, ResetLinkBody, "/account")
 	cut, err := s.gt.Accounts.ResetCredentials(r.Context(), u.ID)
 	if err != nil {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)

@@ -40,7 +40,7 @@ import (
 
 // The pairing gate's words.
 const (
-	PairStepUpProofNeeded = "To pair a phone that confirms requests, first confirm on Account, Passkeys with a passkey you have or your paired phone, then show the pairing code again. With neither left (phones unpaired, passkeys gone, or the phone's key invalidated), the way back is a password reset by email."
+	PairStepUpProofNeeded = "To pair a phone that confirms requests, first confirm on Account, Passkeys with a passkey you have or your paired phone, then show the pairing code again. With neither left, ask another admin for a password reset link, or, if you are the only admin, ask whoever runs the server to recover your account."
 	PhonePairedTitle      = "A phone was paired to your account"
 	PhonePairedBody       = "If this was not you, remove it under Account, Devices, and change your password."
 )

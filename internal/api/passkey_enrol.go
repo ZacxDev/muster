@@ -229,12 +229,13 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 	if ok {
 		return enrolNeed{ticket: &t}, nil
 	}
-	var list []gotrue.Passkey
-	if s.passkeysServed(ctx) {
-		var err error
-		if list, err = s.accountPasskeys(ctx, ip, creds); err != nil {
-			return enrolNeed{}, err
-		}
+	// 🔴 THE ACCOUNT'S PASSKEYS ARE LISTED WHATEVER GoTrue's /settings SAY
+	// (as the reset counts them): a /settings blip reads as "passkeys off",
+	// and an account whose only factor is a passkey must not open on it. A
+	// list that fails refuses (fail closed).
+	list, err := s.accountPasskeys(ctx, ip, creds)
+	if err != nil {
+		return enrolNeed{}, err
 	}
 	phone, err := s.stepUpPhonePaired(ctx)
 	if err != nil {
@@ -244,7 +245,7 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 	if n.passkey || n.phone {
 		// The sticky tier (migration 0188): an account seen with a factor
 		// stays gated, whatever later empties its rows.
-		s.markStrongFactor(ctx, uid)
+		_ = s.markStrongFactor(ctx, uid) // the live rows gate meanwhile
 	}
 	// 🔴 "OPEN" ONLY FOR AN ACCOUNT THAT HAS NEVER HAD ONE. The live rows can
 	// be emptied by the password alone (Sign out everywhere unpairs every
@@ -348,15 +349,20 @@ func (s *Server) hadStrongFactor(ctx context.Context, uid int64) (bool, error) {
 }
 
 // markStrongFactor records that account uid has a passkey or a step-up
-// phone. A failed write is logged (the live rows still gate until it lands).
-func (s *Server) markStrongFactor(ctx context.Context, uid int64) {
+// phone, and returns the write's error (logged here). 🔴 A caller about to
+// REMOVE a factor refuses on an error: the removal would empty the live rows
+// with nothing recording the account ever had one. A caller that only ADDED
+// one may go on: the live row it just wrote still gates.
+func (s *Server) markStrongFactor(ctx context.Context, uid int64) error {
 	st, ok := s.ext.Users.(strongFactorStore)
 	if !ok || uid <= 0 {
-		return
+		return nil
 	}
-	if err := st.MarkStrongFactor(ctx, uid); err != nil {
+	err := st.MarkStrongFactor(ctx, uid)
+	if err != nil {
 		s.logger.Printf("account: mark user %d as having had a strong factor: %v", uid, err)
 	}
+	return err
 }
 
 // clearStrongFactor reopens account uid's first-factor tier: ONLY a

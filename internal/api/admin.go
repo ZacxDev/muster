@@ -375,6 +375,13 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminUsers(w, r, http.StatusBadRequest, "Choose admin or member.", "")
 		return
 	}
+	// 🔴 A PROMOTION TAKES THE ACTING ADMIN'S PROOF (admin_proof.go).
+	if role == authz.RoleAdmin {
+		if why := s.adminProof(r, false, false); why != "" {
+			s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
+			return
+		}
+	}
 	by := actorOf(r)
 	_, err := s.gt.Accounts.SetRole(r.Context(), by, u.ID, role)
 	if errors.Is(err, users.ErrLastAdmin) {
@@ -416,6 +423,13 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 		s.renderAdminUsers(w, r, http.StatusConflict, "That user has no login to reset.", "")
 		return
 	}
+	// 🔴 A RESET LINK FOR AN ACCOUNT THAT HAS HAD A FACTOR takes the acting
+	// admin's proof, from an account that has had one too (admin_proof.go): a
+	// completed reset clears the target's mark.
+	if why := s.adminProof(r, s.targetMarked(r, u), true); why != "" {
+		s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
+		return
+	}
 	by := actorOf(r)
 	var hashed string
 	// The audit row and the link are one fact: the row commits only if GoTrue
@@ -430,6 +444,8 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 		s.renderAdminUsers(w, r, http.StatusBadGateway, "A reset link could not be made right now.", "")
 		return
 	}
+	// The account is told a link exists (and again when it is used).
+	s.notifySecurity(r.Context(), u.ID, ResetLinkMintedTitle, ResetLinkBody, "/account")
 	link := strings.TrimRight(s.auth.PublicURL, "/") + ResetPath + "#" + hashed
 	s.renderAdminUsers(w, r, http.StatusOK, "", shownOnce("Reset link for "+u.Email, link,
 		"Send this to them. It sets a new password once and then stops working."))

@@ -38,8 +38,8 @@ const (
 	AdminRemovedPasskeysTitle = "An admin removed every passkey from your account"
 	// SignedOutEverywhereTitle: Sign out everywhere, which unpairs every
 	// phone; sent to every device BEFORE it is unpaired.
-	SignedOutEverywhereTitle = "You signed out everywhere: your phones were unpaired"
-	SignedOutEverywhereBody  = "If this was not you, reset your password by email."
+	SignedOutEverywhereTitle = "You signed out everywhere: your phones are being unpaired"
+	SignedOutEverywhereBody  = "If this was not you, ask another admin for a password reset link."
 	// PasskeyDeleteProofNeeded: a passkey of the account is deleted with a
 	// proof (passkey_enrol.go).
 	PasskeyDeleteProofNeeded = "To remove a passkey, first confirm below with a passkey you have (the one you are removing will do) or on your paired phone, then remove it within ten minutes."

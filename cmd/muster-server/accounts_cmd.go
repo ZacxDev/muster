@@ -28,12 +28,18 @@ import (
 //	muster-server user disable <id>      disabled_at + GoTrue ban, and the
 //	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
+//	muster-server user clear-strong-factor <id|email>
+//	                                     reopen the account's first-factor tier
+//	                                     (migration 0188), as a completed password
+//	                                     reset does: the recovery for a sole admin
+//	                                     who lost every passkey and phone
 //	muster-server app install|rotate|uninstall|list|unlink
 //	                                     server-installed apps (app_cmd.go)
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server invite --claim-admin\n"+
 			"       muster-server user disable|enable <user-id>\n"+
+			"       muster-server user clear-strong-factor <user-id|email>\n"+
 			"       muster-server app install|rotate|uninstall|list|unlink …")
 		return 2
 	}
@@ -74,6 +80,37 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		if note != "" {
 			fmt.Fprintln(stderr, note)
 		}
+		return 0
+	case len(args) == 3 && args[0] == "user" && args[1] == "clear-strong-factor":
+		// THE RECOVERY FOR A SOLE ADMIN WHO LOST EVERY FACTOR (docs/auth.md,
+		// "Adding a passkey"): on a server with no other admin to mint a reset
+		// link, whoever can reach the database clears the record that keeps
+		// the account gated, so its next passkey or step-up phone is added as
+		// a first factor. Not reachable over HTTP: a shell with DATABASE_URL is
+		// the proof.
+		pool, err := db.Connect(ctx, cfg.Database)
+		if err != nil {
+			fmt.Fprintf(stderr, "db connect: %v\n", err)
+			return 1
+		}
+		defer pool.Close()
+		st := users.NewPG(pool)
+		id, perr := strconv.ParseInt(args[2], 10, 64)
+		if perr != nil || id <= 0 {
+			var found bool
+			if id, found, err = st.IDByEmail(ctx, args[2]); err != nil || !found {
+				fmt.Fprintf(stderr, "user %q: no such user (%v)\n", args[2], err)
+				return 1
+			}
+		}
+		if err := st.ClearStrongFactor(ctx, id); err != nil {
+			fmt.Fprintf(stderr, "user %d: %v\n", id, err)
+			return 1
+		}
+		if err := st.Audit(ctx, users.Actor{Via: "cli"}, "user.strong_factor_cleared", users.UserObject(id), nil); err != nil {
+			fmt.Fprintf(stderr, "user %d: audit: %v (the record was cleared)\n", id, err)
+		}
+		fmt.Fprintf(stdout, "user %d: cleared. Its next passkey or phone that confirms requests is added as a first factor.\n", id)
 		return 0
 	case len(args) == 3 && args[0] == "user" && (args[1] == "disable" || args[1] == "enable"):
 		id, err := strconv.ParseInt(args[2], 10, 64)

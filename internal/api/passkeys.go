@@ -313,6 +313,9 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	s.setGoTrueCookies(w, sess)
 	s.setGoTrueKnownDevice(w, u.ID)
 	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)
+	// The account has a passkey: marked (migration 0188), which closes the
+	// gap SQL could not backfill (passkeys live in GoTrue).
+	_ = s.markStrongFactor(r.Context(), u.ID)
 	s.logger.Printf("login: user %d signed in with a passkey", u.ID)
 	s.writeJSON(w, http.StatusOK, map[string]any{"redirect": safeReturnTo(body.Next)})
 }
@@ -612,7 +615,7 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": PasskeyEnrolRecordFail})
 		return
 	}
-	s.markStrongFactor(r.Context(), uid)
+	_ = s.markStrongFactor(r.Context(), uid) // the new passkey gates meanwhile
 	s.auditPasskeyAdded(r.Context(), uid, p.ID, clientIP(r), proof, vouched)
 	s.logger.Printf("passkeys: user %d added a passkey (proof: %s; decides step-up cards: %t)", uid, proof, vouched)
 	s.notifyPasskeyAdded(r.Context(), uid)
@@ -644,7 +647,10 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	// The account has a passkey: it is marked as having had a factor
 	// (migration 0188), so deleting this one never reopens the first-factor
 	// tier.
-	s.markStrongFactor(r.Context(), uid)
+	if err := s.markStrongFactor(r.Context(), uid); err != nil {
+		s.renderAccountPasskeys(w, r, http.StatusServiceUnavailable, creds, PasskeyEnrolUnchecked)
+		return
+	}
 	need, err := s.passkeyEnrolNeed(r.Context(), creds, clientIP(r), true)
 	if err != nil {
 		s.renderAccountPasskeys(w, r, http.StatusServiceUnavailable, creds, PasskeyEnrolUnchecked)
@@ -693,9 +699,18 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 		s.renderAdminUsers(w, r, http.StatusConflict, "That user has no login.", "")
 		return
 	}
+	// 🔴 An account that has had a factor is stripped only with the acting
+	// admin's proof, from an account that has had one (admin_proof.go).
+	if why := s.adminProof(r, s.targetMarked(r, u), true); why != "" {
+		s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
+		return
+	}
 	// The account had a passkey: it stays gated after they are removed
 	// (migration 0188), and it is told.
-	s.markStrongFactor(r.Context(), u.ID)
+	if err := s.markStrongFactor(r.Context(), u.ID); err != nil {
+		s.renderAdminUsers(w, r, http.StatusServiceUnavailable, PasskeyEnrolUnchecked, "")
+		return
+	}
 	n := 0
 	err := s.gt.Accounts.Audited(r.Context(), actorOf(r), "user.passkeys_removed", users.UserObject(u.ID), nil, func() error {
 		var err error

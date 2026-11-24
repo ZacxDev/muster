@@ -267,7 +267,10 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 	if list[i].HasStepUpKey {
 		// The account has a step-up phone: marked (migration 0188), so
 		// removing it never reopens the first-factor tier.
-		s.markStrongFactor(r.Context(), requestOwner(r.Context()))
+		if err := s.markStrongFactor(r.Context(), requestOwner(r.Context())); err != nil {
+			http.Error(w, "the device could not be removed", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	// 🔴 Not with the password alone where the account can prove more
 	// (passkey_removal.go).
@@ -369,7 +372,7 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
 	if d.HasStepUpKey {
-		s.markStrongFactor(r.Context(), d.OwnerID) // the sticky tier (migration 0188)
+		_ = s.markStrongFactor(r.Context(), d.OwnerID) // the sticky tier (migration 0188); the new row gates meanwhile
 	}
 	// Every device already registered is told (pairing_gate.go).
 	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
@@ -387,6 +390,14 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 // Account → Devices' Remove, under the device's owner.
 func (s *Server) handleDeviceUnpair(w http.ResponseWriter, r *http.Request) {
 	d := deviceFromContext(r.Context())
+	// A step-up phone leaving marks its account first (migration 0188): its
+	// own unpair must not reopen the first-factor tier. Fail closed.
+	if d.HasStepUpKey {
+		if err := s.markStrongFactor(r.Context(), d.OwnerID); err != nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "the device could not be unpaired; try again"})
+			return
+		}
+	}
 	if _, err := s.ext.Devices.Remove(r.Context(), d.ID); err != nil {
 		s.logger.Printf("devices: unpair %d: %v", d.ID, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the device could not be unpaired"})

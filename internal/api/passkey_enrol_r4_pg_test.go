@@ -30,7 +30,7 @@ func TestSigningOutEverywhereDoesNotReopenPairing(t *testing.T) {
 	if n := r.stepUpPhones(t); n != 0 {
 		t.Fatalf("fixture: sign out everywhere left %d phone(s)", n)
 	}
-	if n := r.pushedTitle("You signed out everywhere: your phones were unpaired"); n != 1 {
+	if n := r.pushedTitle("You signed out everywhere: your phones are being unpaired"); n != 1 {
 		t.Fatalf("the phone was told %d time(s) before it was unpaired, want 1", n)
 	}
 	r.at, r.rt = r.login() // the password, again
@@ -87,6 +87,11 @@ func TestAPasswordResetClearsTheStickyTier(t *testing.T) {
 	if !had() {
 		t.Fatal("fixture: the account is not marked")
 	}
+	// A link for a marked account takes the acting admin's proof, from an
+	// account that has had a factor (admin_proof.go).
+	a := adminSelf(t, w)
+	_ = w.s.markStrongFactor(context.Background(), a)
+	grantEnrolTicket(t, w.s, w.fake, a, w.adminAT)
 	rec := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/reset-link", url.Values{}, w.asAdmin())
 	m := regexp.MustCompile(regexp.QuoteMeta(invitePublic+ResetPath+"#") + `([A-Za-z0-9_-]+)`).FindStringSubmatch(rec.Body.String())
 	if rec.Code != 200 || m == nil {

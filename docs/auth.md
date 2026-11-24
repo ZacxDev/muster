@@ -675,7 +675,7 @@ in the browser, which otherwise only the paired phone can do. So adding one,
 pairing a phone that confirms requests, and removing either need more than
 the password: 🔴 **once an account has ever had a passkey or a paired phone
 with a step-up key, a password alone never reaches card approval** — until a
-password reset completes.
+password reset completes or the server's recovery command is run.
 
 "Ever had" is recorded on the account (`users.had_strong_factor_at`,
 migration 0188). It is set when a passkey is added or such a phone paired,
@@ -683,8 +683,14 @@ when muster first sees either on the account, and before any is removed. It
 was backfilled for every account that already had such a phone. Emptying the
 live rows never clears it: Sign out everywhere (which unpairs every phone),
 removing a phone or a passkey, and an admin removing passkeys all leave it
-set. **Only a completed password reset clears it.** Its link proves more than
-the password: an admin mints it for you, or it reaches your email.
+set. Two things clear it:
+- **a completed password reset.** muster sends no email, so the link comes
+  from an admin. Minting one for an account that has had a factor takes the
+  acting admin's own proof, and the acting admin's account must have had a
+  factor too. So a second admin account that a password alone could create
+  cannot reset the first (see "The admin pages" below);
+- **the server recovery command** (below), run by whoever can reach the
+  database.
 
 The one place the password is enough is an account's **first factor**, on an
 account that has never had one:
@@ -766,19 +772,37 @@ From then on, every change below takes a proof.
   - a browser turning off its own notifications;
   - **Sign out everywhere**, a recovery action. It unpairs every phone and
     drops every push target, so it is announced FIRST, while they still
-    exist ("You signed out everywhere: your phones were unpaired").
+    exist ("You signed out everywhere: your phones are being unpaired").
 
   So a person holding only the password can silence your devices only by
   signing out everywhere. That act is announced on every one of them, and the
   account stays gated afterwards.
 - **Recovery when no factor is left.** Your phones may be unpaired, your
   passkeys gone, or your phone's key invalidated (a new fingerprint or face
-  enrolled on it voids its step-up key). On an account that has had one, the
-  way back is a **password reset by email**. It revokes every paired phone and
-  clears the record, and then your next passkey or phone is added as a first
-  factor. The pairing code says so when it may not pair a phone that confirms
-  requests (`stepup_note`), and Account → Devices shows it. With a passkey
-  left, prove with it instead.
+  enrolled on it voids its step-up key). On an account that has had one:
+  - **ask another admin for a password reset link.** The reset revokes every
+    paired phone and clears the record, and then your next passkey or phone
+    is added as a first factor;
+  - **on a server with one admin**, whoever runs the server clears the record
+    with `muster-server user clear-strong-factor <user-id|email>`, run where
+    the server's `DATABASE_URL` is (for example `kubectl exec` into its pod).
+    It is audited (`user.strong_factor_cleared`) and has no HTTP route: the
+    shell is the proof.
+
+  The pairing code says this, in plain words, when it may not pair a phone
+  that confirms requests (`stepup_note`), and Account → Devices shows it.
+  With a passkey left, prove with it instead.
+- **The admin pages.** From Admin → Users:
+  - **making an account an admin** takes the acting admin's proof when the
+    acting admin's account has had a factor;
+  - **minting a reset link for, or removing the passkeys of, an account that
+    has had a factor** takes the acting admin's proof, and is refused to an
+    admin whose own account has never had one (it could mint its own proof).
+
+  Prove on Account → Passkeys, then return within ten minutes. The account
+  is told when a reset link is minted for it ("An admin created a password
+  reset link for your account"), again when that link is used, and when an
+  admin removes its passkeys. An invite always makes a member.
 - **Every passkey added pushes you "A passkey was added to your account"** on
   every device registered for push, whatever your notification settings say:
   a person holding only your password could turn them off first. The

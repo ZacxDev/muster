@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -114,6 +115,48 @@ function signals(rec: WebAuthnRecord, name: string, from = 0): unknown[] {
   return rec.events.slice(from).filter((e) => e.kind === 'signal' && e.name === name).map((e) => e.arg);
 }
 
+// adminGetsAFreshPasskey gives the signed-in admin a passkey on this page's
+// authenticator. The admin's passkey from the first test lives on an
+// authenticator that is gone, and an account that has a passkey adds another
+// only with a proof (internal/api passkey_enrol.go): so the old ones are
+// removed straight at GoTrue's admin API (a service_role token signed with the
+// e2e secret, as muster's own admin calls are) and the account's record
+// cleared as a password reset would (stepupfix unmark), then the password
+// adds this one as the account's first factor.
+async function adminGetsAFreshPasskey(page: Page): Promise<void> {
+  const at = (await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;
+  const claims = JSON.parse(Buffer.from(at.split('.')[1], 'base64url').toString());
+  const now = Math.floor(Date.now() / 1000);
+  const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const head = enc({ alg: 'HS256', typ: 'JWT' });
+  const body = enc({ sub: 'muster-server', iss: claims.iss, role: 'service_role', iat: now, exp: now + 60 });
+  const admin = `${head}.${body}.${crypto.createHmac('sha256', gotrueSecret).update(head + '.' + body).digest('base64url')}`;
+  const base = `${gotrueURL}/admin/users/${encodeURIComponent(String(claims.sub))}/passkeys`;
+  const list = await fetch(base, { headers: { Authorization: 'Bearer ' + admin } });
+  expect(list.status, "GoTrue's admin passkey list").toBe(200);
+  for (const p of (await list.json()) as { id: string }[]) {
+    await fetch(`${base}/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + admin } });
+  }
+  execFileSync('go', ['run', './e2e/stepupfix', 'unmark', '1'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
+  await page.goto(browserURL + '/account/passkeys');
+  await addPasskey(page);
+}
+
+// adminProves confirms with the admin's passkey on Account → Passkeys
+// (?confirm=1): the proof the admin pages take for a sensitive change
+// (internal/api admin_proof.go). The options are fetched when the button is
+// reached for, and the prompt runs in the tap.
+async function adminProves(page: Page): Promise<void> {
+  await page.goto(browserURL + '/account/passkeys?confirm=1');
+  const btn = page.locator('#passkey-proof-passkey');
+  await expect(btn).toBeVisible();
+  const opts = page.waitForResponse((r) => new URL(r.url()).pathname === '/account/passkeys/proof/options');
+  await btn.dispatchEvent('pointerdown');
+  await opts;
+  await btn.click();
+  await expect(page.locator('#passkey-status')).toContainText('Confirmed.');
+}
+
 async function signOut(page: Page): Promise<void> {
   await page.goto(browserURL + '/account');
   await Promise.all([page.waitForURL(/\/login$/), page.getByRole('button', { name: 'Sign out', exact: true }).click()]);
@@ -181,11 +224,15 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   const memberEmail = `pk-member-${Date.now()}@example.com`;
   const memberPW = 'e2e-member-password-not-a-real-one';
 
-  // The admin (claimed by the test above) signs in with the password.
+  // The admin (claimed by the test above) signs in with the password, and
+  // gets a passkey on this test's authenticator: a reset link for the member
+  // (who adds a passkey below) takes the admin's proof.
+  await authenticator(page);
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', adminEmail);
   await page.fill('#muster-password', adminPW);
   await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  await adminGetsAFreshPasskey(page);
   await page.goto(browserURL + '/admin/invites');
   await page.getByRole('button', { name: 'Create link' }).click();
   const link = await page.locator('#once-link').inputValue();
@@ -274,6 +321,8 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   // the real GoTrue (whose admin password change does not touch passkeys).
   await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Enable' }).click();
   await expect(page.locator(`[data-user-email="${memberEmail}"] [data-user-state]`)).toHaveText('active');
+  await adminProves(page);
+  await page.goto(browserURL + '/admin/users');
   await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Reset link' }).click();
   await mp.goto(await page.locator('#once-link').inputValue());
   await expect(mp.locator('#reset-remove-passkeys'), 'the box is offered, unticked').not.toBeChecked();
@@ -289,6 +338,8 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
 
   // Reset again WITH the box ticked: the reset deletes the member's passkeys,
   // so the credential still on the device is refused by GoTrue.
+  await page.goto(browserURL + '/admin/users');
+  await adminProves(page);
   await page.goto(browserURL + '/admin/users');
   await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Reset link' }).click();
   const resetLink = await page.locator('#once-link').inputValue();
@@ -325,11 +376,15 @@ test('autofill signs in; a button or the password form aborts a pending autofill
   const email = `pk-autofill-${Date.now()}@example.com`;
   const pw = 'e2e-autofill-password-not-a-real-one';
 
-  // The admin (claimed by the first test) makes an invite.
+  // The admin (claimed by the first test) makes an invite — and gets a
+  // passkey on this test's authenticator: removing the member's passkeys
+  // below takes the admin's proof (internal/api admin_proof.go).
+  await authenticator(page);
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', adminEmail);
   await page.fill('#muster-password', adminPW);
   await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  await adminGetsAFreshPasskey(page);
   await page.goto(browserURL + '/admin/invites');
   await page.getByRole('button', { name: 'Create link' }).click();
   const link = await page.locator('#once-link').inputValue();
@@ -432,6 +487,7 @@ test('autofill signs in; a button or the password form aborts a pending autofill
   // 5. A PASSKEY THE ACCOUNT NO LONGER HAS: the admin removes the member's
   //    passkeys; signing in with the one still on the device is refused as
   //    unknown, and the page tells the password manager to drop it.
+  await adminProves(page);
   await page.goto(browserURL + '/admin/users');
   await page.locator(`[data-user-email="${email}"]`).getByRole('button', { name: 'Remove passkeys' }).click();
   await expect(page.locator('#admin-passkeys-removed')).toBeVisible();
