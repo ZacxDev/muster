@@ -41,6 +41,10 @@ import (
 //     (`muster-followups`) → itself, lower-cased. One made only of dictionary
 //     words (`follow-up`, `sign-up`, `self-hosted`) is prose, not an identifier.
 //
+//   - a host's numbered tail: a message's `gpuhost-4090-52-23` → itself and
+//     "~52-23" (TAIL KEYS, below), and on a history row a bare `-52-23` →
+//     "~52-23" (never one that reads as a date).
+//
 // Plain words never are, whatever they are (a message's sender can add common
 // words at will; TestGenericOverlapNamesNothing).
 //
@@ -166,6 +170,141 @@ type span struct {
 // counted on, so an identifier is never counted twice (once as itself and
 // again as the words the tsvector parser splits it into).
 func distinctiveTerms(text string, max int) (keys []string, rest string) {
+	keys, _, rest = extractTerms(text, max, false)
+	return keys, rest
+}
+
+// TAIL KEYS: A HOST NAMED BY ITS NUMBERED TAIL. A message's host name shaped
+// like a fleet's — a lettered first part, a numeric part, then two numbers
+// (`gpuhost-4090-52-23`; numberTail) — carries, besides itself, its TAIL as a
+// second key ("~52-23", tailPrefix plus the two numbers), listed right after
+// it. The focus
+// summarizer is told never to quote hostnames (SummaryInstructions), so a
+// session on that host writes "node -7-12" or "7-12": a bare number pair,
+// which is no term. Measured on a fleet's alert channel: every alert named its
+// host in full, and the session on that host's fault named it by its tail
+// alone, so no alert named the session unless something else the alert
+// carried (a rack, a tool name) happened to be in its focus too.
+//
+// 🔴 ONLY A HISTORY ROW READS A BARE PAIR AS A TAIL (rowTerms), AND ONLY A
+// MESSAGE'S HOST CARRIES ONE. A message's "52-23" stays no term, whatever it
+// is: a sender can write numbers at will, and a bare number never names a
+// session. A row's full host name carries no tail: a full name must match in
+// full, so another host with the same tail (gpuhost-3090-52-23) names nothing.
+// The direction that matters is the message naming a host in full and the
+// focus naming it short; rows are only ever compared against a message's
+// keys, so a row's bare pair matches nothing unless the message named a host
+// with that tail. A row's pair that reads as a date is none (numberTail), and
+// a tail is at least minTailBytes long: "1-2" is prose.
+const (
+	tailPrefix   = "~"
+	minTailBytes = 4
+)
+
+// numberTail is tok's tail key — tailPrefix and its last two hyphen-separated
+// parts, both all digits, at least minTailBytes together — or "".
+//
+// host (a MESSAGE's host name): tok must be shaped like one — a first part
+// with at least two letters, then a numeric part, then the pair
+// (`gpuhost-4090-52-23`) — so a sender's `a-7-12` or `gpu-x-7-12` mints no
+// tail. That is a structural floor, not a defence: a sender who writes a whole
+// host-shaped name still gets its tail, and a match still needs a second
+// shared term (MatchHistory's minTerms).
+//
+// !host (a ROW's bare pair, rowTerms): tok has no letter at all, and does not
+// read as a date. A part before the pair that is a year (1900–2099) refuses it
+// (`2000-11-23`), and a bare pair that is a calendar month and day refuses it
+// too (`11-23`, `7-12`; February up to 29). The fleet's real short forms stay:
+// `-2-31` (no 31 February), `52-23`, `52-110`, `4090-7-12` (4090 is no year).
+// The cost: a host whose tail is a valid month and day (`…-7-12`) is matched
+// by a focus only when it writes more of the name (`4090-7-12`, or in full).
+func numberTail(tok string, host bool) string {
+	parts := strings.Split(strings.ToLower(tok), "-")
+	// A host needs a part before the pair (pre, below, is read); its shape
+	// check then needs two such parts, a lettered one and a numeric one.
+	if len(parts) < 2 || (host && len(parts) < 3) {
+		return ""
+	}
+	a, b := parts[len(parts)-2], parts[len(parts)-1]
+	if !allDigits(a) || !allDigits(b) || len(a)+1+len(b) < minTailBytes {
+		return ""
+	}
+	pre := parts[:len(parts)-2]
+	if host {
+		if letters(pre[0]) < 2 || !allDigits(pre[len(pre)-1]) {
+			return ""
+		}
+		return tailPrefix + a + "-" + b
+	}
+	for _, p := range pre {
+		if strings.IndexFunc(p, isLetter) >= 0 || isYear(p) {
+			return ""
+		}
+	}
+	if len(pre) == 0 && isMonthDay(a, b) {
+		return ""
+	}
+	return tailPrefix + a + "-" + b
+}
+
+// letters is how many a–z letters s (lower-case) holds.
+func letters(s string) int {
+	n := 0
+	for _, r := range s {
+		if isLetter(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// isYear reports whether s is a four-digit year, 1900 to 2099.
+func isYear(s string) bool {
+	if len(s) != 4 || !allDigits(s) {
+		return false
+	}
+	y, _ := strconv.Atoi(s)
+	return y >= 1900 && y <= 2099
+}
+
+// isMonthDay reports whether m-d reads as a calendar month and day (February
+// up to 29): "11-23" and "7-12" do, "2-31", "52-4" and "13-1" do not.
+func isMonthDay(m, d string) bool {
+	mi, err1 := strconv.Atoi(m)
+	di, err2 := strconv.Atoi(d)
+	if err1 != nil || err2 != nil || mi < 1 || mi > 12 || di < 1 {
+		return false
+	}
+	days := [...]int{31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+	return di <= days[mi-1]
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsTailKey reports whether key is a tail key (numberTail).
+func IsTailKey(key string) bool { return strings.HasPrefix(key, tailPrefix) }
+
+// rowTerms is a history row's keys: distinctiveTerms', uncapped, plus the
+// tail key of every bare number pair in it (numberTail; see TAIL KEYS).
+func rowTerms(text string) []string {
+	keys, _, _ := extractTerms(text, 0, true)
+	return keys
+}
+
+// extractTerms is distinctiveTerms (bare false) or rowTerms (bare true), and
+// for each tail key the host key it is the tail of (the first, when the text
+// names several hosts with one tail).
+func extractTerms(text string, max int, bare bool) (keys []string, hostOf map[string]string, rest string) {
 	var spans []span
 	taken := make([]bool, len(text))
 	claim := func(start, end int, key string) {
@@ -204,35 +343,59 @@ func distinctiveTerms(text string, max int) (keys []string, rest string) {
 		}
 		claim(m[0], m[1], "v"+text[m[g]:m[g+1]])
 	}
+	// A tail key shares its host's bytes, so it is not claimed: it is kept
+	// here, by the span of the host it was read from, and listed after it.
+	tails := map[int]string{}
 	for _, m := range tokenRE.FindAllStringIndex(text, -1) {
 		tok := strings.TrimRight(text[m[0]:m[1]], "._-")
-		if k := tokenKey(tok); k != "" {
+		k := tokenKey(tok)
+		switch {
+		case k != "":
+			before := len(spans)
 			claim(m[0], m[0]+len(tok), k)
+			// A ROW's full host name carries no tail: a full name must match
+			// in full, so gpuhost-3090-7-12 never meets gpuhost-4090-7-12's
+			// tail. Only a message's host carries one, for a row's short form.
+			if tail := numberTail(tok, true); !bare && tail != "" && len(spans) > before {
+				tails[m[0]] = tail
+			}
+		case bare:
+			if tail := numberTail(tok, false); tail != "" {
+				claim(m[0], m[0]+len(tok), tail)
+			}
 		}
 	}
 	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
 	seen := map[string]bool{}
+	hostOf = map[string]string{}
 	b := []byte(text)
+	add := func(key string) bool {
+		if seen[key] || (max > 0 && len(keys) >= max) {
+			return false
+		}
+		seen[key] = true
+		keys = append(keys, key)
+		return true
+	}
 	for _, s := range spans {
 		for i := s.start; i < s.end; i++ {
 			b[i] = ' '
 		}
-		if seen[s.key] || (max > 0 && len(keys) >= max) {
-			continue
+		add(s.key)
+		if tail, ok := tails[s.start]; ok && add(tail) {
+			hostOf[tail] = s.key
 		}
-		seen[s.key] = true
-		keys = append(keys, s.key)
 	}
-	return keys, string(b)
+	return keys, hostOf, string(b)
 }
 
 // keyCore is the substring every spelling of key contains (lower-cased): a
 // cheap SQL prefilter for the rows that may carry it, confirmed in Go by
 // distinctiveTerms. A reference's core is its number, a version's its dotted
-// digits, anything else the key itself.
+// digits, a tail's its number pair, anything else the key itself.
 func keyCore(key string) string {
 	switch {
-	case strings.HasPrefix(key, "#"):
+	case strings.HasPrefix(key, "#"), IsTailKey(key):
 		return key[1:]
 	case strings.HasPrefix(key, "v") && len(key) > 1 && key[1] >= '0' && key[1] <= '9':
 		return key[1:]

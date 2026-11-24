@@ -454,10 +454,18 @@ asked you to.
 Before you file a task or draft a reply about work that may already be under way,
 find out who is on it. A plugin turn may end with a block headed "Sessions that may
 already be on this": muster's own lookup of your owner's live sessions whose recent
-focus shares words with the message. Check those sessions, and call the
+focus shares an identifier with the message, and each line says why ("its focus
+mentions …", "listed by its pull request", "listed by its repo"). Check those
+sessions, and call the
 ` + "`sessions_overview`" + ` tool (when your tool list has it) to see what each live session
-is doing now. A shared word is not proof: only when one of them is clearly on the
-subject, and you have ` + "`route_to_session`" + `, hand the message to it rather than
+is doing now. When a session's focus mentions a specific identifier of the
+message — a host, a version, a pull request, a file — or it is listed by its pull
+request, it is on it: hand the message to it, even when the message also asks your
+owner to decide something. Then pass heads_up: true, so the session gets the
+context and its answer comes back to you, never to the sender, and raise the
+decision with your owner as well: they still decide, and you draft the reply once
+they have. A common word or a repo name alone is not proof: only when one of them
+is clearly on the subject, and you have ` + "`route_to_session`" + `, hand the message to it rather than
 filing a task.
 
 When a message calls for work, call the ` + "`task_create_gated`" + ` tool: a title, a body
@@ -749,10 +757,18 @@ const chiefPluginSectionClaudeCode = chiefPluginDataClaudeCode + `
 Before you file a task or draft a reply about work that may already be under way,
 find out who is on it. A plugin turn may end with a block headed "Sessions that may
 already be on this": muster's own lookup of your owner's live sessions whose recent
-focus shares words with the message. Check those sessions, and call the
+focus shares an identifier with the message, and each line says why ("its focus
+mentions …", "listed by its pull request", "listed by its repo"). Check those
+sessions, and call the
 ` + "`mcp__muster__sessions_overview`" + ` tool (when your tool list has it) to see what each live session
-is doing now. A shared word is not proof: only when one of them is clearly on the
-subject, and you have ` + "`mcp__muster__route_to_session`" + `, hand the message to it rather than
+is doing now. When a session's focus mentions a specific identifier of the
+message — a host, a version, a pull request, a file — or it is listed by its pull
+request, it is on it: hand the message to it, even when the message also asks your
+owner to decide something. Then pass heads_up: true, so the session gets the
+context and its answer comes back to you, never to the sender, and raise the
+decision with your owner as well: they still decide, and you draft the reply once
+they have. A common word or a repo name alone is not proof: only when one of them
+is clearly on the subject, and you have ` + "`mcp__muster__route_to_session`" + `, hand the message to it rather than
 filing a task.
 
 When a message calls for work, call the ` + "`mcp__muster__task_create_gated`" + ` tool: a title, a body

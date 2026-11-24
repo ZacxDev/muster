@@ -148,7 +148,9 @@ func retrySentence(m Message, r Retry, tools ChiefTools) string {
 // to route back to the sender.
 const RoutingSentence = "If one of your user's sessions is better placed to answer it, find that session with " +
 	"focus_search and hand the message to it with route_to_session(message_id, subject): the session's answer " +
-	"comes back as the reply, and only the stored message is passed on, fenced as untrusted."
+	"comes back as the reply, and only the stored message is passed on, fenced as untrusted. When the message " +
+	"also asks your user to decide something, add heads_up: true: the session gets it as a one-way heads-up, and " +
+	"its answer comes back to you, never to the sender."
 
 // OneWayRoutingSentence is what the chief's turn says, with routing on, about
 // a no_reply message (not a task event, which is routed by its task): it can

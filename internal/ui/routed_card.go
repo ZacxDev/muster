@@ -33,8 +33,9 @@ type RouteAnswerCard struct {
 	// From is the plain name of the session that answered ("a session" when it
 	// has none).
 	From string
-	// OneWay: the answer reports on a heads-up nobody can reply to; otherwise
-	// it answers the owner's request.
+	// OneWay: the answer reports on a one-way heads-up — a message nobody can
+	// reply to, or one whose reply is the owner's to decide (a heads_up
+	// route, 0186); otherwise it answers the owner's request.
 	OneWay bool
 	// Body is the session's answer as it wrote it.
 	Body string

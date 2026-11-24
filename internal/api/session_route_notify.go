@@ -72,7 +72,10 @@ func (s *Server) notifyChiefRouted(ctx context.Context, owner int64, r plugins.R
 		if label != "" {
 			body = label + ": " + subject
 		}
-		if r.OneWay {
+		switch {
+		case r.HeadsUp:
+			body += " (a heads-up: the reply is still yours)"
+		case r.OneWay:
 			body += " (no reply possible: a heads-up)"
 		}
 	}
