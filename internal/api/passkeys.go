@@ -359,6 +359,9 @@ func (s *Server) passkeyFlags(ctx context.Context, sub string) map[string]map[st
 // setPasskeyFlag records (flags non-nil) or forgets (nil) one passkey's
 // backup flags; with id "" it forgets them all. Best effort, logged.
 func (s *Server) setPasskeyFlag(ctx context.Context, sub, id string, flags map[string]any) {
+	// Whether the account has a passkey is cached for its step-up cards
+	// (stepup_web_confirm.go); a passkey added or removed changes it now.
+	s.stepUpCards.forget(sub)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if id == "" {

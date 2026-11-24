@@ -241,6 +241,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
+		// A step-up card decided in the browser behind a passkey ceremony made
+		// for it (stepup_web_confirm.go): the session's own user, re-proven.
+		"POST /attention/asks/{id}/stepup/passkey/options",
+		"POST /attention/asks/{id}/stepup/passkey/verify",
 		"POST /attention/asks/{id}/redeliver",
 		"POST /attention/wakes/{id}/retry",
 		"POST /attention/opencode/answer",

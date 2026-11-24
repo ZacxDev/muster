@@ -633,8 +633,10 @@ ledger, and a test fails when one is added without saying how you confirm it.
 
 **A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
 an owner-authority tool reached through that machine's MCP door is confirmed
-on the owner's paired phone, one decision per signed action — not by this
-window. One tool is the exception on every machine: `chief_restart` runs at
+on the owner's paired phone, one decision per signed action, or on its card in
+muster with a passkey ceremony made for that one decision
+([mirroring.md](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey)) —
+never by this window: a fresh sign-in alone decides no card. One tool is the exception on every machine: `chief_restart` runs at
 once, `force` included, and asks no phone, like the browser's Stop and Start
 ([mirroring.md](mirroring.md#chief_restart-is-not-gated)).
 

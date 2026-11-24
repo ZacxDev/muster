@@ -803,6 +803,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/badge":                          classList,
 	"POST /attention/asks/{id}/answer":              classParam,
 	"POST /attention/asks/{id}/cancel":              classParam,
+	// A step-up card's passkey decision (stepup_web_confirm.go): A's card by
+	// id — row-level security, and the pending decision's own owner check.
+	"POST /attention/asks/{id}/stepup/passkey/options": classParam,
+	"POST /attention/asks/{id}/stepup/passkey/verify":  classParam,
 	// An unconfirmed answer delivery's Retry (migration 0031): one of the
 	// caller's asks by id, under row-level security.
 	"POST /attention/asks/{id}/redeliver": classParam,

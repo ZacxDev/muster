@@ -11,6 +11,8 @@
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix thread <owner>  a long X thread's card (an excerpt)
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix lookalike <owner>  a post with look-alike letters
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix draftcard <owner> <draft-id> [reject]  a card about a REAL draft (prints its id)
+//	DATABASE_URL=…_e2e go run ./e2e/stepupfix ask <owner>     a plain open ask (yes/no) a gated attention_answer can name (prints its id)
+//	DATABASE_URL=…_e2e go run ./e2e/stepupfix status <owner> <id>  an ask's "<status> <answer>"
 //	DATABASE_URL=…_e2e go run ./e2e/stepupfix clear <owner>
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check).
@@ -30,6 +32,9 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
+
+// webAskLabel is the asker label of the plain asks `ask` files.
+const webAskLabel = "e2e-stepup-web"
 
 // The card's parts (synthetic): an X post of two paragraphs and one image,
 // for draft 41 (the fixture's draft id; the spec serves its medium).
@@ -100,6 +105,30 @@ func run(args []string) error {
 	}
 	as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
 	switch args[0] {
+	case "ask":
+		// What a gated attention_answer names (e2e/tests/mirror-stepup.spec.ts:
+		// a step-up card decided in the browser with a passkey).
+		a, err := attention.NewPG(pool).Create(as, attention.New{Asker: attention.Asker{System: true, Label: webAskLabel},
+			Question: "Ship the e2e build?", Options: []string{"yes", "no"}})
+		if err != nil {
+			return err
+		}
+		fmt.Println(a.ID)
+		return nil
+	case "status":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: stepupfix status <owner> <id>")
+		}
+		id, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			return err
+		}
+		a, err := attention.NewPG(pool).Get(as, id)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(a.Status) + " " + a.Answer)
+		return nil
 	case "draftcard":
 		// A card a host session filed for plugin_draft_decide on one of the
 		// owner's real drafts: the Open feed draws that draft's own decision
@@ -142,7 +171,7 @@ func run(args []string) error {
 		fmt.Println(a.ID)
 		return nil
 	case "clear":
-		_, err := pool.Exec(as, `DELETE FROM attention_asks WHERE asker_label = 'step-up'`)
+		_, err := pool.Exec(as, `DELETE FROM attention_asks WHERE asker_label IN ('step-up', $1)`, webAskLabel)
 		return err
 	case "card", "thread", "lookalike", "answered":
 		card := &attention.StepUpCard{Tool: "plugin_draft_decide", Title: Title, Why: Why, Asker: Asker,

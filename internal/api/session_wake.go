@@ -418,13 +418,13 @@ func renderWake(w sessionwake.Wake) string {
 		card := stepUpCardRef(w)
 		switch w.Decision {
 		case sessionwake.DecisionConfirmed:
-			return "muster: you confirmed " + card + ", on your phone: muster ran that call once, exactly as asked. " +
+			return "muster: you confirmed " + card + ": muster ran that call once, exactly as asked. " +
 				"Do not call it again; read what it did with the list tools."
 		case sessionwake.DecisionConfirmedFailed:
-			return "muster: you confirmed " + card + ", on your phone: muster ran that call once, and the tool refused it. " +
+			return "muster: you confirmed " + card + ": muster ran that call once, and the tool refused it. " +
 				"Read why with the list tools before you ask again."
 		case sessionwake.DecisionRefused:
-			return "muster: you refused " + card + ", on your phone: the call did not run, and nothing was done."
+			return "muster: you refused " + card + ": the call did not run, and nothing was done."
 		case sessionwake.DecisionDismissed:
 			return "muster: you dismissed " + card + ", without confirming it: the call did not run, and nothing was done."
 		case sessionwake.DecisionSettledApproved:
@@ -560,13 +560,18 @@ func (s *Server) wakeHostHere(ctx context.Context, host string) bool {
 // freshness rule (wakeNeedsSignIn) judges it: the request's browser sign-in
 // (stepup.AuthTime), or — for an action the paired phone's step-up key signed
 // and the server verified (withVerifiedDeviceAction, set only after the
-// signature checked out) — the moment of that verification, the later of
-// the two. Zero for neither: a phone request with no verified signature, a
+// signature checked out), or a step-up card decided with a passkey ceremony
+// (withStepUpPasskeyDecision) — the moment of that verification, the latest. Zero for neither: a phone request with no verified signature, a
 // session's MCP call. The door a principal came through proves nothing here.
 func wakeDecisionSignIn(ctx context.Context) time.Time {
 	at, _ := stepup.AuthTime(ctx)
 	if dv, ok := verifiedDeviceActionAt(ctx); ok && dv.After(at) {
 		at = dv
+	}
+	// A step-up card decided in the browser with a passkey ceremony made for
+	// it (stepup_web_confirm.go): the moment the assertion verified.
+	if pk, ok := stepUpPasskeyDecisionAt(ctx); ok && pk.After(at) {
+		at = pk
 	}
 	return at
 }

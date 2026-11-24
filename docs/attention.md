@@ -780,18 +780,23 @@ from the question and its options, grounded in them by the same filter:
   tapped, it is confirmed with the phone's step-up key, whose prompt shows the
   exact text, and sent as the ask's answer by a signed action — the same answer
   as this page's ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
-  A **step-up confirmation card** is answered this way, and only this way:
-  its **Confirm** and **Refuse** are notification buttons, and the phone's
-  prompt shows the card's own text, which muster hands the phone with the
-  challenge (`confirms`). Both this page and the card on the Asks feed show
-  the card's title (with the draft's id on a draft card) and, for a draft, a
-  preview of the post as it will look on its venue: its logo, its text, its
-  images ([what a card shows](mirroring.md#what-a-card-shows)). Neither can
-  answer a card: both draw no Confirm, Refuse or answer box, only the
-  plain line *Confirm this on your phone.*, and **Dismiss**
+  A **step-up confirmation card** is answered this way, or with a passkey on
+  its card in muster: its **Confirm** and **Refuse** are notification
+  buttons, and the phone's prompt shows the card's own text, which muster
+  hands the phone with the challenge (`confirms`). Both this page and the
+  card on the Asks feed show the card's title (with the draft's id on a draft
+  card) and, for a draft, a preview of the post as it will look on its venue:
+  its logo, its text, its images ([what a card shows](mirroring.md#what-a-card-shows)).
+  Neither draws an answer box. For an account with a passkey both draw
+  **Confirm** and **Refuse** under the line *Confirm here with your passkey,
+  or on your phone.*, each running a passkey ceremony made for that card
+  ([mirroring.md](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey));
+  for an account with none, the plain line *Confirm this on your phone.* and
+  where a passkey is added; then **Dismiss**
   ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
-  A card that is dismissed (or expires) runs nothing: a Confirm signed on the
-  phone after that is refused as not open, and its request is dropped.
+  A card that is dismissed (or expires) runs nothing: a Confirm after that,
+  on the phone or in the browser, is refused as not open, and its request is
+  dropped.
   It shows the card's title, why and preview (for a draft: the venue, the
   exact text and the media). The machine, the session, the call and its
   hash sit under a collapsed **Details**
@@ -1519,7 +1524,7 @@ muster tells that session, so it carries on without you going back to type
 | anyone else responded on that page (a link's viewer, a team member) | the page's session | `muster: page #12, which this session made, got 3 new responses from its viewers — read them with page_responses{page_id: 12}.` |
 | approved or rejected an outbound draft an officer filed for an [officer item the session enqueued](#officer-items-a-session-enqueues) (migration 0178) | the session that enqueued the item | `muster: you rejected draft #476, which an officer filed for officer item #223 that this session enqueued. It will not be sent, and the officer will not redraft it: officer item #223 is closed, and what happens next is this session's call.` then the reason you gave, fenced (the officer is not told: [a rejection of work a session asked for](plugins.md#outbound-drafts-officer_post_draft) is that session's alone); or `muster: you approved draft #476, … Its plugin sends it next; muster tells this session how that went.` Decided through `plugin_draft_decide` it says so, as above |
 | that approved draft was later sent, failed, or not confirmed — on whichever attempt its [retry chain](plugins.md#retries-approve-once) ended | the session that enqueued the item | `muster: draft #481 (attempt 2 of its retry chain), which an officer filed for officer item #223 that this session enqueued — it was sent.` (or `could not be sent after 2 attempts …, and muster stopped retrying it`, or may or may not have been sent). Nothing is owed while the chain is still retrying |
-| confirmed or refused, on your phone, a [step-up card](mirroring.md) the session's call raised; dismissed it; or decided the card's draft on another door | the session whose call raised the card | `muster: you confirmed step-up card #1013, which this session's plugin_draft_decide call raised, on your phone: muster ran that call once, exactly as asked. …` (or `… and the tool refused it.`, `you refused …: the call did not run`, `you dismissed …`, `… was settled when you approved the draft it is about on another door; the call itself was not run.`) — the tool's name, never its arguments or its output |
+| confirmed or refused, on your phone or with a passkey in muster, a [step-up card](mirroring.md) the session's call raised; dismissed it; or decided the card's draft on another door | the session whose call raised the card | `muster: you confirmed step-up card #1013, which this session's plugin_draft_decide call raised: muster ran that call once, exactly as asked. …` (or `… and the tool refused it.`, `you refused …: the call did not run`, `you dismissed …`, `… was settled when you approved the draft it is about on another door; the call itself was not run.`) — the tool's name, never its arguments or its output |
 
 An answer typed into the session itself, the chief's answer to a question put
 to it, a dispatch approval and a draft muster approved on its own (an

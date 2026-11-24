@@ -288,6 +288,7 @@ type flakyAttention struct {
 	answerErr    error   // the next Answer fails with it (once)
 	beforeAnswer func()  // runs (once) before the next Answer
 	answered     []int64 // every id an Answer reached the store for
+	fromSession  []int64 // every id an AnswerFromSession reached the store for
 }
 
 func (f *flakyAttention) Get(ctx context.Context, id int64) (attention.Ask, error) {
@@ -299,6 +300,16 @@ func (f *flakyAttention) Get(ctx context.Context, id int64) (attention.Ask, erro
 		return attention.Ask{}, err
 	}
 	return f.Store.Get(ctx, id)
+}
+
+// AnswerFromSession records every id a session's answer reached the store
+// for (a held attention_answer, run once its card is confirmed) in
+// fromSession.
+func (f *flakyAttention) AnswerFromSession(ctx context.Context, id int64, answer, host, session string) (attention.Ask, error) {
+	f.mu.Lock()
+	f.fromSession = append(f.fromSession, id)
+	f.mu.Unlock()
+	return f.Store.AnswerFromSession(ctx, id, answer, host, session)
 }
 
 func (f *flakyAttention) Answer(ctx context.Context, id int64, answer string) (attention.Ask, error) {

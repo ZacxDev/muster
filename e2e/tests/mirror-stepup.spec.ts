@@ -13,6 +13,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { Authenticator, authenticator, credentialIds, removeCredential, setUserVerified } from '../lib/webauthn';
 import { landedHome } from '../lib/nav';
 import { entryMatches, mirroredEntries } from '../lib/mirrorhost';
+import { withMCPSession } from '../lib/localmcp';
 
 // STEP-UP for typing into a mirrored session, end to end against the REAL
 // GoTrue image (e2e/gotrue/compose.yml, the deployment's pin), a gotrue-mode
@@ -2017,3 +2018,111 @@ for (const size of [
     });
   });
 }
+
+// A STEP-UP CARD DECIDED IN THE BROWSER WITH A PASSKEY (internal/api
+// stepup_web_confirm.go), every hop real: a session's attention_answer reaches
+// muster's /mirror/mcp from a host this muster does not mirror (a REMOTE
+// caller: always gated), so it files a confirmation card and runs nothing.
+// The owner opens the card's page — signed in a moment ago, which is NOT
+// enough — and taps Confirm: the page runs a passkey ceremony for that card on
+// Chromium's virtual authenticator, the REAL GoTrue verifies the assertion,
+// and the card closes as confirmed with its held call run once. A ceremony
+// without user verification decides nothing; Refuse closes a second card and
+// its call never runs.
+//
+// 🔴 RED AT origin/main: the card's page draws only "Confirm this on your
+// phone." — no Confirm, no Refuse — and the browser cannot decide it.
+test.describe('a step-up card confirmed in the browser with a passkey (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  const fix = (...args: string[]) =>
+    execFileSync('go', ['run', './e2e/stepupfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+  const remoteHost = 'stepup-remote-' + Date.now().toString(36);
+  const remoteSession = '7d1e2f30-4a5b-4c6d-8e9f-' + Date.now().toString(16).padStart(12, '0').slice(-12);
+
+  // gatedAnswer is the remote session's attention_answer of ask id: the card
+  // it filed instead.
+  async function gatedAnswer(token: string, id: number): Promise<number> {
+    const url = machineURL + '/mirror/mcp';
+    const headers = await withMCPSession(url, {
+      Authorization: 'Bearer ' + token, 'X-Muster-Client': 'remote', 'X-Muster-Remote-Session': remoteSession,
+    });
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'attention_answer', arguments: { id, answer: 'yes' } } }),
+    });
+    const raw = await r.text();
+    expect(r.status, `the gated call: ${raw}`).toBe(200);
+    const m = raw.match(/\{"jsonrpc".*\}/);
+    const body = JSON.parse(m ? m[0] : raw) as { result: { content: { text: string }[] } };
+    const out = JSON.parse(body.result.content[0].text) as { status: string; card: number };
+    expect(out.status, `the gated call filed a card: ${raw}`).toBe('awaiting_owner_confirmation');
+    return out.card;
+  }
+
+  test.afterAll(() => {
+    fix('clear', '1');
+  });
+
+  test('Confirm runs a passkey ceremony for that card, and the card closes confirmed (real GoTrue, virtual authenticator)', async ({ page }, testInfo) => {
+    test.setTimeout(180_000);
+    const auth = await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', remoteHost], { env: serverEnv() }).toString().trim();
+    expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+
+    // 1. Confirm, with a user-verified passkey.
+    const x = Number(fix('ask', '1'));
+    const card = await gatedAnswer(token, x);
+    expect(fix('status', '1', String(x)), 'nothing ran yet').toBe('open');
+    const verifies: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === `/attention/asks/${card}/stepup/passkey/verify`) verifies.push(r.status());
+    });
+    await page.goto(`${browserURL}/attention/asks/${card}`);
+    const box = page.locator('[data-ask-stepup-web]');
+    await expect(box.locator('[data-ask-stepup-phone]')).toHaveText('Confirm here with your passkey, or on your phone.');
+    const confirm = box.getByRole('button', { name: 'Confirm', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(box.getByRole('button', { name: 'Refuse', exact: true })).toBeVisible();
+    const shot = testInfo.outputPath('stepup-card-passkey.png');
+    await page.screenshot({ path: shot, fullPage: true });
+    await testInfo.attach('stepup-card-passkey.png', { path: shot, contentType: 'image/png' });
+
+    // A ceremony WITHOUT user verification decides nothing (the options are
+    // relaxed in flight so the authenticator answers at all; muster's own UV
+    // guard is what refuses it).
+    await setUserVerified(auth, false);
+    await page.route(`**/attention/asks/${card}/stepup/passkey/options`, async (route) => {
+      const resp = await route.fetch();
+      const body = await resp.json();
+      if (body.options) body.options.userVerification = 'discouraged';
+      await route.fulfill({ response: resp, json: body });
+    });
+    await confirm.tap();
+    await expect(box.locator('[data-stepup-error]')).toContainText('did not verify you');
+    expect(fix('status', '1', String(x)), 'a ceremony without user verification ran the call').toBe('open');
+    expect(fix('status', '1', String(card))).toBe('open');
+    await page.unroute(`**/attention/asks/${card}/stepup/passkey/options`);
+    await setUserVerified(auth, true);
+
+    await Promise.all([page.waitForLoadState('load'), confirm.tap()]);
+    await expect(page.locator('#ask-live [data-ask-closed]')).toHaveAttribute('data-status', 'answered', { timeout: 20_000 });
+    await expect(page.locator('#ask-live [data-ask-answer]')).toContainText('Confirm');
+    expect(fix('status', '1', String(card))).toBe('answered Confirm');
+    expect(fix('status', '1', String(x)), 'the held call ran, exactly as asked').toBe('answered yes');
+    expect(verifies.filter((s) => s === 200), 'one accepted decision').toHaveLength(1);
+
+    // 2. Refuse, on the Asks feed: the card closes refused, its call never runs.
+    const y = Number(fix('ask', '1'));
+    const card2 = await gatedAnswer(token, y);
+    await page.goto(browserURL + '/attention');
+    const feed = page.locator(`#ask-${card2} [data-ask-stepup-web]`);
+    await expect(feed.locator('[data-ask-stepup-phone]')).toHaveText('Confirm here with your passkey, or on your phone.');
+    await feed.getByRole('button', { name: 'Refuse', exact: true }).tap();
+    await expect.poll(() => fix('status', '1', String(card2)), { timeout: 20_000 }).toBe('answered Refuse');
+    expect(fix('status', '1', String(y)), 'a refused card ran its call').toBe('open');
+  });
+});

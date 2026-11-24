@@ -19,8 +19,11 @@ import (
 //
 // A confirmation card a host session filed for plugin_draft_decide ("Post to
 // X? · Draft #41", "Reject this draft? · Draft #41") is answered only from the
-// owner's paired phone (hostDecisionForAnswer): no Confirm, no Refuse, no
-// answer box in the browser, and that does not change here.
+// owner's paired phone or with a passkey ceremony made for it
+// (hostDecisionForAnswer). Where its face carries the draft's own decision
+// (below), that decision is what the browser draws, in place of the card's
+// passkey Confirm and Refuse (stepup_web_confirm.go), which it draws when
+// the draft's controls are not offered.
 //
 // What the Open feed's card and the ask page add is the DRAFT's own decision —
 // the owner deciding the draft in muster's web UI, the path that was never

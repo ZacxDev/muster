@@ -333,6 +333,8 @@ POST /api/tasks/{id}/comments
 POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
+POST /attention/asks/{id}/stepup/passkey/options
+POST /attention/asks/{id}/stepup/passkey/verify
 POST /attention/opencode/answer
 POST /attention/wakes/{id}/retry
 POST /auth/claim

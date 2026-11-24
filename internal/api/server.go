@@ -304,6 +304,9 @@ type Server struct {
 	// hostDecisions are the owner-authority calls from a host officer's
 	// machine waiting for the owner's phone (host_stepup.go).
 	hostDecisions hostDecisions
+	// stepUpCards is the browser door's state for deciding those cards with a
+	// passkey: the challenges minted per card (stepup_web_confirm.go).
+	stepUpCards stepUpCardWeb
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 
