@@ -216,6 +216,7 @@ func TestThePasskeysPageSignalsTheCompleteSet(t *testing.T) {
 	if d.UserID == b64url("pk-signal@invite.test") || d.UserID == sub {
 		t.Fatal("the user handle is not the base64url of the subject")
 	}
+	w.proveWithAPasskey(cookies) // a removal takes the proof (passkey_enrol.go)
 	r := do(w.edge, "POST", accountPasskeysPath+"/"+ids[0]+"/delete", url.Values{}, cookies)
 	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != accountPasskeysPath {
 		t.Fatalf("remove: %d %q", r.Code, r.Header().Get("Location"))

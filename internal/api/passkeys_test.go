@@ -243,6 +243,9 @@ func TestPasskeyRoutesRefuseCrossOriginWrites(t *testing.T) {
 	_, sub, at, rt := w.joinMember("pk-xo@invite.test")
 	pid := w.fake.AddPasskey(sub, "cred-xo")
 	cookies := withCookies(at, rt)
+	// Removing a passkey takes the enrolment proof (passkey_enrol.go): given
+	// first, so the same-origin delete below is refused for nothing else.
+	w.proveWithAPasskey(cookies)
 	for _, path := range []string{passkeySignInOptionsPath, passkeySignInVerifyPath, accountPasskeysPath + "/options",
 		accountPasskeysPath + "/verify", accountPasskeysPath + "/" + pid + "/delete"} {
 		rec := postJSON(w.edge, path, map[string]any{}, cookies, fromOrigin("https://evil.example"))
@@ -771,6 +774,7 @@ func TestThePasskeyListShowsTheSyncedFlag(t *testing.T) {
 		strings.Count(page, "data-passkey-id=") != 2 || !strings.Contains(page, "never used") {
 		t.Fatalf("the list: %s", truncate(page, 2000))
 	}
+	w.proveWithAPasskey(cookies) // a removal takes the proof (passkey_enrol.go)
 	if r := do(w.edge, "POST", accountPasskeysPath+"/"+deviceID+"/delete", url.Values{}, cookies); r.Code != http.StatusSeeOther {
 		t.Fatalf("remove: %d", r.Code)
 	}

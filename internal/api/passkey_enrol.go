@@ -23,8 +23,10 @@ import (
 // A passkey can decide a step-up card in the browser (stepup_web_confirm.go),
 // which before needed the paired phone. So if a password and a fresh sign-in
 // were enough to ADD one, a password alone would reach card approval: sign
-// in, enrol your own authenticator, approve. 🔴 THE INVARIANT: A PASSWORD
-// ALONE NEVER REACHES CARD APPROVAL.
+// in, enrol your own authenticator, approve. 🔴 THE INVARIANT: ONCE AN
+// ACCOUNT HAS A PASSKEY OR A PAIRED PHONE WITH A STEP-UP KEY, A PASSWORD ALONE
+// NEVER REACHES CARD APPROVAL — not by adding a passkey, not by pairing a
+// phone (pairing_gate.go), not by removing either (passkey_removal.go).
 //
 // So adding a passkey (POST /account/passkeys/options and …/verify, which
 // still need a sign-in from the last stepup.CredentialMaxAge) also needs, for
@@ -309,7 +311,8 @@ func passkeyStandingOf(rec map[string]any, found bool, created, since time.Time)
 			return standingPasswordOnly
 		}
 	}
-	if !since.IsZero() && created.Before(since) {
+	// A created_at GoTrue did not give (zero) says nothing: not trusted.
+	if !since.IsZero() && !created.IsZero() && created.Before(since) {
 		return standingVouched
 	}
 	return standingUnknown

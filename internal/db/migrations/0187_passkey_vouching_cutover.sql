@@ -23,14 +23,13 @@
 -- Must apply after its predecessor, 0186 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT at merge if main moved.
 --
--- ROLLBACK. An older image ignores the table, and with it every rule that
--- reads it (it also has no card approval in the browser). Before the older
--- image starts:
---   DROP TABLE IF EXISTS public.passkey_rules;
---   DELETE FROM schema_migrations WHERE version = 187;
--- 🔴 Re-applying it later sets a NEW instant: every passkey added between the
--- two runs with no record then counts as added before the rule. Do not drop
--- the table on a server that has run this version for a while.
+-- ROLLBACK. Nothing to undo: an older image ignores the table, and with it
+-- every rule that reads it (it also has no card approval in the browser).
+-- 🔴 LEAVE THE TABLE AND ITS ROW IN PLACE. Dropping it and running this
+-- version again would set a NEW instant, and every passkey added in between
+-- with no record would then count as added before the rule — trusted to
+-- approve cards. Leave schema_migrations' row too, so a later run of this
+-- version does not re-apply it.
 
 SET LOCAL lock_timeout = '3s';
 

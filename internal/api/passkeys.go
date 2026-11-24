@@ -33,6 +33,7 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -623,13 +624,33 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) error {
-		return s.gt.Client.DeletePasskey(r.Context(), clientIP(r), accessToken, id)
-	})
-	if s.answerUserTokenRefreshFailure(w, r, err) {
+	uid := authz.MustFrom(r.Context()).UserID
+	// 🔴 THE SAME PROOF AS ADDING ONE (passkey_enrol.go): deleting a passkey
+	// changes how the account is reached. A passkey that is not the
+	// account's spends nothing; one the account has needs a ticket — which a
+	// proof with that very passkey gives, so a passkey can always be removed
+	// by proving with it.
+	list, err := s.accountPasskeys(r.Context(), clientIP(r), creds)
+	if err != nil {
+		s.logger.Printf("passkeys: delete: list: %v", err)
+		s.renderAccountPasskeys(w, r, http.StatusBadGateway, creds, "That passkey could not be removed right now.")
 		return
 	}
+	if !slices.ContainsFunc(list, func(p gotrue.Passkey) bool { return p.ID == id }) {
+		s.renderAccountPasskeys(w, r, http.StatusNotFound, creds, "That passkey is not one of yours.")
+		return
+	}
+	need, err := s.passkeyEnrolNeed(r.Context(), creds, clientIP(r), true)
 	if err != nil {
+		s.renderAccountPasskeys(w, r, http.StatusServiceUnavailable, creds, PasskeyEnrolUnchecked)
+		return
+	}
+	if need.ticket == nil {
+		s.renderAccountPasskeys(w, r, http.StatusForbidden, creds, PasskeyDeleteProofNeeded)
+		return
+	}
+	if err := s.gt.Client.DeletePasskey(r.Context(), clientIP(r), creds.access, id); err != nil {
+		s.passkeyEnrol.giveBack(enrolKey(uid, creds), *need.ticket)
 		if gotrue.IsClientError(err) {
 			s.renderAccountPasskeys(w, r, http.StatusNotFound, creds, "That passkey is not one of yours.")
 			return
@@ -638,8 +659,8 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderAccountPasskeys(w, r, http.StatusBadGateway, creds, "That passkey could not be removed right now.")
 		return
 	}
+	s.notifySecurity(r.Context(), uid, PasskeyRemovedTitle, RemovedBody, accountPasskeysPath)
 	s.setPasskeyFlag(r.Context(), creds.claims.Subject, id, nil)
-	uid := authz.MustFrom(r.Context()).UserID
 	if s.gt.Accounts != nil {
 		_ = s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: uid, Via: authz.ViaSession}, "user.passkey_removed",
 			users.UserObject(uid), map[string]any{"passkey_id": id})
@@ -655,6 +676,12 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.adminUserTarget(w, r)
 	if !ok {
+		return
+	}
+	// 🔴 NOT FOR THE ADMIN'S OWN ACCOUNT: removing your own passkeys is
+	// Account → Passkeys, which asks for the proof (passkey_enrol.go).
+	if u.ID == requestOwner(r.Context()) {
+		s.renderAdminUsers(w, r, http.StatusForbidden, AdminSelfRefusal, "")
 		return
 	}
 	if u.GotrueSub == "" {

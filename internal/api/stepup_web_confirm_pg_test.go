@@ -56,7 +56,7 @@ type webRig struct {
 func newWebRig(t *testing.T) *webRig {
 	t.Helper()
 	r := newStepUpRaceRig(t)
-	r.fake.EnablePasskeys()
+	enablePasskeys(r.s, r.fake)
 	r.fake.AddPasskey(r.subject(), "owner-cred")
 	// A passkey that may approve cards: recorded as added with a proof
 	// (passkey_enrol.go). One with no record, added after muster started
@@ -542,7 +542,7 @@ func TestASecondConfirmWhileTheFirstIsRecordedNeverWithdrawsTheCard(t *testing.T
 // a card whose decision a restart lost draws the phone line alone.
 func TestTheBrowserOffersAPasskeyDecisionOnlyWhereOneCanWork(t *testing.T) {
 	base := newStepUpRaceRig(t)
-	base.fake.EnablePasskeys() // passkeys served, none on this account yet
+	enablePasskeys(base.s, base.fake) // passkeys served, none on this account yet
 	at, rt := base.login()
 	r := &webRig{stepUpRaceRig: base, at: at, rt: rt}
 	_, card := r.card(t, "Ship it, drawn?")

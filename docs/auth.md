@@ -671,9 +671,22 @@ passkeys**) and have the person add them again.
 ### Adding a passkey
 
 A passkey can approve a [step-up card](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey)
-in the browser, which otherwise only the paired phone can do. So adding one
-needs more than the password: 🔴 **a password alone never reaches card
-approval.**
+in the browser, which otherwise only the paired phone can do. So adding one,
+pairing a phone that confirms requests, and removing either need more than
+the password: 🔴 **once an account has a passkey or a paired phone with a
+step-up key, a password alone never reaches card approval.**
+
+The one place the password is enough is an account's **first factor**, on an
+account that has neither:
+
+- its first passkey is added with the password, and it **cannot** approve a
+  card (below);
+- its first phone with a step-up key is paired with the password, and it
+  **can** answer cards: a phone's step-up key is the hardware-bound proof
+  cards were built on, and without it the account could answer no card at
+  all.
+
+From then on, every change below takes a proof.
 
 - **The account already has a passkey, or a paired phone with a step-up
   key:** adding another needs, besides a sign-in from the last five minutes,
@@ -703,13 +716,29 @@ approval.**
   An add whose claimed id (`rawId`) differs from the signed one is refused
   before GoTrue registers anything. 🔴 A passkey **with no record** may
   approve a card only when GoTrue created it before muster started recording
-  (`passkey_rules.vouching_since`, set once by migration 0187). That keeps
+  (`passkey_rules.vouching_since`, set once by migration 0187). A passkey whose
+  creation time GoTrue does not give is not trusted. That keeps
   older passkeys working, card approval included. A newer passkey with no
   record (one added through GoTrue's own endpoints, or one whose record was
   lost) approves no card and proves no enrolment. muster writes the record
   before it answers the add. If the write fails it removes the passkey; if the
   removal fails too, that passkey stays and approves nothing. The record
   writes are serialised per account, so two at once lose neither.
+- **Pairing a phone that confirms requests** (one with a step-up key) takes
+  the same proof once the account has a passkey or such a phone. Confirm on
+  Account → Passkeys first; the pairing code shown afterwards may pair a
+  step-up key, and the proof is spent. A code minted without the proof says so
+  (`stepup_allowed: false`). A phone redeeming that code with a step-up key is
+  refused (`403 stepup_proof_required`) and the code is not used up. A phone
+  without a key still pairs read-only. Every pairing pushes every device
+  already registered "A phone was paired to your account", whatever your
+  notification settings say.
+- **Removing a passkey** takes the same proof once the account has a passkey
+  or a step-up phone. Proving with the passkey you are removing is enough.
+  The removal pushes "A passkey was removed from your account".
+- **The admin pages do not reset or strip the admin's own account.** An admin
+  cannot mint a password-reset link for their own account, or remove their
+  own passkeys from Admin → Users. Those are done on Account, with its proof.
 - **A proof allows one change, used once.** The ticket is taken when it is
   checked, so two adds racing on one ticket add one passkey.
 - **Removing a phone or a notification target** (on Account) takes the same
@@ -719,7 +748,9 @@ approval.**
   within ten minutes. So a person holding only the password cannot first
   remove your devices to silence the notice below. On an account with neither,
   the removal goes through as before, after every device registered for push
-  is told ("A phone was removed from your account"). These stay open:
+  is told ("A phone was removed from your account"). A removal with the proof
+  is announced the same way. Removing a phone or target that does not exist
+  answers 404, spends no proof and announces nothing. These stay open:
   - a phone removing itself from the app;
   - a browser turning off its own notifications;
   - a password reset, which revokes every paired phone. That is the recovery

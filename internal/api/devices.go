@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -228,16 +229,37 @@ func (s *Server) handleDevicePairCode(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the pairing code could not be created"})
 		return
 	}
+	// 🔴 May this code pair a phone that confirms requests (pairing_gate.go)?
+	stepUp := s.pairingStepUpAllowed(r)
+	if stepUp {
+		s.pairingPermits.allow(code, expires)
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"code": code, "expires_at": expires.UTC().Format(time.RFC3339),
-		"expires_in": int(devices.PairingCodeTTL / time.Second),
-	})
+		"expires_in": int(devices.PairingCodeTTL / time.Second), "stepup_allowed": stepUp,
+	}
+	if !stepUp {
+		out["stepup_note"] = PairStepUpProofNeeded
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 || s.ext.Devices == nil {
+		http.Error(w, "no such device", http.StatusNotFound)
+		return
+	}
+	// The phone first: a removal of one that is not there spends no ticket
+	// and tells nobody anything.
+	list, err := s.ext.Devices.List(r.Context())
+	if err != nil {
+		s.logger.Printf("devices: remove %d: %v", id, err)
+		http.Error(w, "the device could not be removed", http.StatusInternalServerError)
+		return
+	}
+	if !slices.ContainsFunc(list, func(d devices.Device) bool { return d.ID == id }) {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
 	}
@@ -306,6 +328,12 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 				`"stepup_key_type","stepup_key_level"}; the three step-up fields are all present or all absent`})
 		return
 	}
+	// 🔴 A STEP-UP KEY ONLY ON A CODE MINTED WITH PERMISSION (pairing_gate.go).
+	// Refused before the code is redeemed, so it is not used up.
+	if body.StepUpPubkey != "" && !s.pairingPermits.allowed(body.Code) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PairStepUpProofNeeded, "code": "stepup_proof_required"})
+		return
+	}
 	tok, d, err := s.ext.Devices.Redeem(r.Context(), body.Code, devices.PairIn{
 		Name: body.Name, AppVersion: body.AppVersion, StepUpKey: body.StepUpPubkey,
 		KeyType: body.StepUpKeyType, KeyLevel: body.StepUpKeyLevel, AllowPINKeys: s.ext.AllowPINKeys})
@@ -329,7 +357,10 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the device could not be paired"})
 		return
 	}
+	s.pairingPermits.forget(body.Code)
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
+	// Every device already registered is told (pairing_gate.go).
+	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"token": tok,

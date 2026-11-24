@@ -568,14 +568,26 @@ async function addPasskey(page: Page) {
   await expect(page.locator('#passkey-list [data-passkey-id]'), 'the new passkey is listed').toHaveCount(1);
 }
 
-// removeAllPasskeys removes every passkey listed on /account/passkeys.
+// removeAllPasskeys removes every passkey of the signed-in account straight at
+// GoTrue's admin API, with a service_role token signed by the e2e JWT secret
+// (as muster's own admin calls are). Not through Account → Passkeys: removing
+// a passkey there takes the enrolment proof (internal/api passkey_enrol.go),
+// which the earlier tests' authenticators — long gone — cannot give. muster's
+// records of them are left behind, naming passkeys that no longer exist.
 async function removeAllPasskeys(page: Page) {
-  for (let i = 0; i < 50; i++) {
-    const rm = page.locator('#passkey-list [data-passkey-id] button', { hasText: 'Remove' }).first();
-    if ((await rm.count()) === 0) return;
-    await Promise.all([page.waitForURL(browserURL + '/account/passkeys'), rm.click()]);
+  const real = await accessToken(page.context());
+  const claims = b64urlJSON(real.split('.')[1]);
+  const now = Math.floor(Date.now() / 1000);
+  const admin = sign({ sub: 'muster-server', iss: claims.iss, role: 'service_role', iat: now, exp: now + 60 });
+  const base = `${gotrueURL}/admin/users/${encodeURIComponent(String(claims.sub))}/passkeys`;
+  const list = await fetch(base, { headers: { Authorization: 'Bearer ' + admin } });
+  expect(list.status, `GoTrue's admin passkey list: ${await list.clone().text()}`).toBe(200);
+  for (const p of (await list.json()) as { id: string }[]) {
+    const d = await fetch(`${base}/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + admin } });
+    expect([200, 204], `GoTrue's admin passkey delete: ${d.status}`).toContain(d.status);
   }
-  throw new Error('passkeys kept coming back');
+  await page.goto(browserURL + '/account/passkeys');
+  await expect(page.locator('#passkey-list [data-passkey-id]')).toHaveCount(0);
 }
 
 // sendFrom opens the rendered view and returns its composer plus a live list of

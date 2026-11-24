@@ -400,6 +400,14 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// 🔴 NOT FOR THE ADMIN'S OWN ACCOUNT: a reset link the session mints
+	// for itself would set a new password, and a reset revokes the paired
+	// phones — a way around the proof the account pages ask for
+	// (passkey_enrol.go). Your own password is changed on Account.
+	if u.ID == requestOwner(r.Context()) {
+		s.renderAdminUsers(w, r, http.StatusForbidden, AdminSelfRefusal, "")
+		return
+	}
 	if strings.TrimSpace(s.auth.PublicURL) == "" {
 		s.renderAdminUsers(w, r, http.StatusServiceUnavailable, "MUSTER_PUBLIC_URL is not set, so there is no address to put in the link.", "")
 		return

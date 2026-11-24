@@ -28,10 +28,17 @@ import (
 
 // The removal gate's words.
 const (
-	RemovalProofNeeded = "Removing a phone or a notification target needs a confirmation first: open Account, Passkeys, confirm with a passkey you have or on your paired phone, then remove it here within ten minutes."
-	PhoneRemovedTitle  = "A phone was removed from your account"
-	TargetRemovedTitle = "A notification target was removed from your account"
-	RemovedBody        = "If this was not you, change your password and check Account, Passkeys."
+	RemovalProofNeeded  = "Removing a phone or a notification target needs a confirmation first: open Account, Passkeys, confirm with a passkey you have or on your paired phone, then remove it here within ten minutes."
+	PhoneRemovedTitle   = "A phone was removed from your account"
+	TargetRemovedTitle  = "A notification target was removed from your account"
+	RemovedBody         = "If this was not you, change your password and check Account, Passkeys."
+	PasskeyRemovedTitle = "A passkey was removed from your account"
+	// PasskeyDeleteProofNeeded: a passkey of the account is deleted with a
+	// proof (passkey_enrol.go).
+	PasskeyDeleteProofNeeded = "To remove a passkey, first confirm below with a passkey you have (the one you are removing will do) or on your paired phone, then remove it within ten minutes."
+	// AdminSelfRefusal: the admin pages do not reset or strip the admin's
+	// OWN account (the account pages, with their proof, do).
+	AdminSelfRefusal = "Not for your own account: change your password or your passkeys on Account."
 )
 
 // gateCredentialRemoval answers (false) when the session may not remove a
@@ -55,6 +62,9 @@ func (s *Server) gateCredentialRemoval(w http.ResponseWriter, r *http.Request, t
 	}
 	switch {
 	case need.ticket != nil:
+		// Proven — and still told, as every change to how the account is
+		// reached is (an account's own proof is not a reason for silence).
+		s.notifySecurity(r.Context(), authz.MustFrom(r.Context()).UserID, title, RemovedBody, "/account")
 		return true
 	case need.open:
 		s.notifySecurity(r.Context(), authz.MustFrom(r.Context()).UserID, title, RemovedBody, "/account")

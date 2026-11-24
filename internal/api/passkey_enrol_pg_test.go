@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -123,6 +124,16 @@ func recordPasskey(t *testing.T, s *Server, fake *gotruetest.Fake, sub, credID s
 		}
 	}
 	t.Fatalf("no fake passkey %q", credID)
+}
+
+// enablePasskeys turns passkeys on in fake and drops srv's cached GoTrue
+// settings: a rig that paired a phone first (the pairing gate reads them)
+// would otherwise keep "off" for passkeySettingsTTL.
+func enablePasskeys(srv *Server, fake *gotruetest.Fake) {
+	fake.EnablePasskeys()
+	srv.gt.pk.mu.Lock()
+	srv.gt.pk.at = time.Time{}
+	srv.gt.pk.mu.Unlock()
 }
 
 func (r *enrolRig) passkeys() int { return len(r.fake.Passkeys(r.subject())) }

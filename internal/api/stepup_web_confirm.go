@@ -60,7 +60,8 @@ import (
 // decides the card and makes no session fresh.
 //
 // 🔴 ONLY A PASSKEY THAT MAY DECIDE CARDS (passkey_enrol.go): one added with
-// the password alone is refused here, so a password alone never reaches card
+// the password alone is refused here, so — once the account has a passkey or
+// a step-up phone — a password alone never reaches card
 // approval. A card only the phone decides (hostDecision.phoneOnly: adding a
 // passkey) offers no browser decision at all.
 //

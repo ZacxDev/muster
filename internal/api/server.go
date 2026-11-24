@@ -314,6 +314,9 @@ type Server struct {
 	// reading the map and writing it back lose one's change). In process:
 	// muster runs one replica.
 	passkeyMeta keyedLocks
+	// pairingPermits is which pairing codes may pair a step-up key
+	// (pairing_gate.go).
+	pairingPermits pairingPermits
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 
