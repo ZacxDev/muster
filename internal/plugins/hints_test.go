@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,46 @@ func TestATaskEventGetsATaskHint(t *testing.T) {
 	}
 	if got := d.hintsFor(context.Background(), agents.Agent{}, Message{ID: 1, Body: "node-7k"}); len(got.Sessions) != 1 || calls != 2 {
 		t.Fatalf("control: a mail message's hint: %+v (%d call(s))", got, calls)
+	}
+}
+
+// TestTheWhyLineNamesAtMostThreeKeys pins the why line's bound exactly: four
+// short identifiers, three shown, in order, and no marker for the fourth.
+func TestTheWhyLineNamesAtMostThreeKeys(t *testing.T) {
+	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n",
+		Matched: []string{"a1", "b2", "c3", "d4"}}}}, hintNonce, true)
+	want := "\n" + hintPrefaceReply + "\n" +
+		"\n" +
+		"<<<session-hints untrusted nonce=fedcba9876543210 count=1>>>\n" +
+		"| agent:7 — n\n" +
+		"|   its focus mentions a1, b2, c3\n" +
+		"<<<end session-hints nonce=fedcba9876543210>>>\n"
+	if got != want {
+		t.Fatalf("hint block:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// 🔴 TestAFirstSessionAloneOverTheCapStillSaysWhatWasLeftOut: two sessions,
+// the first over MaxHintBytes on its own (its titles); the block keeps the
+// first's id and why, drops its titles, and says the second was left out —
+// exactly. (Before, that fallback dropped the "(N more not shown)" line.)
+func TestAFirstSessionAloneOverTheCapStillSaysWhatWasLeftOut(t *testing.T) {
+	big := strings.Repeat("語", maxHintTitleRunes)
+	first := SessionHint{ID: "agent:1", Name: "a", Matched: []string{"node-7k"}}
+	for i := 0; i < MaxHintTitles; i++ {
+		first.Titles = append(first.Titles, HintTitle{Title: big + strconv.Itoa(i), At: hintAt})
+	}
+	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{first, {ID: "agent:2", Name: "b"}}}, hintNonce, true)
+	want := "\n" + hintPrefaceReply + "\n" +
+		"\n" +
+		"<<<session-hints untrusted nonce=fedcba9876543210 count=1>>>\n" +
+		"| agent:1 — a\n" +
+		"|   its focus mentions node-7k\n" +
+		"| (titles not shown)\n" +
+		"| (1 more not shown)\n" +
+		"<<<end session-hints nonce=fedcba9876543210>>>\n"
+	if got != want {
+		t.Fatalf("hint block:\n%s\nwant:\n%s", got, want)
 	}
 }
 

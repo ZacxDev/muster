@@ -478,6 +478,10 @@ func (s *Server) toolRouteToSession(ctx context.Context, chief agents.Agent, arg
 	if r.HeadsUp {
 		next := "The message is on its way into the session as a one-way heads-up: the session's answer comes back to you " +
 			"here, and nothing it writes goes to the sender. The reply is still yours to draft"
+		if !in.HeadsUp {
+			next = "The message had a heads-up route before, so muster made this one a heads-up too: the session's answer " +
+				"comes back to you here, and nothing it writes goes to the sender. The reply is still yours to draft"
+		}
 		if tools := s.routeChiefTools(ctx, r); tools.Has(replyDraftToolName) {
 			next += " with reply_draft"
 		}
@@ -1944,9 +1948,11 @@ func (s *Server) handBackText(ctx context.Context, r plugins.Route, reason strin
 		return reason + ", so your owner's request is back with you: " + handBackChoices(handBackRequest, tools)
 	case r.IsTask():
 		return reason + ", so the task is back with you: " + handBackChoices(handBackTask, tools)
-	case r.OneWay && !r.HeadsUp:
-		// A heads-up's message can still be answered: it is handed back as
-		// any message is.
+	case r.HeadsUp:
+		// A heads-up's message can still be answered (by the chief, once the
+		// owner decides), and any later route of it stays a heads-up.
+		return reason + ", so the message is back with you: " + handBackChoices(handBackHeadsUp, tools)
+	case r.OneWay:
 		return reason + ", so the message is back with you: " + handBackChoices(handBackOneWay, tools)
 	}
 	return reason + ", so the message is back with you: " + handBackChoices(handBackMessage, tools)
@@ -2555,6 +2561,10 @@ const (
 	handBackRequest
 	handBackTask
 	handBackOneWay
+	// handBackHeadsUp: a heads-up's message (Route.HeadsUp), still the
+	// chief's to answer once the owner decides; a later route of it is a
+	// heads-up again (plugins.PGStore.CreateRouteFrom).
+	handBackHeadsUp
 )
 
 // handBackChoices ends a hand-back of kind: each choice the chief holds the
@@ -2578,10 +2588,16 @@ func handBackChoices(kind int, tools plugins.ChiefTools) string {
 	if kind == handBackMessage && tools.Has(replyDraftToolName) {
 		opts = append(opts, "draft a reply with reply_draft")
 	}
+	if kind == handBackHeadsUp && tools.Has(replyDraftToolName) {
+		opts = append(opts, "draft the reply with reply_draft once your owner has decided")
+	}
 	if tools.Has(routeToSessionToolName) {
 		route := "route it to another session with route_to_session"
-		if kind == handBackRequest {
+		switch kind {
+		case handBackRequest:
 			route += " if they ask you again in this chat"
+		case handBackHeadsUp:
+			route += " (as a heads-up again: muster makes every later route of this message one, so no session's answer reaches the sender)"
 		}
 		opts = append(opts, route)
 	}

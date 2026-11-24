@@ -88,10 +88,10 @@ type Match struct {
 	Terms   int
 	Titles  []TitleAt
 	// Keys is WHY it matched: the message's distinctive terms its history
-	// carries, in the message's order, as the message names them — a
-	// normalised key ("#137", "v0.0.42", "gpuhost-4090-7-12"), a tail key as
-	// "7-12 (of gpuhost-4090-7-12)" (terms.go's TAIL KEYS), and a host and its
-	// own tail once, as the host.
+	// carries, in the message's order, each as its normalised key (lower-
+	// cased: "#137", "v0.0.42", "gpuhost-4090-52-23"), a tail key as
+	// "52-23 (of gpuhost-4090-52-23)" (terms.go's TAIL KEYS), and a host and
+	// its own tail once, as the host.
 	Keys []string
 }
 

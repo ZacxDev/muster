@@ -31,11 +31,19 @@ import (
 // liveDraft and liveRoute are the two "the first turn's work is still live or
 // done" clauses; retryableWhere and Requeue's refusal reasons both read THESE,
 // so the list, the reasons and the guarded UPDATE cannot disagree.
+//
+// 🔴 A RELAYED HEADS-UP IS NOT A DONE ROUTE (session_routes.heads_up, 0186).
+// Every other relayed route either answered the sender (its draft) or carried
+// a message nobody can answer. A heads-up's relay only told the chief: the
+// message still awaits its reply, which is the owner's decision. Counting it
+// would silence the "not acted on" ask (unrouted.go) and close one already
+// raised. While the heads-up is still open (routed, answered) it is live work,
+// like any route.
 const (
 	liveDraft = `EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id
 		AND d.status IN ('pending', 'approved', 'sent', 'unconfirmed'))`
 	liveRoute = `EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id
-		AND r.state IN ('routed', 'answered', 'relayed', 'owner_answered'))`
+		AND (r.state IN ('routed', 'answered', 'owner_answered') OR (r.state = 'relayed' AND NOT r.heads_up)))`
 )
 
 // revokedPlugin: the message's plugin has been revoked. Revoking a plugin

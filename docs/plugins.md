@@ -3117,23 +3117,37 @@ not again as the words it is made of, and a message contributes at most its
 first 20. Common words alone ("update", "next week", "review") name nothing: an
 ordinary mail or a newsletter shares several with almost any session.
 
-A **host named with a numbered tail** (`gpuhost-4090-7-12`) also counts by
-that tail (`7-12`). The focus summarizer is told never to quote hostnames, so
-a session working on that host writes "node -7-12" or "7-12", not the name an
-alert spells out in full. A focus row's bare number pair (`-7-12`, `52-110`)
-therefore counts as a host's tail. A message's bare pair does not: "the game
-ended 7-12" names nothing, so a sender cannot name a session by writing
-numbers. A tail is two numbers of at least four characters together (`1-2`
-is prose). A focus that names the host in full carries both the host and its
-tail, and they count once, as the host.
+A message's **host named with a numbered tail** also counts by that tail.
+The host has to be shaped like a fleet's: a first part with at least two
+letters, a numeric part, then two numbers (`gpuhost-4090-52-23` counts by
+`52-23`). The focus summarizer is told never to quote hostnames, so a session
+working on that host writes "node -52-23" or "52-23", not the name an alert
+spells out in full. A focus row's bare number pair (`-52-23`, `52-110`)
+therefore counts as a host's tail, with these limits:
+- A pair that reads as a date never counts: one after a year (`2000-11-23`),
+  or a calendar month and day on its own (`11-23`, `7-12`). `-2-31` still
+  counts, since there is no 31 February. The cost: a host whose tail is a
+  valid month and day is matched only when the focus writes more of its name.
+- A focus row's **full** host name counts only in full, never by its tail, so
+  `gpuhost-3090-52-23` in a focus names nothing for an alert about
+  `gpuhost-4090-52-23`.
+- A message's bare pair never counts ("the game ended 52-23" names nothing),
+  nor does a token not shaped like a host (`ab-52-23`).
+- A tail is at least four characters (`1-2` is prose).
+
+This is a structural floor, not a defence: a sender who writes a whole
+host-shaped name still gets its tail. A match still needs a second shared
+term. A focus row with both the full host and its short form counts the host
+once.
 
 It appends what it finds to the chief's turn, after the message, as a block
 headed **Sessions that may already be on this**: up to three sessions, each
 with its id, name and host, then **why it is listed**, then up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
 Each session listed by its focus has a line *"its focus mentions …"* naming
-up to three of the message's identifiers its focus carries, as the message
-spells them, a tail as `7-12 (of gpuhost-4090-7-12)`. A session listed by its
+up to three of the message's identifiers its focus carries. They appear as
+muster normalises them: lower-cased, a reference as `#137`, a version as
+`v1.2.3`, a tail as `52-23 (of gpuhost-4090-52-23)`. A session listed by its
 pull request or repo says so on its own line (below). The chief can then judge
 relevance by what was shared, not by a title that may name the session's
 larger job.
@@ -3560,6 +3574,19 @@ What differs:
   (an attention ask), and drafts the reply with `reply_draft` once you have
   answered. A heads-up that times out comes back as a message the chief can
   still reply to, with `reply_draft` among its choices.
+- **Once a heads-up, always a heads-up.** Any later route the chief makes of
+  the same message is a heads-up too, whether or not it passes `heads_up`. A
+  two-way re-route after a time-out would otherwise send the new session's
+  answer to an allowlisted sender. muster coerces it rather than refusing it,
+  and says so in the route's answer and in the hand-back. Your own
+  [`plugin_message_route`](#routing-a-message-from-your-own-session) is not
+  coerced, since it is your decision.
+- **A relayed heads-up is not the chief acting on the message.** For a
+  message from a plugin the
+  [not-acted-on sweep](#a-message-the-chief-does-not-act-on) judges, a
+  heads-up whose answer has come back still counts as undecided. So the
+  "not acted on" ask is raised, and one already raised stays open, until the
+  chief drafts the reply, settles the message or routes it again.
 - **The chief's own route only**: `heads_up` goes with `message_id` alone (a
   task or your own request with it is refused as bad arguments), and on a
   `no_reply` message it changes nothing (that message is already one-way).

@@ -97,20 +97,33 @@ func TestRestBlanksIdentifiersOnly(t *testing.T) {
 	}
 }
 
-// 🔴 TestAHostCarriesItsNumberedTail: a host named with a numbered tail
-// (gpuhost-4090-7-12) carries that tail as a second key ("~7-12", right after
-// it), because a focus written without hostnames names the host by its tail
-// alone. A row's bare "-7-12" carries the tail key too (rowTerms) — and only a
-// row's: a message's bare number pair is no term (a sender could add them at
-// will), and a tail shorter than four characters ("1-2") is none either.
+// 🔴 TestAHostCarriesItsNumberedTail: a message's host named with a numbered
+// tail (gpuhost-4090-52-23) carries that tail as a second key ("~52-23", right
+// after it), because a focus written without hostnames names the host by its
+// tail alone. A row's bare "-52-23" carries the tail key too (rowTerms) — and
+// only a row's: a message's bare number pair is no term (a sender could add
+// them at will). A row's full host carries none, a row's pair that reads as a
+// date carries none, a tail shorter than four characters ("1-2") is none, and
+// a message token not shaped like a host (a-7-12) mints none.
 func TestAHostCarriesItsNumberedTail(t *testing.T) {
 	for _, c := range []struct {
 		text      string
 		msg, rows []string
 	}{
-		{"gpuhost-4090-7-12 is down", []string{"gpuhost-4090-7-12", "~7-12"}, []string{"gpuhost-4090-7-12", "~7-12"}},
-		{"node -7-12 is at 0/8 GPUs", nil, []string{"~7-12"}},
+		// A message's host carries its tail; a row's full host does not (a
+		// full name matches in full).
+		{"gpuhost-4090-52-23 is down", []string{"gpuhost-4090-52-23", "~52-23"}, []string{"gpuhost-4090-52-23"}},
+		{"node -52-23 is at 0/8 GPUs", nil, []string{"~52-23"}},
 		{"nodes 52-110 and -4090-7-12", nil, []string{"~52-110", "~7-12"}},
+		// The fleet's own short form: no 31 February, so not a date.
+		{"node -2-31 is down", nil, []string{"~2-31"}},
+		// A row's pair that reads as a date is none: a year before it, or a
+		// calendar month and day on its own.
+		{"since 2000-11-23, and 11-23, and 7-12, and 2-29", nil, nil},
+		// Not host-shaped on the message side — one letter first, no numeric
+		// part before the pair, or too few parts: no tail.
+		{"a-7-12 and gpu-x-7-12 and ab-52-23 and a-4090-52-23", []string{"a-7-12", "gpu-x-7-12", "ab-52-23", "a-4090-52-23"},
+			[]string{"a-7-12", "gpu-x-7-12", "ab-52-23", "a-4090-52-23"}},
 		// One numeric part, or a tail of letters: no tail.
 		{"drain node-7k and utf-8 and rack-9-b", []string{"node-7k", "utf-8", "rack-9-b"}, []string{"node-7k", "utf-8", "rack-9-b"}},
 		// Too short to be a host's tail, on either side.

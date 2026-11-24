@@ -524,6 +524,18 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		// A heads-up is one-way; on a no_reply message, already one-way, it
 		// is no more than that (HeadsUp marks a message that CAN be answered).
 		headsUp := origin.HeadsUp && !m.NoReply
+		// 🔴 A HEADS-UP IS STICKY: the chief's later route of a message that
+		// had a heads-up route is a heads-up too, whatever it asked for. The
+		// first heads-up said the decision is the owner's; a two-way re-route
+		// (after a time-out, say) would send the new session's answer to an
+		// allowlisted sender as the reply. Coerced, not refused, so the
+		// hand-back's "route it to another session" still works.
+		if !headsUp && !m.NoReply && origin.Via == "" {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM session_routes WHERE plugin_message_id = $1 AND heads_up)`,
+				messageID).Scan(&headsUp); err != nil {
+				return err
+			}
+		}
 		var err error
 		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil,
 			m.NoReply || headsUp, headsUp)

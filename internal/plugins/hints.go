@@ -149,8 +149,9 @@ type SessionHint struct {
 	ByRepo     bool
 	LastActive time.Time
 	// Matched, when not empty, is why the session is listed by its focus: the
-	// message's identifiers its recent focus carries (focus.Match.Keys), in
-	// the message's words. Rendered as "its focus mentions …", at most
+	// message's identifiers its recent focus carries (focus.Match.Keys), as
+	// muster normalises them (lower-cased; "#137", "v1.2.3", a tail "52-23 (of
+	// <host>)"). Rendered as "its focus mentions …", at most
 	// MaxHintKeys of them, each cut.
 	Matched []string
 	// PRs, when not empty, is why the session is listed by its pull request:

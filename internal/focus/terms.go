@@ -41,8 +41,9 @@ import (
 //     (`muster-followups`) → itself, lower-cased. One made only of dictionary
 //     words (`follow-up`, `sign-up`, `self-hosted`) is prose, not an identifier.
 //
-//   - a host's numbered tail: `gpuhost-4090-7-12` → itself and "~7-12" (TAIL
-//     KEYS, below), and on a history row a bare `-7-12` → "~7-12".
+//   - a host's numbered tail: a message's `gpuhost-4090-52-23` → itself and
+//     "~52-23" (TAIL KEYS, below), and on a history row a bare `-52-23` →
+//     "~52-23" (never one that reads as a date).
 //
 // Plain words never are, whatever they are (a message's sender can add common
 // words at will; TestGenericOverlapNamesNothing).
@@ -173,10 +174,11 @@ func distinctiveTerms(text string, max int) (keys []string, rest string) {
 	return keys, rest
 }
 
-// TAIL KEYS: A HOST NAMED BY ITS NUMBERED TAIL. A host name whose last two
-// hyphen-separated parts are numbers after a part with a letter
-// (`gpuhost-4090-7-12`) carries, besides itself, its TAIL as a second key
-// ("~7-12", tailPrefix plus the two numbers), listed right after it. The focus
+// TAIL KEYS: A HOST NAMED BY ITS NUMBERED TAIL. A message's host name shaped
+// like a fleet's — a lettered first part, a numeric part, then two numbers
+// (`gpuhost-4090-52-23`; numberTail) — carries, besides itself, its TAIL as a
+// second key ("~52-23", tailPrefix plus the two numbers), listed right after
+// it. The focus
 // summarizer is told never to quote hostnames (SummaryInstructions), so a
 // session on that host writes "node -7-12" or "7-12": a bare number pair,
 // which is no term. Measured on a fleet's alert channel: every alert named its
@@ -184,24 +186,42 @@ func distinctiveTerms(text string, max int) (keys []string, rest string) {
 // alone, so no alert named the session unless something else the alert
 // carried (a rack, a tool name) happened to be in its focus too.
 //
-// 🔴 ONLY A HISTORY ROW READS A BARE PAIR AS A TAIL (rowTerms). A message's
-// "7-12" stays no term, whatever it is: a sender can write numbers at will,
-// and a bare number never names a session. The direction that matters is the
-// message naming a host in full and the focus naming it short; rows are only
-// ever compared against a message's keys, so a row's bare pair matches
-// nothing unless the message named a host with that tail. A tail is at least
-// minTailBytes long ("7-12"): "1-2" is prose.
+// 🔴 ONLY A HISTORY ROW READS A BARE PAIR AS A TAIL (rowTerms), AND ONLY A
+// MESSAGE'S HOST CARRIES ONE. A message's "52-23" stays no term, whatever it
+// is: a sender can write numbers at will, and a bare number never names a
+// session. A row's full host name carries no tail: a full name must match in
+// full, so another host with the same tail (gpuhost-3090-52-23) names nothing.
+// The direction that matters is the message naming a host in full and the
+// focus naming it short; rows are only ever compared against a message's
+// keys, so a row's bare pair matches nothing unless the message named a host
+// with that tail. A row's pair that reads as a date is none (numberTail), and
+// a tail is at least minTailBytes long: "1-2" is prose.
 const (
 	tailPrefix   = "~"
 	minTailBytes = 4
 )
 
 // numberTail is tok's tail key — tailPrefix and its last two hyphen-separated
-// parts, both all digits, at least minTailBytes together — or "". host: tok
-// must also have a part with a letter before them (a host name); otherwise
-// (a row's bare "7-12" or "4090-7-12") it must have no letter at all.
+// parts, both all digits, at least minTailBytes together — or "".
+//
+// host (a MESSAGE's host name): tok must be shaped like one — a first part
+// with at least two letters, then a numeric part, then the pair
+// (`gpuhost-4090-52-23`) — so a sender's `a-7-12` or `gpu-x-7-12` mints no
+// tail. That is a structural floor, not a defence: a sender who writes a whole
+// host-shaped name still gets its tail, and a match still needs a second
+// shared term (MatchHistory's minTerms).
+//
+// !host (a ROW's bare pair, rowTerms): tok has no letter at all, and does not
+// read as a date. A part before the pair that is a year (1900–2099) refuses it
+// (`2000-11-23`), and a bare pair that is a calendar month and day refuses it
+// too (`11-23`, `7-12`; February up to 29). The fleet's real short forms stay:
+// `-2-31` (no 31 February), `52-23`, `52-110`, `4090-7-12` (4090 is no year).
+// The cost: a host whose tail is a valid month and day (`…-7-12`) is matched
+// by a focus only when it writes more of the name (`4090-7-12`, or in full).
 func numberTail(tok string, host bool) string {
 	parts := strings.Split(strings.ToLower(tok), "-")
+	// A host needs a part before the pair (pre, below, is read); its shape
+	// check then needs two such parts, a lettered one and a numeric one.
 	if len(parts) < 2 || (host && len(parts) < 3) {
 		return ""
 	}
@@ -209,14 +229,54 @@ func numberTail(tok string, host bool) string {
 	if !allDigits(a) || !allDigits(b) || len(a)+1+len(b) < minTailBytes {
 		return ""
 	}
-	lettered := false
-	for _, p := range parts[:len(parts)-2] {
-		lettered = lettered || strings.IndexFunc(p, isLetter) >= 0
+	pre := parts[:len(parts)-2]
+	if host {
+		if letters(pre[0]) < 2 || !allDigits(pre[len(pre)-1]) {
+			return ""
+		}
+		return tailPrefix + a + "-" + b
 	}
-	if lettered != host {
+	for _, p := range pre {
+		if strings.IndexFunc(p, isLetter) >= 0 || isYear(p) {
+			return ""
+		}
+	}
+	if len(pre) == 0 && isMonthDay(a, b) {
 		return ""
 	}
 	return tailPrefix + a + "-" + b
+}
+
+// letters is how many a–z letters s (lower-case) holds.
+func letters(s string) int {
+	n := 0
+	for _, r := range s {
+		if isLetter(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// isYear reports whether s is a four-digit year, 1900 to 2099.
+func isYear(s string) bool {
+	if len(s) != 4 || !allDigits(s) {
+		return false
+	}
+	y, _ := strconv.Atoi(s)
+	return y >= 1900 && y <= 2099
+}
+
+// isMonthDay reports whether m-d reads as a calendar month and day (February
+// up to 29): "11-23" and "7-12" do, "2-31", "52-4" and "13-1" do not.
+func isMonthDay(m, d string) bool {
+	mi, err1 := strconv.Atoi(m)
+	di, err2 := strconv.Atoi(d)
+	if err1 != nil || err2 != nil || mi < 1 || mi > 12 || di < 1 {
+		return false
+	}
+	days := [...]int{31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+	return di <= days[mi-1]
 }
 
 func allDigits(s string) bool {
@@ -293,7 +353,10 @@ func extractTerms(text string, max int, bare bool) (keys []string, hostOf map[st
 		case k != "":
 			before := len(spans)
 			claim(m[0], m[0]+len(tok), k)
-			if tail := numberTail(tok, true); tail != "" && len(spans) > before {
+			// A ROW's full host name carries no tail: a full name must match
+			// in full, so gpuhost-3090-7-12 never meets gpuhost-4090-7-12's
+			// tail. Only a message's host carries one, for a row's short form.
+			if tail := numberTail(tok, true); !bare && tail != "" && len(spans) > before {
 				tails[m[0]] = tail
 			}
 		case bare:

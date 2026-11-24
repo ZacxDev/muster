@@ -6,7 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -138,6 +140,58 @@ func TestAHeadsUpOfAReplyableMessageNeverAnswersTheSender(t *testing.T) {
 	}
 }
 
+// 🔴 TestARelayedHeadsUpStillRaisesTheNotActedOnAsk: an agent-mail message
+// (a plugin the not-acted-on sweep judges) the chief sent as a heads-up, whose
+// session has answered (relayed, no draft), is still undecided: past the delay
+// the sweep raises its ask — and an ask already raised for another one stays
+// open after its heads-up is relayed. Red when a relayed heads-up counts as
+// acted (liveRoute without its heads_up clause). Control: a heads-up still
+// open (routed) is live work, and raises none.
+func TestARelayedHeadsUpStillRaisesTheNotActedOnAsk(t *testing.T) {
+	g := newUnroutedFixture(t)
+	relayed := g.deliveredMessage(t, g.owner, g.chief.ID, "headsup-relayed")
+	open := g.deliveredMessage(t, g.owner, g.chief.ID, "headsup-open")
+	asked := g.deliveredMessage(t, g.owner, g.chief.ID, "headsup-asked")
+	routeIDs := map[int64]string{}
+	headsUp := func(m plugins.Message) {
+		t.Helper()
+		r, err := g.plugins.CreateRouteFrom(g.asOwner, g.chief.ID, g.owner, m.ID,
+			plugins.RouteTarget{Kind: "mirror", Key: routeSID, Label: "w"}, time.Hour, plugins.RouteOrigin{HeadsUp: true})
+		if err != nil || !r.HeadsUp {
+			t.Fatalf("heads-up of %d: %+v %v", m.ID, r, err)
+		}
+		routeIDs[m.ID] = r.RouteID
+	}
+	// relayed and open go as heads-ups in time; asked raises its ask first.
+	headsUp(relayed)
+	headsUp(open)
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
+	if asks := unroutedAsks(t, g, asked.ID); len(asks) != 1 {
+		t.Fatalf("asked: %d asks; want 1 before its heads-up", len(asks))
+	}
+	for _, m := range []plugins.Message{relayed, open} {
+		if asks := unroutedAsks(t, g, m.ID); len(asks) != 0 {
+			t.Fatalf("message %d: an open heads-up raised %d ask(s)", m.ID, len(asks))
+		}
+	}
+	headsUp(asked)
+	// Both sessions answer: relayed to the chief, no draft.
+	for _, m := range []plugins.Message{relayed, asked} {
+		dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET state = 'relayed', answered_at = now(), finished_at = now(),
+			reply_body = 'noted' WHERE route_id = '`+routeIDs[m.ID]+`'`)
+	}
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+2*time.Minute)
+	if asks := unroutedAsks(t, g, relayed.ID); len(asks) != 1 || asks[0].Status != attention.Open {
+		t.Errorf("relayed heads-up: asks %+v; want one, open", asks)
+	}
+	if asks := unroutedAsks(t, g, asked.ID); len(asks) != 1 || asks[0].Status != attention.Open {
+		t.Errorf("asked, then a heads-up relayed: asks %+v; want its one ask still open", asks)
+	}
+	if asks := unroutedAsks(t, g, open.ID); len(asks) != 0 {
+		t.Errorf("control: an open heads-up raised %d ask(s); want none", len(asks))
+	}
+}
+
 // TestAHeadsUpIsOnlyForAMessage: heads_up with a task or the owner's text is
 // refused as bad arguments, naming the shape; and a heads-up of a no_reply
 // message is just its one-way route (heads_up changes nothing for it).
@@ -196,8 +250,55 @@ func TestATimedOutHeadsUpComesBackAsAMessageToAnswer(t *testing.T) {
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("the chief's session: %+v %v", msgs, err)
 	}
-	if got := msgs[0].Content; !strings.Contains(got, "so the message is back with you: draft a reply with reply_draft") ||
+	if got := msgs[0].Content; !strings.Contains(got, "so the message is back with you: draft the reply with reply_draft once "+
+		"your owner has decided, route it to another session with route_to_session (as a heads-up again: muster makes every "+
+		"later route of this message one, so no session's answer reaches the sender), or leave it.") ||
 		strings.Contains(got, "cannot be answered") {
 		t.Fatalf("the hand-back:\n%s", got)
+	}
+}
+
+// 🔴 TestAHeadsUpIsSticky: after a heads-up of a message ended (here, timed
+// out), the chief's next route of that message WITHOUT heads_up is made a
+// heads-up anyway, and says so — so the second session's answer, for an
+// allowlisted sender, still never becomes the reply. Red without the
+// coercion: the re-route is two-way and its answer an approved draft.
+// Control: another message never sent as a heads-up still routes two-way.
+func TestAHeadsUpIsSticky(t *testing.T) {
+	f := newRouteFixture(t)
+	f.allow(t, "example-dm:colleague@example.test")
+	_, m := f.pluginMessage(t, "example-dm", "dm-sticky-1", "colleague@example.test", true)
+	route := func(args string) (string, bool, string) {
+		t.Helper()
+		var res struct {
+			RouteID string `json:"route_id"`
+			HeadsUp bool   `json:"heads_up"`
+			Next    string `json:"next"`
+		}
+		out := f.srv.AgentToolDispatch(f.asOwner, f.chief)(routeToSessionToolName, args)
+		if err := json.Unmarshal([]byte(out), &res); err != nil || res.RouteID == "" {
+			t.Fatalf("route: %s", out)
+		}
+		return res.RouteID, res.HeadsUp, res.Next
+	}
+	id, _, _ := route(`{"message_id":` + strconv.FormatInt(m.ID, 10) + `,"subject":"mirror:` + routeSID + `","heads_up":true}`)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+id+`'`)
+	if n, err := f.srv.RouteTimeoutPass(context.Background()); err != nil || n < 1 {
+		t.Fatalf("past the deadline: %d timed out (%v)", n, err)
+	}
+	id2, headsUp, next := route(routeArgs(m, "mirror:"+routeSID))
+	if !headsUp || !strings.HasPrefix(next, "The message had a heads-up route before, so muster made this one a heads-up too") {
+		t.Fatalf("the re-route: heads_up=%v next=%q; want a heads-up, saying why", headsUp, next)
+	}
+	if code, out := f.reply(t, f.token, id2, "Promote it."); code != 200 || out["draft_id"] != nil {
+		t.Fatalf("the re-route's answer became a draft: %d %v", code, out)
+	}
+	if n := f.draftsFor(t, m.ID); n != 0 {
+		t.Fatalf("%d drafts after the sticky re-route's answer; want none", n)
+	}
+	// Control.
+	_, m2 := f.pluginMessage(t, "example-dm", "dm-sticky-2", "colleague@example.test", true)
+	if _, headsUp, _ := route(routeArgs(m2, "mirror:"+routeSID)); headsUp {
+		t.Fatalf("control: a message never sent as a heads-up was made one")
 	}
 }
