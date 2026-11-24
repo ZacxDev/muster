@@ -30,8 +30,8 @@ import (
 // Every pairing pushes every device already registered "A phone was paired
 // to your account", outside the notification switches.
 //
-// The permission lives with the code, in memory, until the code is redeemed
-// or expires (with the code). A restart loses it: the person mints a
+// The permission lives with the code, in memory, until it expires with the
+// code (a spent code is refused by the redeem itself). A restart loses it: the person mints a
 // new code.
 // ---------------------------------------------------------------------------
 
@@ -75,11 +75,6 @@ func (p *pairingPermits) allowed(code string) bool {
 	return ok && time.Now().Before(exp)
 }
 
-func (p *pairingPermits) forget(code string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.m, codeKey(code))
-}
 
 // pairingStepUpAllowed decides, as a code is minted, whether it may pair a
 // step-up key: the account has nothing to prove with, or the session holds a

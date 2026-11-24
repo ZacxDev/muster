@@ -330,8 +330,10 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	}
 	// 🔴 A STEP-UP KEY ONLY ON A CODE MINTED WITH PERMISSION (pairing_gate.go).
 	// Refused before the code is redeemed, so it is not used up.
+	// Counted as a failed attempt, as a bad code is: a code this server did
+	// not mint with permission may be no code at all.
 	if body.StepUpPubkey != "" && !s.pairingPermits.allowed(body.Code) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PairStepUpProofNeeded, "code": "stepup_proof_required"})
+		failed(http.StatusForbidden, map[string]any{"error": PairStepUpProofNeeded, "code": "stepup_proof_required"})
 		return
 	}
 	tok, d, err := s.ext.Devices.Redeem(r.Context(), body.Code, devices.PairIn{
@@ -357,7 +359,8 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the device could not be paired"})
 		return
 	}
-	s.pairingPermits.forget(body.Code)
+	// The permission is NOT dropped here: it expires with the code, and a
+	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
 	// Every device already registered is told (pairing_gate.go).
 	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")

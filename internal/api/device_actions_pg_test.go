@@ -64,6 +64,10 @@ func (a *actionRig) pairKeyedAs(t *testing.T, name, typ string) (*ecdsa.PrivateK
 	}
 	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
 	at, rt := a.login()
+	// A second phone that confirms requests takes the enrolment proof
+	// (pairing_gate.go); the rig grants this session its ticket directly —
+	// the gate itself is under test in passkey_enrol_r3_pg_test.go.
+	grantEnrolTicket(t, a.s, a.fake, a.uid, at)
 	w := do(a.edge, "POST", accountDevicesPairPath, nil, withCookies(at, rt))
 	var code struct {
 		Code string `json:"code"`

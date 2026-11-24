@@ -2741,6 +2741,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	freshAT, freshRT, _ := w.gtFake.Mint(w.aSub)
 	w.gtTokens[w.a.uid] = [2]string{freshAT, freshRT}
+	// Removing a passkey takes the enrolment proof (passkey_enrol.go): A's
+	// fresh session is granted its ticket, as a proof would.
+	grantEnrolTicket(t, w.gtSrv, w.gtFake, w.a.uid, freshAT)
 	pm, pp, pb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.a)
 	if rec := w.do(w.h, pm, pp, pb, cred{gotrueUser: w.a.uid}); rec.Code != http.StatusSeeOther {
 		t.Errorf("CONTROL: A could not remove its OWN passkey: %d %s", rec.Code, truncate(rec.Body.String(), 200))

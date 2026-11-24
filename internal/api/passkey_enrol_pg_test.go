@@ -126,6 +126,17 @@ func recordPasskey(t *testing.T, s *Server, fake *gotruetest.Fake, sub, credID s
 	t.Fatalf("no fake passkey %q", credID)
 }
 
+// grantEnrolTicket grants the session whose access token is at an enrolment
+// ticket, as a proof would (passkey_enrol.go), for tests of something else.
+func grantEnrolTicket(t *testing.T, s *Server, fake *gotruetest.Fake, uid int64, at string) {
+	t.Helper()
+	c, err := fake.Verifier().Verify(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.passkeyEnrol.grant(enrolKey(uid, gotrueCreds{access: at, claims: c}), enrolTicket{vouched: true, proof: "phone", granted: s.stepUpNow()})
+}
+
 // enablePasskeys turns passkeys on in fake and drops srv's cached GoTrue
 // settings: a rig that paired a phone first (the pairing gate reads them)
 // would otherwise keep "off" for passkeySettingsTTL.
