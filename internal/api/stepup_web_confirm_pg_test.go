@@ -58,6 +58,10 @@ func newWebRig(t *testing.T) *webRig {
 	r := newStepUpRaceRig(t)
 	r.fake.EnablePasskeys()
 	r.fake.AddPasskey(r.subject(), "owner-cred")
+	// A passkey that may approve cards: recorded as added with a proof
+	// (passkey_enrol.go). One with no record, added after muster started
+	// recording, approves nothing.
+	recordPasskey(t, r.s, r.fake, r.subject(), "owner-cred", true)
 	at, rt := r.login()
 	return &webRig{stepUpRaceRig: r, at: at, rt: rt}
 }
@@ -571,7 +575,7 @@ func TestTheBrowserOffersAPasskeyDecisionOnlyWhereOneCanWork(t *testing.T) {
 
 	// A passkey added (muster forgets what it cached on an add: setPasskeyFlag).
 	r.fake.AddPasskey(r.subject(), "owner-cred")
-	r.s.stepUpCards.forget(r.subject())
+	recordPasskey(t, r.s, r.fake, r.subject(), "owner-cred", true)
 	for _, path := range []string{askPage, "/attention"} {
 		body := page(path)
 		if !strings.Contains(body, webPasskeyLine) || !strings.Contains(body, confirmBtn) || !strings.Contains(body, `data-stepup-decide="Refuse"`) ||

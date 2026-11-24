@@ -115,6 +115,10 @@ type Fake struct {
 	// settingsFailures: the next N GET /settings calls answer 500.
 	settingsFailures int
 	lastPasskeySID   string
+	// deletePasskeyFailures: the next N user passkey deletes answer 500.
+	deletePasskeyFailures int
+	// beforeRegister: run once before the next registration verify.
+	beforeRegister func()
 }
 
 // Call is one request the fake served.

@@ -58,6 +58,7 @@ GET /account/credentials
 GET /account/devices/live
 GET /account/features
 GET /account/passkeys
+GET /account/passkeys/proof/status
 GET /account/teams
 GET /account/tokens
 GET /admin/apps

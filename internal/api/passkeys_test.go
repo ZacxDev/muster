@@ -102,6 +102,17 @@ func (w *invWorld) proveWithAPasskey(cookies reqOpt) {
 	if len(pks) == 0 {
 		w.t.Fatal("no passkey to prove with")
 	}
+	// A passkey the fake made with no record is one muster never added
+	// (passkey_enrol.go: it proves nothing): record it as one added with the
+	// password, which proves an add as any passkey of the account does.
+	recs, err := w.s.passkeyRecords(context.Background(), c.Subject)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if _, ok := recs[pks[0].ID]["vouched"].(bool); !ok {
+		w.s.setPasskeyFlag(context.Background(), c.Subject, pks[0].ID,
+			map[string]any{passkeyCredIDKey: gotrue.CredentialID([]byte(pks[0].CredentialID)), "vouched": false})
+	}
 	o := postJSON(w.edge, accountPasskeysPath+"/proof/options", map[string]any{}, cookies)
 	ch, _ := jsonBody(w.t, o)["challenge_id"].(string)
 	if v := postJSON(w.edge, accountPasskeysPath+"/proof/verify", map[string]any{"challenge_id": ch,

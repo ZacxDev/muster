@@ -309,6 +309,11 @@ type Server struct {
 	stepUpCards stepUpCardWeb
 	// passkeyEnrol is the enrolment gate's tickets (passkey_enrol.go).
 	passkeyEnrol passkeyEnrolState
+	// passkeyMeta serialises each account's read-modify-write of its passkey
+	// records (passkeyMetaKey is ONE app_metadata value: two writers each
+	// reading the map and writing it back lose one's change). In process:
+	// muster runs one replica.
+	passkeyMeta keyedLocks
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 

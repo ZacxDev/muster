@@ -693,14 +693,39 @@ approval.**
   adds the first passkey, as before. That passkey signs in and confirms
   "Confirm it's you" like any other, but **it cannot approve a step-up card**.
   A card shows the phone line and says why.
-- **Which passkeys may approve a card.** Every passkey added records it: one
-  added with the phone's Confirm may, one added with the password alone may
-  not, and one added with a passkey proof takes the standing of the passkey
-  that proved it. A passkey added before muster recorded this keeps working
-  as it did, card approval included. muster writes that record before it
-  answers the add. If the write fails, it removes the passkey it just added
-  and refuses, because a passkey with no record would read as an older one.
-- **Every passkey added pushes you "A passkey was added to your account"**, on
+- **Which passkeys may approve a card.** Every passkey added records it, with
+  the credential id read from the authenticator's **signed** data:
+  - one added with the phone's Confirm may;
+  - one added with the password alone may not;
+  - one added with a passkey proof takes the standing of the passkey that
+    proved it.
+
+  An add whose claimed id (`rawId`) differs from the signed one is refused
+  before GoTrue registers anything. 🔴 A passkey **with no record** may
+  approve a card only when GoTrue created it before muster started recording
+  (`passkey_rules.vouching_since`, set once by migration 0187). That keeps
+  older passkeys working, card approval included. A newer passkey with no
+  record (one added through GoTrue's own endpoints, or one whose record was
+  lost) approves no card and proves no enrolment. muster writes the record
+  before it answers the add. If the write fails it removes the passkey; if the
+  removal fails too, that passkey stays and approves nothing. The record
+  writes are serialised per account, so two at once lose neither.
+- **A proof allows one change, used once.** The ticket is taken when it is
+  checked, so two adds racing on one ticket add one passkey.
+- **Removing a phone or a notification target** (on Account) takes the same
+  proof on an account that has a passkey or a paired phone with a step-up
+  key. Without the proof the removal is refused and nothing is removed:
+  confirm on Account → Passkeys (`?confirm=1` opens the proofs), then remove
+  within ten minutes. So a person holding only the password cannot first
+  remove your devices to silence the notice below. On an account with neither,
+  the removal goes through as before, after every device registered for push
+  is told ("A phone was removed from your account"). These stay open:
+  - a phone removing itself from the app;
+  - a browser turning off its own notifications;
+  - a password reset, which revokes every paired phone. That is the recovery
+    for a lost phone on an account without a passkey. With a passkey, prove
+    with it and remove the lost phone.
+- **Every passkey added pushes you "A passkey was added to your account"** on
   every device registered for push, whatever your notification settings say:
   a person holding only your password could turn them off first. The
   `user.passkey_added` audit row records the proof (`passkey`, `phone` or

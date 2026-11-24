@@ -241,6 +241,11 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
 	}
+	// 🔴 Not with the password alone where the account can prove more
+	// (passkey_removal.go).
+	if !s.gateCredentialRemoval(w, r, PhoneRemovedTitle) {
+		return
+	}
 	found, err := s.ext.Devices.Remove(r.Context(), id)
 	if err != nil {
 		s.logger.Printf("devices: remove %d: %v", id, err)

@@ -87,6 +87,7 @@ const (
 	PasskeyEnrolUnchecked  = "muster could not check how to confirm adding a passkey. Try again."
 	PasskeyEnrolNoPhone    = "No phone with a confirmation key is paired to this account."
 	PasskeyEnrolRecordFail = "The passkey could not be recorded, so it was not kept. Try again."
+	PasskeyProofUnknown    = "muster has no record of how that passkey was added, so it cannot confirm this. Confirm on your phone instead."
 	PasskeyAddedTitle      = "A passkey was added to your account"
 	PasskeyAddedBody       = "If this was not you, remove it under Account, Passkeys, and change your password."
 )
@@ -129,11 +130,31 @@ func (e *passkeyEnrolState) held(key string, now time.Time) (enrolTicket, bool) 
 	return t, true
 }
 
-// spend removes key's ticket (a passkey was added with it).
-func (e *passkeyEnrolState) spend(key string) {
+// take removes and returns key's ticket, unspent and unexpired: 🔴 ATOMIC AT
+// THE CHECK, so two requests racing on one ticket cannot both use it. A use
+// that then fails for a reason that is not the ticket's puts it back
+// (giveBack).
+func (e *passkeyEnrolState) take(key string, now time.Time) (enrolTicket, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	t, ok := e.tickets[key]
 	delete(e.tickets, key)
+	if !ok || now.Sub(t.granted) > enrolTicketTTL {
+		return enrolTicket{}, false
+	}
+	return t, true
+}
+
+// giveBack restores a ticket take returned, when nothing was done with it.
+func (e *passkeyEnrolState) giveBack(key string, t enrolTicket) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.tickets == nil {
+		e.tickets = map[string]enrolTicket{}
+	}
+	if _, newer := e.tickets[key]; !newer {
+		e.tickets[key] = t
+	}
 }
 
 func (e *passkeyEnrolState) card(key string) (int64, bool) {
@@ -189,14 +210,29 @@ func (s *Server) stepUpPhonePaired(ctx context.Context) (bool, error) {
 
 // passkeyEnrolNeed is THE enrolment gate's one read: what adding a passkey
 // needs of the session in creds. An error is a refusal (fail closed).
-func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip string) (enrolNeed, error) {
+//
+// take: a ticket held is TAKEN (the add, a removal), so no second request uses
+// it; the caller gives it back if it then did nothing (passkeyEnrol.giveBack).
+// Without take it is only looked at (the options).
+func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip string, take bool) (enrolNeed, error) {
 	uid := authz.MustFrom(ctx).UserID
-	if t, ok := s.passkeyEnrol.held(enrolKey(uid, creds), s.stepUpNow()); ok {
+	key, now := enrolKey(uid, creds), s.stepUpNow()
+	var t enrolTicket
+	var ok bool
+	if take {
+		t, ok = s.passkeyEnrol.take(key, now)
+	} else {
+		t, ok = s.passkeyEnrol.held(key, now)
+	}
+	if ok {
 		return enrolNeed{ticket: &t}, nil
 	}
-	list, err := s.accountPasskeys(ctx, ip, creds)
-	if err != nil {
-		return enrolNeed{}, err
+	var list []gotrue.Passkey
+	if s.passkeysServed(ctx) {
+		var err error
+		if list, err = s.accountPasskeys(ctx, ip, creds); err != nil {
+			return enrolNeed{}, err
+		}
 	}
 	phone, err := s.stepUpPhonePaired(ctx)
 	if err != nil {
@@ -245,50 +281,131 @@ func (s *Server) passkeyRecords(ctx context.Context, sub string) (map[string]map
 	return out, nil
 }
 
-// passkeyMayDecideCards is the one rule for whether a passkey with record rec
-// (found: it has one) may decide a step-up card: a record that says so, or one
-// that predates the rule (no passkeyVouchedKey, or no record at all).
-func passkeyMayDecideCards(rec map[string]any, found bool) bool {
-	if !found {
-		return true
-	}
-	v, ok := rec[passkeyVouchedKey].(bool)
-	return !ok || v
-}
+// passkeyStanding is what a passkey may do beyond signing in.
+type passkeyStanding int
 
-// assertionMayDecideCards reports whether the passkey that made assertion
-// credential may decide a step-up card: its record, found by its credential
-// id. A record that cannot be read refuses (an error).
-func (s *Server) assertionMayDecideCards(ctx context.Context, sub string, credential json.RawMessage) (bool, error) {
-	credID, _, err := gotrue.AssertionIdentity(credential)
-	if err != nil {
-		return false, err
-	}
-	recs, err := s.passkeyRecords(ctx, sub)
-	if err != nil {
-		return false, err
-	}
-	for _, rec := range recs {
-		if recordedCredID(rec) == credID {
-			return passkeyMayDecideCards(rec, true), nil
+const (
+	// standingUnknown: no record says, and GoTrue created it after muster
+	// started recording (passkeyVouchingSince) — added some way that is not
+	// muster's add (GoTrue's endpoints called directly, an add whose record
+	// was lost). 🔴 FAIL CLOSED: it decides no card and proves no enrolment.
+	standingUnknown passkeyStanding = iota
+	// standingPasswordOnly: recorded as added with the password alone.
+	standingPasswordOnly
+	// standingVouched: recorded as added with a proof, or created before
+	// muster started recording (it keeps working as it did).
+	standingVouched
+)
+
+// passkeyStandingOf is THE rule: a record's passkeyVouchedKey when it has one;
+// otherwise (no record, or one from before the rule) GoTrue's created_at
+// against since — never anything the client sent.
+func passkeyStandingOf(rec map[string]any, found bool, created, since time.Time) passkeyStanding {
+	if found {
+		if v, ok := rec[passkeyVouchedKey].(bool); ok {
+			if v {
+				return standingVouched
+			}
+			return standingPasswordOnly
 		}
 	}
-	return passkeyMayDecideCards(nil, false), nil
+	if !since.IsZero() && created.Before(since) {
+		return standingVouched
+	}
+	return standingUnknown
 }
 
-// accountMayDecideCards reports whether any of list (sub's passkeys) may
-// decide a step-up card.
-func (s *Server) accountMayDecideCards(ctx context.Context, sub string, list []gotrue.Passkey) (bool, error) {
-	if len(list) == 0 {
-		return false, nil
+// passkeyVouchingSinceStore is the users store's read of migration 0187.
+type passkeyVouchingSinceStore interface {
+	PasskeyVouchingSince(ctx context.Context) (time.Time, error)
+}
+
+// passkeyVouchingSince is when this server started recording which passkeys
+// may decide cards. With no store to read it from, the zero time: no passkey
+// counts as older than the rule (fail closed).
+func (s *Server) passkeyVouchingSince(ctx context.Context) (time.Time, error) {
+	st, ok := s.ext.Users.(passkeyVouchingSinceStore)
+	if !ok {
+		return time.Time{}, nil
 	}
-	recs, err := s.passkeyRecords(ctx, sub)
+	return st.PasskeyVouchingSince(ctx)
+}
+
+// accountStandings is every passkey of the account in creds with its record
+// and standing: the three reads the rule needs (the admin passkey list, the
+// records, the cutover).
+type accountPasskey struct {
+	p        gotrue.Passkey
+	rec      map[string]any
+	found    bool
+	standing passkeyStanding
+}
+
+func (s *Server) accountStandings(ctx context.Context, creds gotrueCreds) ([]accountPasskey, error) {
+	list, err := s.accountPasskeys(ctx, "muster-server", creds)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := s.passkeyRecords(ctx, creds.claims.Subject)
+	if err != nil {
+		return nil, err
+	}
+	since, err := s.passkeyVouchingSince(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]accountPasskey, 0, len(list))
+	for _, p := range list {
+		rec, found := recs[p.ID]
+		out = append(out, accountPasskey{p: p, rec: rec, found: found, standing: passkeyStandingOf(rec, found, p.CreatedAt, since)})
+	}
+	return out, nil
+}
+
+// assertionStanding is the standing of the passkey that made assertion
+// credential: the passkey whose record names its credential id; when none
+// does, it is one of the passkeys whose records name no id, and it is
+// trusted only when EVERY such passkey is older than the rule (the assertion
+// does not say which one it is). An error refuses.
+func (s *Server) assertionStanding(ctx context.Context, creds gotrueCreds, credential json.RawMessage) (passkeyStanding, error) {
+	credID, _, err := gotrue.AssertionIdentity(credential)
+	if err != nil {
+		return standingUnknown, err
+	}
+	all, err := s.accountStandings(ctx, creds)
+	if err != nil {
+		return standingUnknown, err
+	}
+	for _, a := range all {
+		if a.found && recordedCredID(a.rec) == credID {
+			return a.standing, nil
+		}
+	}
+	unnamed := 0
+	for _, a := range all {
+		if a.found && recordedCredID(a.rec) != "" {
+			continue
+		}
+		unnamed++
+		if a.standing != standingVouched {
+			return standingUnknown, nil
+		}
+	}
+	if unnamed == 0 {
+		return standingUnknown, nil
+	}
+	return standingVouched, nil
+}
+
+// accountMayDecideCards reports whether any of the account's passkeys may
+// decide a step-up card.
+func (s *Server) accountMayDecideCards(ctx context.Context, creds gotrueCreds) (bool, error) {
+	all, err := s.accountStandings(ctx, creds)
 	if err != nil {
 		return false, err
 	}
-	for _, p := range list {
-		rec, found := recs[p.ID]
-		if passkeyMayDecideCards(rec, found) {
+	for _, a := range all {
+		if a.standing == standingVouched {
 			return true, nil
 		}
 	}
@@ -307,6 +424,7 @@ func (s *Server) recordAddedPasskey(ctx context.Context, sub, id string, rec map
 		return errors.New("no vouched flag")
 	}
 	s.stepUpCards.forget(sub)
+	defer s.passkeyMeta.lock(sub)()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	all, err := s.passkeyRecords(ctx, sub)
@@ -318,14 +436,20 @@ func (s *Server) recordAddedPasskey(ctx context.Context, sub, id string, rec map
 }
 
 // notifyPasskeyAdded pushes owner the security notice of a passkey added.
-// Not behind a notification switch: the person holding only the password
-// could turn a switch off first.
 func (s *Server) notifyPasskeyAdded(ctx context.Context, owner int64) {
+	s.notifySecurity(ctx, owner, PasskeyAddedTitle, PasskeyAddedBody, accountPasskeysPath)
+}
+
+// notifySecurity pushes owner a security notice — a fixed title and body,
+// muster's own words — on every device registered for push. 🔴 NOT BEHIND A
+// NOTIFICATION SWITCH: the person holding only the password could turn a
+// switch off first.
+func (s *Server) notifySecurity(ctx context.Context, owner int64, title, body, url string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	rep := s.sendPush(ctx, owner, push.Payload{Type: "notify", Title: PasskeyAddedTitle, Body: PasskeyAddedBody,
-		Tag: "muster-passkey-added", Data: map[string]string{"url": accountPasskeysPath}})
-	s.logger.Printf("passkeys: told user %d a passkey was added (%d of %d device(s))", owner, rep.Delivered, rep.Devices)
+	rep := s.sendPush(ctx, owner, push.Payload{Type: "notify", Title: title, Body: body,
+		Tag: "muster-security", Data: map[string]string{"url": url}})
+	s.logger.Printf("account: told user %d %q (%d of %d device(s))", owner, title, rep.Delivered, rep.Devices)
 }
 
 // --- the proofs -------------------------------------------------------------
@@ -388,13 +512,20 @@ func (s *Server) handlePasskeyProofVerify(w http.ResponseWriter, r *http.Request
 	}
 	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey enrolment proof", false, func(pk sessionPasskey) signinOutcome {
 		pk.end()
-		vouched, err := s.assertionMayDecideCards(ctx, creds.claims.Subject, body.Credential)
+		st, err := s.assertionStanding(ctx, creds, body.Credential)
 		if err != nil {
 			s.logger.Printf("passkeys: read user %d's passkey records for an enrolment proof: %v", me, err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": PasskeyEnrolUnchecked})
 			return outcomeSucceeded
 		}
-		s.passkeyEnrol.grant(enrolKey(me, creds), enrolTicket{vouched: vouched, proof: "passkey", granted: s.stepUpNow()})
+		if st == standingUnknown {
+			// 🔴 A passkey muster has no record of, made after it started
+			// recording, proves nothing (passkeyStandingOf).
+			s.logger.Printf("passkeys: refused user %d's enrolment proof: the passkey has no record and is newer than the rule", me)
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PasskeyProofUnknown})
+			return outcomeSucceeded
+		}
+		s.passkeyEnrol.grant(enrolKey(me, creds), enrolTicket{vouched: st == standingVouched, proof: "passkey", granted: s.stepUpNow()})
 		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return outcomeSucceeded
 	})

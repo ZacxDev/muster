@@ -111,6 +111,20 @@ func (r *enrolRig) record(t *testing.T, credID string) map[string]any {
 	return nil
 }
 
+// recordPasskey writes the record muster's add would have written for the
+// fake passkey credID of sub: its credential id and vouched. (A passkey the
+// fake's AddPasskey made has none: one GoTrue made outside muster's add.)
+func recordPasskey(t *testing.T, s *Server, fake *gotruetest.Fake, sub, credID string, vouched bool) {
+	t.Helper()
+	for _, p := range fake.Passkeys(sub) {
+		if p.CredentialID == credID {
+			s.setPasskeyFlag(context.Background(), sub, p.ID, map[string]any{passkeyCredIDKey: gotrue.CredentialID([]byte(credID)), "vouched": vouched})
+			return
+		}
+	}
+	t.Fatalf("no fake passkey %q", credID)
+}
+
 func (r *enrolRig) passkeys() int { return len(r.fake.Passkeys(r.subject())) }
 
 // pushedAdded counts the "A passkey was added" pushes that reached the phone.
@@ -175,6 +189,7 @@ func TestAPasswordAloneCannotAddASecondPasskey(t *testing.T) {
 func TestAnExistingPasskeyLetsYouAddAnother(t *testing.T) {
 	r := newEnrolRig(t, false)
 	r.fake.AddPasskey(r.subject(), "owner-cred")
+	recordPasskey(t, r.s, r.fake, r.subject(), "owner-cred", true)
 	o := postJSON(r.edge, enrolProofOptions, map[string]any{}, withCookies(r.at, r.rt))
 	ch, _ := jsonBody(t, o)["challenge_id"].(string)
 	if o.Code != http.StatusOK || ch == "" {
@@ -314,6 +329,7 @@ func TestAPasskeyAddedWithThePasswordAloneDecidesNoCard(t *testing.T) {
 		}
 		r.s.stepUpCards.forget(r.subject())
 	}
+	_ = credID
 	setVouched(false)
 	if o := r.options(r.at, r.rt, card); o.Code != http.StatusOK || jsonBody(t, o)["available"] != false {
 		t.Fatalf("a card's options for a password-only passkey: %d %s, want available:false", o.Code, o.Body)

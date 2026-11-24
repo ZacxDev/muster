@@ -352,7 +352,7 @@ func TestThePreferencesFormSavesUncheckedAsMuted(t *testing.T) {
 // TestNativePushHasOneSendSite: PushService.SendTo is called from sendPush
 // alone, and sendPush only from goNotify (server.go), the account page's send
 // test (push_routes.go) and the passkey-added security notice
-// (passkey_enrol.go notifyPasskeyAdded, which BY DESIGN skips the
+// (passkey_enrol.go notifySecurity: "a passkey was added", "a phone was removed" — which BY DESIGN skip the
 // notification switches: a person holding only the password could turn them
 // off first) — so who receives a notification is decided in one place, its
 // owner. Positive control: both lists are non-empty.
@@ -363,7 +363,7 @@ func TestNativePushHasOneSendSite(t *testing.T) {
 	}
 	callers := callSitesOf(t, "sendPush")
 	if len(callers) != 3 {
-		t.Fatalf("sendPush call sites %v; want 3 (goNotify, handlePushTest, notifyPasskeyAdded)", callers)
+		t.Fatalf("sendPush call sites %v; want 3 (goNotify, handlePushTest, notifySecurity)", callers)
 	}
 	var files []string
 	for _, c := range callers {

@@ -280,6 +280,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /account/passkeys/proof/options",
 		"POST /account/passkeys/proof/verify",
 		"POST /account/passkeys/proof/phone",
+		"GET /account/passkeys/proof/status",
 		"POST /account/passkeys/{id}/delete",
 		"POST /admin/users/{id}/passkeys/delete",
 		// muster-native Web Push: the subscribe flow and the account page's

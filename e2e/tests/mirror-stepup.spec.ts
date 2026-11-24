@@ -2141,8 +2141,14 @@ test.describe('a step-up card confirmed in the browser with a passkey (390×844)
     expect(enrolCard, 'the phone confirmation card').toBeGreaterThan(0);
     await phoneAnswers(page, phone, enrolCard, 'Confirm');
     await expect(page.locator('#passkey-status')).toHaveText('Confirmed on your phone. Now tap “Add a passkey on this device”.', { timeout: 20_000 });
+    const added = page.waitForResponse((r) => new URL(r.url()).pathname === '/account/passkeys/verify');
+    const reloaded = page.waitForEvent('load');
     await page.locator('#passkey-add').tap();
-    await expect(page.locator('#passkey-list [data-passkey-id]'), 'the passkey the phone allowed is listed').toHaveCount(1);
+    // Its status only: the page navigates on success, which drops the body.
+    // That it may approve cards is what the Confirm below exercises.
+    expect((await added).status(), 'the add the phone allowed').toBe(200);
+    await reloaded;
+    await expect(page.locator('#passkey-list [data-passkey-id]'), 'the passkey the phone allowed is listed').toHaveCount(1, { timeout: 20_000 });
     const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', remoteHost], { env: serverEnv() }).toString().trim();
     expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
 
@@ -2201,8 +2207,13 @@ test.describe('a step-up card confirmed in the browser with a passkey (390×844)
     await expect.poll(() => fix('status', '1', String(card2)), { timeout: 20_000 }).toBe('answered Refuse');
     expect(fix('status', '1', String(y)), 'a refused card ran its call').toBe('open');
     } finally {
-      // The phone goes: a later test's addPasskey must not need it.
-      await page.request.post(`${browserURL}/account/devices/${phone.id}/remove`, { headers: { Origin: browserURL } });
+      // The phone goes, so a later test's addPasskey does not need it.
+      // Removing a phone needs the same proof as adding a passkey (internal/api
+      // passkey_removal.go): the phone confirms its own removal here.
+      const proof = await page.request.post(browserURL + '/account/passkeys/proof/phone', { headers: { Origin: browserURL }, data: {} });
+      if (proof.ok()) await phoneAnswers(page, phone, (await proof.json()).card, 'Confirm');
+      const removed = await page.request.post(`${browserURL}/account/devices/${phone.id}/remove`, { headers: { Origin: browserURL }, maxRedirects: 0 });
+      expect(removed.status(), 'the phone was removed').toBe(303);
     }
   });
 });

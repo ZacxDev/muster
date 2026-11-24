@@ -328,7 +328,7 @@ func (s *Server) handleStepUpCardPasskeyOptions(w http.ResponseWriter, r *http.R
 		return
 	}
 	// Nor for an account none of whose passkeys may decide a card.
-	may, err := s.accountMayDecideCards(r.Context(), creds.claims.Subject, list)
+	may, err := s.accountMayDecideCards(r.Context(), creds)
 	if err != nil {
 		s.logger.Printf("step-up: read the passkey records of user %d: %v", authz.MustFrom(r.Context()).UserID, err)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
@@ -398,7 +398,8 @@ func (s *Server) handleStepUpCardPasskeyVerify(w http.ResponseWriter, r *http.Re
 		pk.end()
 		// 🔴 A PASSKEY ADDED WITH THE PASSWORD ALONE DECIDES NO CARD
 		// (passkey_enrol.go).
-		may, err := s.assertionMayDecideCards(ctx, creds.claims.Subject, body.Credential)
+		st, err := s.assertionStanding(ctx, creds, body.Credential)
+		may := st == standingVouched
 		if err != nil {
 			s.logger.Printf("step-up: read the passkey records of user %d for card %d: %v", me, id, err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
@@ -491,7 +492,7 @@ func (s *Server) stepUpWebAccount(ctx context.Context) stepUpWebOffer {
 	}
 	offer := stepUpWebNoPasskey
 	if len(list) > 0 {
-		may, err := s.accountMayDecideCards(ctx, creds.claims.Subject, list)
+		may, err := s.accountMayDecideCards(ctx, creds)
 		if err != nil {
 			s.logger.Printf("step-up: read the passkey records of user %d for their cards: %v", requestOwner(ctx), err)
 			return stepUpWebPhoneOnly

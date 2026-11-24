@@ -273,6 +273,10 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
   if (!btn) { return; }
   if (!mpkSupported()) { btn.disabled = true; mpkSay(msg, 'This browser cannot create passkeys.'); return; }
   var path = '` + accountPasskeysPath + `/options', pre = null, proofPre = null, polling = null;
+  // ?confirm=1: the page was opened to confirm a removal (passkey_removal.go),
+  // not to add a passkey: the proof is the point, and success says so.
+  var confirming = new URLSearchParams(location.search).get('confirm') === '1';
+  var confirmedText = 'Confirmed. For the next ten minutes you can remove a phone or a notification target on Account, or add one passkey here.';
   function needReauth(r) { return r.status === 401 && r.data.error === '` + PasskeyReauthRequired + `'; }
   function needProof(r) { return r.status === 403 && r.data.code === '` + PasskeyProofRequired + `'; }
   function showProof(r) {
@@ -288,6 +292,7 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
     var o = await pre.promise;
     if (needReauth(o)) { pre = null; btn.hidden = true; form.hidden = false; }
     else if (needProof(o)) { pre = null; showProof(o); }
+    else if (confirming) { mpkSay(msg, 'Nothing to confirm: this account can remove a phone or a notification target as it is.'); }
   }
   btn.addEventListener('click', async function () {
     btn.disabled = true; mpkSay(msg, '');
@@ -338,7 +343,7 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
         byKey.disabled = false;
         if (!v.ok) { mpkSay(msg, v.data.error || 'That passkey could not confirm it.'); return; }
         pre = mpkPrefetch(path);
-        ready('Confirmed. Now tap “Add a passkey on this device”.');
+        ready(confirming ? confirmedText : 'Confirmed. Now tap “Add a passkey on this device”.');
       });
     }, function (e) {
       byKey.disabled = false;
@@ -357,8 +362,11 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
     var tries = 0;
     polling = setInterval(async function () {
       if (++tries > 200) { clearInterval(polling); polling = null; mpkSay(msg, 'No confirmation came from your phone. Try again.'); return; }
-      var p = mpkPrefetch(path), o = await p.promise;
-      if (o.ok) { clearInterval(polling); polling = null; pre = p; ready('Confirmed on your phone. Now tap “Add a passkey on this device”.'); }
+      var st = await mpkGet('` + accountPasskeysPath + `/proof/status');
+      if (st.ok && st.data.ticket) {
+        clearInterval(polling); polling = null; pre = mpkPrefetch(path);
+        ready(confirming ? confirmedText : 'Confirmed on your phone. Now tap “Add a passkey on this device”.');
+      }
     }, 3000);
   });
   form.addEventListener('submit', async function (ev) {
@@ -375,6 +383,12 @@ const passkeyAddJS = ui.PasskeyPrefetchJS + `
     mpkSay(msg, 'Password confirmed. Now tap “Add a passkey on this device”.');
     pre = mpkPrefetch(path);
   });
+  async function mpkGet(u) {
+    var res = await fetch(u, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+    var d = {};
+    try { d = await res.json(); } catch (e) {}
+    return { ok: res.ok, data: d };
+  }
   load();
 })();
 `

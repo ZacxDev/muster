@@ -212,6 +212,11 @@ func (s *Server) handlePushRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
 	}
+	// 🔴 Not with the password alone where the account can prove more
+	// (passkey_removal.go).
+	if !s.gateCredentialRemoval(w, r, TargetRemovedTitle) {
+		return
+	}
 	found, err := s.ext.Push.Store().Remove(r.Context(), id)
 	if err != nil {
 		s.logger.Printf("push: remove device %d: %v", id, err)

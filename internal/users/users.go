@@ -796,3 +796,13 @@ func looksLikeUUID(s string) bool {
 	}
 	return true
 }
+
+// PasskeyVouchingSince is when this server started recording which passkeys
+// may approve a step-up card (migration 0187, passkey_rules): a passkey with
+// no record counts as added before that only when GoTrue created it earlier
+// (internal/api passkey_enrol.go).
+func (s *PGStore) PasskeyVouchingSince(ctx context.Context) (time.Time, error) {
+	var at time.Time
+	err := s.pool.QueryRow(sys(ctx), `SELECT vouching_since FROM passkey_rules WHERE singleton`).Scan(&at)
+	return at, err
+}

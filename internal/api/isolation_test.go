@@ -216,6 +216,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /account/passkeys/proof/options": classList,
 	"POST /account/passkeys/proof/verify":  classList,
 	"POST /account/passkeys/proof/phone":   classList,
+	"GET /account/passkeys/proof/status":   classList,
 	"POST /account/passkeys/{id}/delete":   classParam,
 	"GET /api/whoami":                      classAdmin,
 	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
