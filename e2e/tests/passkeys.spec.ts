@@ -140,6 +140,13 @@ async function adminGetsAFreshPasskey(page: Page): Promise<void> {
   for (const p of (await list.json()) as { id: string }[]) {
     await fetch(`${base}/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + admin } });
   }
+  // muster's records of the removed passkeys go with them, as a reset's do.
+  const cleared = await fetch(`${gotrueURL}/admin/users/${encodeURIComponent(String(claims.sub))}`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + admin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ app_metadata: { muster_passkeys: null } }),
+  });
+  expect(cleared.status, "the removed passkeys' records cleared").toBe(200);
   execFileSync('go', ['run', './e2e/stepupfix', 'unmark', '1'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
   await page.goto(browserURL + '/account/passkeys');
   await addPasskey(page);
