@@ -371,9 +371,8 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	// The permission is NOT dropped here: it expires with the code, and a
 	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
-	if d.HasStepUpKey {
-		_ = s.markStrongFactor(r.Context(), d.OwnerID) // the sticky tier (migration 0188); the new row gates meanwhile
-	}
+	// A step-up key marked the account (the sticky tier) in Redeem's own
+	// statement: migration 0189's trigger on devices.
 	// Every device already registered is told (pairing_gate.go).
 	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
 	w.Header().Set("Cache-Control", "no-store")

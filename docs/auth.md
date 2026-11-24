@@ -776,7 +776,12 @@ From then on, every change below takes a proof.
 
   So a person holding only the password can silence your devices only by
   signing out everywhere. That act is announced on every one of them, and the
-  account stays gated afterwards.
+  account stays gated afterwards. The database guarantees this: deleting a
+  phone that confirms requests records, in the same statement, that the
+  account has had one (migration 0189). That covers every path that deletes
+  phones: Sign out everywhere, a disable, a password reset and a removal.
+  Pairing such a phone records it the same way, in the same statement, or
+  does not pair it.
 - **Recovery when no factor is left.** Your phones may be unpaired, your
   passkeys gone, or your phone's key invalidated (a new fingerprint or face
   enrolled on it voids its step-up key). On an account that has had one:
@@ -784,21 +789,30 @@ From then on, every change below takes a proof.
     paired phone and clears the record, and then your next passkey or phone
     is added as a first factor;
   - **on a server with one admin**, whoever runs the server runs
-    `muster-server user reset-factors <user-id|email>` where the server's
-    environment is (its `DATABASE_URL` and GoTrue secret; for example
-    `kubectl exec` into its pod). In this order, it:
+    `muster-server user reset-factors <user-id|email> --new-password-stdin`
+    where the server's environment is (its `DATABASE_URL` and GoTrue secret;
+    for example `kubectl exec -i` into its pod), with the new password on
+    standard input. Give a new password whenever anyone else may know the
+    old one: the reset reopens the account, and whoever signs in first with
+    the password could pair their own phone as its first factor. Without
+    `--new-password-stdin` the password is kept. In this order, it:
     1. looks the account up: an unknown id or email exits non-zero and
        changes nothing, with no audit row;
-    2. deletes every passkey of the account through GoTrue's admin API, and
-       muster's records of them. If GoTrue fails, it stops here and exits
-       non-zero with the account still gated: run it again;
-    3. in one transaction, unpairs every phone (their push targets go with
-       them), clears the record and writes the audit row
-       (`user.factors_reset`, with how many passkeys and phones went).
+    2. records the account as gated, so every later stop leaves it gated;
+    3. sets the new password, when one is given;
+    4. signs out every GoTrue session of the account;
+    5. deletes every passkey of the account through GoTrue's admin API, and
+       muster's records of them;
+    6. in one transaction, unpairs every phone (their push targets go with
+       them), ends every muster session, revokes every personal API token,
+       clears the record and writes the audit row (`user.factors_reset`,
+       with how many passkeys and phones went).
 
-    It prints what it removed. Then sign in with the password and add a
-    passkey or pair a phone: it is added as a first factor. It has no HTTP
-    route: the shell is the proof.
+    If any step fails, it stops there, says how many passkeys went, and
+    exits non-zero with the account still gated: run it again. It prints
+    what it removed. Then sign in with the (new) password and pair the
+    Android app's phone, or add a passkey: it is added as a first factor.
+    It has no HTTP route: the shell is the proof.
 
   The pairing code says this, in plain words, when it may not pair a phone
   that confirms requests (`stepup_note`), and Account → Devices shows it.
@@ -807,8 +821,11 @@ From then on, every change below takes a proof.
   - **making an account an admin** takes the acting admin's proof when the
     acting admin's account has had a factor;
   - **minting a reset link for, or removing the passkeys of, an account that
-    has had a factor** takes the acting admin's proof, and is refused to an
-    admin whose own account has never had one (it could mint its own proof).
+    has had a factor** takes the acting admin's proof. It is refused to an
+    admin whose own account has no factor: such an account holds only a
+    password, and the password alone can add that account's first passkey.
+    So every proof it could give would come from the password, and a
+    password must not undo another account's factor.
 
   "Has had a factor" means: has a passkey or a phone that confirms requests
   now, or has had one (the record). The check is the same everywhere, and an
@@ -817,6 +834,20 @@ From then on, every change below takes a proof.
   The proof must come from your paired phone's Confirm, or from a passkey
   that may approve cards. A passkey added with your password alone cannot
   give it. If GoTrue then fails, the proof is not spent.
+
+  **An admin whose only factor is a passkey added with the password, and
+  who has no Android app,** can never give that proof: a passkey becomes
+  one that may approve cards only when it is added with such a proof. The
+  way out:
+  1. Whoever runs the server runs `reset-factors` for that admin (above).
+     This reopens the account.
+  2. Either pair the Android app's phone on the reopened account (a first
+     phone may approve cards, and every later proof from it counts), or
+     make the change while the account is open: promoting another account
+     takes no proof from an admin whose account has no factor.
+  3. A reset link or a passkey removal for a gated account still needs the
+     proof. Without a phone, whoever runs the server uses `reset-factors` on
+     that account instead.
 
   Prove on Account → Passkeys, then return within ten minutes. The account
   is told when a reset link is minted for it ("An admin created a password

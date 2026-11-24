@@ -551,8 +551,10 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	// muster_revoke_team_page_uploads (a team page's file rows, on its delete).
 	// Their behaviour is TestTheTeamCardAnswerDoorHoldsInTheDatabase's and
 	// TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive's.
-	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_is_team_member",
-		"muster_owner_is_team", "muster_retire_agent_name", "muster_revoke_team_page_uploads"}; !slices.Equal(got, want) {
+	// 0189 adds muster_devices_mark_strong_factor, the trigger function that
+	// marks a step-up phone's account (TestMigration0189MarksInTheSameStatement).
+	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_devices_mark_strong_factor",
+		"muster_is_team_member", "muster_owner_is_team", "muster_retire_agent_name", "muster_revoke_team_page_uploads"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
 	}
 	for _, fn := range []string{"muster_is_team_member", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_revoke_team_page_uploads"} {

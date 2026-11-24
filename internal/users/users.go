@@ -323,7 +323,7 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
-	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+	if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
 	return t, tx.Commit(ctx)
@@ -360,7 +360,7 @@ func (s *PGStore) RecordSignOutEverywhere(ctx context.Context, id int64) (time.T
 	if err != nil {
 		return t, err
 	}
-	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+	if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
 	return t, tx.Commit(ctx)
@@ -417,7 +417,7 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 			return User{}, err
 		}
 		// Every paired phone (0039), in THIS transaction.
-		if err := deleteDevicesTx(ctx, tx, id); err != nil {
+		if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
 		// Accounts PR 6: every live personal API token, in THIS transaction.
@@ -493,10 +493,16 @@ func revokeRunnerTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // DELETE CASCADE). An unspent pairing code is left to expire (a minute): the
 // session that minted it signed in at or before the cut, so the redeem's own
 // rule refuses it. Raw SQL for the revokeAPITokensTx reason: internal/devices
-// imports this package.
-func deleteDevicesTx(ctx context.Context, tx pgx.Tx, id int64) error {
-	_, err := tx.Exec(ctx, `DELETE FROM devices WHERE owner_id = $1`, id)
-	return err
+// imports this package. It returns how many phones went.
+//
+// 🔴 A DELETED PHONE WITH A STEP-UP KEY MARKS ITS ACCOUNT (had_strong_factor_at)
+// in this same statement: migration 0189's trigger on devices, which covers
+// every SQL that changes the table, this one included. So a delete-everything
+// path reached with the password alone (Sign out everywhere) can never leave
+// an account that had a step-up phone unmarked.
+func deleteDevicesTx(ctx context.Context, tx pgx.Tx, id int64) (int, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE owner_id = $1`, id)
+	return int(tag.RowsAffected()), err
 }
 
 // accountWritersLockClass is the first key of the ONE advisory lock that
@@ -836,10 +842,16 @@ func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
 // ResetFactors is the server recovery's database half (muster-server user
 // reset-factors, internal/api ResetAccountFactors), in ONE transaction under
 // the credentials lock: every paired phone of account id is deleted (their
-// push subscriptions go with them), its mark is cleared, and the audit row
+// push subscriptions go with them), every session it has is ended
+// (sessions_not_before) and every personal API token revoked — as a password
+// reset does (ResetCredentials) — its mark is cleared, and the audit row
 // "user.factors_reset" records by, how many phones went and passkeysRemoved
 // (the GoTrue half, done before). ErrNotFound when there is no such account
 // (nothing written).
+//
+// 🔴 THE PHONES GO BEFORE THE MARK IS CLEARED: deleting a step-up phone marks
+// the account (migration 0189's trigger), so the other order would leave it
+// marked.
 func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, passkeysRemoved int) (phones int, err error) {
 	ctx = sys(ctx)
 	tx, err := s.pool.Begin(ctx)
@@ -851,14 +863,20 @@ func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, passkeys
 		return 0, err
 	}
 	var got int64
-	err = tx.QueryRow(ctx, `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1 RETURNING id`, id).Scan(&got)
+	err = tx.QueryRow(ctx, `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1 RETURNING id`, id).Scan(&got)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNotFound
 	}
 	if err != nil {
 		return 0, err
 	}
-	if err := tx.QueryRow(ctx, `WITH d AS (DELETE FROM devices WHERE owner_id = $1 RETURNING 1) SELECT count(*) FROM d`, id).Scan(&phones); err != nil {
+	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	if phones, err = deleteDevicesTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, id); err != nil {
 		return 0, err
 	}
 	if err := AuditTx(ctx, tx, by, "user.factors_reset", UserObject(id),

@@ -110,6 +110,8 @@ type Fake struct {
 	lastCredential  []byte
 	// adminPasskeyFailures: the next N admin passkey calls answer 500.
 	adminPasskeyFailures int
+	// adminPasskeySkip: admin passkey calls let through before those failures.
+	adminPasskeySkip int
 	// adminUserGetFailures: the next N GET /admin/users/{id} calls answer 500.
 	adminUserGetFailures int
 	// settingsFailures: the next N GET /settings calls answer 500.

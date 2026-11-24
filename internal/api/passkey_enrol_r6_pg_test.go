@@ -116,6 +116,9 @@ func TestAnUnmarkedAdminWithAStepUpPhoneTakesTheProofToPromote(t *testing.T) {
 	w := newPasskeyWorld(t)
 	a := adminSelf(t, w)
 	pairStepUpPhone(t, w, a)
+	// The pairing marked the account (migration 0189); a phone paired before
+	// that, and never marked, is the case.
+	w.s.clearStrongFactor(context.Background(), a)
 	mustBeUnmarked(t, w, a)
 	b, promote := promoteB(w, "unmarked-phone-puppet@invite.test")
 	if c := promote(); c != http.StatusForbidden {
@@ -209,12 +212,13 @@ func TestOnlyOneFunctionReadsTheStrongFactorRecord(t *testing.T) {
 	// The column, across the module's non-test Go: the store's three methods
 	// and the e2e seed's reset — nothing else writes SQL against it.
 	got := moduleFilesMentioning(t, root, "had_strong_factor_at")
-	want := []string{"e2e/seed/main.go", "internal/api/factors_reset.go", "internal/api/passkey_enrol.go", "internal/users/users.go"}
+	want := []string{"e2e/seed/main.go", "internal/api/passkey_enrol.go", "internal/users/users.go"}
 	if !slices.Equal(got, want) {
 		t.Errorf("non-test Go naming had_strong_factor_at: %v\nwant exactly %v", got, want)
 	}
-	// The two in internal/api are comments only: no SQL there.
-	for _, f := range []string{"factors_reset.go", "passkey_enrol.go"} {
+	// The one in internal/api is comments only: no SQL there
+	// (TestTheStrongFactorColumnIsALedger reads every literal, folded).
+	for _, f := range []string{"passkey_enrol.go"} {
 		if stringLiteralMentions(t, f, "had_strong_factor_at") {
 			t.Errorf("%s has a string literal naming had_strong_factor_at: read it through accountHasStrongFactor", f)
 		}

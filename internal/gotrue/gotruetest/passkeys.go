@@ -107,6 +107,15 @@ func (f *Fake) FailAdminPasskeys(n int) {
 	f.mu.Unlock()
 }
 
+// FailAdminPasskeysAfter lets the next ok admin passkey calls through, then
+// makes the n after them answer 500 — a GoTrue outage part-way through a
+// list-then-delete, after some deletions.
+func (f *Fake) FailAdminPasskeysAfter(ok, n int) {
+	f.mu.Lock()
+	f.adminPasskeySkip, f.adminPasskeyFailures = ok, n
+	f.mu.Unlock()
+}
+
 // FailSettings makes the next n GET /settings calls answer 500 — GoTrue
 // unreachable for the passkeys_enabled read.
 func (f *Fake) FailSettings(n int) {
@@ -329,7 +338,9 @@ func (f *Fake) adminPasskeyRoute(w http.ResponseWriter, r *http.Request) {
 	// admin passkey routes sit under /admin, outside requirePasskeyEnabled.
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.adminPasskeyFailures > 0 {
+	if f.adminPasskeySkip > 0 {
+		f.adminPasskeySkip--
+	} else if f.adminPasskeyFailures > 0 {
 		f.adminPasskeyFailures--
 		writeErr(w, 500, "unexpected_failure", "injected failure")
 		return

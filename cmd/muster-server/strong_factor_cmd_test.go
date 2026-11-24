@@ -135,6 +135,7 @@ func TestTheRecoveryCommandResetsEveryFactor(t *testing.T) {
 	if err := w.pg.MarkStrongFactor(w.ctx, w.id); err != nil {
 		t.Fatal(err)
 	}
+	_, _, sid := w.fake.Mint(w.sub) // a session someone holds
 	rc, out := w.run(strconv.FormatInt(w.id, 10))
 	if rc != 0 {
 		t.Fatalf("reset-factors by id: rc %d %s", rc, out)
@@ -156,6 +157,15 @@ func TestTheRecoveryCommandResetsEveryFactor(t *testing.T) {
 	}
 	if n := w.audit("user.factors_reset"); n != 1 {
 		t.Fatalf("audit rows: %d, want 1", n)
+	}
+	// Every session ended: GoTrue's (its refresh tokens die) and muster's
+	// cutoff.
+	if !w.fake.SessionRevoked(sid) {
+		t.Fatal("the GoTrue session survived the reset")
+	}
+	var cut *time.Time
+	if err := w.pool.QueryRow(authz.System(w.ctx), `SELECT sessions_not_before FROM users WHERE id = $1`, w.id).Scan(&cut); err != nil || cut == nil {
+		t.Fatalf("muster's session cutoff was not moved (%v %v)", cut, err)
 	}
 	// By email, on an account with nothing left: still a reset, still audited.
 	_ = w.pg.MarkStrongFactor(w.ctx, w.id)
@@ -205,21 +215,63 @@ func TestTheRecoveryCommandRefusesAnUnknownAccount(t *testing.T) {
 	}
 }
 
-// TestTheRecoveryCommandStopsWhilePasskeysMayRemain: GoTrue failing mid-way
-// leaves the account gated — the mark and the phones untouched, nothing
-// audited — and says to run it again.
+// TestTheRecoveryCommandStopsWhilePasskeysMayRemain: GoTrue failing part-way
+// — after one passkey of three went — leaves the account gated: MARKED (it
+// was not before), its phone kept, nothing audited, and the output says how
+// many went and to run it again.
 func TestTheRecoveryCommandStopsWhilePasskeysMayRemain(t *testing.T) {
 	w := newRecoveryWorld(t)
-	w.fake.AddPasskey(w.sub, "kept-cred")
+	for _, c := range []string{"kept-1", "kept-2", "kept-3"} {
+		w.fake.AddPasskey(w.sub, c)
+	}
 	w.pairPhone()
-	_ = w.pg.MarkStrongFactor(w.ctx, w.id)
-	w.fake.FailAdminPasskeys(10)
+	if _, err := w.pool.Exec(authz.System(w.ctx), `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, w.id); err != nil {
+		t.Fatal(err)
+	}
+	// The list and the first delete go through; the second delete fails.
+	w.fake.FailAdminPasskeysAfter(2, 10)
 	rc, out := w.run(strconv.FormatInt(w.id, 10))
-	w.fake.FailAdminPasskeys(0)
-	if rc == 0 || !strings.Contains(out, "still gated") {
-		t.Fatalf("a GoTrue failure: rc %d %s", rc, out)
+	w.fake.FailAdminPasskeysAfter(0, 0)
+	if rc == 0 || !strings.Contains(out, "1 passkey(s) removed") || !strings.Contains(out, "still gated") {
+		t.Fatalf("a GoTrue failure part-way: rc %d %s", rc, out)
+	}
+	if n := len(w.fake.Passkeys(w.sub)); n != 2 {
+		t.Fatalf("fixture: %d passkeys left, want 2 (the failure came after one delete)", n)
 	}
 	if !w.marked() || w.phones() != 1 || w.audit("user.factors_reset") != 0 {
-		t.Fatalf("a failed recovery changed the account (marked %v, phones %d)", w.marked(), w.phones())
+		t.Fatalf("a failed recovery: marked %v, phones %d (want marked, 1)", w.marked(), w.phones())
+	}
+	// Run again: it completes.
+	if rc, out := w.run(strconv.FormatInt(w.id, 10)); rc != 0 || !strings.Contains(out, "removed 2 passkey(s) and 1 paired phone(s)") {
+		t.Fatalf("the second run: rc %d %s", rc, out)
+	}
+}
+
+// TestTheRecoveryCommandSetsANewPassword: --new-password-stdin sets the
+// account's password before anything else is removed (whoever knew the old
+// one cannot sign in first and pair a phone); a short one is refused with
+// nothing changed.
+func TestTheRecoveryCommandSetsANewPassword(t *testing.T) {
+	w := newRecoveryWorld(t)
+	_ = w.pg.MarkStrongFactor(w.ctx, w.id)
+	run := func(stdin string) (int, string) {
+		old := accountStdin
+		accountStdin = strings.NewReader(stdin)
+		defer func() { accountStdin = old }()
+		return w.run(strconv.FormatInt(w.id, 10), "--new-password-stdin")
+	}
+	if rc, out := run("short\n"); rc == 0 || !w.marked() || w.audit("user.factors_reset") != 0 {
+		t.Fatalf("a short password: rc %d %s (marked %v)", rc, out, w.marked())
+	}
+	const pw = "a-brand-new-long-password"
+	rc, out := run(pw + "\n")
+	if rc != 0 || !strings.Contains(out, "set the new password") {
+		t.Fatalf("with a new password: rc %d %s", rc, out)
+	}
+	if fu, _ := w.fake.User(w.sub); fu.Password != pw {
+		t.Fatal("the new password was not set")
+	}
+	if w.marked() {
+		t.Fatal("the account is still marked")
 	}
 }
