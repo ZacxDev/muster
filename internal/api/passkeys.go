@@ -701,7 +701,8 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 	}
 	// 🔴 An account that has had a factor is stripped only with the acting
 	// admin's proof, from an account that has had one (admin_proof.go).
-	if why := s.adminProof(r, s.targetMarked(r, u), true); why != "" {
+	why, giveBack := s.adminProof(r, s.targetMarked(r, u), true)
+	if why != "" {
 		s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
 		return
 	}
@@ -718,6 +719,9 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 		return err
 	})
 	if err != nil {
+		if giveBack != nil && n == 0 {
+			giveBack() // nothing was removed: the proof is not spent
+		}
 		s.logger.Printf("admin: remove passkeys of user %d (%d removed before the failure): %v", u.ID, n, err)
 		s.renderAdminUsers(w, r, http.StatusBadGateway, "The passkeys could not all be removed. Try again.", "")
 		return

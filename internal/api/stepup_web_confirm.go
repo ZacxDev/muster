@@ -423,6 +423,8 @@ func (s *Server) handleStepUpCardPasskeyVerify(w http.ResponseWriter, r *http.Re
 			// failed sign-in.
 			return outcomeSucceeded
 		}
+		// A passkey decided a card: the account has a factor (migration 0188).
+		_ = s.markStrongFactor(ctx, me)
 		next := askPagePath(id)
 		if body.Return == attentionPath {
 			next = settledLink(id)

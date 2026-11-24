@@ -816,11 +816,56 @@ func (s *PGStore) HadStrongFactor(ctx context.Context, id int64) (bool, error) {
 	return at != nil, err
 }
 
+// HasStepUpPhone reports whether account id has a paired phone with a step-up
+// key (internal/devices), read by id whoever asks: internal/api's one rule for
+// the gated tier (accountHasStrongFactor) asks it about the acting admin and
+// about the account acted on. Raw SQL for the deleteDevicesTx reason.
+func (s *PGStore) HasStepUpPhone(ctx context.Context, id int64) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(sys(ctx), `SELECT EXISTS (SELECT 1 FROM devices WHERE owner_id = $1 AND stepup_pubkey IS NOT NULL)`, id).Scan(&ok)
+	return ok, err
+}
+
 // MarkStrongFactor records that account id has a passkey or a phone with a
 // step-up key; a mark already set is kept (its first time).
 func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(sys(ctx), `UPDATE users SET had_strong_factor_at = now() WHERE id = $1 AND had_strong_factor_at IS NULL`, id)
 	return err
+}
+
+// ResetFactors is the server recovery's database half (muster-server user
+// reset-factors, internal/api ResetAccountFactors), in ONE transaction under
+// the credentials lock: every paired phone of account id is deleted (their
+// push subscriptions go with them), its mark is cleared, and the audit row
+// "user.factors_reset" records by, how many phones went and passkeysRemoved
+// (the GoTrue half, done before). ErrNotFound when there is no such account
+// (nothing written).
+func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, passkeysRemoved int) (phones int, err error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	var got int64
+	err = tx.QueryRow(ctx, `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1 RETURNING id`, id).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.QueryRow(ctx, `WITH d AS (DELETE FROM devices WHERE owner_id = $1 RETURNING 1) SELECT count(*) FROM d`, id).Scan(&phones); err != nil {
+		return 0, err
+	}
+	if err := AuditTx(ctx, tx, by, "user.factors_reset", UserObject(id),
+		map[string]any{"phones_removed": phones, "passkeys_removed": passkeysRemoved}); err != nil {
+		return 0, err
+	}
+	return phones, tx.Commit(ctx)
 }
 
 // ClearStrongFactor clears account id's mark: ONLY a completed password reset

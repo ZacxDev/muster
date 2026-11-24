@@ -376,14 +376,20 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 🔴 A PROMOTION TAKES THE ACTING ADMIN'S PROOF (admin_proof.go).
+	var giveBack func()
 	if role == authz.RoleAdmin {
-		if why := s.adminProof(r, false, false); why != "" {
+		var why string
+		why, giveBack = s.adminProof(r, false, false)
+		if why != "" {
 			s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
 			return
 		}
 	}
 	by := actorOf(r)
 	_, err := s.gt.Accounts.SetRole(r.Context(), by, u.ID, role)
+	if err != nil && giveBack != nil {
+		giveBack() // nothing changed: the proof is not spent
+	}
 	if errors.Is(err, users.ErrLastAdmin) {
 		s.renderAdminUsers(w, r, http.StatusConflict, lastAdminRefusal, "")
 		return
@@ -426,7 +432,8 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 	// 🔴 A RESET LINK FOR AN ACCOUNT THAT HAS HAD A FACTOR takes the acting
 	// admin's proof, from an account that has had one too (admin_proof.go): a
 	// completed reset clears the target's mark.
-	if why := s.adminProof(r, s.targetMarked(r, u), true); why != "" {
+	why, giveBack := s.adminProof(r, s.targetMarked(r, u), true)
+	if why != "" {
 		s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
 		return
 	}
@@ -440,6 +447,9 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 		return err
 	})
 	if err != nil {
+		if giveBack != nil {
+			giveBack() // nothing was made: the proof is not spent
+		}
 		s.logger.Printf("admin: reset link for user %d: %v", u.ID, err)
 		s.renderAdminUsers(w, r, http.StatusBadGateway, "A reset link could not be made right now.", "")
 		return

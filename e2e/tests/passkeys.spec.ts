@@ -122,7 +122,10 @@ function signals(rec: WebAuthnRecord, name: string, from = 0): unknown[] {
 // removed straight at GoTrue's admin API (a service_role token signed with the
 // e2e secret, as muster's own admin calls are) and the account's record
 // cleared as a password reset would (stepupfix unmark), then the password
-// adds this one as the account's first factor.
+// adds this one as the account's first factor. A passkey the password added
+// cannot vouch for an admin page's change (internal/api admin_proof.go), so
+// its record is then marked vouched at GoTrue, as a passkey the admin's phone
+// confirmed would be.
 async function adminGetsAFreshPasskey(page: Page): Promise<void> {
   const at = (await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;
   const claims = JSON.parse(Buffer.from(at.split('.')[1], 'base64url').toString());
@@ -140,6 +143,18 @@ async function adminGetsAFreshPasskey(page: Page): Promise<void> {
   execFileSync('go', ['run', './e2e/stepupfix', 'unmark', '1'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
   await page.goto(browserURL + '/account/passkeys');
   await addPasskey(page);
+  const user = `${gotrueURL}/admin/users/${encodeURIComponent(String(claims.sub))}`;
+  const got = await fetch(user, { headers: { Authorization: 'Bearer ' + admin } });
+  expect(got.status, "GoTrue's admin user read").toBe(200);
+  const records = (((await got.json()) as { app_metadata?: Record<string, unknown> }).app_metadata?.muster_passkeys ?? {}) as Record<string, Record<string, unknown>>;
+  expect(Object.keys(records).length, 'the added passkey is recorded').toBe(1);
+  for (const id of Object.keys(records)) records[id] = { ...records[id], vouched: true };
+  const put = await fetch(user, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + admin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ app_metadata: { muster_passkeys: records } }),
+  });
+  expect(put.status, 'the record marked vouched').toBe(200);
 }
 
 // adminProves confirms with the admin's passkey on Account → Passkeys

@@ -115,6 +115,11 @@ func TestAnAdminStrippingPasskeysTellsTheUser(t *testing.T) {
 	w := newPasskeyWorld(t)
 	uid, sub, _, _ := w.joinMember("stripped@invite.test")
 	w.fake.AddPasskey(sub, "s1")
+	// The account holds a passkey, so stripping it takes the acting admin's
+	// vouched proof, from an account in the gated tier (admin_proof.go).
+	a := adminSelf(t, w)
+	_ = w.s.markStrongFactor(context.Background(), a)
+	grantEnrolTicket(t, w.s, w.fake, a, w.adminAT)
 	rec := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/passkeys/delete", url.Values{}, w.asAdmin())
 	if rec.Code != 200 {
 		t.Fatalf("strip: %d", rec.Code)

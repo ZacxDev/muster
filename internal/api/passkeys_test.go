@@ -796,6 +796,11 @@ func TestTheAdminCanRemoveAUsersPasskeys(t *testing.T) {
 	if page := do(w.edge, "GET", "/admin/users", nil, w.asAdmin()).Body.String(); !strings.Contains(page, `/admin/users/`+id+`/passkeys/delete`) {
 		t.Fatal("no Remove passkeys button for the member")
 	}
+	// The account holds passkeys: the strip takes the acting admin's vouched
+	// proof, from an account in the gated tier (admin_proof.go).
+	a := adminSelf(t, w)
+	_ = w.s.markStrongFactor(context.Background(), a)
+	grantEnrolTicket(t, w.s, w.fake, a, w.adminAT)
 	rec := do(w.edge, "POST", "/admin/users/"+id+"/passkeys/delete", url.Values{}, w.asAdmin())
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Removed 2 passkeys of pk-admin@invite.test") {
 		t.Fatalf("remove: %d %s", rec.Code, truncate(rec.Body.String(), 400))

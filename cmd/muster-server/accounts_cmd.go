@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,18 +29,18 @@ import (
 //	muster-server user disable <id>      disabled_at + GoTrue ban, and the
 //	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
-//	muster-server user clear-strong-factor <id|email>
-//	                                     reopen the account's first-factor tier
-//	                                     (migration 0188), as a completed password
-//	                                     reset does: the recovery for a sole admin
-//	                                     who lost every passkey and phone
+//	muster-server user reset-factors <id|email>
+//	                                     remove every passkey and paired phone of
+//	                                     the account and reopen its first-factor
+//	                                     tier (migration 0188): the recovery for a
+//	                                     sole admin who lost every passkey and phone
 //	muster-server app install|rotate|uninstall|list|unlink
 //	                                     server-installed apps (app_cmd.go)
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server invite --claim-admin\n"+
 			"       muster-server user disable|enable <user-id>\n"+
-			"       muster-server user clear-strong-factor <user-id|email>\n"+
+			"       muster-server user reset-factors <user-id|email>\n"+
 			"       muster-server app install|rotate|uninstall|list|unlink …")
 		return 2
 	}
@@ -81,13 +82,14 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 			fmt.Fprintln(stderr, note)
 		}
 		return 0
-	case len(args) == 3 && args[0] == "user" && args[1] == "clear-strong-factor":
+	case len(args) == 3 && args[0] == "user" && args[1] == "reset-factors":
 		// THE RECOVERY FOR A SOLE ADMIN WHO LOST EVERY FACTOR (docs/auth.md,
-		// "Adding a passkey"): on a server with no other admin to mint a reset
-		// link, whoever can reach the database clears the record that keeps
-		// the account gated, so its next passkey or step-up phone is added as
-		// a first factor. Not reachable over HTTP: a shell with DATABASE_URL is
-		// the proof.
+		// "Recovering an account that lost every passkey and phone"): on a
+		// server with no other admin to mint a reset link, whoever can reach
+		// the database and GoTrue removes every passkey and paired phone of the
+		// account and clears the record that keeps it gated, so its next
+		// passkey or step-up phone is added as a first factor. Not reachable
+		// over HTTP: a shell with the server's environment is the proof.
 		pool, err := db.Connect(ctx, cfg.Database)
 		if err != nil {
 			fmt.Fprintf(stderr, "db connect: %v\n", err)
@@ -103,14 +105,20 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 				return 1
 			}
 		}
-		if err := st.ClearStrongFactor(ctx, id); err != nil {
-			fmt.Fprintf(stderr, "user %d: %v\n", id, err)
+		res, err := api.ResetAccountFactors(ctx, goTrueAuth(cfg, pool), st, users.Actor{Via: "cli"}, id)
+		if errors.Is(err, users.ErrNotFound) {
+			fmt.Fprintf(stderr, "user %d: no such user; nothing was changed\n", id)
 			return 1
 		}
-		if err := st.Audit(ctx, users.Actor{Via: "cli"}, "user.strong_factor_cleared", users.UserObject(id), nil); err != nil {
-			fmt.Fprintf(stderr, "user %d: audit: %v (the record was cleared)\n", id, err)
+		if err != nil {
+			fmt.Fprintf(stderr, "user %d: %d passkey(s) removed, then: %v. The account is still gated: run this again\n", id, res.Passkeys, err)
+			return 1
 		}
-		fmt.Fprintf(stdout, "user %d: cleared. Its next passkey or phone that confirms requests is added as a first factor.\n", id)
+		if res.RecordsKept != nil {
+			fmt.Fprintf(stderr, "user %d: the passkey records kept in GoTrue could not be cleared (%v); they name passkeys that are gone\n", id, res.RecordsKept)
+		}
+		fmt.Fprintf(stdout, "user %d: removed %d passkey(s) and %d paired phone(s), and reopened the account: "+
+			"its next passkey or phone that confirms requests is added as a first factor.\n", id, res.Passkeys, res.Phones)
 		return 0
 	case len(args) == 3 && args[0] == "user" && (args[1] == "disable" || args[1] == "enable"):
 		id, err := strconv.ParseInt(args[2], 10, 64)

@@ -783,11 +783,22 @@ From then on, every change below takes a proof.
   - **ask another admin for a password reset link.** The reset revokes every
     paired phone and clears the record, and then your next passkey or phone
     is added as a first factor;
-  - **on a server with one admin**, whoever runs the server clears the record
-    with `muster-server user clear-strong-factor <user-id|email>`, run where
-    the server's `DATABASE_URL` is (for example `kubectl exec` into its pod).
-    It is audited (`user.strong_factor_cleared`) and has no HTTP route: the
-    shell is the proof.
+  - **on a server with one admin**, whoever runs the server runs
+    `muster-server user reset-factors <user-id|email>` where the server's
+    environment is (its `DATABASE_URL` and GoTrue secret; for example
+    `kubectl exec` into its pod). In this order, it:
+    1. looks the account up: an unknown id or email exits non-zero and
+       changes nothing, with no audit row;
+    2. deletes every passkey of the account through GoTrue's admin API, and
+       muster's records of them. If GoTrue fails, it stops here and exits
+       non-zero with the account still gated: run it again;
+    3. in one transaction, unpairs every phone (their push targets go with
+       them), clears the record and writes the audit row
+       (`user.factors_reset`, with how many passkeys and phones went).
+
+    It prints what it removed. Then sign in with the password and add a
+    passkey or pair a phone: it is added as a first factor. It has no HTTP
+    route: the shell is the proof.
 
   The pairing code says this, in plain words, when it may not pair a phone
   that confirms requests (`stepup_note`), and Account → Devices shows it.
@@ -798,6 +809,14 @@ From then on, every change below takes a proof.
   - **minting a reset link for, or removing the passkeys of, an account that
     has had a factor** takes the acting admin's proof, and is refused to an
     admin whose own account has never had one (it could mint its own proof).
+
+  "Has had a factor" means: has a passkey or a phone that confirms requests
+  now, or has had one (the record). The check is the same everywhere, and an
+  account found holding a factor is recorded as having had one.
+
+  The proof must come from your paired phone's Confirm, or from a passkey
+  that may approve cards. A passkey added with your password alone cannot
+  give it. If GoTrue then fails, the proof is not spent.
 
   Prove on Account → Passkeys, then return within ten minutes. The account
   is told when a reset link is minted for it ("An admin created a password

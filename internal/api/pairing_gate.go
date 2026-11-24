@@ -22,11 +22,11 @@ import (
 //     that minted it held an enrolment ticket (a passkey you have, or your
 //     phone's Confirm), which the mint TAKES; a phone redeeming a code without
 //     it is refused if it brings a step-up key (it may still pair read-only);
-//   - on an account that has NEVER had either (users.had_strong_factor_at,
-//     migration 0188 — Sign out everywhere, which unpairs every phone, does
-//     not clear it; only a completed password reset does), the first phone
-//     pairs with its key on the
-//     password, as before: it is the account's first factor, and it MAY decide
+//   - on an account that has NEVER had either (accountHasStrongFactor: the
+//     live rows or the sticky record of migration 0188, which Sign out
+//     everywhere does not clear; only a completed password reset or the
+//     server's reset-factors command does), the first phone pairs with its
+//     key on the password, as before: it is the account's first factor, and it MAY decide
 //     cards (a phone's step-up key is the hardware-bound proof cards were built
 //     on). From then on, the rule above holds.
 //
@@ -34,8 +34,8 @@ import (
 // to your account", outside the notification switches.
 //
 // The permission lives with the code, in memory, until it expires with the
-// code (a spent code is refused by the redeem itself). A restart loses it: the person mints a
-// new code.
+// code (a spent code is refused by the redeem itself). A restart loses it:
+// the person mints a new code.
 // ---------------------------------------------------------------------------
 
 // The pairing gate's words.
@@ -77,7 +77,6 @@ func (p *pairingPermits) allowed(code string) bool {
 	exp, ok := p.m[codeKey(code)]
 	return ok && time.Now().Before(exp)
 }
-
 
 // pairingStepUpAllowed decides, as a code is minted, whether it may pair a
 // step-up key: the account has nothing to prove with, or the session holds a

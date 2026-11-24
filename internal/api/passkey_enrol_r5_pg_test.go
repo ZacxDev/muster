@@ -163,6 +163,9 @@ type failingMarkStore struct {
 	pg *users.PGStore
 }
 
+func (f failingMarkStore) HasStepUpPhone(ctx context.Context, id int64) (bool, error) {
+	return f.pg.HasStepUpPhone(ctx, id)
+}
 func (f failingMarkStore) HadStrongFactor(ctx context.Context, id int64) (bool, error) {
 	return f.pg.HadStrongFactor(ctx, id)
 }

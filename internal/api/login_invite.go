@@ -587,6 +587,14 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
 	done := resetDonePath(removePasskeys, 0)
 	if removePasskeys {
+		// Marked first (accountHasStrongFactor reads the live passkeys and
+		// records them): a reset that stops after deleting them, before the
+		// password is set and the record cleared, leaves the account gated.
+		if _, err := s.accountHasStrongFactor(r.Context(), u.ID); err != nil {
+			s.logger.Printf("reset: read user %d's factors before removing passkeys: %v", u.ID, err)
+			s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+			return
+		}
 		n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject)
 		if err != nil {
 			s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)

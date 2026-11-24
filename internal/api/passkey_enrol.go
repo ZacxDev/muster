@@ -229,33 +229,81 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 	if ok {
 		return enrolNeed{ticket: &t}, nil
 	}
-	// 🔴 THE ACCOUNT'S PASSKEYS ARE LISTED WHATEVER GoTrue's /settings SAY
-	// (as the reset counts them): a /settings blip reads as "passkeys off",
-	// and an account whose only factor is a passkey must not open on it. A
-	// list that fails refuses (fail closed).
-	list, err := s.accountPasskeys(ctx, ip, creds)
+	f, err := s.accountStrongFactors(ctx, uid)
 	if err != nil {
 		return enrolNeed{}, err
 	}
-	phone, err := s.stepUpPhonePaired(ctx)
-	if err != nil {
-		return enrolNeed{}, err
+	return enrolNeed{passkey: f.passkey, phone: f.phone, open: !f.any()}, nil
+}
+
+// strongFactors is what account has, or has had, beyond its password.
+type strongFactors struct {
+	passkey bool // a live passkey (GoTrue's admin API)
+	phone   bool // a paired phone with a step-up key
+	had     bool // the sticky record (users.had_strong_factor_at, 0188)
+}
+
+func (f strongFactors) any() bool { return f.passkey || f.phone || f.had }
+
+// accountHasStrongFactor is THE rule for whether account uid is past its
+// first factor (the gated tier): it has, or has had, a passkey or a phone
+// with a step-up key. Every decision about the tier — the enrolment and
+// pairing gates, the removal gates, the admin pages' proof for the acting
+// admin and the target — reads it, and nothing else reads the sticky record
+// (TestOnlyOneFunctionReadsTheStrongFactorRecord).
+func (s *Server) accountHasStrongFactor(ctx context.Context, uid int64) (bool, error) {
+	f, err := s.accountStrongFactors(ctx, uid)
+	return f.any(), err
+}
+
+// accountStrongFactors reads the three sources for account uid:
+//
+//   - its live passkeys, through GoTrue's ADMIN API by its subject, whatever
+//     GoTrue's /settings say (a /settings blip reads as "passkeys off");
+//   - its paired phones with a step-up key;
+//   - the sticky record, which the live rows alone could never stand in for:
+//     the password can empty them (Sign out everywhere unpairs every phone).
+//
+// 🔴 A LIVE FACTOR FOUND MARKS THE ACCOUNT, so a factor muster sees once is
+// remembered however its row goes later (the backfill SQL cannot do this for
+// passkeys, which live in GoTrue). 🔴 ANY READ ERROR IS RETURNED: every
+// caller refuses on it (fail closed).
+func (s *Server) accountStrongFactors(ctx context.Context, uid int64) (strongFactors, error) {
+	var f strongFactors
+	if uid <= 0 {
+		return f, errors.New("no account")
 	}
-	n := enrolNeed{passkey: len(list) > 0, phone: phone}
-	if n.passkey || n.phone {
-		// The sticky tier (migration 0188): an account seen with a factor
-		// stays gated, whatever later empties its rows.
+	if s.gt != nil && s.gt.Users != nil {
+		u, err := s.gt.Users.ByID(ctx, uid)
+		if err != nil {
+			return f, err
+		}
+		if u.GotrueSub != "" {
+			list, err := s.gt.Client.AdminPasskeys(ctx, "muster-server", u.GotrueSub)
+			if err != nil {
+				return f, err
+			}
+			f.passkey = len(list) > 0
+		}
+	}
+	// Read by account id through the users store, whoever asks (an admin page
+	// asks about another account): no principal is minted for uid.
+	if st, ok := s.ext.Users.(strongFactorStore); ok && s.ext.Devices != nil {
+		phone, err := st.HasStepUpPhone(ctx, uid)
+		if err != nil {
+			return f, err
+		}
+		f.phone = phone
+	}
+	if f.passkey || f.phone {
 		_ = s.markStrongFactor(ctx, uid) // the live rows gate meanwhile
 	}
-	// 🔴 "OPEN" ONLY FOR AN ACCOUNT THAT HAS NEVER HAD ONE. The live rows can
-	// be emptied by the password alone (Sign out everywhere unpairs every
-	// phone), so they alone cannot open the first-factor tier.
 	had, err := s.hadStrongFactor(ctx, uid)
 	if err != nil {
-		return enrolNeed{}, err
+		return f, err
 	}
-	n.open = !n.passkey && !n.phone && !had
-	return n, nil
+	f.had = had
+	return f, nil
 }
 
 // refuseEnrolNeed answers (true) when n gives no way to add a passkey now:
@@ -331,8 +379,10 @@ func passkeyStandingOf(rec map[string]any, found bool, created, since time.Time)
 	return standingUnknown
 }
 
-// strongFactorStore is the users store's sticky tier (migration 0188).
+// strongFactorStore is the users store's sticky tier (migration 0188), and
+// its read of whether an account has a step-up phone.
 type strongFactorStore interface {
+	HasStepUpPhone(ctx context.Context, id int64) (bool, error)
 	HadStrongFactor(ctx context.Context, id int64) (bool, error)
 	MarkStrongFactor(ctx context.Context, id int64) error
 	ClearStrongFactor(ctx context.Context, id int64) error
@@ -366,7 +416,8 @@ func (s *Server) markStrongFactor(ctx context.Context, uid int64) error {
 }
 
 // clearStrongFactor reopens account uid's first-factor tier: ONLY a
-// completed password reset calls it (login_invite.go).
+// completed password reset calls it (login_invite.go); the server's recovery
+// clears it in its own transaction (users.PGStore.ResetFactors).
 func (s *Server) clearStrongFactor(ctx context.Context, uid int64) {
 	st, ok := s.ext.Users.(strongFactorStore)
 	if !ok {

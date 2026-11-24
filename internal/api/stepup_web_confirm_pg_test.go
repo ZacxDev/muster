@@ -157,9 +157,15 @@ func (r *webRig) auditDoor(t *testing.T, card int64) string {
 func TestAStepUpCardIsConfirmedInTheBrowserWithAPasskey(t *testing.T) {
 	r := newWebRig(t)
 	x, card := r.card(t, "Ship it from the browser?")
+	// Unmarked before the decision (as an account whose passkey muster never
+	// saw added): a passkey that decides a card marks it (migration 0188).
+	r.s.clearStrongFactor(context.Background(), r.uid)
 	w := r.decide(t, card, "Confirm")
 	if w.Code != http.StatusOK {
 		t.Fatalf("the browser's Confirm: %d %s", w.Code, w.Body)
+	}
+	if had, err := r.s.hadStrongFactor(context.Background(), r.uid); err != nil || !had {
+		t.Fatalf("a passkey that decided a card did not mark the account (%v %v)", had, err)
 	}
 	// The ceremony makes no sign-in fresh: the session GoTrue minted for it
 	// is the one signed out, the browser's own is not, and no session cookie
