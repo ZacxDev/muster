@@ -252,7 +252,7 @@ func TestAFleetLinkOpensTheProposedGroupOnItsProposal(t *testing.T) {
 	card = f.fleetCardFor(t, "?fleet=proposed&proposal="+id(older))
 	open(t, card)
 	m = goneLine.FindStringSubmatch(card)
-	if m == nil || m[1] != "That proposal expired at " || m[2] != strconv.FormatInt(created.Add(12*time.Hour).UnixMilli(), 10) || m[3] != "." {
+	if m == nil || m[1] != "Expired after 12 hours at " || m[2] != strconv.FormatInt(created.Add(12*time.Hour).UnixMilli(), 10) || m[3] != "." {
 		t.Errorf("the expired line: %q (want the time %d)", m, created.Add(12*time.Hour).UnixMilli())
 	}
 	if got := highlighted(card); len(got) != 0 || !strings.Contains(card, "None.") {

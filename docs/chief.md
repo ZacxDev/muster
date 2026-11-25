@@ -1842,12 +1842,32 @@ the rest: "Wrap 'muster-asks-ux'? +2 more. Nothing is sent until you approve
 them." It never carries a message's text, and it has no buttons. Each push
 replaces the last on the phone.
 
+**The push follows the proposals.** Whenever the proposals waiting change —
+one expired (its 12 hours passed, or its session moved on), was approved,
+rejected or not sent, or fleet proposals were turned off:
+
+- once **none** waits, the push is withdrawn from your devices;
+- while **some** still wait, it is replaced in place with the new count and a
+  link to the newest one still waiting, **quietly**: no sound, no vibration,
+  no second alert. A new proposal arriving while it shows updates the count
+  the same way.
+
+A quiet update never counts as the 30-minute push: a genuinely new proposal
+still gets its own alert when the next one is due. Nothing is sent when
+nothing changed. Muster records which proposals the push showed, so it acts
+only on a real change and never raises a push that is not showing. Safari
+(an iPhone or a Mac) keeps the old push: it ignores "quiet", and muster does
+not send it a withdrawal (see [push.md](push.md#when-a-notification-is-withdrawn)).
+
 Tapping it opens the board (`/tasks?chief=open&fleet=proposed&proposal=<id>`)
 with the chief panel open on the digest's **Proposed group** (on a phone, its
 sheet), scrolled to that proposal and outlined, with its Approve, Edit and
 Reject on screen. If it no longer waits when you get there, a line says so:
-"That proposal expired at 10:07 PM.", "That proposal was already approved at
-…", "…rejected at …", or "That proposal was not sent: its session moved on".
+"No longer needed: the session moved on at 10:07 PM." (its stop ended, or a
+new message or pull-request head came), "Expired after 12 hours at 10:07 PM.",
+"That proposal was already approved at …", "…rejected at …", or "That
+proposal was not sent: its session moved on". The reason is the one recorded
+on the proposal when it expired (`expired_why`), never read from its text.
 The newest one still waiting is outlined instead, or the group says "None.".
 An older push's `/?chief=open` opens the board with the panel open too.
 

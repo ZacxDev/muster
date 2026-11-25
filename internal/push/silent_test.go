@@ -47,7 +47,7 @@ func TestASilentPayloadReachesOnlyDevicesThatShowItQuietly(t *testing.T) {
 		dev(KindAndroid, "https://ntfy.example.test/up-android"),
 	}
 	var got []string
-	for _, d := range silentCapable(devs) {
+	for _, d := range silentCapable(devs, false) {
 		got = append(got, d.Sub.Endpoint)
 	}
 	want := []string{"https://fcm.googleapis.com/fcm/send/chrome", "https://updates.push.services.mozilla.com/wpush/v2/firefox"}
@@ -61,5 +61,39 @@ func TestASilentPayloadReachesOnlyDevicesThatShowItQuietly(t *testing.T) {
 	b, _ = json.Marshal(Payload{Type: "attention", Tag: "attention-episode-7"})
 	if strings.Contains(string(b), "silent") {
 		t.Fatalf("an ordinary payload carries a silent field: %s", b)
+	}
+}
+
+// TestASilentUpdateReachesPairedPhonesAsAnUpdate: a payload both Silent and
+// Update (a notification replaced in place: the fleet's "N proposals
+// waiting" with a new count) reaches the non-Apple browser with
+// "silent":true AND the paired phone, whose payload v2 carries
+// "update":true — what the Android app draws without alerting
+// (onlyAlertOnce) — and never Safari, which ignores `silent`. A Silent
+// payload without Update still skips the phone (the control): payload v2 has
+// no field that would keep it quiet.
+//
+// Red at origin/main: silentCapable skipped every native device, so a phone
+// kept the old count and its link to a proposal no longer waiting.
+func TestASilentUpdateReachesPairedPhonesAsAnUpdate(t *testing.T) {
+	p := Payload{Type: "attention", ID: "fleet-proposals", Tag: "fleet-proposals", Title: "2 proposals waiting",
+		Data: map[string]string{"url": "/tasks?chief=open&fleet=proposed&proposal=31"}, Update: true, Silent: true}
+	sent := fanOut(t, p)
+	if !strings.Contains(sent[epFCM], `"silent":true`) {
+		t.Fatalf("the FCM browser got %q; want the payload, silent", sent[epFCM])
+	}
+	var v2 PayloadV2
+	if err := json.Unmarshal([]byte(sent[epNtfy]), &v2); err != nil {
+		t.Fatalf("the paired phone got %q: %v", sent[epNtfy], err)
+	}
+	if !v2.Update || v2.Tag != "fleet-proposals" || v2.Title != "2 proposals waiting" || v2.URL != "/tasks?chief=open&fleet=proposed&proposal=31" {
+		t.Fatalf("the paired phone's payload v2: %+v; want the update, in place, under the same tag", v2)
+	}
+	if b, ok := sent[epApple]; ok {
+		t.Errorf("Safari was sent the silent update: %q", b)
+	}
+	p.Update = false
+	if b, ok := fanOut(t, p)[epNtfy]; ok {
+		t.Errorf("CONTROL: a silent re-show without update reached the paired phone: %q", b)
 	}
 }

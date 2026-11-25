@@ -362,8 +362,9 @@ An episode is one stop of one session.
   when it ended `gone`, is shown again **silently** under the new episode's
   tag — no sound, no vibration, not a new push (the repush floor and the
   claim are untouched). Only browsers whose push service honours `silent`
-  get it; the Android app (which ignores payload v2's `update`) and Safari
-  (which ignores `silent`) are skipped rather than buzzed. One that ended
+  get it; a paired phone (payload v2 has no `silent`, and this re-show is
+  not marked `update`) and Safari (which ignores `silent`) are skipped
+  rather than buzzed. One that ended
   `gone` before it was pushed, unjudged, carries nothing and is pushed as any
   new stop. A new streak, or a new session key, is a new stop, judged
   afresh.

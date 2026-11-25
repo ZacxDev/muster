@@ -262,3 +262,74 @@ func TestTheSubjectFilterIsExactAndBeforeTheLimit(t *testing.T) {
 		t.Fatalf("control: no filter lists %d; want all 7", len(got))
 	}
 }
+
+// TestSyncPushFollowsTheWaitingSetOnlyWhileAPushShows: with no push recorded,
+// SyncPush does nothing whatever waits (it never raises one). ClaimPush's due
+// push records the set it shows; SyncPush then answers nothing while the set
+// is the same, Replace (the count, the newest still waiting) when it changed —
+// once: the next call finds it recorded — and Withdraw when none waits, after
+// which nothing again. Neither moves ClaimPush's clock. HidePush says whether
+// one was showing. An expiry records why (ExpiredWhy); a reason on any other
+// state is refused by the database.
+func TestSyncPushFollowsTheWaitingSetOnlyWhileAPushShows(t *testing.T) {
+	p := pgActions(t)
+	ctx := asUser(2)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_pushed_at = NULL, proposals_push_ids = NULL WHERE owner_id = 2`)
+	a, err := p.Propose(ctx, proposal("5yncpu5h-0001", 9201, ClassContinue, ContinueText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{}) {
+		t.Fatalf("no push recorded: %+v %v; want nothing", r, err)
+	}
+	b, err := p.Propose(ctx, proposal("5yncpu5h-0002", 9202, ClassStopNote, StopNoteText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now().Add(time.Hour).Truncate(time.Millisecond).UTC()
+	if n, due, err := p.ClaimPush(ctx, t0); err != nil || !due || n != 2 {
+		t.Fatalf("the claim: %d %v %v", n, due, err)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{}) {
+		t.Fatalf("right after the claim: %+v %v; want nothing (it shows this set)", r, err)
+	}
+	if _, ok, err := p.MoveAction(ctx, b.ID, []string{StateProposed}, Move{State: StateExpired, Why: WhyMovedOn, Finish: true}); err != nil || !ok {
+		t.Fatalf("expire the newer: %v %v", ok, err)
+	}
+	if got, _ := p.GetAction(ctx, b.ID); got.ExpiredWhy != WhyMovedOn {
+		t.Fatalf("the expired action's reason: %q", got.ExpiredWhy)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{Replace: true, Count: 1, Newest: a.ID}) {
+		t.Fatalf("the newer expired: %+v %v; want Replace, 1, newest %d", r, err, a.ID)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{}) {
+		t.Fatalf("again with no change: %+v; want nothing", r)
+	}
+	if _, ok, err := p.MoveAction(ctx, a.ID, []string{StateProposed}, Move{State: StateExpired, Why: WhyTTL, Finish: true}); err != nil || !ok {
+		t.Fatalf("expire the last: %v %v", ok, err)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{Withdraw: true}) {
+		t.Fatalf("none waiting: %+v; want Withdraw", r)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{}) {
+		t.Fatalf("after the withdrawal: %+v; want nothing", r)
+	}
+	var clock time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT proposals_pushed_at FROM fleet_owner_marks`).Scan(&clock); err != nil || !clock.Equal(t0) {
+		t.Fatalf("the alert clock: %v %v; want the claim's %v", clock, err, t0)
+	}
+	if showing, err := p.HidePush(ctx); err != nil || showing {
+		t.Fatalf("HidePush with nothing showing: %v %v", showing, err)
+	}
+	c, err := p.Propose(ctx, proposal("5yncpu5h-0003", 9203, ClassContinue, ContinueText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_push_ids = '{1}' WHERE owner_id = 2`)
+	if showing, err := p.HidePush(ctx); err != nil || !showing {
+		t.Fatalf("HidePush with one showing: %v %v", showing, err)
+	}
+	if _, _, err := p.MoveAction(ctx, c.ID, []string{StateProposed}, Move{State: StateRejected, Why: WhyTTL, Finish: true}); err == nil {
+		t.Fatal("a rejected action recorded an expiry reason")
+	}
+}

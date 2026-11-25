@@ -117,6 +117,16 @@ const (
 	GuardFlagOff = "flag_off"
 )
 
+// Why an expired proposal expired (fleet_actions.expired_why, migration
+// 0192): the page a stale link opens says which (internal/api fleetGone).
+const (
+	// WhyTTL: its ProposalTTL passed with no tap.
+	WhyTTL = "ttl"
+	// WhyMovedOn: its session moved on (its stop ended, a new message, a new
+	// pull-request head) before the tap.
+	WhyMovedOn = "moved_on"
+)
+
 // Suppressed is the state of an action muster did not send because of guard.
 func Suppressed(guard string) string { return "suppressed:" + guard }
 
@@ -272,6 +282,9 @@ type Action struct {
 	// CloseAfter is a wrap's close step: the streak its handoff was sent on.
 	CloseAfter string
 	FinishedAt time.Time
+	// ExpiredWhy is why an expired proposal expired (WhyTTL, WhyMovedOn); ""
+	// for any other state, and for one expired before migration 0192.
+	ExpiredWhy string
 }
 
 // Evidence is an action's references: never transcript text.
@@ -337,6 +350,9 @@ type Move struct {
 	SendQueueID int64
 	RouteID     string
 	CloseAfter  string
+	// Why is an expiry's reason (WhyTTL, WhyMovedOn); set only with
+	// State StateExpired.
+	Why string
 	// Finish ends the action (finished_at = now()).
 	Finish bool
 }
@@ -371,14 +387,33 @@ type Actions interface {
 	ProposedOn(ctx context.Context, episode int64, class string) (bool, error)
 	// ClaimPush records a batched push at now when one is due: the last was
 	// PushEvery or more ago (or never) and a proposal was made after it. The
-	// count is the open proposals the push names.
+	// count is the open proposals the push names. A due push also records the
+	// waiting proposals it shows (SyncPush's baseline).
 	ClaimPush(ctx context.Context, now time.Time) (count int, due bool, err error)
+	// SyncPush compares the proposals waiting now with the ones the owner's
+	// "N proposals waiting" notification shows, and records the new set when
+	// it changed. It never touches ClaimPush's clock.
+	SyncPush(ctx context.Context) (PushSync, error)
+	// HidePush records that no such notification is showing; showing reports
+	// whether one was (fleet proposals turned off).
+	HidePush(ctx context.Context) (showing bool, err error)
+}
+
+// PushSync is what SyncPush found. Nothing to do unless Withdraw or Replace.
+type PushSync struct {
+	// Withdraw: a notification was showing and no proposal waits now.
+	Withdraw bool
+	// Replace: a notification is showing and the waiting set changed: it is
+	// replaced in place with Count and the newest still waiting (Newest).
+	Replace bool
+	Count   int
+	Newest  int64
 }
 
 const actionCols = `id, owner_id, created_at, class, proposer, subject_kind, subject_key, mirror_host, mirror_session, mirror_window,
 	coalesce(agent_id, 0), coalesce(chat_session_id, 0), episode_id, streak_key, evidence, reason, text, text_sha256,
 	coalesce(task_id, 0), to_subject, state, outcome, coalesce(decided_by, 0), decided_via, coalesce(decided_at, 'epoch'::timestamptz),
-	coalesce(send_queue_id, 0), coalesce(route_id, ''), close_after, coalesce(finished_at, 'epoch'::timestamptz)`
+	coalesce(send_queue_id, 0), coalesce(route_id, ''), close_after, coalesce(finished_at, 'epoch'::timestamptz), expired_why`
 
 func scanAction(row pgx.Row) (Action, error) {
 	var a Action
@@ -386,7 +421,7 @@ func scanAction(row pgx.Row) (Action, error) {
 	err := row.Scan(&a.ID, &a.Owner, &a.CreatedAt, &a.Class, &a.Proposer, &a.SubjectKind, &a.SubjectKey, &a.Host, &a.TmuxSession, &a.Window,
 		&a.AgentID, &a.ChatSessionID, &a.EpisodeID, &a.StreakKey, &ev, &a.Reason, &a.Text, &a.TextSHA256,
 		&a.TaskID, &a.ToSubject, &a.State, &a.Outcome, &a.DecidedBy, &a.DecidedVia, &a.DecidedAt,
-		&a.SendQueueID, &a.RouteID, &a.CloseAfter, &a.FinishedAt)
+		&a.SendQueueID, &a.RouteID, &a.CloseAfter, &a.FinishedAt, &a.ExpiredWhy)
 	if err != nil {
 		return a, err
 	}
@@ -500,9 +535,10 @@ func (p *PG) MoveAction(ctx context.Context, id int64, from []string, m Move) (A
 				send_queue_id = coalesce($7, send_queue_id),
 				route_id = coalesce($8, route_id),
 				close_after = CASE WHEN $9 = '' THEN close_after ELSE left($9, 200) END,
-				finished_at = CASE WHEN $10 THEN greatest(now(), created_at) ELSE finished_at END
+				finished_at = CASE WHEN $10 THEN greatest(now(), created_at) ELSE finished_at END,
+				expired_why = $11
 			WHERE id = $1 AND state = ANY($2) AND finished_at IS NULL RETURNING `+actionCols,
-			id, from, m.State, oneLine(m.Outcome), m.DecidedVia, nullID(m.DecidedBy), nullID(m.SendQueueID), nullText(m.RouteID), m.CloseAfter, m.Finish))
+			id, from, m.State, oneLine(m.Outcome), m.DecidedVia, nullID(m.DecidedBy), nullID(m.SendQueueID), nullText(m.RouteID), m.CloseAfter, m.Finish, m.Why))
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
 		}
@@ -546,7 +582,7 @@ func (p *PG) ClaimPush(ctx context.Context, now time.Time) (int, bool, error) {
 		if !fresh || count == 0 {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, updated_at = now()`, now); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, proposals_push_ids = (`+waitingIDs+`), updated_at = now()`, now); err != nil {
 			return err
 		}
 		due = true
@@ -556,6 +592,73 @@ func (p *PG) ClaimPush(ctx context.Context, now time.Time) (int, bool, error) {
 		return 0, false, err
 	}
 	return count, due, nil
+}
+
+// waitingIDs is the principal's waiting proposals' ids, oldest first: the
+// set the "N proposals waiting" notification shows.
+const waitingIDs = `SELECT coalesce(array_agg(id ORDER BY created_at, id), '{}') FROM fleet_actions WHERE state = 'proposed' AND finished_at IS NULL`
+
+// SyncPush implements Actions.
+//
+// 🔴 ONE ROW LOCK DECIDES: two passes (or a pass and a tap) that race read
+// the same mark under FOR UPDATE, so a change is acted on once — the second
+// finds the set already recorded. NULL (nothing showing) is left NULL: a
+// notification is only ever replaced or withdrawn, never raised, here.
+func (p *PG) SyncPush(ctx context.Context) (PushSync, error) {
+	var out PushSync
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO fleet_owner_marks DEFAULT VALUES ON CONFLICT (owner_id) DO NOTHING`); err != nil {
+			return err
+		}
+		var shown []int64
+		if err := tx.QueryRow(ctx, `SELECT proposals_push_ids FROM fleet_owner_marks FOR UPDATE`).Scan(&shown); err != nil {
+			return err
+		}
+		if shown == nil {
+			return nil
+		}
+		var now []int64
+		if err := tx.QueryRow(ctx, waitingIDs).Scan(&now); err != nil {
+			return err
+		}
+		if sameIDs(shown, now) {
+			return nil
+		}
+		var next any = now
+		if len(now) == 0 {
+			next = nil
+			out.Withdraw = true
+		} else {
+			out.Replace, out.Count, out.Newest = true, len(now), now[len(now)-1]
+		}
+		_, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_push_ids = $1, updated_at = now()`, next)
+		return err
+	})
+	if err != nil {
+		return PushSync{}, err
+	}
+	return out, nil
+}
+
+// HidePush implements Actions.
+func (p *PG) HidePush(ctx context.Context) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_push_ids = NULL, updated_at = now() WHERE proposals_push_ids IS NOT NULL`)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func sameIDs(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ActionObject is an action's audit object.

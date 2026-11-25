@@ -46,11 +46,14 @@ type Payload struct {
 	Icon string `json:"icon,omitempty"`
 	// Silent: show this notification WITHOUT sound or vibration — a re-show
 	// of one the device already alerted for (a session-state stop back from a
-	// blip, internal/api session_push.go). The service worker passes it as the
-	// Notifications API's `silent` (with `renotify: false`). 🔴 SENT ONLY TO
-	// DEVICES THAT HONOUR IT (silentCapable): a native device's app as shipped
-	// ignores payload v2's "update" and alerts on every post, and Safari
-	// ignores `silent`; both are skipped — a missing re-show, never a buzz.
+	// blip, internal/api session_push.go), or a replacement in place (the
+	// fleet's "N proposals waiting" with a new count). The service worker
+	// passes it as the Notifications API's `silent` (with `renotify: false`).
+	// 🔴 SENT ONLY TO DEVICES THAT HONOUR IT (silentCapable): Safari ignores
+	// `silent` and is skipped — a missing update, never a buzz. A native
+	// device gets it only when Update is set too: payload v2's `update` is
+	// what the Android app reads (setOnlyAlertOnce, and setSilent when
+	// nothing is showing under the tag) — Silent alone is no field it knows.
 	Silent bool `json:"silent,omitempty"`
 }
 
@@ -398,7 +401,7 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 		devs = withoutSilentPenalty(devs)
 	}
 	if p.Silent {
-		devs = silentCapable(devs)
+		devs = silentCapable(devs, p.Update)
 	}
 	rep.Devices = len(devs)
 	if len(devs) == 0 {
@@ -482,15 +485,20 @@ func withoutSilentPenalty(devs []Device) []Device {
 }
 
 // silentCapable is the devices a Silent payload is sent to: browser devices
-// whose push service is not Safari's. A native device (KindAndroid) is
-// skipped — its app as shipped ignores payload v2's "update" and alerts on
-// every post (docs/design/android.md) — and so is a Safari browser device,
-// whose WebKit ignores the Notifications API's `silent`. A device that cannot
-// show it quietly is not shown it at all.
-func silentCapable(devs []Device) []Device {
+// whose push service is not Safari's — WebKit ignores the Notifications API's
+// `silent` — and, when update, native devices (KindAndroid): payload v2 then
+// carries `update: true`, which the Android app has drawn without alerting
+// since muster-android #16 (onlyAlertOnce; posted silent when nothing shows
+// under the tag). A Silent payload WITHOUT update (a re-show, which says
+// nothing in payload v2) skips them. A device that cannot show it quietly is
+// not shown it at all.
+func silentCapable(devs []Device, update bool) []Device {
 	out := devs[:0:0]
 	for _, d := range devs {
 		if d.Kind == KindAndroid {
+			if update {
+				out = append(out, d)
+			}
 			continue
 		}
 		if u, err := url.Parse(d.Sub.Endpoint); err == nil && strings.EqualFold(u.Hostname(), applePushHost) {

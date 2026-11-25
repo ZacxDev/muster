@@ -142,6 +142,41 @@ notify, and a team-owned agent's call is refused.
   Notifications** lists your 20 newest. Only you read them; they are not on
   the admins' activity list.
 
+### When a notification is withdrawn
+
+A notification that opens something which can stop waiting is withdrawn
+from your devices when it does — a `resolved` push under its tag: the
+browser's service worker closes it, a paired phone cancels it. So a tap never
+opens "that is no longer waiting". Each kind, and what withdraws it:
+
+| notification | withdrawn when |
+|---|---|
+| an Attention item (`attention-<key>`) | it is answered, dismissed, expires or stops waiting |
+| a reply draft (`plugin-draft-<id>`), an outreach batch | it is decided or expires |
+| a task ready for review (`task-<id>-done`) | it leaves review |
+| an app's knock (`app-<plugin>-<ref>`) | the app withdraws it, or the app is uninstalled |
+| an officer's cap hold or held restart | the hold ends |
+| a connector request (`connector-<id>`) | it is approved or denied (in the Connectors tab or from a session), approved by another request's shared approval, or its connector is deleted |
+| a plugin pairing request (`pair-<id>`) | it is approved or denied, or it expires undecided (10 minutes): the Attention sweep notices, within 30 seconds, and withdraws it once |
+| "N proposals waiting" (`fleet-proposals`) | no proposal waits any more; with fewer (or more) still waiting it is **replaced quietly** instead ([chief.md](chief.md#fleet-proposals)) |
+
+Every other notification only reports something (a page published, an agent
+finished, the morning report, a routed message, `notify_owner`, a new session
+started) and stays until you clear it.
+
+A quiet replacement is sent with `silent` to browsers (no sound or vibration;
+`renotify: false`, so it never alerts again under its tag) and with
+`"update": true` to paired phones (payload v2), which the Android app draws
+without alerting. Safari ignores `silent`, so it is not sent one; nor is it
+sent a withdrawal (a push that shows nothing counts against a Safari
+subscription), so on Safari a stale notification can stay.
+
+🔴 **Every notification tag is declared.** `internal/api/push_tags.go` lists
+each tag family muster sends, with how it is withdrawn or why it never is, and
+a test reads every tag from the source: a new kind of notification with
+neither fails, and so does one declared as withdrawn with no withdrawal in the
+code.
+
 ### Every dropped notification is logged
 
 A notification that reaches nobody leaves one line in muster's log, at the
@@ -333,6 +368,12 @@ as **payload v2**:
   re-push does not alert again (`onlyAlertOnce(p) = p.update`). A chip
   a secret scan would redact is left out, never sent redacted. A payload that
   would not fit drops the suggestions, then the options, never the question.
+- `"update": true` is not only an ask's: the "N proposals waiting" push
+  replaced in place (a new count, [above](#when-a-notification-is-withdrawn))
+  carries it too. The app reads `update` for every type (its parser does,
+  since v0.1.5) and draws the replacement without alerting — and silently when
+  nothing is showing under the tag. An older app would alert once; nothing
+  else changes for it.
 - An ask also carries `actions`, the notification's buttons: an `ask_answer`
   per option and per suggestion (naming its chip by index in `ask`, whose
   text is the answer it sends), an inline-reply

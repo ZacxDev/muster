@@ -287,6 +287,29 @@ func (s *PGStore) PendingPairs(ctx context.Context, now time.Time) ([]PairReques
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (PairRequest, error) { return scanPair(r) })
 }
 
+// ExpiredPair is a pairing request that expired undecided: whose notification
+// to withdraw.
+type ExpiredPair struct {
+	ID      int64
+	OwnerID int64
+}
+
+// TakeExpiredPairs marks every pending request that expired at or before now
+// and whose notification is still out (push_withdrawn_at, migration 0192),
+// and returns them — each once, across every replica: the UPDATE is the
+// claim. Under the system scope (every owner's); ctx needs no principal.
+func (s *PGStore) TakeExpiredPairs(ctx context.Context, now time.Time) ([]ExpiredPair, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `UPDATE plugin_pair_requests SET push_withdrawn_at = $1
+		WHERE status = 'pending' AND expires_at <= $1 AND push_withdrawn_at IS NULL RETURNING id, owner_id`, now)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (ExpiredPair, error) {
+		var e ExpiredPair
+		return e, r.Scan(&e.ID, &e.OwnerID)
+	})
+}
+
 // DecidePair approves or denies one of the principal's pending, unexpired
 // pairing requests, recording via. With requireCode (a decision over MCP) code
 // must be the request's (ErrPairCode). Approving checks what minting checks:

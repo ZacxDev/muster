@@ -154,7 +154,10 @@ func (s *Server) handleFleetBulk(w http.ResponseWriter, r *http.Request) {
 	if !s.fleetCardGate(w, r, op == "approve") {
 		return
 	}
-	ctx := r.Context()
+	// One sync of the proposals push after every decision (fleetPushSync).
+	owner := requestOwner(r.Context())
+	ctx := fleetBatch(r.Context())
+	defer s.fleetPushSync(r.Context(), owner)
 	var ids []int64
 	for _, v := range r.PostForm["id"] {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 && len(ids) < 100 {
@@ -258,9 +261,21 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 		return nil
 	}
 	owner := s.personName(ctx, requestOwner(ctx))
+	// Every expiry this draw makes moves the notification once, after it
+	// (fleetPushSync), not once per card.
+	bctx, expired := fleetBatch(ctx), false
+	defer func() {
+		if expired {
+			s.fleetPushSync(ctx, requestOwner(ctx))
+		}
+	}()
 	var out []ui.FleetProposalView
 	for _, a := range open {
-		if a.State != fleet.StateProposed || s.fleetExpire(ctx, a) {
+		if a.State != fleet.StateProposed {
+			continue
+		}
+		if s.fleetExpire(bctx, a) {
+			expired = true
 			continue
 		}
 		p := ui.FleetProposalView{ID: a.ID, Subject: a.Evidence.SubjectID, Session: firstNonBlank(a.Evidence.Label, firstNonBlank(a.Evidence.SubjectID, a.SubjectKey)),
@@ -282,19 +297,24 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 }
 
 // fleetTTLOutcome is the outcome of a proposal expired by its 12 h
-// (fleet.Expired): fleetGone says it expired at fleet.ExpiresAt by it.
-const fleetTTLOutcome = "12 h passed"
+// (fleet.Expired), recorded with fleet.WhyTTL; fleetMovedOnOutcome one whose
+// session moved on, with fleet.WhyMovedOn. fleetGone reads the reason, never
+// these words.
+const (
+	fleetTTLOutcome     = "12 h passed"
+	fleetMovedOnOutcome = "the session moved on (its stop ended, or a new message or pull-request head)"
+)
 
 // fleetExpire expires proposal a when its 12 h passed or its stop moved on
 // (the stop ended, a new message, a new pull-request head): true when it is
 // no longer a proposal. A state that cannot be read keeps it.
 func (s *Server) fleetExpire(ctx context.Context, a fleet.Action) bool {
 	if fleet.Expired(a.CreatedAt, s.now()) {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Finish: true})
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Why: fleet.WhyTTL, Finish: true})
 		return true
 	}
 	if s.fleetStillOn(ctx, a).movedOn() {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: "the session moved on (its stop ended, or a new message or pull-request head)", Finish: true})
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetMovedOnOutcome, Why: fleet.WhyMovedOn, Finish: true})
 		return true
 	}
 	return false
@@ -317,6 +337,12 @@ func fleetExpiresIn(d time.Duration) string {
 // The lines a fleet link's card draws when the proposal it named no longer
 // waits (ui.FleetGroupView.Gone; " at <clock>." follows when it says when).
 const (
+	// FleetGoneTTL: its 12 hours passed with no tap (fleet.WhyTTL).
+	FleetGoneTTL = "Expired after 12 hours"
+	// FleetGoneNoLongerNeeded: its session moved on before the tap — the stop
+	// ended, a new message, a new pull-request head (fleet.WhyMovedOn).
+	FleetGoneNoLongerNeeded = "No longer needed: the session moved on"
+	// FleetGoneExpired: expired before muster recorded why (migration 0192).
 	FleetGoneExpired  = "That proposal expired"
 	FleetGoneApproved = "That proposal was already approved"
 	FleetGoneRejected = "That proposal was already rejected"
@@ -369,11 +395,13 @@ func (s *Server) fleetGone(ctx context.Context, id int64) (string, time.Time) {
 		return FleetGoneUnknown, time.Time{}
 	}
 	switch {
-	case a.State == fleet.StateExpired && a.Outcome == fleetTTLOutcome:
+	case a.State == fleet.StateExpired && a.ExpiredWhy == fleet.WhyTTL:
 		// Its 12 h passed: then, not when a draw next noticed and marked it.
-		return FleetGoneExpired, fleet.ExpiresAt(a.CreatedAt)
-	case a.State == fleet.StateExpired:
+		return FleetGoneTTL, fleet.ExpiresAt(a.CreatedAt)
+	case a.State == fleet.StateExpired && a.ExpiredWhy == fleet.WhyMovedOn:
 		// Its session moved on: noticed (and marked) by a draw or the pass.
+		return FleetGoneNoLongerNeeded, a.FinishedAt
+	case a.State == fleet.StateExpired:
 		return FleetGoneExpired, a.FinishedAt
 	case a.State == fleet.StateRejected:
 		return FleetGoneRejected, a.DecidedAt
