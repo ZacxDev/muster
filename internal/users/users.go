@@ -296,7 +296,8 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 // issued at or before it is refused from now on
 // (TestAResetEndsOtherDevicesAccessTokensAtOnce) — and revokes every live
 // personal API token the user holds (accounts PR 6;
-// TestAPasswordResetRevokesTheUsersAPITokens). It returns the cutoff.
+// TestAPasswordResetRevokesTheUsersAPITokens) and every flow-runner token, as
+// the server recovery does (ResetFactors). It returns the cutoff.
 //
 // ⚠ "SIGN OUT EVERYWHERE" IS NOT THIS: it ends GoTrue sessions only, and the
 // /account page says so next to its button.
@@ -321,6 +322,9 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 		return t, err
 	}
 	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
+	if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
 	if _, err := deleteDevicesTx(ctx, tx, id); err != nil {

@@ -346,8 +346,8 @@ func (g *gotrueState) sweepDisabled(ctx context.Context) {
 			delete(g.disabled, id)
 			g.forgetUserLocked(id)
 		}
-		// 🔴 A CUTOFF MOVED IN ANOTHER PROCESS (the server recovery, a reset on
-		// another replica) ends every open request of a session issued at or
+		// 🔴 A CUTOFF MOVED IN ANOTHER PROCESS (the server recovery from the
+		// CLI) ends every open request of a session issued at or
 		// before it, within one interval, and drops the cached row so the next
 		// request reads the new cutoff (TestACutoffFromAnotherProcessEndsOpenStreams).
 		if st.SessionsNotBefore != nil {

@@ -277,19 +277,25 @@ func TestTheRecoveryCommandSetsANewPassword(t *testing.T) {
 }
 
 // TestTheRecoveryCommandRefusesATerminalForThePassword: a terminal would echo
-// the password, so --new-password-stdin takes it piped only (/dev/null is a
-// character device, as a terminal is); nothing is changed.
+// the password, so --new-password-stdin takes it piped only; nothing is
+// changed. The terminal is the isatty answer (stdinIsTerminal, swapped here:
+// a test has no terminal); /dev/null, a character device but no terminal, is
+// not called one — it is refused only for carrying no password.
 func TestTheRecoveryCommandRefusesATerminalForThePassword(t *testing.T) {
 	w := newRecoveryWorld(t)
 	_ = w.pg.MarkStrongFactor(w.ctx, w.id)
-	tty, err := os.Open(os.DevNull)
+	null, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tty.Close()
-	old := accountStdin
-	accountStdin = tty
-	defer func() { accountStdin = old }()
+	defer null.Close()
+	oldIn, oldTTY := accountStdin, stdinIsTerminal
+	defer func() { accountStdin, stdinIsTerminal = oldIn, oldTTY }()
+	accountStdin = null
+	if rc, out := w.run(strconv.FormatInt(w.id, 10), "--new-password-stdin"); rc == 0 || strings.Contains(out, "is a terminal") || !strings.Contains(out, "no password on standard input") {
+		t.Fatalf("/dev/null: rc %d %s (want refused for no password, not as a terminal)", rc, out)
+	}
+	stdinIsTerminal = func(*os.File) bool { return true }
 	rc, out := w.run(strconv.FormatInt(w.id, 10), "--new-password-stdin")
 	if rc == 0 || !strings.Contains(out, "standard input is a terminal") || !w.marked() || w.audit("user.factors_reset") != 0 {
 		t.Fatalf("a terminal for the password: rc %d %s", rc, out)
@@ -306,7 +312,7 @@ func TestTheRecoveryCommandOnADisabledAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc, out := w.run(strconv.FormatInt(w.id, 10))
-	if rc != 0 || !strings.Contains(out, "The account is disabled, so GoTrue") || !strings.Contains(out, "removed 1 passkey(s)") {
+	if rc != 0 || !strings.Contains(out, "The account is disabled, so GoTrue was not asked") || !strings.Contains(out, "removed 1 passkey(s)") {
 		t.Fatalf("a disabled account: rc %d %s", rc, out)
 	}
 	if w.marked() || len(w.fake.Passkeys(w.sub)) != 0 {

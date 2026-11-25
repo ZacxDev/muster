@@ -206,6 +206,9 @@ func TestOnlyOneFunctionReadsTheStrongFactorRecord(t *testing.T) {
 	// THE open-tier decision, with its fresh session check (round 8): every
 	// grant of the open tier goes through it.
 	assertCallers(t, ".", "openTier", []string{"passkey_enrol.go:accountHasStrongFactor", "passkey_enrol.go:passkeyEnrolNeed"})
+	// The fresh session check (round 9): the open tier, and every honoured
+	// enrolment ticket.
+	assertCallers(t, ".", "sessionFresh", []string{"admin_proof.go:adminProof", "passkey_enrol.go:openTier", "passkey_enrol.go:passkeyEnrolNeed"})
 
 	root := filepath.Join("..", "..")
 	// The store method, across the module.

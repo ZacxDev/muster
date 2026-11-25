@@ -817,8 +817,8 @@ From then on, every change below takes a proof.
     nothing that needs the reopened tier from that moment: that decision
     re-reads the cutoff from the database every time. Its open streams
     close within 10 seconds, and every other request it makes is refused
-    within 30 seconds (the server's user cache). The same holds after a
-    password reset on another replica.
+    within 30 seconds (the server's user cache). A proof given before the
+    reset is not honoured either.
 
     If any step fails, it stops there. It says how many passkeys went and
     whether the new password is already set, and exits non-zero with the

@@ -227,6 +227,17 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 		t, ok = s.passkeyEnrol.held(key, now)
 	}
 	if ok {
+		// 🔴 A TICKET IS HONOURED ONLY FOR A SESSION STILL GOOD BY A FRESH READ
+		// (sessionFresh): tickets live in memory for passkeyEnrolTTL, and a
+		// recovery from the CLI (another process) cuts off the session that
+		// earned one without reaching this process's memory. A stale one is
+		// dropped (TestATicketDoesNotOutliveARecovery).
+		if err := s.sessionFresh(ctx); err != nil {
+			if !take {
+				s.passkeyEnrol.take(key, now)
+			}
+			return enrolNeed{}, err
+		}
 		return enrolNeed{ticket: &t}, nil
 	}
 	f, err := s.accountStrongFactors(ctx, uid)
@@ -278,7 +289,7 @@ var errOpenTierStale = errors.New("the session predates its account's cutoff: si
 // account's cutoff (users.sessions_not_before) — through the user cache,
 // which may be up to userCacheTTL old. A cutoff moved in ANOTHER process (the
 // server recovery muster-server user reset-factors, or a password reset on
-// another replica) moves it in the same transaction as it clears the mark, so
+// the CLI, another process) moves it in the same transaction as it clears the mark, so
 // the account reads open the moment that commits, while this process may still
 // admit the old session from its cache. The open tier is exactly what that
 // old session must not be granted: it re-reads the row here, as the API token
@@ -289,26 +300,40 @@ func (s *Server) openTier(ctx context.Context, f strongFactors) (bool, error) {
 	if f.any() {
 		return false, nil
 	}
+	if err := s.sessionFresh(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// sessionFresh refuses (errOpenTierStale) the requesting session when a FRESH
+// read of its account — not the user cache — says it was issued at or before
+// the account's cutoff, or the account is disabled. The disabled check is not
+// redundant with the cutoff: a disable written without moving the cutoff (a
+// row-only write) is still refused (TestARowOnlyDisableIsNotOpen). It is the
+// one check behind openTier and every honoured enrolment ticket
+// (passkeyEnrolNeed, adminProof). Password mode has no such sessions.
+func (s *Server) sessionFresh(ctx context.Context) error {
 	if !s.auth.goTrueMode() || s.gt == nil || s.gt.Users == nil {
-		return true, nil
+		return nil
 	}
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return false, errors.New("open tier: no requesting account")
+		return errors.New("fresh session check: no requesting account")
 	}
 	iat, _ := ctx.Value(sessionIssuedAtKey{}).(int64)
 	if iat <= 0 {
-		return false, errors.New("open tier: the requesting session has no issued-at")
+		return errors.New("fresh session check: the requesting session has no issued-at")
 	}
 	u, err := s.gt.Users.ByID(ctx, p.UserID)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if u.Disabled() || issuedBeforeCutoff(u, gotrue.Claims{IssuedAt: iat}) {
 		s.gt.forgetUser(p.UserID)
-		return false, errOpenTierStale
+		return errOpenTierStale
 	}
-	return true, nil
+	return nil
 }
 
 // accountStrongFactors reads the three sources for account uid:

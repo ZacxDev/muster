@@ -287,10 +287,10 @@ func TestAFailedDisableSweepCancelsNothing(t *testing.T) {
 	}
 }
 
-// TestACutoffFromAnotherProcessEndsOpenStreams: the server recovery (or a
-// reset on another replica) moves the session cutoff in the database only;
-// the sweep reads it and ends every open stream of a session issued at or
-// before it.
+// TestACutoffFromAnotherProcessEndsOpenStreams: the server recovery from the
+// CLI (another process) moves the session cutoff in the database only; the
+// sweep reads it and ends every open stream of a session issued at or before
+// it — and only those: a session issued after the cutoff keeps its streams.
 func TestACutoffFromAnotherProcessEndsOpenStreams(t *testing.T) {
 	f := newStreamFixture(t)
 	at, rt, _ := f.fake.Mint(f.sub)
@@ -298,8 +298,16 @@ func TestACutoffFromAnotherProcessEndsOpenStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.fake.Advance(2 * time.Second)
+	at2, rt2, _ := f.fake.Mint(f.sub) // a session from after the cutoff below
+	c2, err := f.fake.Verifier().Verify(at2)
+	if err != nil || c2.IssuedAt <= c.IssuedAt {
+		t.Fatalf("fixture: the newer session's iat %d is not after %d (%v)", c2.IssuedAt, c.IssuedAt, err)
+	}
 	ss := f.openAll(t, at, rt)
+	newer := f.openAll(t, at2, rt2)
 	requireOpen(t, "before the cutoff", ss)
+	requireOpen(t, "before the cutoff (newer session)", newer)
 	cut := time.Unix(c.IssuedAt, 0)
 	f.store.mu.Lock()
 	f.store.rows[1].SessionsNotBefore = &cut // the row only, as the CLI does
@@ -308,6 +316,10 @@ func TestACutoffFromAnotherProcessEndsOpenStreams(t *testing.T) {
 		if !s.ended(2 * time.Second) {
 			t.Errorf("a row-only cutoff: the %s stream is still open after 2s (sweep every 50ms)", s.name)
 		}
+		s.close()
+	}
+	requireOpen(t, "a session issued after the cutoff (several sweeps later)", newer)
+	for _, s := range newer {
 		s.close()
 	}
 }

@@ -95,6 +95,8 @@ var (
 	devicesDeleteRE   = regexp.MustCompile(`\bdelete from devices\b`)
 	devicesMergeRE    = regexp.MustCompile(`\bmerge into devices\b`)
 	devicesUpdateRE   = regexp.MustCompile(`\bupdate devices\b(?: as)?(?: [a-z_]+)? set (.*?)(?: where |$| returning | from )`)
+	devicesUpsertRE   = regexp.MustCompile(`\binsert into devices\b.*?\bon conflict\b.*?\bdo update set (.*?)(?: where |$| returning )`)
+	parenRE           = regexp.MustCompile(`\([^()]*\)`)
 	devicesTruncateRE = regexp.MustCompile(`\btruncate(?: table)? [^;]*\b(devices|users)\b`)
 )
 
@@ -106,9 +108,17 @@ func writesDevices(raw string) bool {
 	if devicesDeleteRE.MatchString(s) || devicesMergeRE.MatchString(s) || devicesTruncateRE.MatchString(s) {
 		return true
 	}
-	for _, m := range devicesUpdateRE.FindAllStringSubmatch(s, -1) {
-		if strings.Contains(m[1], "stepup") || strings.Contains(m[1], "owner_id") {
-			return true
+	// A SET clause is read with its parenthesised subexpressions folded away
+	// first, so a subquery's own FROM/WHERE does not end it early.
+	flat := s
+	for parenRE.MatchString(flat) {
+		flat = parenRE.ReplaceAllString(flat, "_")
+	}
+	for _, re := range []*regexp.Regexp{devicesUpdateRE, devicesUpsertRE} {
+		for _, m := range re.FindAllStringSubmatch(flat, -1) {
+			if strings.Contains(m[1], "stepup") || strings.Contains(m[1], "owner_id") {
+				return true
+			}
 		}
 	}
 	return false
@@ -141,7 +151,8 @@ func TestTheDevicesWritersAreALedger(t *testing.T) {
 		t.Fatal("0189's trigger does not cover INSERT, DELETE and UPDATE OF stepup_pubkey, owner_id on devices")
 	}
 	// CONTROLS: every spelling measured to walk around a plain match is
-	// caught, and the near misses are not.
+	// caught, and the near misses are not. (A plain INSERT is not a writer
+	// here: it changes no phone that exists; the trigger marks it.)
 	for _, q := range []string{
 		"DELETE FROM devices WHERE id = $1",
 		`DELETE FROM "devices" WHERE id = $1`,
@@ -158,6 +169,9 @@ func TestTheDevicesWritersAreALedger(t *testing.T) {
 		"TRUNCATE TABLE ONLY public.devices",
 		"TRUNCATE users CASCADE",
 		"TRUNCATE audit_log, users RESTART IDENTITY CASCADE",
+		"UPDATE devices SET name = (SELECT name FROM x WHERE x.id = $1), owner_id = $2 WHERE id = $3",
+		"INSERT INTO devices (id, owner_id, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET owner_id = EXCLUDED.owner_id",
+		"insert into public.devices (id) values ($1) on conflict do update set stepup_pubkey = null",
 	} {
 		if !writesDevices(q) {
 			t.Errorf("control: the matcher misses %q", q)
@@ -168,6 +182,9 @@ func TestTheDevicesWritersAreALedger(t *testing.T) {
 		"UPDATE devices SET last_seen_at = now() WHERE id = $1",
 		"SELECT owner_id, stepup_pubkey FROM devices WHERE id = $1",
 		"UPDATE users SET had_strong_factor_at = NULL WHERE id = $1",
+		"UPDATE devices SET last_seen_at = (SELECT now() FROM x) WHERE owner_id = $1",
+		"INSERT INTO devices (owner_id, name, stepup_pubkey) VALUES ($1, $2, $3)",
+		"INSERT INTO devices (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name WHERE devices.owner_id = $3",
 	} {
 		if writesDevices(q) {
 			t.Errorf("control: the matcher flags %q", q)

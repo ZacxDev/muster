@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/users"
+	"golang.org/x/term"
 )
 
 // runAccountCommand runs a one-shot account command and returns the process
@@ -44,6 +45,10 @@ import (
 //
 // accountStdin is where --new-password-stdin reads (a test swaps it).
 var accountStdin io.Reader = os.Stdin
+
+// stdinIsTerminal reports whether f is a terminal (isatty), where a typed
+// password would be shown: /dev/null or a pipe is not (a test swaps it).
+var stdinIsTerminal = func(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
 
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
@@ -104,7 +109,7 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		if len(args) == 4 {
 			// Piped only: a terminal would echo the password as it is typed.
 			if f, ok := accountStdin.(*os.File); ok {
-				if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+				if stdinIsTerminal(f) {
 					fmt.Fprintf(stderr, "--new-password-stdin: standard input is a terminal, which would show the password; pipe it in instead (for example from a file or a password manager); nothing was changed\n")
 					return 1
 				}
@@ -157,7 +162,7 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		}
 		gt := " GoTrue signed out every session."
 		if res.GoTrueSignOutSkipped {
-			gt = " The account is disabled, so GoTrue (which its disable already signed out) was not asked."
+			gt = " The account is disabled, so GoTrue was not asked to sign it out (it refuses that for a disabled login); its disable asked GoTrue then, and muster's session cutoff refuses its sessions either way."
 		}
 		fmt.Fprintf(stdout, "user %d: removed %d passkey(s) and %d paired phone(s), revoked its personal API and flow-runner tokens "+
 			"(mirror host tokens are kept), and reopened the account: its next passkey or phone that confirms requests is added as a first factor.%s%s "+

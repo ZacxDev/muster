@@ -24,8 +24,9 @@ type FactorsReset struct {
 	// on a failure too, since it is already in effect then.
 	PasswordSet bool
 	// GoTrueSignOutSkipped: the account is disabled, so GoTrue (which refuses
-	// /logout for a banned user) was not asked; the disable already signed
-	// it out there.
+	// /logout for a banned user) was not asked. The disable asked GoTrue to
+	// sign it out then — that call may have failed — and muster's session
+	// cutoff refuses its sessions either way.
 	GoTrueSignOutSkipped bool
 	// RecordsKept: the passkey records muster keeps in GoTrue (app_metadata)
 	// could not be cleared. Harmless — each names a passkey that is gone — and
@@ -46,8 +47,9 @@ type FactorsReset struct {
 //     knew the old one could otherwise sign in first and pair their phone on
 //     the reopened account;
 //  4. every GoTrue session is signed out (its refresh tokens die) — skipped
-//     for a disabled account, which the disable already signed out and
-//     whose /logout GoTrue refuses;
+//     for a disabled account, whose /logout GoTrue refuses (its disable
+//     asked GoTrue to sign it out, which may have failed; muster's cutoff
+//     refuses its sessions either way);
 //  5. every passkey goes, through GoTrue's admin API, and muster's records of
 //     them;
 //  6. in one transaction: every paired phone is deleted, muster's session

@@ -59,3 +59,53 @@ func TestResetFactorsRefusesAnUnknownAccountAndAuditsARealOne(t *testing.T) {
 		t.Fatalf("audit detail %v", detail)
 	}
 }
+
+// TestBothResetsRevokeFlowRunnerTokens: a password reset (ResetCredentials)
+// and the server recovery (ResetFactors) revoke the account's flow-runner
+// tokens alike, and leave another account's alone.
+func TestBothResetsRevokeFlowRunnerTokens(t *testing.T) {
+	st, pool := storeFor(t)
+	ctx := context.Background()
+	sys := authz.System(ctx)
+	runner := func(owner int64, tag string) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(sys, `INSERT INTO flow_runner_tokens (owner_id, host, token_hash) VALUES ($1, $2, $3) RETURNING id`, owner, "host-"+tag, "runnerhash-"+tag).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	revoked := func(id int64) bool {
+		t.Helper()
+		var r bool
+		if err := pool.QueryRow(sys, `SELECT revoked_at IS NOT NULL FROM flow_runner_tokens WHERE id = $1`, id).Scan(&r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	user := func() int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(sys, `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a, b, other := user(), user(), user()
+	ra, rb, ro := runner(a, "a"), runner(b, "b"), runner(other, "other")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(sys, `DELETE FROM flow_runner_tokens WHERE id = ANY($1)`, []int64{ra, rb, ro})
+	})
+	if _, err := st.ResetCredentials(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ResetFactors(ctx, Actor{Via: "cli"}, b, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !revoked(ra) || !revoked(rb) {
+		t.Fatalf("a password reset revoked its runner token: %v; the recovery: %v (want both)", revoked(ra), revoked(rb))
+	}
+	if revoked(ro) {
+		t.Fatal("another account's runner token was revoked")
+	}
+}

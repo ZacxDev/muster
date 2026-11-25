@@ -83,6 +83,12 @@ func (s *Server) adminProof(r *http.Request, targetMarked, requireActorMarked bo
 	if !ok {
 		return AdminProofNeeded, nil
 	}
+	// A ticket outliving a recovery from the CLI is spent, not honoured
+	// (sessionFresh; TestATicketDoesNotOutliveARecovery).
+	if err := s.sessionFresh(r.Context()); err != nil {
+		s.logger.Printf("admin: user %d's proof is from a session cut off since: %v", actor, err)
+		return AdminProofNeeded, nil
+	}
 	if !t.vouched {
 		s.passkeyEnrol.giveBack(key, t)
 		return AdminProofUnvouched, nil
