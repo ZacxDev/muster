@@ -124,8 +124,7 @@ func (s *Server) noteConnectorBlocked(ctx context.Context, a agents.Agent, grant
 	rt.blockNotesMu.Unlock()
 	ctx = context.WithoutCancel(ctx)
 	rt.blockWork.Add(1)
-	safeGo(s.logger, "officer connector block", func() {
-		defer rt.blockWork.Done()
+	safeGoDone(s.logger, "officer connector block", &rt.blockWork, func() {
 		cctx, cancel := context.WithTimeout(s.officerPrincipal(ctx, o.Owner), connectorBlockTimeout)
 		defer cancel()
 		b := rt.hq.Backend(o)
@@ -184,8 +183,7 @@ func (s *Server) goSettleGrantBlocks(ctx context.Context, g connectors.Grant) {
 	}
 	rt.blockWork.Add(1)
 	ctx = context.WithoutCancel(ctx)
-	safeGo(s.logger, "officer grant blocks", func() {
-		defer rt.blockWork.Done()
+	safeGoDone(s.logger, "officer grant blocks", &rt.blockWork, func() {
 		s.logSettleErr(o, g, s.settleGrantBlocks(ctx, rt, o, g))
 	})
 }

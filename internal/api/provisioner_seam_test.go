@@ -1083,7 +1083,7 @@ func innermostRouteHandler(e ast.Expr) string {
 // ordinary operator sequence — click once, nothing happens, click again. safeGo
 // is the house pattern and this asserts it is the ONLY one.
 //
-// ⚠ THE ONE PERMITTED SITE IS safeGo's OWN BODY, which is where the recover
+// ⚠ THE PERMITTED SITES ARE safeGo's AND safeGoDone's OWN BODIES, which is where the recover
 // lives. Wrapping it in itself is infinite recursion, so it is exempted by
 // LOCATION (the function named safeGo) rather than by a comment a reword could
 // remove.
@@ -1119,7 +1119,7 @@ func TestNoBackgroundGoroutineInThisPackageIsWrittenBare(t *testing.T) {
 					return true
 				}
 				total++
-				if fn.Name.Name == "safeGo" {
+				if fn.Name.Name == "safeGo" || fn.Name.Name == "safeGoDone" {
 					return true // the recover machinery itself
 				}
 				if goStmtHasRecover(g) {
@@ -1201,20 +1201,14 @@ const panicInGoroutineLog = "PANIC in goroutine"
 // recoveredPanicLog is a log sink that reports each recovered-goroutine-panic
 // line safeGo writes, so a test can block until the recovers have actually run.
 //
-// 🔴 THIS IS THE ORDERING THE POSITIVE CONTROL BELOW NEEDS, AND ISSUE #20 IS WHAT
-// HAPPENS WITHOUT IT. safeGo registers its recover in the OUTER goroutine, so it
-// unwinds AFTER fn's own `defer s.pushInFlight.Done()` — that is the property the
-// test exists to protect, and it is also why WaitForPushes can return BEFORE
-// either recover has incremented muster_panics_total{source="goroutine"}. Reading
-// the counter once, the instant the wait returns, is therefore a race — one CI
-// hit, and one that reproduces locally at a few runs in a hundred on unmodified
-// main, every failure reading a delta of 1. The commit carries the rates.
-//
-// WaitForPushes is not the thing to fix. Its contract is that the fan-out WORK
-// has finished (cmd/muster-server's shutdown waits on it so a notification is not
-// dropped on exit); nothing in the service reads this counter, least of all at
-// shutdown, when /metrics has already been drained. The test was reading an
-// unordered value, so the test is what gains an ordering.
+// ISSUE #20 IS WHY IT EXISTS. The fan-outs once ran under safeGo with
+// `defer s.pushInFlight.Done()` as fn's own defer, which unwound BEFORE safeGo's
+// recover — so WaitForPushes could return before either recover had incremented
+// muster_panics_total{source="goroutine"}, and reading the counter the instant
+// the wait returned was a race (one CI hit; a few runs in a hundred locally).
+// They now run under safeGoDone, whose Done runs AFTER the recover has counted
+// and logged, so that window is closed at the source; the wait is kept because
+// it also ATTRIBUTES the panics (below) and holds whatever the defer order is.
 //
 // The edge is the recover's own body: it increments the counter and THEN logs.
 // Receiving the line therefore orders the reader after the increment. It also
@@ -1274,15 +1268,13 @@ func (l *recoveredPanicLog) waitFor(n int, within time.Duration) error {
 // TestAPanickingFanOutStillReleasesTheShutdownWait is the guard for the ONE
 // invariant the safeGo conversion could have silently broken.
 //
-// 🔴 pushInFlight's CONTRACT IS Add-ON-THE-CALLER, Done-IN-THE-GOROUTINE, AND A
-// recover PLACED WRONG WOULD EAT THE Done. safeGo registers its recover OUTSIDE
-// fn, so fn's own `defer s.pushInFlight.Done()` unwinds FIRST and the counter is
-// released before the panic is caught. Had it been written the other way — the
-// recover inside fn, above the defer — a panicking fan-out would leave the
-// WaitGroup at 1 and every shutdown would hang to its full pushDrainTimeout,
-// with nothing in the log naming why. That is a deadlock, which is strictly
-// worse than the crash this conversion removed, so it gets its own assertion
-// rather than riding on "the tests still pass".
+// 🔴 pushInFlight's CONTRACT IS Add-ON-THE-CALLER, Done-IN-THE-GOROUTINE, AND
+// THE Done MUST BE DEFERRED. safeGoDone defers it (below its recover, so it runs
+// after the panic is logged). A Done called at the END of fn instead would be
+// skipped by the panic: the WaitGroup stays at 1 and every shutdown hangs to its
+// full pushDrainTimeout, with nothing in the log naming why. That is a deadlock,
+// which is strictly worse than the crash this conversion removed, so it gets its
+// own assertion rather than riding on "the tests still pass".
 //
 // ⚠ THE PRE-CONVERSION CODE COULD NOT HAVE PASSED THIS TEST AT ALL — it would
 // have taken the test binary down with it. That is the measurement: red by
@@ -1320,14 +1312,14 @@ func TestAPanickingFanOutStillReleasesTheShutdownWait(t *testing.T) {
 		t.Fatal("WaitForPushes did not return within 5s after two PANICKING fan-outs.\n" +
 			"    pushInFlight was left holding a slot, so every shutdown from now on " +
 			"blocks for the full pushDrainTimeout and then exits anyway, logging a " +
-			"drain timeout that names nothing. Check that Done() is fn's own defer " +
-			"and that safeGo's recover is registered OUTSIDE fn — if the recover is " +
-			"inside fn above the defer, it swallows the unwind that would have run it.")
+			"drain timeout that names nothing. Check that the fan-out runs under " +
+			"safeGoDone (or defers its Done) — a Done that is not deferred is skipped " +
+			"by the panic.")
 	}
 
-	// 🔴 POSITIVE CONTROL, PART 1: WAIT FOR THE RECOVERS. WaitForPushes returning
-	// says the fan-out work finished; it does NOT say either recover has run, so
-	// the counter read below is only meaningful after this. With the panics deleted
+	// 🔴 POSITIVE CONTROL, PART 1: WAIT FOR THE RECOVERS. Under safeGoDone they
+	// have run by the time WaitForPushes returns; this wait does not depend on
+	// that order, and attributes the panics to this Server. With the panics deleted
 	// from panickingRouter no line ever arrives and this is where the control goes
 	// red — which is the whole point of it.
 	if err := logs.waitFor(2, 5*time.Second); err != nil {

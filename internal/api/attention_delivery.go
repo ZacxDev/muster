@@ -205,8 +205,7 @@ func (s *Server) startAnswerDelivery(owner, id int64, after time.Duration) {
 	}
 	ctx, cancel := s.streamContext(context.Background())
 	s.attention.deliveries.Add(1)
-	safeGo(s.logger, "attention answer delivery", func() {
-		defer s.attention.deliveries.Done()
+	safeGoDone(s.logger, "attention answer delivery", &s.attention.deliveries, func() {
 		defer cancel()
 		if after > 0 {
 			t := time.NewTimer(after)

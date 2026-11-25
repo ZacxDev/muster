@@ -1748,11 +1748,11 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// Off, unreadable, or no CodenameTitle: Title, byte for byte as before.
 	// Both kinds of device (the browser's payload and payload v2) and the
 	// router get the one title chosen here.
-	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
-	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
-	// fn, so on a panic fn's own defers unwind first — Done runs, then the
-	// recover logs. A shutdown therefore cannot be left waiting on a fan-out that
-	// panicked, which is the one property this pairing has to keep.
+	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done RUNS HOWEVER fn
+	// ENDS, panic included: safeGoDone defers Done, so a shutdown cannot be
+	// left waiting on a fan-out that panicked, which is the one property this
+	// pairing has to keep. It runs AFTER the panic is logged (safeGoDone), and
+	// so does n.wait's below, so neither waiter is released mid-log.
 	//
 	// 🔴 AND THE ONE TEAM FAN-OUT (team sharing phase 2b, part C;
 	// team_notify.go). When owner is a TEAM, the recipients are read first
@@ -1769,11 +1769,13 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	if n.wait != nil {
 		n.wait.Add(1)
 	}
-	safeGo(s.logger, "notify tag="+n.Tag, func() {
-		defer s.pushInFlight.Done()
+	safeGoDone(s.logger, "notify tag="+n.Tag, &s.pushInFlight, func() {
 		if n.wait != nil {
 			defer n.wait.Done()
 		}
+		// Below n.wait's Done, so a panic is logged before it runs (as
+		// safeGoDone does for pushInFlight's).
+		defer recoverGoroutine(s.logger, "notify tag="+n.Tag)
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip, n.managersOnly)
@@ -1872,8 +1874,7 @@ func (s *Server) mirrorToRouter(owner int64, name, data string) {
 	}
 	// Same pairing, same reasoning, as goNotify above.
 	s.pushInFlight.Add(1)
-	safeGo(s.logger, "router publish "+name, func() {
-		defer s.pushInFlight.Done()
+	safeGoDone(s.logger, "router publish "+name, &s.pushInFlight, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		if s.roleOf(ctx, owner) != authz.RoleAdmin {

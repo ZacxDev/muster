@@ -178,8 +178,7 @@ func (s *Server) startMailResume(ctx context.Context, p plugins.Plugin, m plugin
 	s.logger.Printf("mail resume: %s: RESUMING via %s (claim %d), asking %v", who, mr.origin.String(), id, hosts)
 	bg, cancel := s.streamContext(ctx)
 	s.pluginInFlight.Add(1)
-	safeGo(s.logger, "mail resume", func() {
-		defer s.pluginInFlight.Done()
+	safeGoDone(s.logger, "mail resume", &s.pluginInFlight, func() {
 		defer cancel()
 		if !s.runMailResume(bg, p, m, mr, id, hosts, who) {
 			s.deliverPluginMessageCtx(ctx, p, m)

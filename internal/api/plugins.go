@@ -504,8 +504,7 @@ func (s *Server) deliverPluginMessageCtx(parent context.Context, p plugins.Plugi
 	}
 	ctx, cancel := s.streamContext(parent)
 	s.pluginInFlight.Add(1)
-	safeGo(s.logger, "plugin delivery", func() {
-		defer s.pluginInFlight.Done()
+	safeGoDone(s.logger, "plugin delivery", &s.pluginInFlight, func() {
 		defer cancel()
 		chief, err := s.chiefAgent(ctx)
 		if err != nil && !errors.Is(err, ErrNoChief) {

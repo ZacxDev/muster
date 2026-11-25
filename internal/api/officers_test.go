@@ -49,6 +49,8 @@ type officerAgents struct {
 	rearmed      map[int64]string
 	created      []agents.Agent
 	claims       map[int64]string
+	// deletedMsgs is the agent id of each DeleteChatMessage, in order.
+	deletedMsgs []int64
 
 	// laneSecrets is each chat lane's secret, by "<agent id> <session key>"
 	// (ChatLaneSecret, officer_chat_round1_test.go).
@@ -159,6 +161,23 @@ func (s *officerAgents) LatestOrCreateSession(_ context.Context, id int64, name 
 
 func (s *officerAgents) AddChatMessage(_ context.Context, m agents.ChatMessage) (agents.ChatMessage, error) {
 	return m, nil
+}
+
+// DeleteChatMessage records the take-back of a row (a re-prompt refused
+// before anything was typed, officerFleet.Reprompt). Without it the embedded
+// nil Store's method was called: a nil-pointer panic in the re-prompt
+// goroutine, recovered and logged, on every refused send.
+func (s *officerAgents) DeleteChatMessage(_ context.Context, agentID, _ int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deletedMsgs = append(s.deletedMsgs, agentID)
+	return nil
+}
+
+func (s *officerAgents) deletedChatMessages() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.deletedMsgs...)
 }
 
 func (s *officerAgents) AgentsByNoteIDs(context.Context, []int64) (map[int64]agents.Agent, error) {

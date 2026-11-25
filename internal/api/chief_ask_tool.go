@@ -284,8 +284,7 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 	sctx, scancel := s.streamContext(context.Background())
 	tctx, cancel := context.WithTimeout(s.attentionPrincipal(sctx, q.Owner), budget)
 	s.attention.deliveries.Add(1)
-	safeGo(s.logger, "chief question turn", func() {
-		defer s.attention.deliveries.Done()
+	safeGoDone(s.logger, "chief question turn", &s.attention.deliveries, func() {
 		defer scancel()
 		defer cancel()
 		defer release()

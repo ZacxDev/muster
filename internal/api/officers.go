@@ -1413,8 +1413,7 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 	// error. The release runs on its own short, detached budget (release).
 	sendCtx, endSend := s.streamContext(context.WithoutCancel(octx))
 	s.officerRT.wg.Add(1)
-	safeGo(s.logger, "officer re-prompt "+name, func() {
-		defer s.officerRT.wg.Done()
+	safeGoDone(s.logger, "officer re-prompt "+name, &s.officerRT.wg, func() {
 		defer release()
 		defer endSend()
 		// Shutdown came first (EndStreams before this goroutine ran): send
