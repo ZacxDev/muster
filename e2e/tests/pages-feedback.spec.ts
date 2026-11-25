@@ -109,6 +109,10 @@ async function openPanel(page: Page, width: number, height: number) {
   expect(pb.x + pb.width, 'the pill is at the right edge').toBeGreaterThan(width - 40);
   expect(pb.y + pb.height, 'the pill is at the bottom').toBeGreaterThan(height - 40);
   expect(pb.height, 'the pill is a 44px target').toBeGreaterThanOrEqual(44);
+  // 🔴 The pill sits below the page's frame, never over it: a tap meant for
+  // the page's own bottom-right corner (a gallery's Save bar) must reach it.
+  const fr = await box(page, 'iframe#page');
+  expect(pb.y, 'the pill does not cover the page').toBeGreaterThanOrEqual(fr.y + fr.height - 0.5);
   await expect(page.locator('#page-feedback')).toBeHidden();
   await pill.click();
   await expect(page.locator('#page-feedback')).toBeVisible();

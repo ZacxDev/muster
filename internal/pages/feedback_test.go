@@ -14,7 +14,8 @@ func TestTheShellDrawsTheFeedbackPill(t *testing.T) {
 	link := Shell(ShellView{Title: "Plan", FrameSrc: "/s/tok-a1/content", Base: "/s/tok-a1", Nonce: "N1", Feedback: &FeedbackChrome{}})
 	for _, want := range []string{`data-feedback-pill`, `id="page-feedback"`, `data-feedback hidden`, `<textarea id="page-feedback-text"`,
 		`maxlength="4000"`, `data-feedback-send disabled>Send</button>`, `data-feedback-close`, FeedbackLeadLink,
-		`POST="/s/tok-a1/feedback"`, `credentials:"omit"`, `referrerPolicy:"no-referrer"`, `.fbp{position:fixed`} {
+		`POST="/s/tok-a1/feedback"`, `credentials:"omit"`, `referrerPolicy:"no-referrer"`, `.fbp{position:fixed`,
+		`iframe#page{height:calc(100% - var(--fbh))}`, `data-feedback-bar`} {
 		if !strings.Contains(link, want) {
 			t.Errorf("the link's shell lacks %q", want)
 		}

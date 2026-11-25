@@ -105,7 +105,21 @@ type FeedbackChrome struct {
 	MicScript string
 }
 
-// feedbackCSS is the pill and its panel. Phone first: the open panel is the
+// feedbackBarPx is the height of the shell's bottom strip the pill sits in
+// (above the safe-area inset): the pill's 44px and 4px either side.
+const feedbackBarPx = "52"
+
+// feedbackCSS is the pill and its panel.
+//
+// 🔴 THE PILL NEVER COVERS THE PAGE. It sits in a strip of the shell's own,
+// below the content frame, which ends above it (iframe#page's height): a
+// floating pill over the frame took the taps meant for whatever the page drew
+// at its bottom right — its own buttons, a gallery's sticky Save bar (e2e
+// pages.spec.ts's burst and gallery cases, red with it). The owner's confirm
+// bar and the toasts sit above the strip too, over the page, as before it.
+// The open panel is the one thing that covers the page, on purpose.
+//
+// Phone first: the open panel is the
 // screen's full width, pinned to the bottom, the textarea on its own row and
 // the microphone and Send beneath it, never over the shell's header (its
 // height is bounded below the header), padded by the safe-area insets. From
@@ -113,9 +127,14 @@ type FeedbackChrome struct {
 // The dictate control's own classes (internal/ui: `hidden`, `inline-flex`,
 // `sr-only`, the per-state glyphs) are given their meaning here, as the shell
 // carries none of the app's stylesheet.
-const feedbackCSS = `.fbp{position:fixed;z-index:3;right:calc(12px + env(safe-area-inset-right));bottom:calc(12px + env(safe-area-inset-bottom));box-sizing:border-box;
+const feedbackCSS = `:root{--fbh:calc(` + feedbackBarPx + `px + env(safe-area-inset-bottom))}
+iframe#page{height:calc(100% - var(--fbh))}
+.fbbar{position:fixed;z-index:1;left:0;right:0;bottom:0;box-sizing:border-box;height:var(--fbh);background:var(--bg);border-top:1px solid var(--line)}
+.confirm{bottom:var(--fbh)}#action-toasts{bottom:calc(var(--fbh) + 16px)}
+@media (min-width:640px){.confirm{bottom:calc(var(--fbh) + 16px)}}
+.fbp{position:fixed;z-index:3;right:calc(12px + env(safe-area-inset-right));bottom:calc(4px + env(safe-area-inset-bottom));box-sizing:border-box;
 display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 16px;border-radius:999px;border:1px solid var(--edge);background:var(--s1);color:var(--fg);
-font:inherit;font-weight:600;box-shadow:0 4px 16px rgb(0 0 0/.3);cursor:pointer;-webkit-tap-highlight-color:transparent}
+font:inherit;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .fbp svg{width:16px;height:16px;flex:none}.fbp[hidden]{display:none}
 .fb{position:fixed;z-index:3;left:0;right:0;bottom:0;box-sizing:border-box;max-height:calc(100% - ` + shellHeaderPx + `px - 8px);overflow:auto;display:flex;flex-direction:column;gap:8px;
 background:var(--s1);border-top:1px solid var(--line);border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25);
@@ -174,7 +193,8 @@ func feedbackHTML(fc *FeedbackChrome, owner bool) string {
 	if fc != nil {
 		mic, note = fc.Mic, fc.MicNote
 	}
-	return `<button type="button" class="fbp" data-feedback-pill aria-expanded="false" aria-controls="page-feedback">` + feedbackIcon +
+	return `<div class="fbbar" data-feedback-bar aria-hidden="true"></div>
+<button type="button" class="fbp" data-feedback-pill aria-expanded="false" aria-controls="page-feedback">` + feedbackIcon +
 		`<span>` + FeedbackPillLabel + `</span></button>
 <section class="fb" id="page-feedback" aria-labelledby="page-feedback-h" data-feedback hidden>
 <div class="fbh"><p class="fbt" id="page-feedback-h">Feedback on this page</p>` +

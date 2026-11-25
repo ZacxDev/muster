@@ -846,7 +846,9 @@ serves every upload: to the owner, as an attachment (images inline), under a
 ## Feedback
 
 Every page view — [your own](#the-owners-view) and a share link's — has a
-**Feedback** pill pinned to the bottom right. Tap it for a small panel: a box
+**Feedback** pill pinned to the bottom right, in a slim strip of muster's own
+below the page (so it never covers anything the page draws at its bottom
+edge). Tap it for a small panel: a box
 for a message, **Send**, and (in your own view, on a server with
 [dictation](features.md)) the microphone. **×** or Escape folds it back to
 the pill and keeps what you typed; Ctrl/⌘+Enter sends. On a phone the open
