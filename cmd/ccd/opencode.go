@@ -717,14 +717,27 @@ func (s *server) handleOpencodeResponses(w http.ResponseWriter, r *http.Request)
 		writeFailure(w, f)
 		return
 	}
-	defer s.lanes.releaseOC(ln)
 	select {
 	case ln.turn <- struct{}{}:
 	default:
+		s.lanes.releaseOC(ln)
 		writeFailure(w, busyFailure())
 		return
 	}
-	defer func() { <-ln.turn }()
+	// 🔴 THE LANE IS FREED BEFORE THE ANSWER IS WRITTEN, not when the handler
+	// returns. muster's client stops reading at the answer's terminal event
+	// (agents.parseResponsesSSE) and may send the session's next turn at once;
+	// a slot still held until this handler's deferred release refused that turn
+	// as busy (TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy). The deferred
+	// call is the backstop for a panic only.
+	var once sync.Once
+	endTurn := func() {
+		once.Do(func() {
+			<-ln.turn
+			s.lanes.releaseOC(ln)
+		})
+	}
+	defer endTurn()
 	ctx := r.Context()
 	var accepted func()
 	if r.Header.Get(headerCCPromptAccepted) == "1" {
@@ -735,6 +748,7 @@ func (s *server) handleOpencodeResponses(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	res, f := s.lanes.runOCTurn(ctx, ln, prompt, accepted)
+	endTurn()
 	if f != nil {
 		log.Printf("ccd: opencode turn failed: %s", f.Error())
 		writeFailure(w, f)
