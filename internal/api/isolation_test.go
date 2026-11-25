@@ -898,6 +898,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /pages/{id}/versions/{v}/content":             classParam,
 	"GET /pages/{id}/responses/{rid}/raw":              classParam,
 	"POST /pages/{id}/versions/{v}/submit":             classParam,
+	"POST /pages/{id}/versions/{v}/feedback":           classParam,
 	"POST /pages/{id}/versions/{v}/upload":             classParam,
 	"GET /pages/{id}/versions/{v}/assets/{asset}":      classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
@@ -910,6 +911,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /s/{token}":                                   classPublic,
 	"GET /s/{token}/content":                           classPublic,
 	"POST /s/{token}/submit":                           classPublic,
+	"POST /s/{token}/feedback":                         classPublic,
 	"POST /s/{token}/upload":                           classPublic,
 	"GET /s/{token}/assets/{asset}":                    classPublic,
 
@@ -2364,6 +2366,7 @@ var sideEffectControlled = map[string]string{
 	"GET /s/{token}":                "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
 	"GET /s/{token}/content":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
 	"POST /s/{token}/submit":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/feedback":      "a share link: its token is the credential no walker holds; controlled in page_feedback_pg_test.go (TestFeedbackThroughARevokedLinkIsRefused)",
 	"POST /s/{token}/upload":        "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
 	"GET /s/{token}/assets/{asset}": "a share link: its token is the credential no walker holds; controlled in page_assets_pg_test.go (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse)",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier

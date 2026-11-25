@@ -72,6 +72,7 @@ var teamPageRoutes = map[string]teamPageRule{
 	"GET /pages/{id}/versions/{v}/assets/{asset}": teamPageRead,
 	"GET /pages/{id}/view":                        teamPageRead,
 	"POST /pages/{id}/versions/{v}/submit":        teamPageRespond,
+	"POST /pages/{id}/versions/{v}/feedback":      teamPageRespond,
 	"POST /pages/{id}/share":                      teamPageShare,
 	"POST /pages/{id}/delete":                     teamPageCreator,
 	"POST /pages/{id}/rollback":                   teamPageCreator,

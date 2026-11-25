@@ -795,6 +795,48 @@ is only ever served back as [uploads.md](uploads.md#serving-uploaded-files)
 serves every upload: to the owner, as an attachment (images inline), under a
 `sandbox` policy.
 
+## Feedback
+
+Every page view — [your own](#the-owners-view) and a share link's — has a
+**Feedback** pill pinned to the bottom right. Tap it for a small panel: a box
+for a message, **Send**, and (in your own view, on a server with
+[dictation](features.md)) the microphone. **×** or Escape folds it back to
+the pill and keeps what you typed; Ctrl/⌘+Enter sends. On a phone the open
+panel is the screen's full width, the box on its own row and the microphone
+and Send beneath it, below the header and clear of the home indicator.
+
+The panel is part of muster's own frame around the page (the shell), never of
+the page: the page's script cannot type, read or send a message.
+
+What happens to a message (migration 0191, `internal/api/page_feedback.go`):
+
+- it is **kept as one of the page's responses**, kind `feedback`,
+  data `{"text": "…"}` — on [the page's screen](#the-pages-screen) as
+  *Feedback*, and to the agent through `page_responses`, whether or not the
+  session below is told;
+- the [session that made the page](#notifications) gets **one line per
+  message** (never a count), with the page's number, version and title and the
+  message fenced: yours as your words (needing your fresh sign-in, as every
+  line carrying your words does), a link viewer's as a stranger's
+  (`<<<viewer-feedback untrusted …>>>`, naming the link: *a viewer of share
+  link #41 sent feedback on page #12 (version 3) …*);
+- after **Send** the box is cleared and the panel says where it went: *Sent to
+  the session that made this page.*; *Saved. It goes to the session that made
+  this page once you sign in again.* (your sign-in is older than the step-up
+  window); or *Saved with this page's responses, but the session that made
+  this page isn't reachable, so it was not sent to it.* — a page a dispatched
+  agent made, a team's, or one whose host no longer mirrors here. The panel
+  stays open for another message.
+
+A share link's viewer can **type only**: the microphone posts to
+`/transcribe`, which is yours alone, so their panel has none. Their message
+goes through the link like a submit (`POST /s/<token>/feedback`, no cookie):
+a revoked, pending, denied or expired link takes none, and it counts toward
+the link's 1000 responses. Yours goes to `POST
+/pages/{id}/versions/{v}/feedback` with your session. Either is refused past
+**5 messages a minute** (per link; for you, per page) and over **4000
+characters** (refused whole, never cut).
+
 ## Notifications
 
 - **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
@@ -836,7 +878,8 @@ session and host recorded when the page was made:
   they sent. Responses that arrive before the line is queued fold into it.
 
 The page's title is not in either line. A dispatched agent's pages wake
-nothing (it reads `page_responses` itself).
+nothing (it reads `page_responses` itself). [Feedback](#feedback) is the one
+exception to both: each message is its own line, with its words.
 
 ### If a page's notification did not arrive
 
@@ -863,6 +906,7 @@ means a push service accepted it, not that the device showed it.
 | a page's author assets | 100 MiB and 200 assets in all |
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
+| [feedback](#feedback) messages per link (yours: per page) | 5 a minute; each at most 4000 characters |
 | uploads per link | 10 a minute |
 | asset reads per link and viewer (client address) | 600 a minute (a repeat view reads from the browser's cache) |
 | asset bytes per link, all viewers | 2 GiB a minute |
@@ -897,8 +941,9 @@ blocks to test a large page.
 ## Telemetry
 
 `muster_page_link_requests_total{route,outcome}` (`route` is `shell`,
-`content`, `submit`, `upload` or `asset`; `served`, `not_found`,
-`throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
+`content`, `submit`, `upload`, `feedback` or `asset`; `served`, `not_found`,
+`throttled`), `muster_page_responses_total{kind,outcome}` (`kind` is `submit`,
+`upload` or `feedback`; `recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
 `denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner whose switch is on) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.

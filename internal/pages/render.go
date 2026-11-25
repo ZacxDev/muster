@@ -845,6 +845,10 @@ type ShellView struct {
 	// Keeps are the only keys the shell keeps a gallery's unsaved picks under
 	// for the frame (KeepKeys of the version it shows); none keeps nothing.
 	Keeps []string
+	// Feedback draws the Feedback pill and its panel (feedback.go), posting
+	// to Base+FeedbackPathSuffix; nil draws none. Its microphone is the
+	// owner's alone (FeedbackChrome).
+	Feedback *FeedbackChrome
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the
@@ -999,7 +1003,11 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>` + contentThemeCSS + "\n" + shellCSS + `</style></head>
+	css := shellCSS
+	if v.Feedback != nil {
+		css += "\n" + feedbackCSS
+	}
+	b.WriteString(`<style>` + contentThemeCSS + "\n" + css + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
@@ -1048,6 +1056,15 @@ func Shell(v ShellView) string {
 <iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
 `)
 	script := ShellScript(v.Base, o != nil, v.Keeps...)
+	if v.Feedback != nil {
+		// The Feedback pill (feedback.go): muster's own markup in the shell,
+		// where the page's script cannot reach.
+		b.WriteString(feedbackHTML(v.Feedback, o != nil))
+		script += "\n" + feedbackScript(v.Base+FeedbackPathSuffix, o != nil)
+		if v.Feedback.MicScript != "" {
+			script += "\n" + v.Feedback.MicScript
+		}
+	}
 	if o != nil {
 		b.WriteString(`<div class="scrim" data-versions-scrim hidden></div>
 <div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>
