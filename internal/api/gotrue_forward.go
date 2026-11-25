@@ -41,21 +41,37 @@ func (e *userTokenRefreshError) Unwrap() error { return e.err }
 // whose session creds is — with an access token GoTrue will accept:
 //
 //  1. a token past its exp, or within userTokenMargin of it, is refreshed
-//     BEFORE the call (refreshGoTrueSession, every guard of the session gate);
+//     BEFORE the call (refreshGoTrueSession, every guard of the session gate).
+//     If that refresh fails only for now (not a verdict on the session) and
+//     the token is still before its exp, the call goes ahead with it;
 //  2. if GoTrue still refuses the token as expired (its clock ahead of
 //     muster's), the session is refreshed once and the call made once more.
 //
 // A refresh updates creds in place and hands the browser the new pair
 // (setGoTrueCookies, as the session gate does), so the caller must not have
-// written its response yet. A refresh that fails returns a
-// *userTokenRefreshError without making the call.
+// written its response yet. A refresh that fails, other than the case 1
+// forwards anyway, returns a *userTokenRefreshError without making the call.
 func (s *Server) asGoTrueUser(w http.ResponseWriter, r *http.Request, creds *gotrueCreds, call func(accessToken string) error) error {
 	refreshed := false
-	if !s.gt.now().Add(userTokenMargin).Before(time.Unix(creds.claims.ExpiresAt, 0)) {
-		if err := s.refreshUserToken(w, r, creds); err != nil {
+	if exp := time.Unix(creds.claims.ExpiresAt, 0); !s.gt.now().Add(userTokenMargin).Before(exp) {
+		err := s.refreshUserToken(w, r, creds)
+		switch {
+		case err == nil:
+			refreshed = true
+		case s.gt.now().Before(exp) && (creds.refresh == "" || !endsTheSession(errors.Unwrap(err))):
+			// 🔴 A MARGIN REFRESH THAT COULD NOT BE MADE RIGHT NOW (GoTrue 5xx,
+			// a throttle, a store error) IS NOT A REASON TO FAIL THE CALL while
+			// the token is still before its exp: GoTrue takes it, so it is
+			// forwarded as it is (TestAFailedMarginRefreshForwardsTheLiveToken).
+			// Sign out matters most here — skipping GoTrue's /logout would
+			// leave the refresh side alive. No refresh cookie is the same case
+			// (nothing to refresh with, but nothing wrong with the token). A
+			// session the refresh ENDED is never forwarded.
+			s.logger.Printf("gotrue: forwarding a token %s from its exp; the early refresh failed: %v",
+				exp.Sub(s.gt.now()).Round(time.Second), err)
+		default:
 			return err
 		}
-		refreshed = true
 	}
 	err := call(creds.access)
 	if refreshed || !gotrueRefusedAsExpired(err) {

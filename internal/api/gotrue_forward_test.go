@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 )
 
@@ -259,5 +261,88 @@ func TestAGoTrueExpiredRefusalIsRetriedOnceAfterARefresh(t *testing.T) {
 	}
 	if setCookies(rec)[accessCookieName] == nil {
 		t.Fatal("the refreshed pair was not handed to the browser")
+	}
+}
+
+// TestAFailedMarginRefreshForwardsTheLiveToken: 5 s before exp the helper
+// refreshes early, and here GoTrue cannot answer the refresh (502). That says
+// nothing about the session and the token is still good, so the call goes
+// ahead with it: the list renders, and a sign-out still ends the session in
+// GoTrue. The same with no refresh cookie at all. A refresh that ENDS the
+// session (a refresh token GoTrue does not know) is never forwarded past.
+func TestAFailedMarginRefreshForwardsTheLiveToken(t *testing.T) {
+	t.Run("the passkey list", func(t *testing.T) {
+		w, _, _, at, rt := skewWorld(t, -5*time.Second)
+		w.fake.FailToken(http.StatusBadGateway, 1)
+		tokens := w.fake.CountCalls("POST", "/token")
+		rec := do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at, rt), asNavigation)
+		if rec.Code != http.StatusOK || okCalls(w.fake, "GET", "/passkeys") != 1 {
+			t.Fatalf("a failed early refresh: %d, list calls %d; want 200 on the live token", rec.Code, okCalls(w.fake, "GET", "/passkeys"))
+		}
+		if w.fake.CountCalls("POST", "/token")-tokens != 1 || setCookies(rec)[accessCookieName] != nil {
+			t.Fatalf("want one (failed) refresh attempt and no new cookies: %+v", setCookies(rec))
+		}
+	})
+	t.Run("sign out", func(t *testing.T) {
+		w, _, _, at, rt := skewWorld(t, -5*time.Second)
+		w.fake.FailToken(http.StatusBadGateway, 1)
+		rec := do(w.edge, "POST", "/logout", url.Values{}, withCookies(at, rt))
+		c, _ := w.fake.Verifier().Verify(at)
+		if rec.Code != http.StatusSeeOther || okCalls(w.fake, "POST", "/logout") != 1 || !w.fake.SessionRevoked(c.SessionID) {
+			t.Fatalf("sign out after a failed early refresh: %d, GoTrue /logout ok %d, revoked %v",
+				rec.Code, okCalls(w.fake, "POST", "/logout"), w.fake.SessionRevoked(c.SessionID))
+		}
+	})
+	t.Run("no refresh cookie", func(t *testing.T) {
+		w, _, _, at, _ := skewWorld(t, -5*time.Second)
+		if rec := do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at, ""), asNavigation); rec.Code != http.StatusOK {
+			t.Fatalf("a live token with no refresh cookie: %d, want 200", rec.Code)
+		}
+	})
+	t.Run("a refresh that ends the session is not forwarded past", func(t *testing.T) {
+		w, _, _, at, _ := skewWorld(t, -5*time.Second)
+		rec := do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at, "not-a-refresh-token"), asNavigation)
+		if rec.Code != http.StatusSeeOther || okCalls(w.fake, "GET", "/passkeys") != 0 {
+			t.Fatalf("a refresh GoTrue refused: %d, list calls %d; want 303 to sign in and no call", rec.Code, okCalls(w.fake, "GET", "/passkeys"))
+		}
+	})
+}
+
+// TestARefreshReadsTheCutoffFresh: a session cutoff (or a disable) written by
+// another process — straight to the database, as the CLI or a second replica
+// does — does not invalidate this process's user cache. The refresh must read
+// the user fresh, or it mints a new token past a cutoff the cache has not
+// seen. The cache is warmed first; the change lands while it is still warm.
+func TestARefreshReadsTheCutoffFresh(t *testing.T) {
+	for _, tc := range []struct{ name, sql string }{
+		{"a session cutoff", `UPDATE users SET sessions_not_before = $2 WHERE id = $1`},
+		{"a disable", `UPDATE users SET disabled_at = $2 WHERE id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newPasskeyWorld(t)
+			w.fake.SetAccessTTL(time.Minute)
+			uid, _, at, rt := w.joinMember("skew-cutoff@invite.test")
+			c, err := w.fake.Verifier().Verify(at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w.fake.Advance(time.Unix(c.ExpiresAt, 0).Sub(w.fake.Now()) - 8*time.Second)
+			// Warm the cache: an ordinary request on the live token.
+			if rec := do(w.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); rec.Code != http.StatusOK {
+				t.Fatalf("CONTROL: the session before the change: %d", rec.Code)
+			}
+			if _, err := w.pool.Exec(authz.System(context.Background()), tc.sql, uid, time.Unix(c.IssuedAt, 0)); err != nil {
+				t.Fatal(err)
+			}
+			w.fake.Advance(3 * time.Second) // 5 s before exp: inside the margin, cache still warm
+			tokens := w.fake.CountCalls("POST", "/token")
+			rec := do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at, rt), asNavigation)
+			if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+				t.Fatalf("after %s: %d Location=%q, want 303 to sign in", tc.name, rec.Code, rec.Header().Get("Location"))
+			}
+			if n := w.fake.CountCalls("POST", "/token") - tokens; n != 0 {
+				t.Fatalf("after %s: GoTrue was asked for %d refresh(es); want none", tc.name, n)
+			}
+		})
 	}
 }

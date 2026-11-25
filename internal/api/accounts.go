@@ -676,9 +676,19 @@ func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt
 	// endsTheSession). Skipping the check on an error would mint a
 	// post-cutoff token and walk past the cutoff once the lookup recovered
 	// (TestARefreshFailsClosedWhenTheCutoffCannotBeRead).
-	u, uerr := g.user(r.Context(), expiredSub)
+	//
+	// 🔴 READ FRESH, NOT FROM THE USER CACHE. The cache (g.user) may be up to
+	// userCacheTTL old, and a cutoff or a disable written by ANOTHER process
+	// (a second replica, the CLI) does not invalidate it here. A refresh mints
+	// a token that outlives that window, so a cached read let a refresh walk
+	// past a cutoff set elsewhere (TestARefreshReadsTheCutoffFresh). Refreshes
+	// are rare (one per access-token lifetime), so the direct query is cheap.
+	u, uerr := g.Users.BySub(r.Context(), expiredSub)
 	if uerr != nil {
 		return gotrue.Session{}, gotrue.Claims{}, uerr
+	}
+	if u.Disabled() {
+		return gotrue.Session{}, gotrue.Claims{}, errDisabled
 	}
 	if issuedBeforeCutoff(u, c) {
 		return gotrue.Session{}, gotrue.Claims{}, errRevoked
