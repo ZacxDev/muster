@@ -39,9 +39,26 @@ async function signInDispatch(page: Page) {
 
 const pages = ['/tasks', '/agents', '/tasks/1', '/tasks/999999', '/agents/docs-sweeper'];
 
+// 🔴 SETTLED MEANS NO FINITE ANIMATION IS STILL RUNNING. A box is measured at
+// rest, never mid-transition: the phone drawer slides in over 300ms
+// (translateX, components.go sidebarIn), and a fractional translate gives its
+// 44×44 close button a getBoundingClientRect width of 43.99998 — under 44,
+// printed as "44x44" — so a measurement taken while it still slid failed a
+// control that is 44px. The fixed wait below is no guard: it is the
+// transition's own length, and starts before the transition does.
+// Every finite animation's `finished` is awaited (CSS transitions included);
+// an infinite one (a spinner) never finishes and is not waited on.
 async function settle(page: Page) {
   await page.waitForLoadState('networkidle').catch(() => undefined);
   await page.waitForTimeout(300);
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
+  );
 }
 
 test('no main page scrolls sideways at 360px', async ({ page }) => {
