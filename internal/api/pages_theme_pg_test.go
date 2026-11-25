@@ -124,8 +124,15 @@ func TestEveryPageDocumentIsDrawnInTheInstancesTheme(t *testing.T) {
 		mem.mu.Lock()
 		mem.b.Theme = theme.Choice{Preset: preset, Accent: accent}
 		mem.mu.Unlock()
-		f.srv.brand = brandCache{}
-		f.srv.themeFiles = themeFiles{}
+		// Expire the caches under their own locks: the page create above left
+		// a push goroutine reading them (goNotify → pushIcon → uiBrand), and
+		// overwriting the structs whole races it.
+		f.srv.brand.mu.Lock()
+		f.srv.brand.ok = false
+		f.srv.brand.mu.Unlock()
+		f.srv.themeFiles.mu.Lock()
+		f.srv.themeFiles.block = ""
+		f.srv.themeFiles.mu.Unlock()
 	}
 	byTheme := map[string]string{}
 	for _, c := range []struct {
