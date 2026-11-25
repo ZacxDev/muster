@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/gotrue"
 )
 
 // FakePasskey is one registered passkey.

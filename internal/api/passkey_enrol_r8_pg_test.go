@@ -138,3 +138,14 @@ func TestARowOnlyDisableIsNotOpen(t *testing.T) {
 		t.Fatalf("B: %s", role)
 	}
 }
+
+// TestTheFreshSessionCheckHasOneHelper: ONE RULE, ONE PLACE. The fresh read of
+// a session's account — disabled, or issued at or before its cutoff — is
+// freshSessionUser, called by a refresh and by sessionFresh (the open tier,
+// an honoured ticket) and nothing else. The cutoff predicate itself is read
+// there and by the request gate, whose user comes from the cache on purpose
+// (a stale cache is what the fresh check exists for).
+func TestTheFreshSessionCheckHasOneHelper(t *testing.T) {
+	assertCallers(t, ".", "freshSessionUser", []string{"accounts.go:refreshGoTrueSession", "passkey_enrol.go:sessionFresh"})
+	assertCallers(t, ".", "issuedBeforeCutoff", []string{"accounts.go:freshSessionUser", "accounts.go:resolveGoTrueSession"})
+}

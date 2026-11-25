@@ -308,7 +308,8 @@ func (s *Server) openTier(ctx context.Context, f strongFactors) (bool, error) {
 
 // sessionFresh refuses (errOpenTierStale) the requesting session when a FRESH
 // read of its account — not the user cache — says it was issued at or before
-// the account's cutoff, or the account is disabled. The disabled check is not
+// the account's cutoff, or the account is disabled: freshSessionUser, the
+// check a refresh makes too. The disabled check is not
 // redundant with the cutoff: a disable written without moving the cutoff (a
 // row-only write) is still refused (TestARowOnlyDisableIsNotOpen). It is the
 // one check behind openTier and every honoured enrolment ticket
@@ -321,19 +322,17 @@ func (s *Server) sessionFresh(ctx context.Context) error {
 	if !ok || p.UserID <= 0 {
 		return errors.New("fresh session check: no requesting account")
 	}
-	iat, _ := ctx.Value(sessionIssuedAtKey{}).(int64)
-	if iat <= 0 {
-		return errors.New("fresh session check: the requesting session has no issued-at")
+	creds, ok := gotrueCredsFrom(ctx)
+	if !ok || creds.claims.IssuedAt <= 0 || creds.claims.Subject == "" {
+		return errors.New("fresh session check: the request carries no GoTrue session")
 	}
-	u, err := s.gt.Users.ByID(ctx, p.UserID)
-	if err != nil {
-		return err
-	}
-	if u.Disabled() || issuedBeforeCutoff(u, gotrue.Claims{IssuedAt: iat}) {
+	// The ONE fresh-session check (freshSessionUser), shared with a refresh.
+	_, err := s.gt.freshSessionUser(ctx, creds.claims)
+	if errors.Is(err, errDisabled) || errors.Is(err, errRevoked) {
 		s.gt.forgetUser(p.UserID)
 		return errOpenTierStale
 	}
-	return nil
+	return err
 }
 
 // accountStrongFactors reads the three sources for account uid:

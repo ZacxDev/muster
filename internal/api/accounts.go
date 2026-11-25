@@ -704,15 +704,8 @@ func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt
 	// a token that outlives that window, so a cached read let a refresh walk
 	// past a cutoff set elsewhere (TestARefreshReadsTheCutoffFresh). Refreshes
 	// are rare (one per access-token lifetime), so the direct query is cheap.
-	u, uerr := g.Users.BySub(r.Context(), expiredSub)
-	if uerr != nil {
-		return gotrue.Session{}, gotrue.Claims{}, uerr
-	}
-	if u.Disabled() {
-		return gotrue.Session{}, gotrue.Claims{}, errDisabled
-	}
-	if issuedBeforeCutoff(u, c) {
-		return gotrue.Session{}, gotrue.Claims{}, errRevoked
+	if _, err := g.freshSessionUser(r.Context(), c); err != nil {
+		return gotrue.Session{}, gotrue.Claims{}, err
 	}
 	fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
 		rtSum := sha256.Sum256([]byte(rt))
@@ -768,6 +761,29 @@ func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt
 // "At" as well as before: iat is whole seconds, so a token stamped with the
 // cutoff's own second may predate it, and refusing it costs only a sign-in
 // made in that same second.
+// freshSessionUser is THE check that a session is still good by a FRESH read
+// of its account — the row by c's subject, never the user cache, which may be
+// up to userCacheTTL behind a cutoff or a disable written by another process
+// (the CLI). It refuses a disabled account (errDisabled) and a session issued
+// at or before the account's cutoff (errRevoked); a read error is returned
+// (every caller fails closed on it). Its two callers are a ledger
+// (TestTheFreshSessionCheckHasOneHelper): a refresh (refreshGoTrueSession),
+// which would otherwise mint a token past the cutoff, and the open tier and
+// every honoured enrolment ticket (sessionFresh).
+func (g *gotrueState) freshSessionUser(ctx context.Context, c gotrue.Claims) (users.User, error) {
+	u, err := g.Users.BySub(ctx, c.Subject)
+	if err != nil {
+		return users.User{}, err
+	}
+	if u.Disabled() {
+		return u, errDisabled
+	}
+	if issuedBeforeCutoff(u, c) {
+		return u, errRevoked
+	}
+	return u, nil
+}
+
 func issuedBeforeCutoff(u users.User, c gotrue.Claims) bool {
 	return u.SessionsNotBefore != nil && c.IssuedAt <= u.SessionsNotBefore.Unix()
 }

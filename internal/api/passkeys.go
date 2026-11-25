@@ -526,7 +526,16 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 	if s.refuseEnrolNeed(w, need) {
 		return
 	}
-	o, err := s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), creds.access)
+	// The gate first, then GoTrue as the person (asGoTrueUser refreshes a
+	// token GoTrue would refuse).
+	var o gotrue.PasskeyOptions
+	err = s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		o, err = s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), accessToken)
+		return err
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
 		s.writeGoTrueRefusal(w, "registration options", err, "A passkey cannot be added right now.")
 		return
@@ -589,11 +598,18 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 	if need.ticket != nil {
 		vouched, proof = need.ticket.vouched, need.ticket.proof
 	}
-	p, err := s.gt.Client.PasskeyRegisterVerify(r.Context(), clientIP(r), creds.access, body.ChallengeID, canonical)
+	var p gotrue.Passkey
+	err = s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		p, err = s.gt.Client.PasskeyRegisterVerify(r.Context(), clientIP(r), accessToken, body.ChallengeID, canonical)
+		return err
+	})
+	if err != nil && need.ticket != nil {
+		s.passkeyEnrol.giveBack(key, *need.ticket) // nothing was added: the proof is not spent
+	}
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
-		if need.ticket != nil {
-			s.passkeyEnrol.giveBack(key, *need.ticket)
-		}
 		s.writeGoTrueRefusal(w, "a passkey registration", err, "That passkey could not be added.")
 		return
 	}
@@ -606,7 +622,9 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 	// card and proves nothing (passkeyStandingOf).
 	if err := s.recordAddedPasskey(r.Context(), creds.claims.Subject, p.ID, rec); err != nil {
 		s.logger.Printf("passkeys: user %d's new passkey could not be recorded (%v); removing it", uid, err)
-		if derr := s.gt.Client.DeletePasskey(context.WithoutCancel(r.Context()), clientIP(r), creds.access, p.ID); derr != nil {
+		if derr := s.asGoTrueUser(w, r, &creds, func(accessToken string) error {
+			return s.gt.Client.DeletePasskey(context.WithoutCancel(r.Context()), clientIP(r), accessToken, p.ID)
+		}); derr != nil {
 			s.logger.Printf("passkeys: remove user %d's unrecorded passkey %s: %v (it stays, deciding no card)", uid, p.ID, derr)
 		}
 		if need.ticket != nil {
@@ -660,8 +678,16 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderAccountPasskeys(w, r, http.StatusForbidden, creds, PasskeyDeleteProofNeeded)
 		return
 	}
-	if err := s.gt.Client.DeletePasskey(r.Context(), clientIP(r), creds.access, id); err != nil {
-		s.passkeyEnrol.giveBack(enrolKey(uid, creds), *need.ticket)
+	err = s.asGoTrueUser(w, r, &creds, func(accessToken string) error {
+		return s.gt.Client.DeletePasskey(r.Context(), clientIP(r), accessToken, id)
+	})
+	if err != nil {
+		s.passkeyEnrol.giveBack(enrolKey(uid, creds), *need.ticket) // nothing was removed
+	}
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
+	if err != nil {
 		if gotrue.IsClientError(err) {
 			s.renderAccountPasskeys(w, r, http.StatusNotFound, creds, "That passkey is not one of yours.")
 			return

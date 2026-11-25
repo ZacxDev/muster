@@ -129,6 +129,7 @@ func TestEveryUserTokenForwardGoesThroughTheHelper(t *testing.T) {
 		"login_gotrue.go resetSignalNode Passkeys helper",
 		"login_invite.go signInAfterCutoff Logout minted:sess.AccessToken",
 		"passkeys.go handlePasskeyAddOptions PasskeyRegisterOptions helper",
+		"passkeys.go handlePasskeyAddVerify DeletePasskey helper",
 		"passkeys.go handlePasskeyAddVerify PasskeyRegisterVerify helper",
 		"passkeys.go handlePasskeyDelete DeletePasskey helper",
 		"passkeys.go handlePasskeySignInVerify Logout minted:sess.AccessToken",
@@ -136,7 +137,7 @@ func TestEveryUserTokenForwardGoesThroughTheHelper(t *testing.T) {
 		"signin_app.go handleAppSignInRedeem Logout minted:sess.AccessToken",
 		"signin_app.go issueGoTrueSessionFor Logout minted:sess.AccessToken",
 		"stepup.go handleStepUpPasskeyOptions Passkeys helper",
-		"stepup.go handleStepUpPasskeyVerify Logout minted:sess.AccessToken",
+		"stepup.go verifySessionPasskey Logout minted:sess.AccessToken",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("user-token forwards to GoTrue:\n  got  %s\n  want %s\n"+
