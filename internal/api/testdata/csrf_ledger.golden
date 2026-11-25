@@ -70,6 +70,7 @@ bearer-only POST /plugin/v1/tasks
 bearer-only POST /runner/flows/claim
 bearer-only POST /runner/flows/{id}/heartbeat
 bearer-only POST /runner/flows/{id}/result
+bearer-only POST /s/{token}/feedback
 bearer-only POST /s/{token}/submit
 bearer-only POST /s/{token}/upload
 bearer-only PUT /api/device/push
@@ -199,6 +200,7 @@ cookie POST /pages/{id}/rollback
 cookie POST /pages/{id}/share
 cookie POST /pages/{id}/share/revoke
 cookie POST /pages/{id}/share/rotate
+cookie POST /pages/{id}/versions/{v}/feedback
 cookie POST /pages/{id}/versions/{v}/submit
 cookie POST /pages/{id}/versions/{v}/upload
 cookie POST /plugin-handoffs

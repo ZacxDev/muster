@@ -203,6 +203,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}/responses/{rid}/raw",
 		"POST /pages/{id}/versions/{v}/submit",
 		"POST /pages/{id}/versions/{v}/upload",
+		"POST /pages/{id}/versions/{v}/feedback",
 		// An author's asset, as the owner's view of a version reads it
 		// (page_assets.go).
 		"GET /pages/{id}/versions/{v}/assets/{asset}",
@@ -745,13 +746,14 @@ var routeVias = map[authz.Via][]string{
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
-	// A page's SHARE LINK (0116) opens exactly the five share-link routes; the
+	// A page's SHARE LINK (0116) opens exactly the six share-link routes; the
 	// token is in the path (credential rewrites the path's placeholder).
 	authz.ViaPageLink: {
 		"GET /s/{token}",
 		"GET /s/{token}/content",
 		"POST /s/{token}/submit",
 		"POST /s/{token}/upload",
+		"POST /s/{token}/feedback",
 		// An author's asset the page's current version uses (page_assets.go).
 		"GET /s/{token}/assets/{asset}",
 	},

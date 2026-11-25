@@ -52,6 +52,8 @@ var PagesPublicRoutes = []string{
 	"GET " + pages.SharePrefix + "{token}/content",
 	"POST " + pages.SharePrefix + "{token}/submit",
 	"POST " + pages.SharePrefix + "{token}/upload",
+	// The Feedback pill's message (page_feedback.go).
+	"POST " + pages.SharePrefix + "{token}" + pages.FeedbackPathSuffix,
 	"GET " + pages.SharePrefix + "{token}/assets/{asset}",
 	// The shell's header logo and its icon on a branded server
 	// (ShellView.BrandLogo, Brand.Icon192), and muster's own icon on an

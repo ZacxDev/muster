@@ -26,6 +26,7 @@ var pagesPublicLedger = []string{
 	"GET /s/{token}",
 	"GET /s/{token}/assets/{asset}",
 	"GET /s/{token}/content",
+	"POST /s/{token}/feedback",
 	"POST /s/{token}/submit",
 	"POST /s/{token}/upload",
 }

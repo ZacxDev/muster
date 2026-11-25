@@ -374,6 +374,22 @@ func dictateScript(path string) g.Node {
 	if path == "" {
 		return nil
 	}
+	return Script(g.Raw(dictateScriptJS(path)))
+}
+
+// DictateScriptJS is dictateScript's JavaScript alone, without its <script>
+// element: for a document whose CSP admits only a nonce'd script of its own
+// (a page's shell, internal/pages: the owner's Feedback microphone), which
+// writes it into that script. "" when path is "". The same one script.
+func DictateScriptJS(path string) string {
+	if path == "" {
+		return ""
+	}
+	return dictateScriptJS(path)
+}
+
+// dictateScriptJS is the script's text (path non-empty).
+func dictateScriptJS(path string) string {
 	msgs := map[string]string{
 		"insecure": DictateInsecure, "unsupported": DictateUnsupported, "denied": DictateDenied, "deniedapp": DictateDeniedApp,
 		"nomic": DictateNoMic, "micbusy": DictateMicBusy, "nothing": DictateNothing,
@@ -391,7 +407,7 @@ func dictateScript(path string) g.Node {
 		js += strconv.Quote(k) + ":" + strconv.Quote(msgs[k])
 	}
 	js += "}"
-	return Script(g.Raw(`
+	return `
 (function () {
   var M = ` + js + `;
   function reveal(root) {
@@ -866,5 +882,5 @@ func dictateScript(path string) g.Node {
     release(s);
   });
 })();
-`))
+`
 }

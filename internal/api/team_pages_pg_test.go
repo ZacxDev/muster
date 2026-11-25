@@ -486,6 +486,19 @@ func TestAMemberRespondsFromTheOwnerViewAsThemselves(t *testing.T) {
 	if code != http.StatusForbidden || !strings.Contains(got, TeamPageNoFile) {
 		t.Errorf("a member's file from the owner view: %d %q; want 403 %q", code, got, TeamPageNoFile)
 	}
+	// Feedback from the owner view's pill: refused to members by name, and
+	// not drawn for them; nothing stored.
+	code, got = f.req(t, f.viewer, http.MethodPost, "/pages/"+sid+"/versions/2/feedback", `{"text":"member-feedback-6611"}`,
+		map[string]string{"Content-Type": "application/json"})
+	if code != http.StatusForbidden || !strings.Contains(got, TeamPageNoFeedback) {
+		t.Errorf("a member's feedback from the owner view: %d %q; want 403 %q", code, got, TeamPageNoFeedback)
+	}
+	if _, view := f.req(t, f.viewer, http.MethodGet, "/pages/"+sid+"/view", "", nil); strings.Contains(view, "data-feedback-pill") || !strings.Contains(view, "<iframe") {
+		t.Error("a member's view of a team's page draws the Feedback pill (or is not the view)")
+	}
+	if rs, err := f.pages.Responses(f.asTeam(f.teamA), id, 0, 10); err != nil || len(rs) != 1 {
+		t.Errorf("after a member's refused feedback the page holds %d responses (%v); want only the submit", len(rs), err)
+	}
 }
 
 // TestEveryPageRouteHasATeamRule is teamPageRoutes' ledger: every route in

@@ -4,7 +4,9 @@
 // raised was answered or dismissed, a reply draft it wrote was decided and
 // later sent or not, or a page it made got a response — and (migration 0178)
 // work it ASKED for: an officer's draft for an item it enqueued was decided and
-// later sent or not, or a step-up card its call raised was settled.
+// later sent or not, or a step-up card its call raised was settled — and
+// (migration 0191) someone sent feedback on a page it made, from the viewer's
+// Feedback pill: the owner's words, or a link viewer's, fenced as untrusted.
 //
 // The delivery itself — resolving the session's window, queueing the line in
 // the window's send queue, the paste's gate and outcome — lives in
@@ -80,6 +82,12 @@ const (
 	// another door, or dismissed it). Component is the tool's name, AskID the
 	// card.
 	KindStepUpDecided Kind = "stepup_decided"
+	// KindPageFeedback: someone sent FEEDBACK on a page the session made,
+	// from the viewer's Feedback pill (migration 0191): one wake per message,
+	// its words in OperatorText. LinkID 0 is the page's OWNER, from their own
+	// view (their words); LinkID set is a share link's viewer (a stranger's
+	// words, fenced as untrusted on the line).
+	KindPageFeedback Kind = "page_feedback"
 )
 
 // State is where a wake is (0177's header).
@@ -137,12 +145,16 @@ type Wake struct {
 	RouteID string
 	// OfficerItemID is an officer wake's item: the one the session enqueued.
 	OfficerItemID int64
+	// LinkID is a KindPageFeedback wake's share link (0191): the link a
+	// viewer's message came through; 0 for the owner's own message.
+	LinkID int64
 	// Decision is a draft wake's: approved or rejected (KindDraftDecided),
 	// sent, failed or unconfirmed (KindDraftOutcome).
 	Decision string
 	// Count is how many other viewers' responses a KindPageResponses wake
-	// stands for, and the attempt a KindOfficerDraftOutcome wake's chain
-	// ended on.
+	// stands for, the attempt a KindOfficerDraftOutcome wake's chain ended
+	// on, and the page version a KindPageFeedback wake's message was sent
+	// from.
 	Count int
 	// Component is a KindPageOwn wake's page component, and a
 	// KindStepUpDecided wake's tool name (its own CHECKed shape).
@@ -185,6 +197,7 @@ type New struct {
 	ResponseID    int64
 	RouteID       string
 	OfficerItemID int64
+	LinkID        int64
 	Decision      string
 	Count         int
 	Component     string
@@ -236,14 +249,14 @@ const cols = `id, owner_id, created_at, kind, coalesce(ask_id, 0), coalesce(draf
 	coalesce(response_id, 0), route_id, decision, response_count, component, operator_text, mirror_host, mirror_session,
 	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz),
 	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz), coalesce(officer_item_id, 0),
-	coalesce(retry_at, 'epoch'::timestamptz)`
+	coalesce(retry_at, 'epoch'::timestamptz), coalesce(link_id, 0)`
 
 func scan(row pgx.Row) (Wake, error) {
 	var w Wake
 	var kind, state string
 	err := row.Scan(&w.ID, &w.Owner, &w.CreatedAt, &kind, &w.AskID, &w.DraftID, &w.PageID, &w.ResponseID, &w.RouteID,
 		&w.Decision, &w.Count, &w.Component, &w.OperatorText, &w.Host, &w.Session, &state, &w.Detail, &w.Attempts,
-		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID, &w.RetryAt)
+		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID, &w.RetryAt, &w.LinkID)
 	w.Kind, w.State = Kind(kind), State(state)
 	if w.DeliveredAt.Unix() == 0 {
 		w.DeliveredAt = time.Time{}
@@ -286,6 +299,9 @@ func (n New) Valid() error {
 		(n.ViaHost != "" && (mirror.ValidHost(n.ViaHost) != nil || !mirror.ValidClaudeSession(n.ViaSession))) {
 		return fmt.Errorf("%w: not a mirrored session to have decided it", ErrInvalid)
 	}
+	if n.LinkID != 0 && n.Kind != KindPageFeedback {
+		return fmt.Errorf("%w: only a page's feedback names a link", ErrInvalid)
+	}
 	if len(n.OperatorText) > MaxOperatorTextBytes {
 		return fmt.Errorf("%w: the owner's text is over %d bytes", ErrInvalid, MaxOperatorTextBytes)
 	}
@@ -311,6 +327,11 @@ func (n New) Valid() error {
 		if n.DraftID <= 0 || n.OfficerItemID <= 0 || n.Count < 1 || n.OperatorText != "" ||
 			(n.Decision != DecisionSent && n.Decision != DecisionFailed && n.Decision != DecisionUnconfirmed) {
 			return fmt.Errorf("%w: an officer draft's outcome names its draft, its item, its attempt and sent, failed or unconfirmed", ErrInvalid)
+		}
+	case KindPageFeedback:
+		if n.PageID <= 0 || n.ResponseID <= 0 || n.LinkID < 0 || n.Count < 1 || strings.TrimSpace(n.OperatorText) == "" ||
+			n.Decision != "" || n.Component != "" || n.RouteID != "" {
+			return fmt.Errorf("%w: a page's feedback names its page, response and version and carries the message", ErrInvalid)
 		}
 	case KindStepUpDecided:
 		switch n.Decision {
@@ -353,11 +374,11 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	}
 	w, err := scan(s.pool.QueryRow(ctx, `INSERT INTO session_wakes (kind, ask_id, draft_id, page_id, response_id, route_id,
 			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at, officer_item_id, response_count,
-			retry_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING `+cols,
+			retry_at, link_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING `+cols,
 		string(n.Kind), nullID(n.AskID), nullID(n.DraftID), nullID(n.PageID), nullID(n.ResponseID), n.RouteID, n.Decision,
 		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt), nullID(n.OfficerItemID), n.Count,
-		nullTime(n.RetryAt)))
+		nullTime(n.RetryAt), nullID(n.LinkID)))
 	if err == nil {
 		return w, true, nil
 	}

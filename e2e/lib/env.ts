@@ -554,6 +554,12 @@ export const knockPushSinkPort = port + 477;
 // blocks above.
 export const pagesPhonePort = port + 478;
 export const pagesPhoneConnectPort = port + 479;
+// tests/pages-feedback.spec.ts: the page viewer's Feedback pill — its own
+// server (pages on, a link key and so its connect listener, speech-to-text
+// pointed at the spec's own fake). +501 to +503: clear of the blocks above.
+export const pagesFeedbackPort = port + 501;
+export const pagesFeedbackConnectPort = port + 502;
+export const pagesFeedbackSttPort = port + 503;
 // tests/plugin-server-app.spec.ts: a server-installed app (core PR 1h.2) — its
 // own gotrue-mode server (main and browser listeners), its own GoTrue, and the
 // stub app plugin behind the TLS edge (+480 to +484: clear of the blocks above).

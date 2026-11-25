@@ -13,11 +13,14 @@
 //	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=… \
 //	  go run ./e2e/pagesfix themed <owner>   the theme page (pages-theme-width.spec.ts), {page, token}
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix themed-clear <owner>
+//	  go run ./e2e/pagesfix feedback <owner>    the feedback page (pages-feedback.spec.ts), {page, token}
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix feedback-clear <owner>
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled <owner> <title>   one plain page (palette-everything.spec.ts); prints its id
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled-clear <owner> <title>
 //
 // phone and phone-clear touch only the page titled PhoneTitle; themed and
-// themed-clear only the page titled ThemedTitle; titled and
+// themed-clear only the page titled ThemedTitle; feedback and
+// feedback-clear only the one titled FeedbackTitle; titled and
 // titled-clear only the pages titled <title>.
 //
 // The pages (all synthetic), each made by a mirrored session ("Release
@@ -70,8 +73,8 @@ func run(args []string) error {
 	}
 	titled := len(args) == 3 && (args[0] == "titled" || args[0] == "titled-clear")
 	if !titled && (len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear" &&
-		args[0] != "themed" && args[0] != "themed-clear")) {
-		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | themed <owner> | themed-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
+		args[0] != "themed" && args[0] != "themed-clear" && args[0] != "feedback" && args[0] != "feedback-clear")) {
+		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | themed <owner> | themed-clear <owner> | feedback <owner> | feedback-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -98,12 +101,15 @@ func run(args []string) error {
 		}
 		return titledPage(as, pages.NewPG(pool), args[2])
 	}
-	if strings.HasPrefix(args[0], "phone") || strings.HasPrefix(args[0], "themed") {
-		// Only the phone (or theme) page: every other page of the owner's is
-		// left alone.
+	if strings.HasPrefix(args[0], "phone") || strings.HasPrefix(args[0], "themed") || strings.HasPrefix(args[0], "feedback") {
+		// Only the phone, theme or feedback page: every other page of the
+		// owner's is left alone.
 		title := PhoneTitle
-		if strings.HasPrefix(args[0], "themed") {
+		switch {
+		case strings.HasPrefix(args[0], "themed"):
 			title = ThemedTitle
+		case strings.HasPrefix(args[0], "feedback"):
+			title = FeedbackTitle
 		}
 		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, title); err != nil || strings.HasSuffix(args[0], "-clear") {
 			return err
@@ -125,6 +131,9 @@ func run(args []string) error {
 	}
 	if args[0] == "themed" {
 		return linkedPage(as, st, ThemedTitle, themedBlocks())
+	}
+	if args[0] == "feedback" {
+		return feedbackPage(as, st)
 	}
 	out, err := seed(as, st)
 	if err != nil {
@@ -325,6 +334,31 @@ func linkedPage(ctx context.Context, st *pages.PGStore, title string, in []pages
 		return err
 	}
 	p, _, err := st.Create(ctx, cr, title, blocks, size)
+	if err != nil {
+		return err
+	}
+	l, _, err := st.ShareLink(ctx, p.ID, "you", false)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"page": p.ID, "token": l.Token})
+}
+
+// FeedbackTitle is the feedback page's title (e2e/tests/pages-feedback.spec.ts).
+const FeedbackTitle = "Feedback check"
+
+// feedbackPage publishes the feedback page — a heading and enough text to
+// scroll on a phone — made by a mirrored session on a host that does not
+// mirror to the e2e server (so its feedback is stored, and its sender told
+// the session is not reachable), with a live link; prints {page, token}.
+func feedbackPage(ctx context.Context, st *pages.PGStore) error {
+	cr := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-session", Label: "Release helper"}
+	text := "# Feedback check\n\n" + strings.Repeat("A paragraph for the viewer to read before saying what should change.\n\n", 20)
+	blocks, size, err := pages.Validate([]pages.Block{{Type: pages.BlockMarkdown, Text: text}})
+	if err != nil {
+		return err
+	}
+	p, _, err := st.Create(ctx, cr, FeedbackTitle, blocks, size)
 	if err != nil {
 		return err
 	}

@@ -93,7 +93,9 @@ type pageState struct {
 	misses  boundedWindow
 	submits boundedWindow
 	uploads boundedWindow
-	assets  boundedWindow
+	// feedback counts feedback messages per responder (page_feedback.go).
+	feedback boundedWindow
+	assets   boundedWindow
 	// assetBytes counts BYTES, per link (spend), not requests.
 	assetBytes boundedWindow
 	pushes     boundedWindow
@@ -113,6 +115,8 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	mux.HandleFunc("GET "+pages.SharePrefix+"{token}/content", s.requirePageLink(s.handlePageContent))
 	mux.HandleFunc("POST "+pages.SharePrefix+"{token}/submit", s.requirePageLink(s.handlePageSubmit))
 	mux.HandleFunc("POST "+pages.SharePrefix+"{token}/upload", s.requirePageLink(s.handlePageUpload))
+	// The Feedback pill's message through the link (page_feedback.go).
+	mux.HandleFunc("POST "+pages.SharePrefix+"{token}"+pages.FeedbackPathSuffix, s.requirePageLink(s.handlePageFeedback))
 	// The owner's: a signed-in session; writes same-origin too.
 	mux.HandleFunc("GET "+pagesPath, s.requireSession(s.handlePagesList))
 	mux.HandleFunc("GET "+pagesPath+"/{id}", s.requireSession(s.handlePageDetail))
@@ -126,6 +130,7 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	// own Origin (requireOperatorWrite), never a link's token.
 	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/submit", s.requireOperatorWrite(s.handleOwnerPageSubmit))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/upload", s.requireOperatorWrite(s.handleOwnerPageUpload))
+	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}"+pages.FeedbackPathSuffix, s.requireOperatorWrite(s.handleOwnerPageFeedback))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/links/{link}/revoke", s.requireOperatorWrite(s.handlePageRevokeLink))
 	// The Share button and its ⋯ menu (page_card.go): the page's one reusable
 	// link. And the chat's page card, for the live stream.
@@ -172,6 +177,8 @@ func pageRouteLabel(r *http.Request) string {
 		return "submit"
 	case strings.HasSuffix(r.URL.Path, "/upload"):
 		return "upload"
+	case strings.HasSuffix(r.URL.Path, pages.FeedbackPathSuffix):
+		return "feedback"
 	case strings.Contains(r.URL.Path, "/assets/"):
 		return "asset"
 	}
@@ -278,6 +285,12 @@ func serveShell(w http.ResponseWriter, v pages.ShellView) {
 	} else {
 		pages.SetShellHeaders(w.Header(), v.Nonce)
 	}
+	if v.Owner != nil && v.Feedback != nil && v.Feedback.Mic != "" {
+		// The owner's Feedback microphone runs in the shell itself
+		// (muster's own origin). The content frame stays without one: its own
+		// header says microphone=(), and its opaque origin is not 'self'.
+		w.Header().Set("Permissions-Policy", pages.FeedbackMicPermissionsPolicy)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, pages.Shell(v))
 }
@@ -321,7 +334,8 @@ func (s *Server) handlePageShell(w http.ResponseWriter, r *http.Request) {
 	}
 	base := pages.LinkPath(l.Token)
 	metrics.PageLinkRequests.WithLabelValues("shell", "served").Inc()
-	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce(), Keeps: pages.KeepKeys(v)}))
+	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce(), Keeps: pages.KeepKeys(v),
+		Feedback: &pages.FeedbackChrome{}}))
 }
 
 // handlePageContent is GET /s/{token}/content: the current version, sandboxed.
@@ -410,6 +424,17 @@ func (p pageResponder) slotKey() int64 {
 // (session_wake.go): the owner's own response with its content, anyone
 // else's as one more in a count, never their words.
 func (s *Server) recordPageResponse(ctx context.Context, p pageResponder, v int, component string, kind pages.ResponseKind, data []byte, uploadID string) (pages.Response, error) {
+	r, owner, err := s.storePageResponse(ctx, p, v, component, kind, data, uploadID)
+	if err == nil {
+		s.wakePageResponse(ctx, owner, p.page, r)
+	}
+	return r, err
+}
+
+// storePageResponse stores one response as the responder, waking nothing, and
+// names the page's owner: THE store call both a response (recordPageResponse)
+// and a feedback message (page_feedback.go) make.
+func (s *Server) storePageResponse(ctx context.Context, p pageResponder, v int, component string, kind pages.ResponseKind, data []byte, uploadID string) (pages.Response, int64, error) {
 	var r pages.Response
 	var err error
 	owner := p.link.OwnerID
@@ -421,10 +446,7 @@ func (s *Server) recordPageResponse(ctx context.Context, p pageResponder, v int,
 	} else {
 		r, err = s.ext.Pages.AddResponse(ctx, p.link, v, component, kind, data, uploadID)
 	}
-	if err == nil {
-		s.wakePageResponse(ctx, owner, p.page, r)
-	}
-	return r, err
+	return r, owner, err
 }
 
 // handlePageSubmit is POST /s/{token}/submit: {component, data}, checked
@@ -690,8 +712,11 @@ func (s *Server) pageResponded(ctx context.Context, p pageResponder, v pages.Ver
 		return
 	}
 	what := "a response"
-	if r.Kind == pages.KindUpload {
+	switch r.Kind {
+	case pages.KindUpload:
 		what = "a file"
+	case pages.KindFeedback:
+		what = "feedback"
 	}
 	s.pushTask(p.link.OwnerID, pushEventPage, RouterNotification{
 		Type:  taskNotificationType,
@@ -708,6 +733,9 @@ func (s *Server) pageResponded(ctx context.Context, p pageResponder, v pages.Ver
 func pageResponsePushBody(blocks []pages.Block, r pages.Response) string {
 	if r.Component == pages.CustomComponent {
 		return "From the page's own script. Open the page in muster to see it."
+	}
+	if r.Kind == pages.KindFeedback {
+		return "From the Feedback button. Open the page in muster to read it."
 	}
 	part := pages.UploadHeading(blocks, r.Component)
 	if r.Kind != pages.KindUpload {
@@ -1304,7 +1332,10 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	esc := html.EscapeString
 	rid := strconv.FormatInt(x.ID, 10)
 	var a pages.Answer
-	if x.Kind == pages.KindUpload {
+	if x.Kind == pages.KindFeedback {
+		// A Feedback pill's message: its words, whatever its version's form.
+		a = pages.DescribeFeedback(x.Data)
+	} else if x.Kind == pages.KindUpload {
 		a.Heading = pages.UploadHeading(blocks, x.Component)
 		if !read {
 			a.Heading = "A file"
@@ -1531,6 +1562,7 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	}
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
 	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(), Embed: embed, Keeps: pages.KeepKeys(v),
+		Feedback: s.pageFeedbackChrome(ctx, p),
 		Owner: &pages.OwnerChrome{PageID: id, Crumbs: crumbs, Updated: ui.PlainWhen(p.UpdatedAt, now), UpdatedMS: p.UpdatedAt.UnixMilli(),
 			Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
