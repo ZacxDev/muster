@@ -210,6 +210,10 @@ type ocConfig struct {
 	// CLAUDE.md), rewritten for opencode's tool spelling.
 	instructions string
 	launch       ocLauncher
+	// port picks a lane server's port; nil is freePort. A launcher that binds
+	// in-process (tests) supplies one that keeps the port bound until launch,
+	// so nothing else can take it in between.
+	port func() (int, error)
 	// readyTimeout bounds a new server's start; turnTimeout one turn.
 	readyTimeout, turnTimeout time.Duration
 	poll                      time.Duration
@@ -271,7 +275,10 @@ func (ln *ocLane) stop() {
 	}
 }
 
-// freePort is a loopback port free now (the server binds it next).
+// freePort is a loopback port free now (the server binds it next). The
+// opencode server is a child process that binds the port itself, so a listener
+// cannot be handed over: another process can take the port in between, and the
+// server then fails to start (a lane start error, retried on the next turn).
 func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -410,7 +417,11 @@ func (l *lanes) startOC(ln *ocLane) *failure {
 	if err != nil {
 		return &failure{Status: http.StatusInternalServerError, Type: failMCPConfig, Message: "opencode lane: its config: " + err.Error()}
 	}
-	port, err := freePort()
+	pick := c.port
+	if pick == nil {
+		pick = freePort
+	}
+	port, err := pick()
 	if err != nil {
 		return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady, Message: "opencode lane: no free port: " + err.Error()}
 	}

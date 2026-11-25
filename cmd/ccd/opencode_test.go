@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -203,20 +204,40 @@ func (p *fakeOCProc) stopped() bool {
 }
 
 // fakeLauncher launches f on each lane's port, with pids from 9001 up; every
-// launch is recorded.
+// launch is recorded. Its port reserves the port by holding a listener on it,
+// which launch serves on: no close-then-rebind window another process could
+// take the port in.
 type fakeLauncher struct {
 	f     *fakeOC
 	mu    sync.Mutex
 	procs []*fakeOCProc
 	specs []ocSpec
+	held  map[int]net.Listener
+}
+
+func (fl *fakeLauncher) port() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	fl.mu.Lock()
+	if fl.held == nil {
+		fl.held = map[int]net.Listener{}
+	}
+	fl.held[port] = ln
+	fl.mu.Unlock()
+	return port, nil
 }
 
 func (fl *fakeLauncher) launch(spec ocSpec) (ocProcess, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(spec.Port))
-	if err != nil {
-		return nil, err
-	}
 	fl.mu.Lock()
+	ln, ok := fl.held[spec.Port]
+	delete(fl.held, spec.Port)
+	if !ok {
+		fl.mu.Unlock()
+		return nil, fmt.Errorf("fake launcher: port %d was not reserved by its port func", spec.Port)
+	}
 	p := &fakeOCProc{pid: 9001 + len(fl.procs), srv: &http.Server{Handler: fl.f}, done: make(chan struct{})}
 	fl.procs = append(fl.procs, p)
 	fl.specs = append(fl.specs, spec)
@@ -247,7 +268,7 @@ func ocTestServer(t *testing.T, max int) (*server, *scriptedCLI, *fakeLauncher) 
 	}
 	l.ocCfg = &ocConfig{bin: "opencode", connectURL: "http://muster.invalid:8106", token: "agent-token",
 		dataDir: filepath.Join(t.TempDir(), "opencode"), runDir: t.TempDir(), instructions: filepath.Join(t.TempDir(), "none.md"),
-		launch: fl.launch, readyTimeout: 5 * time.Second, turnTimeout: 5 * time.Second, poll: 20 * time.Millisecond, mcpWait: 2 * time.Second}
+		launch: fl.launch, port: fl.port, readyTimeout: 5 * time.Second, turnTimeout: 5 * time.Second, poll: 20 * time.Millisecond, mcpWait: 2 * time.Second}
 	srv.runLanes(l)
 	return srv, cli, fl
 }
@@ -750,4 +771,3 @@ func TestNoMCPToolClashesWithAnOpencodeBuiltin(t *testing.T) {
 		}
 	}
 }
-
