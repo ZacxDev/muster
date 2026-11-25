@@ -13,8 +13,10 @@
 // /admin/*, and (accounts PR 5) admin/generate_link for recovery (and magiclink,
 // sharing its one slot as GoTrue does), POST /verify
 // with a single-use token_hash, and an admin password update (which revokes
-// the user's sessions). A ban does NOT revoke sessions — refreshes are
-// refused only while it stands, as measured. The e2e suite
+// the user's sessions). Every route that takes a USER access token refuses one
+// from its exp second on, with no clock-skew leeway (bearerClaimsLocked). A ban
+// does NOT revoke sessions — refreshes are refused only while it stands, as
+// measured. The e2e suite
 // runs the REAL image for the claim → login → refresh → logout path and the
 // invite redemption; this fake exists so every guard can be
 // driven from `go test` with a controllable clock.
@@ -27,6 +29,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -430,14 +433,42 @@ func (f *Fake) token(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *Fake) logout(w http.ResponseWriter, r *http.Request) {
+// ExpiredJWTMsg is the msg the fake answers a call made with a user access
+// token that is past its exp (error_code bad_jwt, HTTP 403). What was MEASURED
+// against GoTrue is the status, the code, and a msg that starts "invalid JWT:"
+// and ends "token is expired"; the words between are its JWT library's.
+const ExpiredJWTMsg = "invalid JWT: unable to parse or verify signature, token has invalid claims: token is expired"
+
+// bearerClaimsLocked checks the user access token a request carries the way
+// GoTrue's own auth middleware does, or answers the refusal and returns false.
+//
+// 🔴 NO LEEWAY ON exp. GoTrue refuses a token from its exp second on (403
+// bad_jwt, "token is expired"), while muster's Verifier accepts one for a
+// clock-skew allowance past it (gotrue.DefaultSkew). The fake used to check
+// with muster's own Verifier, so it carried the same allowance, and a handler
+// that forwarded an access token inside that window passed every test here
+// while real GoTrue refused it.
+func (f *Fake) bearerClaimsLocked(w http.ResponseWriter, r *http.Request) (gotrue.Claims, bool) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.nowLocked() }}
+	now := f.nowLocked()
+	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return now }}
 	c, err := v.Verify(tok)
+	if errors.Is(err, gotrue.ErrExpired) || (err == nil && !now.Before(time.Unix(c.ExpiresAt, 0))) {
+		writeErr(w, 403, "bad_jwt", ExpiredJWTMsg)
+		return gotrue.Claims{}, false
+	}
 	if err != nil {
 		writeErr(w, 401, "bad_jwt", "invalid JWT")
+		return gotrue.Claims{}, false
+	}
+	return c, true
+}
+
+func (f *Fake) logout(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.bearerClaimsLocked(w, r)
+	if !ok {
 		return
 	}
 	// Measured (v2.197.0; v2.189.0 answered 204): /logout with a token for a

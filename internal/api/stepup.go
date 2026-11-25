@@ -276,7 +276,14 @@ func (s *Server) handleStepUpPasskeyOptions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ip := clientIP(r)
-	list, err := s.gt.Client.Passkeys(r.Context(), ip, creds.access)
+	var list []gotrue.Passkey
+	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		list, err = s.gt.Client.Passkeys(r.Context(), ip, accessToken)
+		return err
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
 		s.writeGoTrueRefusal(w, "the passkey list (confirm)", err, PasskeysOffRefusal)
 		return

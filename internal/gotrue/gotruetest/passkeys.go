@@ -22,8 +22,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/ZacxDev/muster/internal/gotrue"
 )
 
 // FakePasskey is one registered passkey.
@@ -115,11 +113,8 @@ func (f *Fake) LastCredential() []byte {
 // userFromBearer resolves a user token the way GoTrue's requireAuthentication
 // does: a valid JWT, a live session, and — v2.197.0 — a user who is not banned.
 func (f *Fake) userFromBearerLocked(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.nowLocked() }}
-	c, err := v.Verify(tok)
-	if err != nil {
-		writeErr(w, 401, "bad_jwt", "invalid JWT")
+	c, ok := f.bearerClaimsLocked(w, r)
+	if !ok {
 		return nil, false
 	}
 	s := f.sessions[c.SessionID]
