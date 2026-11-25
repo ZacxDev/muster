@@ -286,6 +286,66 @@ version keeps its assets, which the owner's view of that version still shows
 — and `page_asset_delete` refuses one in use. Deleting the page deletes every
 asset with it (their bytes are under the page's own prefix, [below](#files)).
 
+## Styling: theme and width
+
+A page is drawn in **the server's theme**: muster's dark palette, with the
+preset and accent an admin picked on Account → Theme
+([ui-kit.md](ui-kit.md#the-theme)). Every document a page is served as — the
+content and the shell, through a link and in the owner's view (a session's
+Pages tab included) — inlines the same theme block `/ui-kit/v1/theme.css`
+serves (the content's policy loads no stylesheet), so the page follows the
+theme the moment it changes. The document depends on the server's theme only,
+never on who is looking: a viewer's device or colour-scheme preference changes
+nothing.
+
+**Use the tokens, not colour literals.** The content defines these CSS
+variables on its root, each following the theme:
+
+| Token | For |
+|---|---|
+| `--bg` | the page's ground (`body` already has it) |
+| `--s1`, `--s2` | a card or panel's surface; a raised one inside it |
+| `--line` | borders, dividers, table rules, a stripe |
+| `--edge` | an input's border (stronger than `--line`) |
+| `--fg` | text (`body` already has it) |
+| `--fg2` | secondary text: captions, hints |
+| `--accent` | emphasis, a link, a button's fill |
+| `--on-accent` | text on an `--accent` fill |
+| `--good`, `--bad` | a success or an error message |
+
+```html
+<style>
+  .card { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h2 { color: var(--fg); } .card small { color: var(--fg2); }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; }
+  .go { background: var(--accent); color: var(--on-accent); }
+</style>
+```
+
+Don't set the page's background or its text colour with a literal: a
+`background: #fff` is a white patch on a dark page, and `color: #111` with no
+background of its own is unreadable on it. `page_create` and `page_update`
+answer such a version with **`theme_notes`** (beside `phone_notes`): one per
+declaration in an html block's `<style>` elements or `style="…"` attributes
+that paints a light background (relative luminance 0.7 or more: `#fff`,
+`white`, `whitesmoke`, `rgb(255,255,255)`, `hsl(0 0% 98%)`, `#ddd`…), or dark
+text (luminance under 0.1: `#000`, `black`, `#333`, `#555`…) in a block that
+sets no background, or only a dark one. Each names the block, the declaration
+and the selector, and suggests the token. Colours are parsed — hex of 3, 4, 6
+or 8 digits, `rgb()`/`rgba()`, `hsl()`/`hsla()`, every CSS named colour — and
+composited over the theme's ground, so a faint `rgba(255,255,255,.06)` overlay
+is not "light". A `var(…)` (its fallback included), `currentColor`,
+`transparent`, comments and a `<script>`'s strings are never judged, and dark
+text on a block's own light or `var()` background (`.badge{background:
+var(--accent); color:#111}`) is left alone. At most 6 notes, equal ones once;
+the version is published either way.
+
+**Full width.** The content is the frame's full width, for every block, with
+a 16px gutter each side and room for the shell's header at the top: there is
+no maximum width. A page that wants a narrower column sets one on its own
+markup (`max-width: 44rem; margin: 0 auto`).
+
 ## Share links
 
 A link is `https://<MUSTER_PUBLIC_URL>/s/<token>` (or under
