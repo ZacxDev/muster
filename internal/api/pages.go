@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/theme"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
 
@@ -237,7 +238,7 @@ func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 // A failed read is logged and renders with none (each reference left as it
 // was written, which loads nothing).
 func (s *Server) pageRenderOptions(ctx context.Context, v pages.Version) pages.RenderOptions {
-	o := pages.RenderOptions{Markdown: ui.MarkdownHTML, Uploads: s.ext.Uploads != nil}
+	o := pages.RenderOptions{Markdown: ui.MarkdownHTML, Uploads: s.ext.Uploads != nil, ThemeCSS: s.pageThemeCSS(ctx)}
 	if s.ext.Uploads != nil {
 		a, err := s.ext.Pages.VersionAssets(ctx, v.PageID, v.Version)
 		if err != nil {
@@ -293,7 +294,20 @@ func (s *Server) shellBrand(ctx context.Context, v pages.ShellView) pages.ShellV
 		v.BrandName = b.Name
 	}
 	v.Icon = b.Icon192()
+	v.ThemeCSS = s.pageThemeCSS(ctx)
 	return v
+}
+
+// pageThemeCSS is the server's theme block as a page's documents inline it
+// (the content's CSP loads no stylesheet): the same rules /ui-kit/v1/theme.css
+// serves (theme.CSS of serverTheme), or "" for the default theme, whose
+// palette the documents already embed.
+func (s *Server) pageThemeCSS(ctx context.Context) string {
+	c, t := s.serverTheme(ctx)
+	if c.IsDefault() {
+		return ""
+	}
+	return theme.CSS(t)
 }
 
 // handlePageShell is GET /s/{token}: the shell of the link's page.

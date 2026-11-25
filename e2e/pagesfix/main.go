@@ -10,10 +10,14 @@
 //	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=… \
 //	  go run ./e2e/pagesfix phone <owner>    the phone page (pages-phone.spec.ts), {page, token}
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix phone-clear <owner>
+//	DATABASE_URL=…_e2e MUSTER_CONNECTOR_ENCRYPTION_KEY=… \
+//	  go run ./e2e/pagesfix themed <owner>   the theme page (pages-theme-width.spec.ts), {page, token}
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix themed-clear <owner>
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled <owner> <title>   one plain page (palette-everything.spec.ts); prints its id
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled-clear <owner> <title>
 //
-// phone and phone-clear touch only the page titled PhoneTitle; titled and
+// phone and phone-clear touch only the page titled PhoneTitle; themed and
+// themed-clear only the page titled ThemedTitle; titled and
 // titled-clear only the pages titled <title>.
 //
 // The pages (all synthetic), each made by a mirrored session ("Release
@@ -65,8 +69,9 @@ func run(args []string) error {
 		return err
 	}
 	titled := len(args) == 3 && (args[0] == "titled" || args[0] == "titled-clear")
-	if !titled && (len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear")) {
-		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
+	if !titled && (len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear" &&
+		args[0] != "themed" && args[0] != "themed-clear")) {
+		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | themed <owner> | themed-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -93,9 +98,14 @@ func run(args []string) error {
 		}
 		return titledPage(as, pages.NewPG(pool), args[2])
 	}
-	if strings.HasPrefix(args[0], "phone") {
-		// Only the phone page: every other page of the owner's is left alone.
-		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, PhoneTitle); err != nil || args[0] == "phone-clear" {
+	if strings.HasPrefix(args[0], "phone") || strings.HasPrefix(args[0], "themed") {
+		// Only the phone (or theme) page: every other page of the owner's is
+		// left alone.
+		title := PhoneTitle
+		if strings.HasPrefix(args[0], "themed") {
+			title = ThemedTitle
+		}
+		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, title); err != nil || strings.HasSuffix(args[0], "-clear") {
 			return err
 		}
 	} else if _, err := pool.Exec(as, `DELETE FROM pages`); err != nil || args[0] == "clear" {
@@ -111,7 +121,10 @@ func run(args []string) error {
 		return err
 	}
 	if args[0] == "phone" {
-		return phone(as, st)
+		return linkedPage(as, st, PhoneTitle, phoneBlocks())
+	}
+	if args[0] == "themed" {
+		return linkedPage(as, st, ThemedTitle, themedBlocks())
 	}
 	out, err := seed(as, st)
 	if err != nil {
@@ -287,14 +300,31 @@ func titledPage(ctx context.Context, st *pages.PGStore, title string) error {
 	return nil
 }
 
-// phone publishes the phone page with a live link and prints {page, token}.
-func phone(ctx context.Context, st *pages.PGStore) error {
+// ThemedTitle is the theme page's title (e2e/tests/pages-theme-width.spec.ts).
+const ThemedTitle = "Theme and width"
+
+// themedBlocks is the theme page: a markdown block, then an html block
+// styled only with the content's tokens (a card on var(--s1), a table ruled
+// with var(--line), a link-coloured button).
+func themedBlocks() []pages.Block {
+	return []pages.Block{
+		{Type: pages.BlockMarkdown, Text: "# Theme and width\n\nA markdown paragraph, drawn in the server's theme."},
+		{Type: pages.BlockHTML, HTML: `<style>.card{background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:16px;color:var(--fg)}` +
+			`.card table{width:100%;border-collapse:collapse}.card td{border-bottom:1px solid var(--line);padding:6px}` +
+			`.card .go{background:var(--accent);color:var(--on-accent)}</style>` +
+			`<div class="card" data-testid="card"><p>An html card.</p><table><tr><td>a</td><td>b</td></tr></table>` +
+			`<button class="go" type="button" data-testid="go">Go</button></div>`},
+	}
+}
+
+// linkedPage publishes a page with a live link and prints {page, token}.
+func linkedPage(ctx context.Context, st *pages.PGStore, title string, in []pages.Block) error {
 	cr := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-session", Label: "Release helper"}
-	blocks, size, err := pages.Validate(phoneBlocks())
+	blocks, size, err := pages.Validate(in)
 	if err != nil {
 		return err
 	}
-	p, _, err := st.Create(ctx, cr, PhoneTitle, blocks, size)
+	p, _, err := st.Create(ctx, cr, title, blocks, size)
 	if err != nil {
 		return err
 	}
