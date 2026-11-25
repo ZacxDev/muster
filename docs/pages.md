@@ -326,20 +326,8 @@ variables on its root, each following the theme:
 Don't set the page's background or its text colour with a literal: a
 `background: #fff` is a white patch on a dark page, and `color: #111` with no
 background of its own is unreadable on it. `page_create` and `page_update`
-answer such a version with **`theme_notes`** (beside `phone_notes`): one per
-declaration in an html block's `<style>` elements or `style="…"` attributes
-that paints a light background (relative luminance 0.7 or more: `#fff`,
-`white`, `whitesmoke`, `rgb(255,255,255)`, `hsl(0 0% 98%)`, `#ddd`…), or dark
-text (luminance under 0.1: `#000`, `black`, `#333`, `#555`…) in a block that
-sets no background, or only a dark one. Each names the block, the declaration
-and the selector, and suggests the token. Colours are parsed — hex of 3, 4, 6
-or 8 digits, `rgb()`/`rgba()`, `hsl()`/`hsla()`, every CSS named colour — and
-composited over the theme's ground, so a faint `rgba(255,255,255,.06)` overlay
-is not "light". A `var(…)` (its fallback included), `currentColor`,
-`transparent`, comments and a `<script>`'s strings are never judged, and dark
-text on a block's own light or `var()` background (`.badge{background:
-var(--accent); color:#111}`) is left alone. At most 6 notes, equal ones once;
-the version is published either way.
+answer such a version with **`theme_notes`** (beside `phone_notes`), naming
+the declaration and the token to use instead; the version is published either way.
 
 **Full width.** The content is the frame's full width, for every block, with
 a 16px gutter each side and room for the shell's header at the top: there is
