@@ -238,8 +238,23 @@ test('the sign-in page drops the pages an ended session left in the caches', asy
     await expect.poll(() => cached(home), { message: 'the HTTP cache no longer holds the ended session\'s page' }).toBe('not cached');
 
     // Back twice, past the icon, to the ended session's page: not restored.
-    await page.goBack({ waitUntil: 'commit' });
-    await page.goBack({ waitUntil: 'commit' });
+    //
+    // 🔴 ONE TRAVERSAL OF TWO ENTRIES, NOT TWO page.goBack() CALLS. goBack
+    // starts with CDP Page.getNavigationHistory, and a goBack issued the moment
+    // the previous one committed can reach the page target while its frame host
+    // is still the document that just left: Chromium answers "Not attached to
+    // an active page" (CI, 3 times in 3 days, the second call 0.6 ms after the
+    // first committed). history.go(-2) is the same Back-twice, asked by the
+    // page, so no CDP history call lands in that window.
+    await page.evaluate(() => history.go(-2));
+    // The traversal must have landed on the ended session's page: the /login
+    // page it leaves carries no marker either, so 'reloaded' alone would pass
+    // if Back never happened. Restored, it is that page; reloaded with no
+    // session, the server sends it to the sign-in page with that page as next.
+    await page.waitForURL(
+      (u) => u.pathname + u.search === home || (u.pathname === '/login' && u.searchParams.get('next') === home),
+      { waitUntil: 'commit' },
+    );
     await expect.poll(kept, { message: 'the ended session\'s page was not restored from the back/forward cache' }).toBe('reloaded');
   } finally {
     await ctx.close();
