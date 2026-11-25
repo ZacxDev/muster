@@ -2371,8 +2371,7 @@ func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess ag
 	tctx, cancel := context.WithTimeout(sctx, budget)
 	tctx = chiefusage.WithTrigger(withTurnInput(tctx, row.ID), turnTriggerFor(notTyped, nil))
 	s.attention.deliveries.Add(1)
-	safeGo(s.logger, "route turn", func() {
-		defer s.attention.deliveries.Done()
+	safeGoDone(s.logger, "route turn", &s.attention.deliveries, func() {
 		defer scancel()
 		defer cancel()
 		ran := false

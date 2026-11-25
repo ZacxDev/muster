@@ -630,8 +630,7 @@ func (s *Server) overviewTails(ctx context.Context, live []liveSession) []any {
 		}
 		out[i] = "unavailable (could not be read)" // what a read that panicked leaves
 		wg.Add(1)
-		safeGo(s.logger, "sessions_overview: read a tail", func() {
-			defer wg.Done()
+		safeGoDone(s.logger, "sessions_overview: read a tail", &wg, func() {
 			defer func() { <-sem }()
 			tctx, cancel := context.WithTimeout(bctx, overviewTranscriptTimeout)
 			defer cancel()

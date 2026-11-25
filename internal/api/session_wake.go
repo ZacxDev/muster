@@ -708,8 +708,7 @@ func (s *Server) wakePageResponse(ctx context.Context, owner, id int64, r pages.
 func (s *Server) startWakeDelivery(owner, id int64) {
 	ctx, cancel := s.streamContext(context.Background())
 	s.attention.deliveries.Add(1)
-	safeGo(s.logger, "session wake delivery", func() {
-		defer s.attention.deliveries.Done()
+	safeGoDone(s.logger, "session wake delivery", &s.attention.deliveries, func() {
 		defer cancel()
 		s.deliverWake(ctx, owner, id)
 	})

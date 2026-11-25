@@ -87,8 +87,7 @@ func (s *Server) startPluginDelivery(ctx context.Context, pluginID, messageID in
 	}
 	dctx, cancel := s.streamContext(context.WithoutCancel(ctx))
 	s.pluginInFlight.Add(1)
-	safeGo(s.logger, "plugin retry delivery", func() {
-		defer s.pluginInFlight.Done()
+	safeGoDone(s.logger, "plugin retry delivery", &s.pluginInFlight, func() {
 		defer cancel()
 		chief, err := s.chiefAgent(dctx)
 		if err != nil && !errors.Is(err, ErrNoChief) {

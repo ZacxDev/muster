@@ -85,8 +85,7 @@ func (s *Server) startAskSuggestions(a attention.Ask) {
 		return
 	}
 	s.attention.suggesting.Add(1)
-	safeGo(s.logger, "ask suggestions "+strconv.FormatInt(a.ID, 10), func() {
-		defer s.attention.suggesting.Done()
+	safeGoDone(s.logger, "ask suggestions "+strconv.FormatInt(a.ID, 10), &s.attention.suggesting, func() {
 		ctx, cancel := context.WithTimeout(s.attentionPrincipal(context.Background(), a.Owner), askSuggestTimeout)
 		defer cancel()
 		s.suggestAsk(ctx, a)

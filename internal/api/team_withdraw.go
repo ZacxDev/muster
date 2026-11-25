@@ -254,8 +254,7 @@ func (s *Server) withdrawTeamItemsFrom(team, person int64) {
 		return
 	}
 	s.pushInFlight.Add(1)
-	safeGo(s.logger, "team withdraw", func() {
-		defer s.pushInFlight.Done()
+	safeGoDone(s.logger, "team withdraw", &s.pushInFlight, func() {
 		s.withdrawTeamItemsNow(team, person, nil)
 	})
 }

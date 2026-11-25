@@ -562,8 +562,7 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 	}
 	ctx, cancel := s.streamContext(context.WithoutCancel(r.Context()))
 	s.pluginInFlight.Add(1)
-	safeGo(s.logger, "plugin retry", func() {
-		defer s.pluginInFlight.Done()
+	safeGoDone(s.logger, "plugin retry", &s.pluginInFlight, func() {
 		defer cancel()
 		defer s.pluginRetrying.Delete(messagesOwner(p))
 		msgs, err := s.ext.Plugins.QueuedForOwner(ctx, messagesOwner(p), pluginRetryBatch)

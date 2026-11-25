@@ -129,8 +129,7 @@ func (t *attempt) done() {
 	}
 	w.wg.Add(1)
 	a, store, ctx := t.a, t.s.ext.AskAttempts, context.WithoutCancel(t.ctx)
-	safeGo(t.s.logger, "answer attempts: record a row", func() {
-		defer w.wg.Done()
+	safeGoDone(t.s.logger, "answer attempts: record a row", &w.wg, func() {
 		defer w.n.Add(-1)
 		ctx, cancel := context.WithTimeout(ctx, askAttemptWriteTimeout)
 		defer cancel()

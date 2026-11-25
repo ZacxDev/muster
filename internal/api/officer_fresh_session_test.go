@@ -274,6 +274,14 @@ func TestAFreshConversationIsFreedOnlyWhenCCDConfirmsANewOne(t *testing.T) {
 	if out := claimC(); !isToolErr(out) || !strings.Contains(out, a) {
 		t.Fatalf("after ccd refused the turn: %s, want refused naming %s", out, a)
 	}
+	// The refused send's prompt row is taken back (#1018), and the goroutine
+	// that does it ends without a panic.
+	if del := r.store.deletedChatMessages(); len(del) != 1 || del[0] != j1.ID {
+		t.Fatalf("the refused re-prompt's row taken back for agents %v, want [%d]", del, j1.ID)
+	}
+	if strings.Contains(r.logs.String(), "PANIC") {
+		t.Fatalf("the refused re-prompt panicked; log:\n%s", r.logs.String())
+	}
 
 	r.chat.setReply(func(ctx context.Context, _ string) error {
 		agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{}) // an old ccd: accepted, no new conversation named

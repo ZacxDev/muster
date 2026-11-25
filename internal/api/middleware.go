@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -131,6 +132,24 @@ func safeGo(logger *log.Logger, what string, fn func()) {
 	}()
 }
 
+// safeGoDone is safeGo for a goroutine wg tracks (the caller has already
+// called wg.Add(1)): wg.Done runs AFTER a panic is recovered and logged.
+//
+// 🔴 NOT `safeGo(…, func() { defer wg.Done(); … })`. fn's own defers unwind
+// before safeGo's recover, so there Done released the waiter while the
+// "PANIC in goroutine" line was still being written: a waiter read a
+// panicked goroutine as finished, and the logger then wrote into whatever
+// the waiter went on to read (a test's log buffer: a DATA RACE, CI run
+// 45664334120, WaitForOfficerReprompts). TestNoSafeGoReleasesAWaiterBeforeItsPanicIsLogged
+// holds every safeGo call in this package to it.
+func safeGoDone(logger *log.Logger, what string, wg *sync.WaitGroup, fn func()) {
+	go func() {
+		defer wg.Done()
+		defer recoverGoroutine(logger, what)
+		fn()
+	}()
+}
+
 // SuperviseBackoff is how long Supervise waits before restarting a loop that
 // panicked; it doubles per consecutive panic, up to SuperviseBackoffMax. A run
 // that stayed up at least SuperviseHealthy before it panicked counts as
@@ -206,7 +225,8 @@ func runRecovered(ctx context.Context, logger *log.Logger, name string, run func
 // in the deferred function itself), it counts and logs a panic of the
 // goroutine named what. safeGo defers it outside fn; a goroutine that needs a
 // defer of its own to run AFTER the panic is logged defers it inside fn, below
-// that defer (destroyAgent: destroyInFlight's Done).
+// that defer (goNotify: n.wait's Done) — or, for one WaitGroup, uses
+// safeGoDone.
 func recoverGoroutine(logger *log.Logger, what string) {
 	if rec := recover(); rec != nil {
 		metrics.Panics.WithLabelValues("goroutine").Inc()
