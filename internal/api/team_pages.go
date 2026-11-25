@@ -27,6 +27,8 @@ import (
 //     of the team, even while the creator is present (pages.MayRevoke: a
 //     mistaken Share is undone at once; New link is a revoke and a Share,
 //     both a manager's, so the database lets it too);
+//   - send FEEDBACK from the owner view's pill — no member (it is not drawn
+//     for them: a team's pages wake no session);
 //   - send a FILE from the owner view — no member in this release (a file is
 //     stored as the person who sends it, and a team's page keeps only files
 //     the team owns: its quota and its delete read them as the team).
@@ -55,6 +57,9 @@ const (
 	teamPageRevoke
 	// teamPageNoFile: no member (a file from the owner view).
 	teamPageNoFile
+	// teamPageNoFeedback: no member (the Feedback pill from the owner view:
+	// a team's pages wake no session, page_feedback.go).
+	teamPageNoFeedback
 )
 
 // teamPageRoutes is EVERY route whose pattern names a page ("pages/{id}"),
@@ -72,7 +77,7 @@ var teamPageRoutes = map[string]teamPageRule{
 	"GET /pages/{id}/versions/{v}/assets/{asset}": teamPageRead,
 	"GET /pages/{id}/view":                        teamPageRead,
 	"POST /pages/{id}/versions/{v}/submit":        teamPageRespond,
-	"POST /pages/{id}/versions/{v}/feedback":      teamPageRespond,
+	"POST /pages/{id}/versions/{v}/feedback":      teamPageNoFeedback,
 	"POST /pages/{id}/share":                      teamPageShare,
 	"POST /pages/{id}/delete":                     teamPageCreator,
 	"POST /pages/{id}/rollback":                   teamPageCreator,
@@ -93,6 +98,9 @@ const (
 		"the team, can revoke its links or make a new one"
 	// TeamPageNoFile: a file from a team page's owner view, to any member.
 	TeamPageNoFile = "this is a team's page: files can't be sent from a team page yet"
+	// TeamPageNoFeedback: feedback from a team page's owner view, to any
+	// member.
+	TeamPageNoFeedback = "this is a team's page: feedback can't be sent from a team page's own view"
 )
 
 // teamPageGate answers 403 and reports true when r names a page its
@@ -106,7 +114,7 @@ const (
 // not let the request through.
 func (s *Server) teamPageGate(w http.ResponseWriter, r *http.Request) bool {
 	rule, ok := teamPageRoutes[r.Pattern]
-	if !ok || (rule != teamPageCreator && rule != teamPageRevoke && rule != teamPageNoFile) || s.ext.Pages == nil {
+	if !ok || (rule != teamPageCreator && rule != teamPageRevoke && rule != teamPageNoFile && rule != teamPageNoFeedback) || s.ext.Pages == nil {
 		return false
 	}
 	ctx := r.Context()
@@ -133,6 +141,9 @@ func (s *Server) teamPageGate(w http.ResponseWriter, r *http.Request) bool {
 	switch rule {
 	case teamPageNoFile:
 		s.pageWriteError(w, http.StatusForbidden, TeamPageNoFile)
+		return true
+	case teamPageNoFeedback:
+		s.pageWriteError(w, http.StatusForbidden, TeamPageNoFeedback)
 		return true
 	case teamPageCreator, teamPageRevoke:
 		msg := TeamPageCreatorOnly

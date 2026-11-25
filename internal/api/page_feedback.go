@@ -26,11 +26,13 @@ import (
 // requireOperatorWrite), each {text}:
 //
 //   - refused past pageFeedbackLimit messages per responder (a link, or the
-//     owner on one page) per pageLimitWindow (429), over
+//     owner on one page) per pageLimitWindow (429), past
+//     pages.MaxFeedbackPerLink messages through one link (409; a budget of
+//     its own, so feedback never uses up the page form's responses), over
 //     pages.MaxFeedbackRunes characters (413, never cut) or blank (400) — and
 //     everything a link's submit is refused for: a link that is revoked,
 //     pending, denied or expired (the one 404, requirePageLink and the store's
-//     live check under the link's lock), a page past its response caps;
+//     live check under the link's lock);
 //   - STORED as one of the page's responses (pages.KindFeedback,
 //     pages.FeedbackComponent, {"text": …}) through the responder's own store
 //     call, so page_responses reads it whatever happens next;
@@ -67,6 +69,8 @@ const (
 	PageFeedbackSentText        = "Sent to the session that made this page."
 	PageFeedbackHeldText        = "Saved. It goes to the session that made this page once you sign in again."
 	PageFeedbackUnreachableText = "Saved with this page's responses, but the session that made this page isn't reachable, so it was not sent to it."
+	// PageFeedbackFullText: the link is at pages.MaxFeedbackPerLink.
+	PageFeedbackFullText = "This link has sent as much feedback as one link may. Nothing more can be sent through it."
 )
 
 // pageFeedbackText is the answer's words for delivery d.
@@ -143,6 +147,11 @@ func (s *Server) pageFeedback(w http.ResponseWriter, r *http.Request, p pageResp
 		return
 	}
 	resp, owner, err := s.storePageResponse(ctx, p, v.Version, pages.FeedbackComponent, pages.KindFeedback, pages.FeedbackData(text), "")
+	if errors.Is(err, pages.ErrFeedbackFull) {
+		metrics.PageResponses.WithLabelValues(kind, "full").Inc()
+		s.pageWriteError(w, http.StatusConflict, PageFeedbackFullText)
+		return
+	}
 	if err != nil {
 		status, msg, outcome := pageStoreRefusal(err)
 		if outcome == "error" {
@@ -179,7 +188,7 @@ func (s *Server) wakePageFeedback(ctx context.Context, owner, id int64, r pages.
 	if err != nil || pg.OwnerID != owner {
 		return pageFeedbackUnreachable
 	}
-	n, ok := pageFeedbackWake(pg, r, v.Version, v.Title)
+	n, ok := pageFeedbackWake(pg, r, v.Version)
 	if !ok {
 		return pageFeedbackUnreachable
 	}
@@ -193,13 +202,17 @@ func (s *Server) wakePageFeedback(ctx context.Context, owner, id int64, r pages.
 	return pageFeedbackSent
 }
 
-// pageFeedbackChrome is the Feedback pill's extras for a shell: the
-// dictation microphone for the OWNER's own view on a server with
-// speech-to-text (dictatePath, the one predicate), nothing for a link's
-// viewer — /transcribe is an operator's alone.
-func (s *Server) pageFeedbackChrome(owner bool) *pages.FeedbackChrome {
+// pageFeedbackChrome is the Feedback pill for the owner's own view of page
+// p: with the dictation microphone on a server with speech-to-text
+// (dictatePath, the one predicate) — and nil, no pill, for a team member
+// reading a team's page (teamPageNoFeedback refuses the route too). A link's
+// viewer's pill is drawn without one (/transcribe is an operator's alone).
+func (s *Server) pageFeedbackChrome(ctx context.Context, p pages.Page) *pages.FeedbackChrome {
+	if memberOnTeamPage(ctx, p) {
+		return nil
+	}
 	fc := &pages.FeedbackChrome{}
-	if path := s.dictatePath(); owner && path != "" {
+	if path := s.dictatePath(); path != "" {
 		fc.Mic = ui.DictateControlHTML(path, pages.FeedbackInputID, pages.FeedbackNoteID, pages.FeedbackMicID)
 		fc.MicNote = ui.DictateNoteHTML(path, pages.FeedbackNoteID, "fbn")
 		fc.MicScript = ui.DictateScriptJS(path)

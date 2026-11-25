@@ -128,10 +128,6 @@ const (
 // MaxOperatorTextBytes bounds Wake.OperatorText (0177's CHECK).
 const MaxOperatorTextBytes = 40960
 
-// MaxPageTitleRunes bounds Wake.PageTitle (0191's CHECK; a page's title,
-// pages.MaxTitleRunes).
-const MaxPageTitleRunes = 200
-
 // MaxDetailRunes bounds Wake.Detail (0177's CHECK).
 const MaxDetailRunes = 300
 
@@ -152,9 +148,6 @@ type Wake struct {
 	// LinkID is a KindPageFeedback wake's share link (0191): the link a
 	// viewer's message came through; 0 for the owner's own message.
 	LinkID int64
-	// PageTitle is a KindPageFeedback wake's page title when it was sent
-	// (0191): an agent's words, which the line carries inside its fence.
-	PageTitle string
 	// Decision is a draft wake's: approved or rejected (KindDraftDecided),
 	// sent, failed or unconfirmed (KindDraftOutcome).
 	Decision string
@@ -205,7 +198,6 @@ type New struct {
 	RouteID       string
 	OfficerItemID int64
 	LinkID        int64
-	PageTitle     string
 	Decision      string
 	Count         int
 	Component     string
@@ -257,14 +249,14 @@ const cols = `id, owner_id, created_at, kind, coalesce(ask_id, 0), coalesce(draf
 	coalesce(response_id, 0), route_id, decision, response_count, component, operator_text, mirror_host, mirror_session,
 	state, detail, attempts, queued_at, coalesce(send_queue_id, 0), coalesce(delivered_at, 'epoch'::timestamptz),
 	via_host, via_session, coalesce(stepup_at, 'epoch'::timestamptz), coalesce(officer_item_id, 0),
-	coalesce(retry_at, 'epoch'::timestamptz), coalesce(link_id, 0), page_title`
+	coalesce(retry_at, 'epoch'::timestamptz), coalesce(link_id, 0)`
 
 func scan(row pgx.Row) (Wake, error) {
 	var w Wake
 	var kind, state string
 	err := row.Scan(&w.ID, &w.Owner, &w.CreatedAt, &kind, &w.AskID, &w.DraftID, &w.PageID, &w.ResponseID, &w.RouteID,
 		&w.Decision, &w.Count, &w.Component, &w.OperatorText, &w.Host, &w.Session, &state, &w.Detail, &w.Attempts,
-		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID, &w.RetryAt, &w.LinkID, &w.PageTitle)
+		&w.QueuedAt, &w.SendQueueID, &w.DeliveredAt, &w.ViaHost, &w.ViaSession, &w.StepUpAt, &w.OfficerItemID, &w.RetryAt, &w.LinkID)
 	w.Kind, w.State = Kind(kind), State(state)
 	if w.DeliveredAt.Unix() == 0 {
 		w.DeliveredAt = time.Time{}
@@ -307,8 +299,8 @@ func (n New) Valid() error {
 		(n.ViaHost != "" && (mirror.ValidHost(n.ViaHost) != nil || !mirror.ValidClaudeSession(n.ViaSession))) {
 		return fmt.Errorf("%w: not a mirrored session to have decided it", ErrInvalid)
 	}
-	if (n.LinkID != 0 || n.PageTitle != "") && n.Kind != KindPageFeedback {
-		return fmt.Errorf("%w: only a page's feedback names a link or a title", ErrInvalid)
+	if n.LinkID != 0 && n.Kind != KindPageFeedback {
+		return fmt.Errorf("%w: only a page's feedback names a link", ErrInvalid)
 	}
 	if len(n.OperatorText) > MaxOperatorTextBytes {
 		return fmt.Errorf("%w: the owner's text is over %d bytes", ErrInvalid, MaxOperatorTextBytes)
@@ -338,7 +330,7 @@ func (n New) Valid() error {
 		}
 	case KindPageFeedback:
 		if n.PageID <= 0 || n.ResponseID <= 0 || n.LinkID < 0 || n.Count < 1 || strings.TrimSpace(n.OperatorText) == "" ||
-			n.Decision != "" || n.Component != "" || n.RouteID != "" || utf8.RuneCountInString(n.PageTitle) > MaxPageTitleRunes {
+			n.Decision != "" || n.Component != "" || n.RouteID != "" {
 			return fmt.Errorf("%w: a page's feedback names its page, response and version and carries the message", ErrInvalid)
 		}
 	case KindStepUpDecided:
@@ -382,11 +374,11 @@ func (s *PGStore) Create(ctx context.Context, n New) (Wake, bool, error) {
 	}
 	w, err := scan(s.pool.QueryRow(ctx, `INSERT INTO session_wakes (kind, ask_id, draft_id, page_id, response_id, route_id,
 			decision, component, operator_text, mirror_host, mirror_session, via_host, via_session, stepup_at, officer_item_id, response_count,
-			retry_at, link_id, page_title)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING `+cols,
+			retry_at, link_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING `+cols,
 		string(n.Kind), nullID(n.AskID), nullID(n.DraftID), nullID(n.PageID), nullID(n.ResponseID), n.RouteID, n.Decision,
 		n.Component, n.OperatorText, n.Host, n.Session, n.ViaHost, n.ViaSession, nullTime(n.StepUpAt), nullID(n.OfficerItemID), n.Count,
-		nullTime(n.RetryAt), nullID(n.LinkID), n.PageTitle))
+		nullTime(n.RetryAt), nullID(n.LinkID)))
 	if err == nil {
 		return w, true, nil
 	}

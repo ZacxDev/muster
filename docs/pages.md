@@ -815,8 +815,8 @@ What happens to a message (migration 0191, `internal/api/page_feedback.go`):
   *Feedback*, and to the agent through `page_responses`, whether or not the
   session below is told;
 - the [session that made the page](#notifications) gets **one line per
-  message** (never a count), with the page's number, version and title and the
-  message fenced: yours as your words (needing your fresh sign-in, as every
+  message** (never a count), with the page's number and version (never its
+  title) and the message fenced: yours as your words (needing your fresh sign-in, as every
   line carrying your words does), a link viewer's as a stranger's
   (`<<<viewer-feedback untrusted …>>>`, naming the link: *a viewer of share
   link #41 sent feedback on page #12 (version 3) …*);
@@ -825,17 +825,21 @@ What happens to a message (migration 0191, `internal/api/page_feedback.go`):
   this page once you sign in again.* (your sign-in is older than the step-up
   window); or *Saved with this page's responses, but the session that made
   this page isn't reachable, so it was not sent to it.* — a page a dispatched
-  agent made, a team's, or one whose host no longer mirrors here. The panel
-  stays open for another message.
+  agent made, a team's (through its share link), or one whose host no longer
+  mirrors here. The panel stays open for another message.
 
 A share link's viewer can **type only**: the microphone posts to
 `/transcribe`, which is yours alone, so their panel has none. Their message
 goes through the link like a submit (`POST /s/<token>/feedback`, no cookie):
-a revoked, pending, denied or expired link takes none, and it counts toward
-the link's 1000 responses. Yours goes to `POST
-/pages/{id}/versions/{v}/feedback` with your session. Either is refused past
-**5 messages a minute** (per link; for you, per page) and over **4000
-characters** (refused whole, never cut).
+a revoked, pending, denied or expired link takes none. A link takes at most
+**200 feedback messages**, a budget of its own: feedback never counts toward
+the link's 1000 form responses, nor they toward it. Yours goes to `POST
+/pages/{id}/versions/{v}/feedback` with your session, with no such cap.
+Either is refused past **5 messages a minute** (per link; for you, per page)
+and over **4000 characters** (refused whole, never cut). A [team's
+page](#a-teams-pages) draws no pill in a member's own view (a team's pages
+wake no session), and that route refuses a member; its share link's viewers
+can still send feedback.
 
 ## Notifications
 
@@ -879,7 +883,8 @@ session and host recorded when the page was made:
 
 The page's title is not in either line. A dispatched agent's pages wake
 nothing (it reads `page_responses` itself). [Feedback](#feedback) is the one
-exception to both: each message is its own line, with its words.
+exception to the count: each message is its own line, with its words (and
+still without the title).
 
 ### If a page's notification did not arrive
 
@@ -899,14 +904,14 @@ means a push service accepted it, not that the device showed it.
 | a version | 512 KiB, 100 blocks; an `html` block 256 KiB; a `markdown` block 64 KiB; a `gallery` 200 items, each caption 120 characters |
 | pending and live links per page | 10 |
 | a submit's data | 32 KiB |
-| responses per link | 1000, files included |
+| responses per link | 1000, files included ([feedback](#feedback) apart) |
 | files per link | 50, each at most `MUSTER_UPLOAD_MAX_BYTES` |
 | a page's files in all | `MUSTER_PAGES_UPLOAD_BYTES` (500 MiB) |
 | one author asset | 15 MiB; PNG, JPEG, WebP, GIF, MP4 or WebM |
 | a page's author assets | 100 MiB and 200 assets in all |
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
-| [feedback](#feedback) messages per link (yours: per page) | 5 a minute; each at most 4000 characters |
+| [feedback](#feedback) messages per link (yours: per page) | 5 a minute; each at most 4000 characters; 200 per link in all (not counted in its 1000 responses; yours uncapped) |
 | uploads per link | 10 a minute |
 | asset reads per link and viewer (client address) | 600 a minute (a repeat view reads from the browser's cache) |
 | asset bytes per link, all viewers | 2 GiB a minute |

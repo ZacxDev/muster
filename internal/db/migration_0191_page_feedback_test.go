@@ -8,11 +8,11 @@ import (
 
 // TestMigration0191PageFeedback: at 0190 page_responses refuses kind
 // 'feedback' and session_wakes refuses kind 'page_feedback' and has no
-// link_id or page_title (the controls). At 0191 a feedback response inserts
+// link_id (the controls). At 0191 a feedback response inserts
 // (component '__feedback' only), and a page_feedback wake inserts — the
 // owner's (no link) and a link viewer's (link_id) — in its one shape: words,
 // a version, no decision or component. An unknown kind is still refused on
-// both tables, link_id and page_title stay page_feedback's alone, and 0178's
+// both tables, link_id stays page_feedback's alone, and 0178's
 // and 0183's shapes still insert. Re-applying 0116's and 0177's bodies (what
 // --rls-on does) narrows nothing, and the header's ROLLBACK block runs as
 // written and the file applies again after it.
@@ -43,8 +43,8 @@ func TestMigration0191PageFeedback(t *testing.T) {
 	if err := exec(wake("9001", "", "")); err == nil {
 		t.Fatal("control: 0190 accepted a page_feedback wake")
 	}
-	if err := exec(`UPDATE session_wakes SET link_id = NULL, page_title = '' WHERE false`); err == nil {
-		t.Fatal("control: session_wakes has link_id and page_title before 0191")
+	if err := exec(`UPDATE session_wakes SET link_id = NULL WHERE false`); err == nil {
+		t.Fatal("control: session_wakes has link_id before 0191")
 	}
 
 	applyThroughFrom(ctx, t, pool, 191)
@@ -54,7 +54,7 @@ func TestMigration0191PageFeedback(t *testing.T) {
 	if err := exec(feedback("notes")); err == nil {
 		t.Error("0191 accepted a feedback response under a page's own component name")
 	}
-	if err := exec(wake(rs, ", link_id, page_title", ", "+lk+", 'Pricing table'")); err != nil {
+	if err := exec(wake(rs, ", link_id", ", "+lk)); err != nil {
 		t.Fatalf("0191 refused a link viewer's page_feedback wake: %v", err)
 	}
 	if err := exec(wake("9002", "", "")); err != nil {
@@ -72,9 +72,6 @@ func TestMigration0191PageFeedback(t *testing.T) {
 		"a page_feedback wake with a link of 0": wake("9009", ", link_id", ", 0"),
 		"a link on another kind": `INSERT INTO session_wakes (owner_id, kind, page_id, response_id, component, operator_text, link_id, mirror_host, mirror_session)
 			VALUES (1, 'page_own_response', ` + pg + `, 9010, 'notes', 'yes', ` + lk + `, 'tower', '` + sid + `')`,
-		"a title on another kind": `INSERT INTO session_wakes (owner_id, kind, page_id, response_count, page_title, mirror_host, mirror_session)
-			VALUES (1, 'page_responses', ` + pg + `, 2, 'Pricing table', 'tower', '` + sid + `')`,
-		"a title over 200 characters": wake("9011", ", page_title", ", '"+strings.Repeat("t", 201)+"'"),
 	} {
 		if err := exec(q); err == nil {
 			t.Errorf("0191 accepted %s", name)
@@ -128,9 +125,7 @@ func TestMigration0191PageFeedback(t *testing.T) {
 	restore("0178_session_wakes_officer_stepup.sql", "session_wakes_kind_check")
 	for _, q := range []string{
 		`ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_link_feedback`,
-		`ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_title_feedback`,
 		`ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS link_id`,
-		`ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS page_title`,
 		`ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_feedback_component`,
 		`ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_kind_check`,
 		`ALTER TABLE public.page_responses ADD CONSTRAINT page_responses_kind_check CHECK (kind IN ('submit', 'upload'))`,

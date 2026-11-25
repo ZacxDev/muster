@@ -3,10 +3,12 @@
 --
 -- The page viewer's shell draws a Feedback pill: the page's owner (from their
 -- own view, signed in) and a share link's viewer (through the link) type a
--- message about the page and Send it. Operator decision (2026-11-25): each
--- message is kept as one of the page's responses, so page_responses reads it
--- even when no line reaches the session, and each wakes the session that made
--- the page with the message itself — the owner's words as theirs, a link
+-- message about the page and Send it. Operator decision (2026-11-25): a share
+-- link's viewer may send feedback, and it reaches the session fenced as
+-- untrusted. The rest is this change's own design, not the operator's: each
+-- message is kept as one of the page's responses (so page_responses reads it
+-- even when no line reaches the session), and each wakes the session that
+-- made the page with the message itself — the owner's words as theirs, a link
 -- viewer's fenced as untrusted — one line per message, never a count.
 --
 --   page_responses.kind 'feedback'   a feedback message: component is
@@ -16,10 +18,6 @@
 --       (0177's session_wakes_one_per_response): its page and response, the
 --       message in operator_text (never empty), the version it was sent from
 --       in response_count (>= 1), no decision, component or route.
---   session_wakes.page_title   on a page_feedback wake only: the page's
---       title when the message was sent (at most 200 characters, as a page's
---       title is). The line carries it INSIDE the fence, never in muster's
---       own sentence: it is an agent's words.
 --   session_wakes.link_id   on a page_feedback wake only: the share link the
 --       message came through. NULL is the OWNER's own message (their words,
 --       queued only while the sign-in that sent it is fresh, as a
@@ -51,9 +49,7 @@
 -- statements of 0183_session_wakes_plugin_refused.sql) and 0178's kind CHECK
 -- (its session_wakes_kind_check statements), and
 --   ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_link_feedback;
---   ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_title_feedback;
 --   ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS link_id;
---   ALTER TABLE public.session_wakes DROP COLUMN IF EXISTS page_title;
 --   ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_feedback_component;
 --   ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_kind_check;
 --   ALTER TABLE public.page_responses ADD CONSTRAINT page_responses_kind_check CHECK (kind IN ('submit', 'upload'));
@@ -71,10 +67,6 @@ ALTER TABLE public.session_wakes ADD COLUMN IF NOT EXISTS link_id BIGINT;
 ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_link_feedback;
 ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_link_feedback
     CHECK (link_id IS NULL OR (kind = 'page_feedback' AND link_id > 0));
-ALTER TABLE public.session_wakes ADD COLUMN IF NOT EXISTS page_title TEXT NOT NULL DEFAULT '';
-ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_title_feedback;
-ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_title_feedback
-    CHECK (page_title = '' OR (kind = 'page_feedback' AND char_length(page_title) <= 200));
 
 ALTER TABLE public.session_wakes DROP CONSTRAINT IF EXISTS session_wakes_kind_check;
 ALTER TABLE public.session_wakes ADD CONSTRAINT session_wakes_kind_check CHECK (kind IN ('ask_answered', 'ask_dismissed',
