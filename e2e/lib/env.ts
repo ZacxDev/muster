@@ -622,6 +622,11 @@ export const chiefOpenRouterCatalogPort = port + 622;
 // +496 and +497: clear of the blocks above.
 export const officerPageRedesignPort = port + 496;
 export const officerPageRedesignConnectPort = port + 497;
+// tests/pages-theme-width.spec.ts: a page drawn in the server's theme, full
+// width — its own password-mode server (+498, its link key's listener +499:
+// clear of the blocks above), so no other server caches the theme it saves.
+export const pagesThemeWidthPort = port + 498;
+export const pagesThemeWidthConnectPort = port + 499;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

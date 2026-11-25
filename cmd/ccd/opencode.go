@@ -210,6 +210,10 @@ type ocConfig struct {
 	// CLAUDE.md), rewritten for opencode's tool spelling.
 	instructions string
 	launch       ocLauncher
+	// port picks a lane server's port; nil is freePort. A launcher that binds
+	// in-process (tests) supplies one that keeps the port bound until launch,
+	// so nothing else can take it in between.
+	port func() (int, error)
 	// readyTimeout bounds a new server's start; turnTimeout one turn.
 	readyTimeout, turnTimeout time.Duration
 	poll                      time.Duration
@@ -271,7 +275,10 @@ func (ln *ocLane) stop() {
 	}
 }
 
-// freePort is a loopback port free now (the server binds it next).
+// freePort is a loopback port free now (the server binds it next). The
+// opencode server is a child process that binds the port itself, so a listener
+// cannot be handed over: another process can take the port in between, and the
+// server then fails to start (a lane start error, retried on the next turn).
 func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -410,7 +417,11 @@ func (l *lanes) startOC(ln *ocLane) *failure {
 	if err != nil {
 		return &failure{Status: http.StatusInternalServerError, Type: failMCPConfig, Message: "opencode lane: its config: " + err.Error()}
 	}
-	port, err := freePort()
+	pick := c.port
+	if pick == nil {
+		pick = freePort
+	}
+	port, err := pick()
 	if err != nil {
 		return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady, Message: "opencode lane: no free port: " + err.Error()}
 	}
@@ -717,14 +728,27 @@ func (s *server) handleOpencodeResponses(w http.ResponseWriter, r *http.Request)
 		writeFailure(w, f)
 		return
 	}
-	defer s.lanes.releaseOC(ln)
 	select {
 	case ln.turn <- struct{}{}:
 	default:
+		s.lanes.releaseOC(ln)
 		writeFailure(w, busyFailure())
 		return
 	}
-	defer func() { <-ln.turn }()
+	// 🔴 THE LANE IS FREED BEFORE THE ANSWER IS WRITTEN, not when the handler
+	// returns. muster's client stops reading at the answer's terminal event
+	// (agents.parseResponsesSSE) and may send the session's next turn at once;
+	// a slot still held until this handler's deferred release refused that turn
+	// as busy (TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy). The deferred
+	// call is the backstop for a panic only.
+	var once sync.Once
+	endTurn := func() {
+		once.Do(func() {
+			<-ln.turn
+			s.lanes.releaseOC(ln)
+		})
+	}
+	defer endTurn()
 	ctx := r.Context()
 	var accepted func()
 	if r.Header.Get(headerCCPromptAccepted) == "1" {
@@ -735,6 +759,7 @@ func (s *server) handleOpencodeResponses(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	res, f := s.lanes.runOCTurn(ctx, ln, prompt, accepted)
+	endTurn()
 	if f != nil {
 		log.Printf("ccd: opencode turn failed: %s", f.Error())
 		writeFailure(w, f)

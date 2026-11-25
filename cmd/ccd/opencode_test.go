@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -203,20 +204,40 @@ func (p *fakeOCProc) stopped() bool {
 }
 
 // fakeLauncher launches f on each lane's port, with pids from 9001 up; every
-// launch is recorded.
+// launch is recorded. Its port reserves the port by holding a listener on it,
+// which launch serves on: no close-then-rebind window another process could
+// take the port in.
 type fakeLauncher struct {
 	f     *fakeOC
 	mu    sync.Mutex
 	procs []*fakeOCProc
 	specs []ocSpec
+	held  map[int]net.Listener
+}
+
+func (fl *fakeLauncher) port() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	fl.mu.Lock()
+	if fl.held == nil {
+		fl.held = map[int]net.Listener{}
+	}
+	fl.held[port] = ln
+	fl.mu.Unlock()
+	return port, nil
 }
 
 func (fl *fakeLauncher) launch(spec ocSpec) (ocProcess, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(spec.Port))
-	if err != nil {
-		return nil, err
-	}
 	fl.mu.Lock()
+	ln, ok := fl.held[spec.Port]
+	delete(fl.held, spec.Port)
+	if !ok {
+		fl.mu.Unlock()
+		return nil, fmt.Errorf("fake launcher: port %d was not reserved by its port func", spec.Port)
+	}
 	p := &fakeOCProc{pid: 9001 + len(fl.procs), srv: &http.Server{Handler: fl.f}, done: make(chan struct{})}
 	fl.procs = append(fl.procs, p)
 	fl.specs = append(fl.specs, spec)
@@ -247,7 +268,7 @@ func ocTestServer(t *testing.T, max int) (*server, *scriptedCLI, *fakeLauncher) 
 	}
 	l.ocCfg = &ocConfig{bin: "opencode", connectURL: "http://muster.invalid:8106", token: "agent-token",
 		dataDir: filepath.Join(t.TempDir(), "opencode"), runDir: t.TempDir(), instructions: filepath.Join(t.TempDir(), "none.md"),
-		launch: fl.launch, readyTimeout: 5 * time.Second, turnTimeout: 5 * time.Second, poll: 20 * time.Millisecond, mcpWait: 2 * time.Second}
+		launch: fl.launch, port: fl.port, readyTimeout: 5 * time.Second, turnTimeout: 5 * time.Second, poll: 20 * time.Millisecond, mcpWait: 2 * time.Second}
 	srv.runLanes(l)
 	return srv, cli, fl
 }
@@ -313,6 +334,50 @@ func TestAnOpencodeTurnRoundTripsThroughMustersClient(t *testing.T) {
 	}
 	if n := len(fl.procs); n != 1 {
 		t.Errorf("%d opencode servers started for one session, want 1", n)
+	}
+}
+
+// onWriteRecorder records an answer and calls after with each write once it
+// is recorded: what a client has read by then.
+type onWriteRecorder struct {
+	*httptest.ResponseRecorder
+	after func(b []byte)
+}
+
+func (w *onWriteRecorder) Write(b []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(b)
+	if w.after != nil {
+		w.after(b)
+	}
+	return n, err
+}
+
+// TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy: muster's client stops
+// reading at the answer's terminal event (agents.parseResponsesSSE), so the
+// session's next turn can arrive while the first turn's handler is still
+// writing. That turn runs: the lane's turn slot is free once the answer goes
+// out. The follow-up is sent from inside the first answer's response.completed
+// write, so the window the CI flake hit by chance is hit every run.
+func TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy(t *testing.T) {
+	srv, _, _ := ocTestServer(t, 3)
+	var second *httptest.ResponseRecorder
+	first := &onWriteRecorder{ResponseRecorder: httptest.NewRecorder()}
+	first.after = func(b []byte) {
+		if second != nil || !bytes.Contains(b, []byte("event: response.completed")) {
+			return
+		}
+		second = httptest.NewRecorder()
+		srv.handleOpencodeResponses(second, ocTurnReq(srv, ocTestKey, ocTestModel, "follow-up"))
+	}
+	srv.handleOpencodeResponses(first, ocTurnReq(srv, ocTestKey, ocTestModel, "first"))
+	if body := first.Body.String(); !strings.Contains(body, "fake reply: first") {
+		t.Fatalf("the first turn's answer: %s", body)
+	}
+	if second == nil {
+		t.Fatal("no response.completed was written: the follow-up was never sent")
+	}
+	if body := second.Body.String(); second.Code != http.StatusOK || !strings.Contains(body, "fake reply: follow-up") {
+		t.Fatalf("a follow-up sent on the first answer's terminal event: HTTP %d %s", second.Code, body)
 	}
 }
 
@@ -706,4 +771,3 @@ func TestNoMCPToolClashesWithAnOpencodeBuiltin(t *testing.T) {
 		}
 	}
 }
-
