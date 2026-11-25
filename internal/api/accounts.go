@@ -110,9 +110,10 @@ type UserStore interface {
 	RecordSignOutEverywhere(ctx context.Context, id int64) (time.Time, error)
 	// IDByEmail resolves a sign-in email to a muster user id (case-folded).
 	IDByEmail(ctx context.Context, email string) (int64, bool, error)
-	// DisabledAmong reports, for each of ids that exists, whether it is
-	// disabled. One query: the disable sweep calls it every interval.
-	DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error)
+	// SessionStateAmong reports, for each of ids that exists, whether it is
+	// disabled and its session cutoff. One query: the session sweep calls it
+	// every interval.
+	SessionStateAmong(ctx context.Context, ids []int64) (map[int64]users.SessionState, error)
 	RedeemClaim(ctx context.Context, tokenHash []byte, email string,
 		create func(context.Context) (string, error), undo func(sub string)) (users.User, error)
 }
@@ -192,6 +193,7 @@ type gotrueState struct {
 // liveRequest is one in-flight session request's cancel.
 type liveRequest struct {
 	sid    string
+	iat    int64 // the session's issued-at, for the sweep's cutoff check
 	cancel context.CancelCauseFunc
 }
 
@@ -215,7 +217,7 @@ func (g *gotrueState) track(parent context.Context, uid int64, c gotrue.Claims) 
 		return nil, nil, false
 	}
 	ctx, cancel := context.WithCancelCause(parent)
-	lr := &liveRequest{sid: c.SessionID, cancel: cancel}
+	lr := &liveRequest{sid: c.SessionID, iat: c.IssuedAt, cancel: cancel}
 	if g.live == nil {
 		g.live = map[int64]map[*liveRequest]struct{}{}
 	}
@@ -293,10 +295,12 @@ func (g *gotrueState) runDisableSweep() {
 	}
 }
 
-// sweepDisabled re-reads disabled_at for every user with an open request, and
-// for every user this process holds as disabled: it cancels the first kind
-// when the row says disabled (or the row is gone), and forgets the second when
-// the row says enabled again (a CLI `user enable`).
+// sweepDisabled re-reads disabled_at and sessions_not_before for every user
+// with an open request, and for every user this process holds as disabled: it
+// cancels the first kind when the row says disabled (or the row is gone), and
+// each open request whose session was issued at or before the row's cutoff;
+// it forgets the second kind when the row says enabled again (a CLI `user
+// enable`).
 func (g *gotrueState) sweepDisabled(ctx context.Context) {
 	g.mu.Lock()
 	seen := map[int64]bool{}
@@ -316,7 +320,7 @@ func (g *gotrueState) sweepDisabled(ctx context.Context) {
 	}
 	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	state, err := g.Users.DisabledAmong(qctx, ids)
+	state, err := g.Users.SessionStateAmong(qctx, ids)
 	if err != nil {
 		if g.logger != nil {
 			g.logger.Printf("session: disable sweep could not read users (open streams unchanged): %v", err)
@@ -329,8 +333,8 @@ func (g *gotrueState) sweepDisabled(ctx context.Context) {
 		g.disabled = map[int64]bool{}
 	}
 	for _, id := range ids {
-		disabled, exists := state[id]
-		if !exists || disabled {
+		st, exists := state[id]
+		if !exists || st.Disabled {
 			if !g.disabled[id] || len(g.live[id]) > 0 {
 				g.disabled[id] = true
 				g.endLocked(id, "")
@@ -341,6 +345,23 @@ func (g *gotrueState) sweepDisabled(ctx context.Context) {
 		if g.disabled[id] {
 			delete(g.disabled, id)
 			g.forgetUserLocked(id)
+		}
+		// 🔴 A CUTOFF MOVED IN ANOTHER PROCESS (the server recovery from the
+		// CLI) ends every open request of a session issued at or
+		// before it, within one interval, and drops the cached row so the next
+		// request reads the new cutoff (TestACutoffFromAnotherProcessEndsOpenStreams).
+		if st.SessionsNotBefore != nil {
+			cut := st.SessionsNotBefore.Unix()
+			ended := false
+			for lr := range g.live[id] {
+				if lr.iat <= cut {
+					lr.cancel(errSessionEnded)
+					ended = true
+				}
+			}
+			if ended {
+				g.forgetUserLocked(id)
+			}
 		}
 	}
 }
@@ -683,15 +704,8 @@ func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt
 	// a token that outlives that window, so a cached read let a refresh walk
 	// past a cutoff set elsewhere (TestARefreshReadsTheCutoffFresh). Refreshes
 	// are rare (one per access-token lifetime), so the direct query is cheap.
-	u, uerr := g.Users.BySub(r.Context(), expiredSub)
-	if uerr != nil {
-		return gotrue.Session{}, gotrue.Claims{}, uerr
-	}
-	if u.Disabled() {
-		return gotrue.Session{}, gotrue.Claims{}, errDisabled
-	}
-	if issuedBeforeCutoff(u, c) {
-		return gotrue.Session{}, gotrue.Claims{}, errRevoked
+	if _, err := g.freshSessionUser(r.Context(), c); err != nil {
+		return gotrue.Session{}, gotrue.Claims{}, err
 	}
 	fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
 		rtSum := sha256.Sum256([]byte(rt))
@@ -747,6 +761,29 @@ func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt
 // "At" as well as before: iat is whole seconds, so a token stamped with the
 // cutoff's own second may predate it, and refusing it costs only a sign-in
 // made in that same second.
+// freshSessionUser is THE check that a session is still good by a FRESH read
+// of its account — the row by c's subject, never the user cache, which may be
+// up to userCacheTTL behind a cutoff or a disable written by another process
+// (the CLI). It refuses a disabled account (errDisabled) and a session issued
+// at or before the account's cutoff (errRevoked); a read error is returned
+// (every caller fails closed on it). Its two callers are a ledger
+// (TestTheFreshSessionCheckHasOneHelper): a refresh (refreshGoTrueSession),
+// which would otherwise mint a token past the cutoff, and the open tier and
+// every honoured enrolment ticket (sessionFresh).
+func (g *gotrueState) freshSessionUser(ctx context.Context, c gotrue.Claims) (users.User, error) {
+	u, err := g.Users.BySub(ctx, c.Subject)
+	if err != nil {
+		return users.User{}, err
+	}
+	if u.Disabled() {
+		return u, errDisabled
+	}
+	if issuedBeforeCutoff(u, c) {
+		return u, errRevoked
+	}
+	return u, nil
+}
+
 func issuedBeforeCutoff(u users.User, c gotrue.Claims) bool {
 	return u.SessionsNotBefore != nil && c.IssuedAt <= u.SessionsNotBefore.Unix()
 }

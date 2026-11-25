@@ -63,6 +63,7 @@ var usersReads = map[string]string{
 	"internal/users emailTaken":                            readByID, // uniqueness over every row; a team has no email
 	"internal/users PGStore.RedeemInvite":                  readByID, // a count by GoTrue subject; a team has none
 	"internal/users PGStore.ListUsers":                     readPerson,
+	"internal/users PGStore.HadStrongFactor":               readByID, // the enrolment gate's sticky tier (0189), for the signed-in person
 	"internal/users guardLastAdmin":                        readByID, // admins only; a team is never an admin (CHECK)
 	"internal/users PGStore.SetRole":                       readByID,
 	"internal/users PGStore.ListTeams":                     readTeam,
@@ -80,7 +81,7 @@ var usersReads = map[string]string{
 	"internal/users PGStore.BySub":                         readPerson,
 	"internal/users PGStore.ByID":                          readPerson,
 	"internal/users PGStore.IDByEmail":                     readPerson,
-	"internal/users PGStore.DisabledAmong":                 readByID,
+	"internal/users PGStore.SessionStateAmong":             readByID,
 	"internal/users PGStore.CreateClaimInvite":             readPerson,
 	"internal/users PGStore.ClaimInviteLive":               readByID,
 	"internal/users PGStore.RedeemClaim":                   readByID,

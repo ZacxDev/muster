@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/gotrue"
 )
 
 // FakePasskey is one registered passkey.
@@ -66,6 +68,14 @@ func (f *Fake) NewChallenge(registrationFor string) string {
 	return id
 }
 
+// LastPasskeySessionID is the session the last passkey sign-in verify
+// minted, "" for none.
+func (f *Fake) LastPasskeySessionID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastPasskeySID
+}
+
 // FailAdminUserGet makes the next n GET /admin/users/{id} calls (the user's
 // app_metadata, AdminAppMetadata) answer 500.
 func (f *Fake) FailAdminUserGet(n int) {
@@ -74,11 +84,37 @@ func (f *Fake) FailAdminUserGet(n int) {
 	f.mu.Unlock()
 }
 
+// BeforeRegister runs fn (once) when the next registration verify arrives,
+// before the fake handles it: a test's way to land a second request inside
+// the first one's call to GoTrue.
+func (f *Fake) BeforeRegister(fn func()) {
+	f.mu.Lock()
+	f.beforeRegister = fn
+	f.mu.Unlock()
+}
+
+// FailDeletePasskey makes the next n DELETE /passkeys/{id} calls (a user
+// removing one of their own) answer 500.
+func (f *Fake) FailDeletePasskey(n int) {
+	f.mu.Lock()
+	f.deletePasskeyFailures = n
+	f.mu.Unlock()
+}
+
 // FailAdminPasskeys makes the next n admin passkey calls answer 500 — a
 // GoTrue outage in the middle of a list-then-delete.
 func (f *Fake) FailAdminPasskeys(n int) {
 	f.mu.Lock()
 	f.adminPasskeyFailures = n
+	f.mu.Unlock()
+}
+
+// FailAdminPasskeysAfter lets the next ok admin passkey calls through, then
+// makes the n after them answer 500 — a GoTrue outage part-way through a
+// list-then-delete, after some deletions.
+func (f *Fake) FailAdminPasskeysAfter(ok, n int) {
+	f.mu.Lock()
+	f.adminPasskeySkip, f.adminPasskeyFailures = ok, n
 	f.mu.Unlock()
 }
 
@@ -163,6 +199,15 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 		Credential  json.RawMessage `json:"credential"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if r.Method == http.MethodPost && r.URL.Path == "/passkeys/registration/verify" {
+		f.mu.Lock()
+		hook := f.beforeRegister
+		f.beforeRegister = nil
+		f.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.passkeysEnabled {
@@ -208,6 +253,7 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 		pk.LastUsedAt = &now
 		sid := newUUID()
 		f.sessions[sid] = &session{user: u.ID, amr: f.amrLocked("passkey")}
+		f.lastPasskeySID = sid
 		at, rt := f.issueLocked(sid, "")
 		f.writeSessionLocked(w, at, rt, u)
 	case r.Method == http.MethodPost && p == "/passkeys/registration/options":
@@ -234,18 +280,22 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "webauthn_challenge_not_found", "Challenge not found or already used")
 			return
 		}
-		if cred.ID == "" {
+		// As GoTrue v2.197.0 (go-webauthn): the credential is stored under
+		// the id its SIGNED authenticator data names — never compared with
+		// the rawId the client claims.
+		signed, err := gotrue.AttestedCredentialRawID(body.Credential)
+		if cred.ID == "" || err != nil {
 			writeErr(w, 400, "webauthn_verification_failed", "Credential verification failed")
 			return
 		}
 		for _, x := range f.passkeys {
-			if x.CredentialID == cred.ID {
+			if x.CredentialID == string(signed) {
 				writeErr(w, 422, "webauthn_credential_exists", "This credential is already registered")
 				return
 			}
 		}
 		id := newUUID()
-		pk := &FakePasskey{ID: id, CredentialID: cred.ID, User: u.ID, CreatedAt: f.nowLocked()}
+		pk := &FakePasskey{ID: id, CredentialID: string(signed), User: u.ID, CreatedAt: f.nowLocked()}
 		f.passkeys[id] = pk
 		writeJSON(w, 200, passkeyItem(pk))
 	case r.Method == http.MethodGet && (p == "/passkeys" || p == "/passkeys/"):
@@ -260,6 +310,9 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, 200, items)
+	case r.Method == http.MethodDelete && strings.HasPrefix(p, "/passkeys/") && f.deletePasskeyFailures > 0:
+		f.deletePasskeyFailures--
+		writeErr(w, 500, "unexpected_failure", "injected passkey delete failure")
 	case r.Method == http.MethodDelete && strings.HasPrefix(p, "/passkeys/"):
 		u, ok := f.userFromBearerLocked(w, r)
 		if !ok {
@@ -287,7 +340,9 @@ func (f *Fake) adminPasskeyRoute(w http.ResponseWriter, r *http.Request) {
 	// admin passkey routes sit under /admin, outside requirePasskeyEnabled.
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.adminPasskeyFailures > 0 {
+	if f.adminPasskeySkip > 0 {
+		f.adminPasskeySkip--
+	} else if f.adminPasskeyFailures > 0 {
 		f.adminPasskeyFailures--
 		writeErr(w, 500, "unexpected_failure", "injected failure")
 		return
@@ -362,16 +417,35 @@ func AssertionFor(credID, userHandle string, flags byte) json.RawMessage {
 
 // Attestation is a registration credential for credID whose attestation
 // object ("none" format) carries authenticator data with flags.
+// Its authenticator data carries attested credential data naming credID, as
+// a real authenticator's does.
 func Attestation(credID string, flags byte) json.RawMessage {
+	return AttestationClaiming(credID, credID, flags)
+}
+
+// AttestationClaiming is a registration whose SIGNED authenticator data names
+// credential signedID while its id and rawId claim claimedID — what a client
+// that edits rawId sends. GoTrue (and this fake) store the credential under
+// signedID.
+func AttestationClaiming(claimedID, signedID string, flags byte) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
-		"id": credID, "rawId": b64u([]byte(credID)), "type": "public-key",
+		"id": claimedID, "rawId": b64u([]byte(claimedID)), "type": "public-key",
 		"response": map[string]any{
 			"clientDataJSON":    b64u([]byte(`{"type":"webauthn.create"}`)),
-			"attestationObject": b64u(AttestationObject(AuthData(flags))),
+			"attestationObject": b64u(AttestationObject(AttestedAuthData(flags, signedID))),
 		},
 		"clientExtensionResults": map[string]any{},
 	})
 	return b
+}
+
+// AttestedAuthData is AuthData with flags plus AT (0x40) and attested
+// credential data: a zero AAGUID, the id's length and the id (no public key:
+// nothing here reads it).
+func AttestedAuthData(flags byte, credID string) []byte {
+	out := append(AuthData(flags|0x40), make([]byte, 16)...)
+	out = append(out, byte(len(credID)>>8), byte(len(credID)))
+	return append(out, credID...)
 }
 
 // AttestationObject CBOR-encodes {"fmt":"none","attStmt":{},"authData":authData}.

@@ -375,8 +375,21 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminUsers(w, r, http.StatusBadRequest, "Choose admin or member.", "")
 		return
 	}
+	// 🔴 A PROMOTION TAKES THE ACTING ADMIN'S PROOF (admin_proof.go).
+	var giveBack func()
+	if role == authz.RoleAdmin {
+		var why string
+		why, giveBack = s.adminProof(r, false, false)
+		if why != "" {
+			s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
+			return
+		}
+	}
 	by := actorOf(r)
 	_, err := s.gt.Accounts.SetRole(r.Context(), by, u.ID, role)
+	if err != nil && giveBack != nil {
+		giveBack() // nothing changed: the proof is not spent
+	}
 	if errors.Is(err, users.ErrLastAdmin) {
 		s.renderAdminUsers(w, r, http.StatusConflict, lastAdminRefusal, "")
 		return
@@ -400,12 +413,28 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// 🔴 NOT FOR THE ADMIN'S OWN ACCOUNT: a reset link the session mints
+	// for itself would set a new password, and a reset revokes the paired
+	// phones — a way around the proof the account pages ask for
+	// (passkey_enrol.go). Your own password is changed on Account.
+	if u.ID == requestOwner(r.Context()) {
+		s.renderAdminUsers(w, r, http.StatusForbidden, AdminSelfRefusal, "")
+		return
+	}
 	if strings.TrimSpace(s.auth.PublicURL) == "" {
 		s.renderAdminUsers(w, r, http.StatusServiceUnavailable, "MUSTER_PUBLIC_URL is not set, so there is no address to put in the link.", "")
 		return
 	}
 	if u.GotrueSub == "" || u.Email == "" {
 		s.renderAdminUsers(w, r, http.StatusConflict, "That user has no login to reset.", "")
+		return
+	}
+	// 🔴 A RESET LINK FOR AN ACCOUNT THAT HAS HAD A FACTOR takes the acting
+	// admin's proof, from an account that has had one too (admin_proof.go): a
+	// completed reset clears the target's mark.
+	why, giveBack := s.adminProof(r, s.targetMarked(r, u), true)
+	if why != "" {
+		s.renderAdminUsers(w, r, http.StatusForbidden, why, "")
 		return
 	}
 	by := actorOf(r)
@@ -418,10 +447,15 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 		return err
 	})
 	if err != nil {
+		if giveBack != nil {
+			giveBack() // nothing was made: the proof is not spent
+		}
 		s.logger.Printf("admin: reset link for user %d: %v", u.ID, err)
 		s.renderAdminUsers(w, r, http.StatusBadGateway, "A reset link could not be made right now.", "")
 		return
 	}
+	// The account is told a link exists (and again when it is used).
+	s.notifySecurity(r.Context(), u.ID, ResetLinkMintedTitle, ResetLinkBody, "/account")
 	link := strings.TrimRight(s.auth.PublicURL, "/") + ResetPath + "#" + hashed
 	s.renderAdminUsers(w, r, http.StatusOK, "", shownOnce("Reset link for "+u.Email, link,
 		"Send this to them. It sets a new password once and then stops working."))

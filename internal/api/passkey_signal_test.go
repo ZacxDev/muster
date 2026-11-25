@@ -182,7 +182,9 @@ func TestARegistrationRecordsTheCredentialID(t *testing.T) {
 	gu, _ := w.fake.User(sub)
 	all, _ := gu.AppMetadata[passkeyMetaKey].(map[string]any)
 	got, _ := all[id].(map[string]any)
-	want := map[string]any{"synced": true, "can_sync": true, passkeyCredIDKey: b64url("raw-id-α")}
+	// "vouched": false — an account with no passkey and no phone adds its
+	// first with the password alone (passkey_enrol.go).
+	want := map[string]any{"synced": true, "can_sync": true, passkeyCredIDKey: b64url("raw-id-α"), "vouched": false}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the record: %v, want %v", got, want)
 	}
@@ -214,6 +216,7 @@ func TestThePasskeysPageSignalsTheCompleteSet(t *testing.T) {
 	if d.UserID == b64url("pk-signal@invite.test") || d.UserID == sub {
 		t.Fatal("the user handle is not the base64url of the subject")
 	}
+	w.proveWithAPasskey(cookies) // a removal takes the proof (passkey_enrol.go)
 	r := do(w.edge, "POST", accountPasskeysPath+"/"+ids[0]+"/delete", url.Values{}, cookies)
 	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != accountPasskeysPath {
 		t.Fatalf("remove: %d %q", r.Code, r.Header().Get("Location"))

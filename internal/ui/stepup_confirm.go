@@ -427,6 +427,23 @@ function mpkMissing() {
   return '';
 }
 function mpkSupported() { return !mpkMissing(); }
+// mpkRequestOptions is the WebAuthn request options from GoTrue's sign-in
+// options, with their binary fields decoded: a COPY, so the answer kept for a
+// later tap stays base64url.
+function mpkRequestOptions(src) {
+  var pk = {};
+  for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) pk[k] = src[k]; }
+  pk.challenge = mpkB64ToBuf(src.challenge);
+  if (src.allowCredentials) {
+    pk.allowCredentials = src.allowCredentials.map(function (c) {
+      var d = {};
+      for (var k in c) { if (Object.prototype.hasOwnProperty.call(c, k)) d[k] = c[k]; }
+      d.id = mpkB64ToBuf(c.id);
+      return d;
+    });
+  }
+  return pk;
+}
 function mpkSay(el, msg) { if (el) { el.textContent = msg; } }
 function mpkCancelled(e) { return e && (e.name === 'NotAllowedError' || e.name === 'AbortError'); }
 `
@@ -826,20 +843,7 @@ window.musterStepUp = (function () {
   // pkOptions is the WebAuthn request options from an options answer, with
   // its binary fields decoded — a COPY: the answer is kept, and reused by the
   // next tap while its challenge is unspent, so it must stay base64url.
-  function pkOptions(src) {
-    var pk = {};
-    for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) pk[k] = src[k]; }
-    pk.challenge = mpkB64ToBuf(src.challenge);
-    if (src.allowCredentials) {
-      pk.allowCredentials = src.allowCredentials.map(function (c) {
-        var d = {};
-        for (var k in c) { if (Object.prototype.hasOwnProperty.call(c, k)) d[k] = c[k]; }
-        d.id = mpkB64ToBuf(c.id);
-        return d;
-      });
-    }
-    return pk;
-  }
+  function pkOptions(src) { return mpkRequestOptions(src); }
   // track sends one telemetry event (see stepUpScript). cgTrack is faro.go's,
   // defined only when telemetry is on.
   function track(name, ev) {

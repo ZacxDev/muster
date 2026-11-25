@@ -108,16 +108,16 @@ func (m *memUsers) IDByEmail(_ context.Context, email string) (int64, bool, erro
 	return 0, false, nil
 }
 
-func (m *memUsers) DisabledAmong(_ context.Context, ids []int64) (map[int64]bool, error) {
+func (m *memUsers) SessionStateAmong(_ context.Context, ids []int64) (map[int64]users.SessionState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.lookupErr != nil {
 		return nil, m.lookupErr
 	}
-	out := map[int64]bool{}
+	out := map[int64]users.SessionState{}
 	for _, id := range ids {
 		if u, ok := m.rows[id]; ok {
-			out[id] = u.DisabledAt != nil
+			out[id] = users.SessionState{Disabled: u.DisabledAt != nil, SessionsNotBefore: u.SessionsNotBefore}
 		}
 	}
 	return out, nil

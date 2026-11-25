@@ -103,6 +103,9 @@ cookie POST /account/notifications/codename
 cookie POST /account/notifications/tmux
 cookie POST /account/pages/agent-share
 cookie POST /account/passkeys/options
+cookie POST /account/passkeys/proof/options
+cookie POST /account/passkeys/proof/phone
+cookie POST /account/passkeys/proof/verify
 cookie POST /account/passkeys/verify
 cookie POST /account/passkeys/{id}/delete
 cookie POST /account/push/preferences
@@ -146,6 +149,8 @@ cookie POST /api/push/unsubscribe
 cookie POST /attention/asks/{id}/answer
 cookie POST /attention/asks/{id}/cancel
 cookie POST /attention/asks/{id}/redeliver
+cookie POST /attention/asks/{id}/stepup/passkey/options
+cookie POST /attention/asks/{id}/stepup/passkey/verify
 cookie POST /attention/opencode/answer
 cookie POST /attention/wakes/{id}/retry
 cookie POST /auth/confirm

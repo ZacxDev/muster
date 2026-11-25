@@ -1,0 +1,642 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"html"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/users"
+)
+
+// ---------------------------------------------------------------------------
+// A STEP-UP CARD DECIDED IN THE BROWSER, WITH A FRESH PASSKEY (operator
+// decision; docs/sending-and-step-up.md, "Confirming in the browser").
+//
+// A confirmation card (host_stepup.go) used to be answered only from the
+// owner's paired phone. Its card in muster — the ask page and the Asks feed —
+// now also offers Confirm and Refuse, each of which runs a PASSKEY CEREMONY
+// FOR THAT ONE DECISION:
+//
+//	POST /attention/asks/{id}/stepup/passkey/options
+//	  → {available:false} for an account with no passkey (no challenge
+//	    minted), else {available, challenge_id, options}: a GoTrue sign-in
+//	    challenge with user verification REQUIRED, which muster records as
+//	    minted for this person and this card (stepUpCardWeb.mint).
+//	POST /attention/asks/{id}/stepup/passkey/verify
+//	  {challenge_id, credential, answer: "Confirm"|"Refuse", return}
+//	  → the card decided exactly as the phone's signed action decides it.
+//
+// 🔴 A RECENT SIGN-IN IS NOT ENOUGH. The proof is the assertion made for this
+// request, never the session's freshness: a session that signed in a minute
+// ago still has to run the ceremony.
+//
+// 🔴 THE PROOF IS BOUND TO ONE CARD, TWICE. (1) The challenge is spent by the
+// verify that presents it (single use) and is refused unless it was minted
+// for the SAME person and the SAME card the verify names — so an assertion
+// made on card A's prompt cannot decide card B, and a replay finds nothing.
+// (2) The decision then runs with a proof on its context that names that card
+// (withStepUpPasskeyDecision), which hostDecisionForAnswer accepts for that
+// card alone: a held call running under it (an attention_answer of another
+// card) proves nothing for any other.
+//
+// 🔴 ONE CORE. The ceremony is verifySessionPasskey, the passkey step-up's own
+// (the UV guard, GoTrue's single-use challenge, the session's-own-user
+// binding, the sign-in limiter); the decision is answerAskFrom →
+// hostDecisionForAnswer, the phone's own — owner-scoped, a closed card runs
+// nothing, the card claimed before its call runs, so a phone and a browser
+// racing decide it once: the other is told to retry while the winner records
+// its answer (that write may yet fail and reopen the card), then that it was
+// decided. The
+// session GoTrue minted for the ceremony is signed out at once: the ceremony
+// decides the card and makes no session fresh.
+//
+// 🔴 ONLY A PASSKEY THAT MAY DECIDE CARDS (passkey_enrol.go): one added with
+// the password alone is refused here, so — once the account has a passkey or
+// a step-up phone — a password alone never reaches card
+// approval. A card only the phone decides (hostDecision.phoneOnly: adding a
+// passkey) offers no browser decision at all.
+//
+// A team files no step-up card (every tool in hostStepUpTools is refused to a
+// team token: TestEveryMirrorToolIsClassifiedForATeamHost), so there is no
+// team rule here: the pending decision's owner check is the whole of it.
+// ---------------------------------------------------------------------------
+
+// stepUpCardPasskeyPath is card id's passkey decision route prefix (the page's
+// script posts to <prefix>/options and <prefix>/verify). Registered literally
+// in registerAttentionRoutes.
+func stepUpCardPasskeyPath(id int64) string { return askPagePath(id) + "/stepup/passkey" }
+
+// stepUpCardChallengeTTL is how long a challenge minted for a card decision is
+// honoured: GoTrue's own passkey challenge lifetime.
+const stepUpCardChallengeTTL = 5 * time.Minute
+
+// stepUpCardChallengesPerUser bounds the challenges kept for one person (the
+// oldest goes first): a prompt opened on several cards, or reopened, never
+// grows the set without bound.
+const stepUpCardChallengesPerUser = 8
+
+// stepUpPasskeyCacheFor is how long whether an account has a passkey is kept
+// for drawing its cards (a live refresh of the Asks feed asks again often);
+// adding or removing one forgets it at once (setPasskeyFlag).
+const stepUpPasskeyCacheFor = 30 * time.Second
+
+// stepUpCardChallenge is what one minted challenge was minted for.
+type stepUpCardChallenge struct {
+	user, card int64
+	minted     time.Time
+}
+
+// stepUpCardWeb is the browser door's in-memory state: the challenges minted
+// for card decisions, by GoTrue challenge id, and whether an account has a
+// passkey, by GoTrue subject. In memory, as hostDecisions is: muster runs one
+// replica, and a restart loses only challenges nobody can use any more.
+type stepUpCardWeb struct {
+	mu         sync.Mutex
+	challenges map[string]stepUpCardChallenge
+	has        map[string]passkeyHeld
+}
+
+// passkeyHeld is one cached answer of what an account's passkeys allow on a
+// card (stepUpWebAccount).
+type passkeyHeld struct {
+	offer stepUpWebOffer
+	at    time.Time
+}
+
+// mint records challenge ch as minted for user's decision of card.
+func (c *stepUpCardWeb) mint(ch string, user, card int64, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.challenges == nil {
+		c.challenges = map[string]stepUpCardChallenge{}
+	}
+	oldest, n := "", 0
+	for k, v := range c.challenges {
+		if now.Sub(v.minted) > stepUpCardChallengeTTL {
+			delete(c.challenges, k)
+			continue
+		}
+		if v.user == user {
+			n++
+			if oldest == "" || v.minted.Before(c.challenges[oldest].minted) {
+				oldest = k
+			}
+		}
+	}
+	if n >= stepUpCardChallengesPerUser && oldest != "" {
+		delete(c.challenges, oldest)
+	}
+	c.challenges[ch] = stepUpCardChallenge{user: user, card: card, minted: now}
+}
+
+// spend removes challenge ch and returns what it was minted for: single use,
+// so whatever the verify then decides, the same challenge is never honoured
+// again. false for one never minted here, spent already, or expired.
+func (c *stepUpCardWeb) spend(ch string, now time.Time) (stepUpCardChallenge, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.challenges[ch]
+	delete(c.challenges, ch)
+	if !ok || now.Sub(v.minted) > stepUpCardChallengeTTL {
+		return stepUpCardChallenge{}, false
+	}
+	return v, true
+}
+
+func (c *stepUpCardWeb) cachedOffer(sub string, now time.Time) (stepUpWebOffer, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h, ok := c.has[sub]
+	if !ok || now.Sub(h.at) > stepUpPasskeyCacheFor {
+		return 0, false
+	}
+	return h.offer, true
+}
+
+func (c *stepUpCardWeb) rememberOffer(sub string, offer stepUpWebOffer, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.has == nil {
+		c.has = map[string]passkeyHeld{}
+	}
+	c.has[sub] = passkeyHeld{offer: offer, at: now}
+}
+
+// forget drops what is cached about sub's passkeys (one was added or
+// removed).
+func (c *stepUpCardWeb) forget(sub string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.has, sub)
+}
+
+// stepUpPasskeyDecisionKey carries, on a decision's context, the card a passkey
+// ceremony was made for and when it verified — set only by
+// handleStepUpCardPasskeyVerify, after verifySessionPasskey verified the
+// assertion and the challenge's binding to that card held.
+type stepUpPasskeyDecisionKey struct{}
+
+type stepUpPasskeyDecision struct {
+	card int64
+	at   time.Time
+}
+
+func withStepUpPasskeyDecision(ctx context.Context, card int64, at time.Time) context.Context {
+	return context.WithValue(ctx, stepUpPasskeyDecisionKey{}, stepUpPasskeyDecision{card: card, at: at})
+}
+
+// stepUpPasskeyDecisionAt is when ctx's passkey decision verified, whatever
+// card it was for (the session wake's sign-in time: wakeDecisionSignIn).
+func stepUpPasskeyDecisionAt(ctx context.Context) (time.Time, bool) {
+	d, ok := ctx.Value(stepUpPasskeyDecisionKey{}).(stepUpPasskeyDecision)
+	return d.at, ok && !d.at.IsZero()
+}
+
+// The doors that may decide a step-up card (stepUpDoor).
+const (
+	stepUpDoorPhone   = "phone"
+	stepUpDoorPasskey = "passkey"
+)
+
+// stepUpDoor is the door ctx decides card id through — the paired phone's
+// signed action, or a passkey ceremony made for THIS card — and "" for any
+// other (a browser without one, an MCP answer, a passkey proof for another
+// card).
+func stepUpDoor(ctx context.Context, p authz.Principal, id int64) string {
+	if p.Via == authz.ViaDevice {
+		return stepUpDoorPhone
+	}
+	if d, ok := ctx.Value(stepUpPasskeyDecisionKey{}).(stepUpPasskeyDecision); ok && d.card == id && !d.at.IsZero() {
+		return stepUpDoorPasskey
+	}
+	return ""
+}
+
+// stepUpDoorWords is the door in the server log's words.
+func stepUpDoorWords(door string) string {
+	if door == stepUpDoorPasskey {
+		return "in the browser with a passkey"
+	}
+	return "on the owner's phone"
+}
+
+// stepUpAuditStore is the users store's audit write.
+type stepUpAuditStore interface {
+	Audit(ctx context.Context, by users.Actor, action, object string, detail map[string]any) error
+}
+
+// stepUpDecisionAuditAction is the audit_log action of a decided step-up card.
+const stepUpDecisionAuditAction = "stepup.decided"
+
+// auditStepUpDecision writes the one audit_log row of a decided card: which
+// card, the tool it held, the answer, and the door that decided it. A failed
+// write is logged.
+func (s *Server) auditStepUpDecision(ctx context.Context, p authz.Principal, id int64, tool, answer, door string) {
+	a, ok := s.ext.Users.(stepUpAuditStore)
+	if !ok {
+		return
+	}
+	if err := a.Audit(ctx, users.Actor{UserID: p.UserID, Via: p.Via}, stepUpDecisionAuditAction, "ask:"+strconv.FormatInt(id, 10),
+		map[string]any{"tool": tool, "answer": answer, "door": door}); err != nil {
+		s.logger.Printf("step-up: audit card %d's decision: %v", id, err)
+	}
+}
+
+// The browser door's refusals, as the page's script shows them.
+const (
+	StepUpCardOtherPrompt = "That passkey prompt was for another card, or has expired. Nothing was decided: try again."
+	StepUpCardDecided     = "This card was already decided. Nothing more was run."
+	StepUpCardClosed      = "This card is closed, so its request was dropped and nothing ran."
+	StepUpCardLost        = "This card's request was lost when muster restarted: nothing ran, and the session must ask again."
+	StepUpCardNotACard    = "That is not a confirmation card."
+	StepUpCardBusy        = "This card is being decided right now. Try again in a moment."
+	StepUpCardPhoneOnly   = "This card is confirmed only on your paired phone."
+	StepUpCardUnvouched   = "That passkey was added with your password alone, so it cannot approve a card. Confirm on your phone, or add a passkey confirmed on your phone."
+)
+
+// stepUpCardRefusal is why ctx's principal may not decide card id in the
+// browser now — "" when it may — with its status and the phone door's refusal
+// code where one applies: not theirs (row-level security reads another
+// owner's ask as missing), not a step-up card, one only the phone decides,
+// settled, being decided right now (retry), or its decision lost.
+func (s *Server) stepUpCardRefusal(ctx context.Context, id int64) (string, int) {
+	if s.ext.Attention == nil {
+		return "No such question.", http.StatusNotFound
+	}
+	a, err := s.ext.Attention.Get(ctx, id)
+	switch {
+	case errors.Is(err, attention.ErrNotFound):
+		return "No such question.", http.StatusNotFound
+	case err != nil:
+		s.logger.Printf("step-up: read card %d for a passkey decision: %v", id, err)
+		return "That could not be checked. Try again.", http.StatusInternalServerError
+	case !isStepUpCard(a):
+		return StepUpCardNotACard, http.StatusBadRequest
+	}
+	switch {
+	case stepUpCardDecided(a):
+		return StepUpCardDecided, http.StatusConflict
+	case a.Status != attention.Open:
+		return StepUpCardClosed, http.StatusConflict
+	}
+	d, ok := s.hostDecisions.peek(id)
+	switch {
+	case !ok && s.hostDecisions.isDeciding(id):
+		return StepUpCardBusy, http.StatusConflict
+	case !ok:
+		return StepUpCardLost, http.StatusGone
+	case d.owner != requestOwner(ctx):
+		return "No such question.", http.StatusNotFound
+	case d.phoneOnly:
+		return StepUpCardPhoneOnly, http.StatusForbidden
+	}
+	return "", 0
+}
+
+// handleStepUpCardPasskeyOptions is POST /attention/asks/{id}/stepup/passkey/options.
+func (s *Server) handleStepUpCardPasskeyOptions(w http.ResponseWriter, r *http.Request) {
+	creds, refused := s.stepUpPasskeyRefusal(w, r)
+	if refused {
+		return
+	}
+	id, ok := askIDParam(r)
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "No such question."})
+		return
+	}
+	if why, status := s.stepUpCardRefusal(r.Context(), id); why != "" {
+		s.writeJSON(w, status, map[string]any{"error": why})
+		return
+	}
+	ip := clientIP(r)
+	list, err := s.accountPasskeys(r.Context(), ip, creds)
+	if err != nil {
+		s.writeGoTrueRefusal(w, "the passkey list (card decision)", err, PasskeysOffRefusal)
+		return
+	}
+	if len(list) == 0 {
+		// No passkey, no challenge (as the step-up confirm's options).
+		s.writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+	// Nor for an account none of whose passkeys may decide a card.
+	may, err := s.accountMayDecideCards(r.Context(), creds)
+	if err != nil {
+		s.logger.Printf("step-up: read the passkey records of user %d: %v", authz.MustFrom(r.Context()).UserID, err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
+		return
+	}
+	if !may {
+		s.writeJSON(w, http.StatusOK, map[string]any{"available": false, "error": StepUpCardUnvouched})
+		return
+	}
+	o, err := s.gt.Client.PasskeySignInOptions(r.Context(), ip)
+	if err != nil {
+		s.writeGoTrueRefusal(w, "card decision options", err, PasskeysOffRefusal)
+		return
+	}
+	opts, err := gotrue.RequireUserVerification(o.Options, false)
+	if err != nil {
+		s.writeGoTrueRefusal(w, "card decision options", err, PasskeysOffRefusal)
+		return
+	}
+	s.stepUpCards.mint(o.ChallengeID, authz.MustFrom(r.Context()).UserID, id, s.stepUpNow())
+	s.writeJSON(w, http.StatusOK, map[string]any{"available": true, "challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
+}
+
+// handleStepUpCardPasskeyVerify is POST /attention/asks/{id}/stepup/passkey/verify.
+func (s *Server) handleStepUpCardPasskeyVerify(w http.ResponseWriter, r *http.Request) {
+	creds, refused := s.stepUpPasskeyRefusal(w, r)
+	if refused {
+		return
+	}
+	id, ok := askIDParam(r)
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "No such question."})
+		return
+	}
+	ctx := r.Context()
+	me := authz.MustFrom(ctx).UserID
+	// The card first: one that is not this person's to decide now is refused
+	// before anything else is read.
+	if why, status := s.stepUpCardRefusal(ctx, id); why != "" {
+		s.writeJSON(w, status, map[string]any{"error": why})
+		return
+	}
+	var body struct {
+		ChallengeID string          `json:"challenge_id"`
+		Credential  json.RawMessage `json:"credential"`
+		Answer      string          `json:"answer"`
+		Return      string          `json:"return"`
+	}
+	if !readPasskeyBody(w, r, &body) || body.ChallengeID == "" {
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
+		return
+	}
+	if body.Answer != hostDecisionConfirm && body.Answer != hostDecisionRefuse {
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, "Answer "+hostDecisionConfirm+" or "+hostDecisionRefuse+".")
+		return
+	}
+	// 🔴 THE CARD BINDING: the challenge is spent here, whatever follows, and
+	// must have been minted for this person's decision of THIS card.
+	minted, ok := s.stepUpCards.spend(body.ChallengeID, s.stepUpNow())
+	if !ok || minted.user != me || minted.card != id {
+		s.logger.Printf("step-up: refused a passkey decision of card %d by user %d: its challenge was not minted for that card", id, me)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": StepUpCardOtherPrompt})
+		return
+	}
+	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey decision", false, func(pk sessionPasskey) signinOutcome {
+		// The ceremony decides this card; it makes no session fresh.
+		pk.end()
+		// 🔴 A PASSKEY ADDED WITH THE PASSWORD ALONE DECIDES NO CARD
+		// (passkey_enrol.go).
+		st, err := s.assertionStanding(ctx, creds, body.Credential)
+		may := st == standingVouched
+		if err != nil {
+			s.logger.Printf("step-up: read the passkey records of user %d for card %d: %v", me, id, err)
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "That could not be checked. Try again."})
+			return outcomeSucceeded
+		}
+		if !may {
+			s.logger.Printf("step-up: refused card %d to user %d: the passkey was added with the password alone", id, me)
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": StepUpCardUnvouched})
+			return outcomeSucceeded
+		}
+		dctx := withStepUpPasskeyDecision(ctx, id, pk.at)
+		a, err := s.answerAskFrom(dctx, id, body.Answer, attention.AnswerSource{})
+		if err != nil {
+			why, status := stepUpCardDecisionRefusal(err)
+			if status == http.StatusInternalServerError {
+				s.logger.Printf("step-up: a passkey decision of card %d: %v", id, err)
+			}
+			s.writeJSON(w, status, map[string]any{"error": why})
+			// The passkey was this person's: the refusal is the card's, not a
+			// failed sign-in.
+			return outcomeSucceeded
+		}
+		// A passkey decided a card: the account has a factor (migration 0189).
+		_ = s.markStrongFactor(ctx, me)
+		next := askPagePath(id)
+		if body.Return == attentionPath {
+			next = settledLink(id)
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": a.ID, "status": a.Status, "answer": a.Answer, "next": next})
+		return outcomeSucceeded
+	})
+}
+
+// stepUpCardDecisionRefusal is a refused decision's words and status.
+func stepUpCardDecisionRefusal(err error) (string, int) {
+	switch {
+	case errors.Is(err, errHostDecisionDecided):
+		return StepUpCardDecided, http.StatusConflict
+	case errors.Is(err, errHostDecisionBusy):
+		return StepUpCardBusy, http.StatusConflict
+	case errors.Is(err, errHostDecisionClosed), errors.Is(err, attention.ErrNotOpen):
+		return StepUpCardClosed, http.StatusConflict
+	case errors.Is(err, errHostDecisionLost):
+		return StepUpCardLost, http.StatusGone
+	case errors.Is(err, attention.ErrNotFound):
+		return "No such question.", http.StatusNotFound
+	case errors.Is(err, attention.ErrInvalid):
+		return attentionErrText(err, attention.Ask{}), http.StatusBadRequest
+	}
+	return "That could not be decided. Try again.", http.StatusInternalServerError
+}
+
+// --- drawing it ----------------------------------------------------------------
+
+// stepUpWebOffer is what a step-up card's line offers in the browser.
+type stepUpWebOffer int
+
+const (
+	// stepUpWebPhoneOnly: the phone line alone (no passkeys on this server,
+	// the account's could not be read, or the card's decision is not one this
+	// reader can make).
+	stepUpWebPhoneOnly stepUpWebOffer = iota
+	// stepUpWebNoPasskey: the phone line, and where a passkey is added.
+	stepUpWebNoPasskey
+	// stepUpWebUnvouched: the account's passkeys were all added with the
+	// password alone (passkey_enrol.go): the phone line, and how to add one
+	// that may decide cards.
+	stepUpWebUnvouched
+	// stepUpWebPasskey: Confirm and Refuse, each behind a passkey ceremony.
+	stepUpWebPasskey
+)
+
+// stepUpWebAccount is what ctx's reader's ACCOUNT allows on any card: a
+// passkey decision when this server serves passkeys and the account has one,
+// the hint when it has none, the phone line alone otherwise. One read per
+// render, cached briefly (stepUpPasskeyCacheFor).
+func (s *Server) stepUpWebAccount(ctx context.Context) stepUpWebOffer {
+	creds, ok := gotrueCredsFrom(ctx)
+	if !ok || !s.passkeysServed(ctx) {
+		return stepUpWebPhoneOnly
+	}
+	now := s.stepUpNow()
+	if offer, ok := s.stepUpCards.cachedOffer(creds.claims.Subject, now); ok {
+		return offer
+	}
+	// muster's own read while drawing a page, not a request of the client's:
+	// named as the server, as its other reads of GoTrue are.
+	list, err := s.accountPasskeys(ctx, "muster-server", creds)
+	if err != nil {
+		s.logger.Printf("step-up: read the passkeys of user %d for their cards: %v", requestOwner(ctx), err)
+		return stepUpWebPhoneOnly
+	}
+	offer := stepUpWebNoPasskey
+	if len(list) > 0 {
+		may, err := s.accountMayDecideCards(ctx, creds)
+		if err != nil {
+			s.logger.Printf("step-up: read the passkey records of user %d for their cards: %v", requestOwner(ctx), err)
+			return stepUpWebPhoneOnly
+		}
+		offer = stepUpWebUnvouched
+		if may {
+			offer = stepUpWebPasskey
+		}
+	}
+	s.stepUpCards.rememberOffer(creds.claims.Subject, offer, now)
+	return offer
+}
+
+// stepUpWebFor is what card id's line offers ctx's reader, given what their
+// account allows: a passkey decision only for an open card whose decision is
+// pending for THIS reader (a lost one is the phone's to refuse too).
+func (s *Server) stepUpWebFor(ctx context.Context, account stepUpWebOffer, id int64) stepUpWebOffer {
+	if account != stepUpWebPasskey {
+		return account
+	}
+	if d, ok := s.hostDecisions.peek(id); !ok || d.owner != requestOwner(ctx) || d.phoneOnly {
+		return stepUpWebPhoneOnly
+	}
+	return stepUpWebPasskey
+}
+
+// The browser door's words on a card.
+const (
+	askStepUpPasskeyLine = "Confirm here with your passkey, or on your phone."
+	askStepUpPasskeyHint = "To confirm here instead, add a passkey under "
+	askStepUpUnvouched   = "Your passkeys were added with your password alone, so they cannot approve a card. To confirm here, add one confirmed on your phone under "
+)
+
+// askStepUpWebHTML is a step-up card's line in place of its options and
+// answer box, on the ask page and the feed's card alike (askStepUpPhoneHTML
+// for the phone alone): with a passkey decision, the line and Confirm and
+// Refuse, each running a passkey ceremony for that card (stepUpCardScript);
+// with no passkey on the account, the phone line and where one is added.
+// back is the page the decision returns to (attentionPath or the card's
+// page); size is the line's text size class.
+func askStepUpWebHTML(id int64, offer stepUpWebOffer, back, size string) string {
+	switch offer {
+	case stepUpWebNoPasskey, stepUpWebUnvouched:
+		hint := askStepUpPasskeyHint
+		if offer == stepUpWebUnvouched {
+			hint = askStepUpUnvouched
+		}
+		return askStepUpPhoneHTML(size) + `<p class="break-words text-xs text-fg2" data-ask-stepup-passkey-hint>` + hint +
+			`<a href="` + accountPasskeysPath + `" class="font-semibold text-accent underline">Account → Passkeys</a>.</p>`
+	case stepUpWebPasskey:
+	default:
+		return askStepUpPhoneHTML(size)
+	}
+	esc := html.EscapeString
+	n := strconv.FormatInt(id, 10)
+	return `<div class="flex min-w-0 flex-col gap-2" data-ask-stepup-web data-card="` + n + `" data-path="` + esc(stepUpCardPasskeyPath(id)) +
+		`" data-return="` + esc(back) + `">` +
+		`<p class="break-words ` + size + ` text-fg2" data-ask-stepup-phone data-phone-line="` + esc(askStepUpPhoneLine) + `">` + askStepUpPasskeyLine + `</p>` +
+		`<div class="flex flex-wrap items-center gap-2" data-stepup-buttons>` +
+		`<button type="button" class="` + ui.AsksPrimaryButtonBase + `" data-stepup-decide="` + hostDecisionConfirm + `">` + hostDecisionConfirm + `</button>` +
+		`<button type="button" class="` + ui.AsksSecondaryButtonClass + `" data-stepup-decide="` + hostDecisionRefuse + `">` + hostDecisionRefuse + `</button>` +
+		`</div><p role="alert" class="break-words text-sm text-st-error-fg" hidden data-stepup-error></p></div>`
+}
+
+// stepUpCardScript runs a step-up card's Confirm and Refuse.
+//
+// 🔴 THE PROMPT IS CALLED IN THE TAP ITSELF. WebKit grants WebAuthn only
+// inside a user gesture, and an await on the network between the tap and
+// navigator.credentials.get can outlive it (a NotAllowedError that reads as
+// a cancel). So the card's options are fetched when the person REACHES for a
+// button (pointerdown — never on mere focus or page load, so no challenge is
+// minted for a card nobody touches), and the tap calls
+// navigator.credentials.get synchronously when they are already here. A tap
+// whose options are not here yet (a keyboard Enter, a slow network) starts the
+// fetch and says "Getting ready — tap again" rather than awaiting it and
+// prompting outside the gesture. On success the page loads the one the server
+// names (the card, settled). A browser that cannot run WebAuthn gets the
+// phone line back and no buttons. Delegated on the document, so a card a
+// live refresh draws later is covered.
+const stepUpCardScript = `<script>
+(function () {
+` + ui.PasskeyJS + ui.PasskeyPrefetchJS + `
+  var pre = {}, busy = {};
+  function boxOf(el) { return el && el.closest ? el.closest('[data-ask-stepup-web]') : null; }
+  function say(b, msg) { var e = b.querySelector('[data-stepup-error]'); if (!e) return; e.textContent = msg || ''; e.hidden = !msg; }
+  function phoneOnly(b) {
+    var line = b.querySelector('[data-ask-stepup-phone]'), btns = b.querySelector('[data-stepup-buttons]');
+    if (line) line.textContent = line.getAttribute('data-phone-line') || line.textContent;
+    if (btns) btns.hidden = true;
+  }
+  // fetchOptions starts one /options fetch for box b and keeps its answer on
+  // the prefetch (p.answer) once it lands, so a tap can read it synchronously.
+  function fetchOptions(b) {
+    var id = b.getAttribute('data-card');
+    var p = pre[id] = mpkPrefetch(b.getAttribute('data-path') + '/options');
+    p.promise.then(function (o) { p.answer = o; }, function () { p.failed = true; });
+    return p;
+  }
+  document.addEventListener('pointerdown', function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('[data-stepup-decide]') : null, b = boxOf(btn);
+    if (!b || mpkMissing() || busy[b.getAttribute('data-card')]) return;
+    var p = pre[b.getAttribute('data-card')];
+    if (!p || !mpkFresh(p) || p.failed) fetchOptions(b);
+  }, true);
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('[data-stepup-decide]') : null, b = boxOf(btn);
+    if (!btn || !b) return;
+    ev.preventDefault();
+    var id = b.getAttribute('data-card');
+    if (busy[id]) return;
+    if (mpkMissing()) { phoneOnly(b); say(b, 'This browser cannot use a passkey here. Confirm on your phone.'); return; }
+    var p = pre[id];
+    if (!p || !mpkFresh(p) || p.failed) { fetchOptions(b); say(b, 'Getting ready. Tap again.'); return; }
+    if (!p.answer) { say(b, 'Getting ready. Tap again.'); return; }
+    var o = p.answer;
+    // A challenge is used once: the next tap fetches another.
+    delete pre[id];
+    if (!o.ok) { say(b, (o.data && o.data.error) || 'The passkey prompt could not be started. Try again.'); return; }
+    if (!o.data.available || !o.data.challenge_id) {
+      phoneOnly(b);
+      say(b, (o.data && o.data.error) || 'This account has no passkey that can approve a card. Confirm on your phone.');
+      return;
+    }
+    busy[id] = true;
+    b.setAttribute('aria-busy', 'true');
+    say(b, '');
+    function done(msg) { busy[id] = false; b.removeAttribute('aria-busy'); say(b, msg); }
+    // 🔴 CALLED HERE, IN THE TAP, before any await.
+    var ask;
+    try { ask = navigator.credentials.get({ publicKey: mpkRequestOptions(o.data.options) }); }
+    catch (e) { done('The passkey could not be used (' + (e && e.name || 'error') + '). Nothing was decided.'); return; }
+    ask.then(function (cred) {
+      return mpkPost(b.getAttribute('data-path') + '/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred),
+        answer: btn.getAttribute('data-stepup-decide'), 'return': b.getAttribute('data-return') }).then(function (v) {
+        if (v.ok) { window.location.assign((v.data && v.data.next) || window.location.href); return; }
+        done((v.data && v.data.error) || 'That could not be decided. Try again.');
+      }, function () { done('muster could not be reached. Nothing was decided: try again.'); });
+    }, function (e) {
+      done(mpkCancelled(e) ? 'The passkey was cancelled. Nothing was decided.' : 'The passkey could not be used (' + (e && e.name || 'error') + '). Nothing was decided.');
+    });
+  });
+})();
+</script>
+`

@@ -1,20 +1,25 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/users"
+	"golang.org/x/term"
 )
 
 // runAccountCommand runs a one-shot account command and returns the process
@@ -28,12 +33,28 @@ import (
 //	muster-server user disable <id>      disabled_at + GoTrue ban, and the
 //	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
+//	muster-server user reset-factors <id|email> [--new-password-stdin]
+//	                                     remove every passkey and paired phone of
+//	                                     the account, end every session (and set
+//	                                     a new password read from stdin), and
+//	                                     reopen its first-factor tier (migration
+//	                                     0189): the recovery for a sole admin who
+//	                                     lost every passkey and phone
 //	muster-server app install|rotate|uninstall|list|unlink
 //	                                     server-installed apps (app_cmd.go)
+//
+// accountStdin is where --new-password-stdin reads (a test swaps it).
+var accountStdin io.Reader = os.Stdin
+
+// stdinIsTerminal reports whether f is a terminal (isatty), where a typed
+// password would be shown: /dev/null or a pipe is not (a test swaps it).
+var stdinIsTerminal = func(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
+
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(stderr, "usage: muster-server invite --claim-admin\n"+
 			"       muster-server user disable|enable <user-id>\n"+
+			"       muster-server user reset-factors <user-id|email> [--new-password-stdin]\n"+
 			"       muster-server app install|rotate|uninstall|list|unlink …")
 		return 2
 	}
@@ -74,6 +95,80 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		if note != "" {
 			fmt.Fprintln(stderr, note)
 		}
+		return 0
+	case (len(args) == 3 || (len(args) == 4 && args[3] == "--new-password-stdin")) && args[0] == "user" && args[1] == "reset-factors":
+		// THE RECOVERY FOR A SOLE ADMIN WHO LOST EVERY FACTOR (docs/auth.md,
+		// "Recovery when no factor is left"): on a server with no other admin
+		// to mint a reset link, whoever can reach the database and GoTrue
+		// removes every passkey and paired phone of the account, ends every
+		// session, optionally sets a new password, and clears the record that
+		// keeps it gated, so its next passkey or step-up phone is added as a
+		// first factor. Not reachable over HTTP: a shell with the server's
+		// environment is the proof.
+		var newPassword string
+		if len(args) == 4 {
+			// Piped only: a terminal would echo the password as it is typed.
+			if f, ok := accountStdin.(*os.File); ok {
+				if stdinIsTerminal(f) {
+					fmt.Fprintf(stderr, "--new-password-stdin: standard input is a terminal, which would show the password; pipe it in instead (for example from a file or a password manager); nothing was changed\n")
+					return 1
+				}
+			}
+			line, err := bufio.NewReader(accountStdin).ReadString('\n')
+			if err != nil && line == "" {
+				fmt.Fprintf(stderr, "--new-password-stdin: no password on standard input\n")
+				return 1
+			}
+			newPassword = strings.TrimRight(line, "\r\n")
+			if len(newPassword) < gotrue.MinPasswordLength {
+				fmt.Fprintf(stderr, "--new-password-stdin: the password is shorter than %d characters; nothing was changed\n", gotrue.MinPasswordLength)
+				return 1
+			}
+		}
+		pool, err := db.Connect(ctx, cfg.Database)
+		if err != nil {
+			fmt.Fprintf(stderr, "db connect: %v\n", err)
+			return 1
+		}
+		defer pool.Close()
+		st := users.NewPG(pool)
+		id, perr := strconv.ParseInt(args[2], 10, 64)
+		if perr != nil || id <= 0 {
+			var found bool
+			if id, found, err = st.IDByEmail(ctx, args[2]); err != nil || !found {
+				fmt.Fprintf(stderr, "user %q: no such user (%v)\n", args[2], err)
+				return 1
+			}
+		}
+		res, err := api.ResetAccountFactors(ctx, goTrueAuth(cfg, pool), st, users.Actor{Via: "cli"}, id, newPassword)
+		if errors.Is(err, users.ErrNotFound) {
+			fmt.Fprintf(stderr, "user %d: no such user; nothing was changed\n", id)
+			return 1
+		}
+		if err != nil {
+			pw := "The password was not changed."
+			if res.PasswordSet {
+				pw = "The NEW password is already set."
+			}
+			fmt.Fprintf(stderr, "user %d: %d passkey(s) removed, then: %v. %s The account is still gated: run this again\n", id, res.Passkeys, err, pw)
+			return 1
+		}
+		if res.RecordsKept != nil {
+			fmt.Fprintf(stderr, "user %d: the passkey records kept in GoTrue could not be cleared (%v); they name passkeys that are gone\n", id, res.RecordsKept)
+		}
+		pw := " The password was kept."
+		if res.PasswordSet {
+			pw = " The new password is set."
+		}
+		gt := " GoTrue signed out every session."
+		if res.GoTrueSignOutSkipped {
+			gt = " The account is disabled, so GoTrue was not asked to sign it out (it refuses that for a disabled login); its disable asked GoTrue then, and muster's session cutoff refuses its sessions either way."
+		}
+		fmt.Fprintf(stdout, "user %d: removed %d passkey(s) and %d paired phone(s), revoked its personal API and flow-runner tokens "+
+			"(mirror host tokens are kept), and reopened the account: its next passkey or phone that confirms requests is added as a first factor.%s%s "+
+			"Its earlier sessions are cut off: a running server grants them nothing that needs the reopened tier from now, "+
+			"closes their open streams within %s, and refuses their every request within %s.\n",
+			id, res.Passkeys, res.Phones, gt, pw, api.DisableSweepInterval, userCacheWindow)
 		return 0
 	case len(args) == 3 && args[0] == "user" && (args[1] == "disable" || args[1] == "enable"):
 		id, err := strconv.ParseInt(args[2], 10, 64)

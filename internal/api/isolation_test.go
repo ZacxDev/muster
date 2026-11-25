@@ -210,11 +210,15 @@ var isolationClasses = map[string]routeClass{
 	"POST /auth/qr":           classPublic,
 	"GET /account/passkeys":   classList,
 	// The feature registry's page: server configuration, the same for every user.
-	"GET /account/features":              classList,
-	"POST /account/passkeys/options":     classList,
-	"POST /account/passkeys/verify":      classList,
-	"POST /account/passkeys/{id}/delete": classParam,
-	"GET /api/whoami":                    classAdmin,
+	"GET /account/features":                classList,
+	"POST /account/passkeys/options":       classList,
+	"POST /account/passkeys/verify":        classList,
+	"POST /account/passkeys/proof/options": classList,
+	"POST /account/passkeys/proof/verify":  classList,
+	"POST /account/passkeys/proof/phone":   classList,
+	"GET /account/passkeys/proof/status":   classList,
+	"POST /account/passkeys/{id}/delete":   classParam,
+	"GET /api/whoami":                      classAdmin,
 	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
 	// caller's own mirror hosts and server-wide booleans.
 	"GET /api/doctor":         classAdmin,
@@ -803,6 +807,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/badge":                          classList,
 	"POST /attention/asks/{id}/answer":              classParam,
 	"POST /attention/asks/{id}/cancel":              classParam,
+	// A step-up card's passkey decision (stepup_web_confirm.go): A's card by
+	// id — row-level security, and the pending decision's own owner check.
+	"POST /attention/asks/{id}/stepup/passkey/options": classParam,
+	"POST /attention/asks/{id}/stepup/passkey/verify":  classParam,
 	// An unconfirmed answer delivery's Retry (migration 0031): one of the
 	// caller's asks by id, under row-level security.
 	"POST /attention/asks/{id}/redeliver": classParam,
@@ -2733,6 +2741,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	freshAT, freshRT, _ := w.gtFake.Mint(w.aSub)
 	w.gtTokens[w.a.uid] = [2]string{freshAT, freshRT}
+	// Removing a passkey takes the enrolment proof (passkey_enrol.go): A's
+	// fresh session is granted its ticket, as a proof would.
+	grantEnrolTicket(t, w.gtSrv, w.gtFake, w.a.uid, freshAT)
 	pm, pp, pb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.a)
 	if rec := w.do(w.h, pm, pp, pb, cred{gotrueUser: w.a.uid}); rec.Code != http.StatusSeeOther {
 		t.Errorf("CONTROL: A could not remove its OWN passkey: %d %s", rec.Code, truncate(rec.Body.String(), 200))

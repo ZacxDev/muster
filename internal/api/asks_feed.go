@@ -301,22 +301,26 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
 `)
 	case it.Kind == attentionKindAsk && it.stepUp != nil:
-		// 🔴 NO CONFIRM/REFUSE AND NO ANSWER BOX ON A STEP-UP CARD, as on its
-		// page (handleAskPage): only the paired phone answers it
-		// (errHostDecisionNeedsPhone refuses every other door). One status
-		// line in their place, never drawn as a control; Dismiss ends it, as
-		// it ends an answer row.
+		// 🔴 NO ANSWER BOX ON A STEP-UP CARD, as on its page (handleAskPage):
+		// only the paired phone, or a passkey ceremony made for the card,
+		// answers it (errHostDecisionNeedsPhone refuses every other door). Its
+		// Confirm and Refuse run that ceremony (askStepUpWebHTML), or a status
+		// line stands in their place; Dismiss ends it, as it ends an answer
+		// row.
 		rowDismiss := ""
 		if inRow {
 			rowDismiss = dismiss
 		}
 		// A card about a draft the reader may decide draws the DRAFT's own
 		// decision controls (askStepUpDraftHTML, the Drafts tab's), returning
-		// here; the card itself stays answerable only from the phone.
+		// here; the card itself stays answerable only from the phone or with
+		// a passkey.
 		line := askStepUpDraftHTML(it.stepUp, it.stepUpDraft, attentionPath, askPagePath(it.AskID), "text-sm", true, now,
 			cardPlace{card: it.AskID, dictate: it.dictate, dictateOff: it.dictateOff})
 		if line == "" {
-			line = askStepUpPhoneHTML("text-sm")
+			// Confirm and Refuse behind a passkey, when the reader's account
+			// has one (askStepUpWebHTML), or the phone line.
+			line = askStepUpWebHTML(it.AskID, it.stepUpWeb, attentionPath, "text-sm")
 		}
 		b.WriteString(`<div class="flex min-w-0 items-center gap-2" data-asks-stepup-row><div class="min-w-0 flex-1">` + line + `</div>` + rowDismiss + "</div>\n")
 	case it.Kind == attentionKindAsk:

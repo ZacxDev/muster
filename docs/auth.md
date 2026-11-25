@@ -592,7 +592,8 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 - You manage your passkeys at **Account → Passkeys** (`/account/passkeys`).
   The link is on the Account page of every gotrue-mode server, whether or not
   GoTrue reports passkeys as enabled; with them off the page says so. Adding
-  one needs a sign-in from the last five minutes.
+  one needs a sign-in from the last five minutes, and more: see
+  [Adding a passkey](#adding-a-passkey).
 - Signing in with a passkey needs no username. The sign-in page offers three
   ways:
   - **Autofill.** The email field is `autocomplete="username webauthn"`, and
@@ -666,6 +667,210 @@ neither `signalAllAcceptedCredentials` nor `signalUnknownCredential`;
 its id), then removes the old ones, leaving at most one without an id. An
 admin can also remove all of a user's passkeys (**Admin → Users → Remove
 passkeys**) and have the person add them again.
+
+### Adding a passkey
+
+A passkey can approve a [step-up card](mirroring.md#confirming-a-card-in-the-browser-with-a-passkey)
+in the browser, which otherwise only the paired phone can do. So adding one,
+pairing a phone that confirms requests, and removing either need more than
+the password: 🔴 **once an account has ever had a passkey or a paired phone
+with a step-up key, a password alone never reaches card approval** — until a
+password reset completes or the server's recovery command is run.
+
+"Ever had" is recorded on the account (`users.had_strong_factor_at`,
+migration 0189). It is set when a passkey is added or such a phone paired,
+when muster first sees either on the account, and before any is removed. It
+was backfilled for every account that already had such a phone. Emptying the
+live rows never clears it: Sign out everywhere (which unpairs every phone),
+removing a phone or a passkey, and an admin removing passkeys all leave it
+set. Two things clear it:
+- **a completed password reset.** muster sends no email, so the link comes
+  from an admin. Minting one for an account that has had a factor takes the
+  acting admin's own proof, and the acting admin's account must have had a
+  factor too. So a second admin account that a password alone could create
+  cannot reset the first (see "The admin pages" below);
+- **the server recovery command** (below), run by whoever can reach the
+  database.
+
+The one place the password is enough is an account's **first factor**, on an
+account that has never had one:
+
+- its first passkey is added with the password, and it **cannot** approve a
+  card (below);
+- its first phone with a step-up key is paired with the password, and it
+  **can** answer cards: a phone's step-up key is the hardware-bound proof
+  cards were built on, and without it the account could answer no card at
+  all.
+
+From then on, every change below takes a proof.
+
+- **The account already has a passkey, or a paired phone with a step-up
+  key:** adding another needs, besides a sign-in from the last five minutes,
+  one of these proofs for that browser session:
+  - **a passkey you already have.** The passkeys page asks for it
+    (`POST /account/passkeys/proof/options`, then `…/proof/verify`), with user
+    verification, as the step-up confirm does;
+  - **your paired phone.** The page files a step-up card, *Add a passkey to
+    your account?* (`POST /account/passkeys/proof/phone`). Only the phone's
+    Confirm answers it; a passkey in the browser cannot. The page waits for
+    the Confirm, then you tap **Add a passkey on this device** again.
+
+  The proof allows one passkey, added from that browser session, within ten
+  minutes. Without it, both the options and the add answer
+  `403 proof_required`, naming the proofs the account can give.
+- **The account has never had either:** there is nothing to prove with, so the password
+  adds the first passkey, as before. That passkey signs in and confirms
+  "Confirm it's you" like any other, but **it cannot approve a step-up card**.
+  A card shows the phone line and says why.
+- **Which passkeys may approve a card.** Every passkey added records it, with
+  the credential id read from the authenticator's **signed** data:
+  - one added with the phone's Confirm may;
+  - one added with the password alone may not;
+  - one added with a passkey proof takes the standing of the passkey that
+    proved it.
+
+  An add whose claimed id (`rawId`) differs from the signed one is refused
+  before GoTrue registers anything. 🔴 A passkey **with no record** may
+  approve a card only when GoTrue created it before muster started recording
+  (`passkey_rules.vouching_since`, set once by migration 0188). A passkey whose
+  creation time GoTrue does not give is not trusted. That keeps
+  older passkeys working, card approval included. A newer passkey with no
+  record (one added through GoTrue's own endpoints, or one whose record was
+  lost) approves no card and proves no enrolment. muster writes the record
+  before it answers the add. If the write fails it removes the passkey; if the
+  removal fails too, that passkey stays and approves nothing. The record
+  writes are serialised per account, so two at once lose neither.
+- **Pairing a phone that confirms requests** (one with a step-up key) takes
+  the same proof once the account has had a passkey or such a phone. Confirm on
+  Account → Passkeys first; the pairing code shown afterwards may pair a
+  step-up key, and the proof is spent. A code minted without the proof says so
+  (`stepup_allowed: false`). A phone redeeming that code with a step-up key is
+  refused (`403 stepup_proof_required`) and the code is not used up. A phone
+  without a key still pairs read-only. Every pairing pushes every device
+  already registered "A phone was paired to your account", whatever your
+  notification settings say.
+- **Removing a passkey** takes the same proof (the account has one, so it is
+  gated). Proving with the passkey you are removing is enough.
+  The removal pushes "A passkey was removed from your account".
+- **The admin pages do not reset or strip the admin's own account.** An admin
+  cannot mint a password-reset link for their own account, or remove their
+  own passkeys from Admin → Users. Those are done on Account, with its proof.
+- **A proof allows one change, used once.** The ticket is taken when it is
+  checked, so two adds racing on one ticket add one passkey.
+- **Removing a phone or a notification target** (on Account) takes the same
+  proof on an account that has, or has ever had, a passkey or a paired phone
+  with a step-up key. Without the proof the removal is refused and nothing is removed:
+  confirm on Account → Passkeys (`?confirm=1` opens the proofs), then remove
+  within ten minutes. On an account that has never had a passkey or a
+  step-up phone,
+  the removal goes through as before, after every device registered for push
+  is told ("A phone was removed from your account"). A removal with the proof
+  is announced the same way. Removing a phone or target that does not exist
+  answers 404, spends no proof and announces nothing. Three things stay
+  open, and none of them reopens the first-factor tier:
+  - a phone removing itself from the app;
+  - a browser turning off its own notifications;
+  - **Sign out everywhere**, a recovery action. It unpairs every phone and
+    drops every push target, so it is announced FIRST, while they still
+    exist ("You signed out everywhere: your phones are being unpaired").
+
+  So a person holding only the password can silence your devices only by
+  signing out everywhere. That act is announced on every one of them, and the
+  account stays gated afterwards. The database guarantees this: deleting a
+  phone that confirms requests records, in the same statement, that the
+  account has had one (migration 0190). That covers every path that deletes
+  phones: Sign out everywhere, a disable, a password reset and a removal.
+  Pairing such a phone records it the same way, in the same statement, or
+  does not pair it.
+- **Recovery when no factor is left.** Your phones may be unpaired, your
+  passkeys gone, or your phone's key invalidated (a new fingerprint or face
+  enrolled on it voids its step-up key). On an account that has had one:
+  - **ask another admin for a password reset link.** The reset revokes every
+    paired phone and clears the record, and then your next passkey or phone
+    is added as a first factor;
+  - **on a server with one admin**, whoever runs the server runs
+    `muster-server user reset-factors <user-id|email> --new-password-stdin`
+    where the server's environment is (its `DATABASE_URL` and GoTrue secret;
+    for example `kubectl exec -i` into its pod), with the new password piped
+    on standard input (a terminal is refused: it would show the password as
+    it is typed). Give a new password whenever anyone else may know the
+    old one: the reset reopens the account, and whoever signs in first with
+    the password could pair their own phone as its first factor. Without
+    `--new-password-stdin` the password is kept. In this order, it:
+    1. looks the account up: an unknown id or email exits non-zero and
+       changes nothing, with no audit row;
+    2. records the account as gated, so every later stop leaves it gated;
+    3. sets the new password, when one is given;
+    4. signs out every GoTrue session of the account (skipped for a disabled
+       account: its disable already did, and GoTrue refuses the sign-out of
+       a banned user);
+    5. deletes every passkey of the account through GoTrue's admin API, and
+       muster's records of them;
+    6. in one transaction, unpairs every phone (their push targets go with
+       them), moves the account's session cutoff, revokes its personal API
+       and flow-runner tokens, clears the record and writes the audit row
+       (`user.factors_reset`: how many passkeys and phones went, whether a
+       password was set, and that the sessions were cut off). Mirror host
+       tokens are kept: they connect a host and decide no factor.
+
+    On a running server, a session from before the cutoff is granted
+    nothing that needs the reopened tier from that moment: that decision
+    re-reads the cutoff from the database every time. Its open streams
+    close within 10 seconds, and every other request it makes is refused
+    within 30 seconds (the server's user cache). A proof given before the
+    reset is not honoured either.
+
+    If any step fails, it stops there. It says how many passkeys went and
+    whether the new password is already set, and exits non-zero with the
+    account still gated: run it again. It prints
+    what it removed. Then sign in with the (new) password and pair the
+    Android app's phone, or add a passkey: it is added as a first factor.
+    It has no HTTP route: the shell is the proof.
+
+  The pairing code says this, in plain words, when it may not pair a phone
+  that confirms requests (`stepup_note`), and Account → Devices shows it.
+  With a passkey left, prove with it instead.
+- **The admin pages.** From Admin → Users:
+  - **making an account an admin** takes the acting admin's proof when the
+    acting admin's account has had a factor;
+  - **minting a reset link for, or removing the passkeys of, an account that
+    has had a factor** takes the acting admin's proof. It is refused to an
+    admin whose own account has no factor: such an account holds only a
+    password, and the password alone can add that account's first passkey.
+    So every proof it could give would come from the password, and a
+    password must not undo another account's factor.
+
+  "Has had a factor" means: has a passkey or a phone that confirms requests
+  now, or has had one (the record). The check is the same everywhere, and an
+  account found holding a factor is recorded as having had one.
+
+  The proof must come from your paired phone's Confirm, or from a passkey
+  that may approve cards. A passkey added with your password alone cannot
+  give it. If GoTrue then fails, the proof is not spent.
+
+  **An admin whose only factor is a passkey added with the password, and
+  who has no Android app,** can never give that proof: a passkey becomes
+  one that may approve cards only when it is added with such a proof. The
+  way out:
+  1. Whoever runs the server runs `reset-factors` for that admin (above).
+     This reopens the account.
+  2. Either pair the Android app's phone on the reopened account (a first
+     phone may approve cards, and every later proof from it counts), or
+     make the change while the account is open: promoting another account
+     takes no proof from an admin whose account has no factor.
+  3. A reset link or a passkey removal for a gated account still needs the
+     proof. Without a phone, whoever runs the server uses `reset-factors` on
+     that account instead.
+
+  Prove on Account → Passkeys, then return within ten minutes. The account
+  is told when a reset link is minted for it ("An admin created a password
+  reset link for your account"), again when that link is used, and when an
+  admin removes its passkeys. An invite always makes a member.
+- **Every passkey added pushes you "A passkey was added to your account"** on
+  every device registered for push, whatever your notification settings say:
+  a person holding only your password could turn them off first. The
+  `user.passkey_added` audit row records the proof (`passkey`, `phone` or
+  `password`) and whether the passkey may approve cards.
 
 ### Passkeys in the Android app
 

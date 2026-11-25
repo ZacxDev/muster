@@ -1712,10 +1712,12 @@ the owner-authority tools (`attention_answer`, `connector_request_decide`,
 `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
 `agent_destroy`, `officer_item_enqueue`) from such a machine as your decision. On a
 machine that **starts agents for the chief**, each of them is a **confirmation
-card on your paired phone**, whichever of your sessions the call names, and
-nothing runs until you answer Confirm there (a signed action; a browser answer
-is refused) — [one tap on its notification](#confirming-a-card-from-its-notification)
-does it. It is the same gate a machine running a
+card**, whichever of your sessions the call names, and nothing runs until you
+answer Confirm on your paired phone (a signed action) —
+[one tap on its notification](#confirming-a-card-from-its-notification) does it —
+or on the card in muster with a fresh passkey ceremony
+([in the browser](#confirming-a-card-in-the-browser-with-a-passkey)). An
+ordinary browser answer is refused. It is the same gate a machine running a
 [host officer](design/officers-on-hosts.md) has. A call counts as coming from
 such a machine when:
 
@@ -1899,8 +1901,9 @@ any other ([design/android.md](design/android.md#the-signed-ask-actions-as-built
 the challenge lives two minutes, is single use, and is bound to the card's id
 and the sha256 of the exact answer. A signature by any other key is refused
 (`bad_signature`), a phone paired read-only gets no challenge
-(`no_stepup_key`), and an answer from your signed-in browser or from a
-machine's door (`attention_answer`) is refused, the card left open. A
+(`no_stepup_key`), and an ordinary answer from your signed-in browser (one
+with no passkey ceremony made for that card) or from a machine's door
+(`attention_answer`) is refused, the card left open. A
 **browser** notification's buttons cannot decide a card either: the web
 worker (`web/static/sw.js`) answers nothing, and a tap on its notification only
 opens muster. The `confirms` text is display, never authority: muster still
@@ -1910,6 +1913,72 @@ decides only by the signature.
 start's card (`dispatch_approve`), or a long post's, can be longer than that: refuse it from the
 notification, or open the card, when the prompt does not show all of what it
 starts.
+
+**Tracing a tap.** The server logs one line for every request to the
+challenge route and to each signed action route, whatever its outcome:
+
+```
+devices: challenge outcome=ok action=ask_answer ask=41 device=3 owner=7 status=200 in=12ms
+devices: signed action outcome=not_open action=ask_answer ask=41 device=3 owner=7 status=409 in=30ms
+```
+
+`outcome` is the route's refusal code (`challenge_expired`, `bad_signature`,
+`not_open`, `not_operator` …), `ok`, `bad_token` for a credential the route
+refused, or `status_<n>` for any other answer. A tap that failed on the phone
+has a line with its code; a tap that has **no** line never reached the
+server. The line carries the ids only: never the device token, the nonce, the
+signed message, the signature or the answer's text.
+
+#### Confirming a card in the browser, with a passkey
+
+The card's page and its card on the Asks feed offer **Confirm** and
+**Refuse** too, under the line *Confirm here with your passkey, or on your
+phone.* Each runs a **passkey ceremony for that one decision**:
+
+1. Reaching for a button (a press, or focus) asks muster for a passkey
+   challenge for that card (`POST /attention/asks/{id}/stepup/passkey/options`).
+   muster records it as minted for you and for that card. An account with no
+   passkey is told so and no challenge is minted.
+2. The tap runs the browser's passkey prompt, which must verify you (a PIN,
+   a fingerprint, a face): an assertion without user verification is
+   refused.
+3. The assertion goes back with the answer
+   (`POST /attention/asks/{id}/stepup/passkey/verify`). muster spends the
+   challenge, refuses it unless it was minted for you and for **this** card,
+   has GoTrue verify the assertion against its own single-use challenge,
+   refuses a passkey of another account, and signs out the session GoTrue
+   minted for it: the ceremony decides the card and makes no sign-in fresh.
+4. The card is then decided exactly as the phone decides it: owner-scoped,
+   claimed before its call runs, the call run once (Confirm) or not at all
+   (Refuse), the session that raised it told. A phone and a browser deciding
+   one card together decide it once: the other is told *This card was
+   already decided.*
+
+🔴 **A recent sign-in is not enough, and neither is a password.** A session
+that signed in a minute ago still runs the ceremony: the proof is the
+assertion made for that card, never the session's freshness. A prompt made
+for one card cannot decide another, and a challenge is never honoured twice.
+**The passkey must be one that may approve cards:** a passkey added with the
+password alone may not ([adding a passkey](auth.md#adding-a-passkey)), so a
+password never reaches card approval by adding one. A team files no step-up
+card, so there is no team rule here. A card only the phone decides (*Add a
+passkey to your account?*) offers no Confirm in the browser.
+
+The page fetches a card's passkey options when you reach for a button (a
+press), never when it draws the card, and runs the prompt in the tap itself,
+as Safari requires. A tap that comes before the options are fetched says
+*Getting ready. Tap again.* and prompts nothing. A Confirm that lands while
+the phone is recording its own answer to the same card is told to try again,
+not that the card was decided: the phone's write may still fail and leave the
+card open.
+
+An account with no passkey sees the phone line and where a passkey is added
+(**Account → Passkeys**). One whose passkeys were all added with the password
+alone sees the phone line and how to add one that may approve cards; a server without passkeys (password mode, or
+GoTrue's passkeys off) shows the phone line alone. A browser that cannot run
+WebAuthn puts the phone line back. Both doors write one `stepup.decided` audit
+row naming the card, the tool, the answer and the door (`phone` or
+`passkey`), and the server log says which door decided.
 
 What it costs: on such a machine your own sessions' other owner-authority
 calls are cards too. Deciding in muster's web UI (Attention, Connectors, the
@@ -2224,7 +2293,9 @@ remote caller's restart runs at once, as a local one's does
 caller's machine runs a host officer, because officers are declared on the
 muster the host is mirrored to. So every such call from a remote caller files a
 step-up confirmation card and runs nothing until the owner confirms it from
-their paired phone. A browser or MCP answer to the card is refused. Then it runs
+their paired phone, or on the card with a passkey
+([in the browser](#confirming-a-card-in-the-browser-with-a-passkey)). An
+ordinary browser answer or an MCP answer to the card is refused. Then it runs
 once, as the session that asked. `dispatch_request` itself is not gated: it
 files a hold, so starting an agent there is `dispatch_request`, then
 `dispatch_approve`, then one confirmation on the phone.

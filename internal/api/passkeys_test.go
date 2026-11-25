@@ -64,15 +64,61 @@ func (w *invWorld) passkeySignIn(credID string, flags byte, opts ...reqOpt) *htt
 
 // addPasskey runs the registration ceremony through muster as the session
 // in cookies, and returns the verify answer.
+//
+// An account that already has a passkey must prove it first (the enrolment
+// gate, passkey_enrol.go): this does, with an assertion of the account's
+// first passkey, so a test of something else adds a second as before. The
+// gate itself is under test in passkey_enrol_pg_test.go.
 func (w *invWorld) addPasskey(credID string, flags byte, cookies reqOpt) *httptest.ResponseRecorder {
 	w.t.Helper()
 	o := postJSON(w.edge, accountPasskeysPath+"/options", map[string]any{}, cookies)
+	if o.Code == http.StatusForbidden && jsonBody(w.t, o)["code"] == "proof_required" {
+		w.proveWithAPasskey(cookies)
+		o = postJSON(w.edge, accountPasskeysPath+"/options", map[string]any{}, cookies)
+	}
 	if o.Code != http.StatusOK {
 		return o
 	}
 	ch, _ := jsonBody(w.t, o)["challenge_id"].(string)
 	return postJSON(w.edge, accountPasskeysPath+"/verify", map[string]any{
 		"challenge_id": ch, "credential": gotruetest.Attestation(credID, flags)}, cookies)
+}
+
+// proveWithAPasskey grants the session in cookies an enrolment ticket with an
+// assertion of its account's first passkey.
+func (w *invWorld) proveWithAPasskey(cookies reqOpt) {
+	w.t.Helper()
+	probe := httptest.NewRequest(http.MethodGet, "/", nil)
+	cookies(probe)
+	ck, err := probe.Cookie("__Host-" + accessCookieName)
+	if err != nil {
+		w.t.Fatal("no session cookie to prove with")
+	}
+	c, err := w.fake.Verifier().Verify(ck.Value)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	pks := w.fake.Passkeys(c.Subject)
+	if len(pks) == 0 {
+		w.t.Fatal("no passkey to prove with")
+	}
+	// A passkey the fake made with no record is one muster never added
+	// (passkey_enrol.go: it proves nothing): record it as one added with the
+	// password, which proves an add as any passkey of the account does.
+	recs, err := w.s.passkeyRecords(context.Background(), c.Subject)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if _, ok := recs[pks[0].ID]["vouched"].(bool); !ok {
+		w.s.setPasskeyFlag(context.Background(), c.Subject, pks[0].ID,
+			map[string]any{passkeyCredIDKey: gotrue.CredentialID([]byte(pks[0].CredentialID)), "vouched": false})
+	}
+	o := postJSON(w.edge, accountPasskeysPath+"/proof/options", map[string]any{}, cookies)
+	ch, _ := jsonBody(w.t, o)["challenge_id"].(string)
+	if v := postJSON(w.edge, accountPasskeysPath+"/proof/verify", map[string]any{"challenge_id": ch,
+		"credential": gotruetest.Assertion(pks[0].CredentialID, gotruetest.FlagUPUV)}, cookies); v.Code != http.StatusOK {
+		w.t.Fatalf("the enrolment proof: %d %s", v.Code, v.Body)
+	}
 }
 
 // TestAPasskeySignInLandsWithBothCookies is the positive path: the options
@@ -197,6 +243,9 @@ func TestPasskeyRoutesRefuseCrossOriginWrites(t *testing.T) {
 	_, sub, at, rt := w.joinMember("pk-xo@invite.test")
 	pid := w.fake.AddPasskey(sub, "cred-xo")
 	cookies := withCookies(at, rt)
+	// Removing a passkey takes the enrolment proof (passkey_enrol.go): given
+	// first, so the same-origin delete below is refused for nothing else.
+	w.proveWithAPasskey(cookies)
 	for _, path := range []string{passkeySignInOptionsPath, passkeySignInVerifyPath, accountPasskeysPath + "/options",
 		accountPasskeysPath + "/verify", accountPasskeysPath + "/" + pid + "/delete"} {
 		rec := postJSON(w.edge, path, map[string]any{}, cookies, fromOrigin("https://evil.example"))
@@ -725,6 +774,7 @@ func TestThePasskeyListShowsTheSyncedFlag(t *testing.T) {
 		strings.Count(page, "data-passkey-id=") != 2 || !strings.Contains(page, "never used") {
 		t.Fatalf("the list: %s", truncate(page, 2000))
 	}
+	w.proveWithAPasskey(cookies) // a removal takes the proof (passkey_enrol.go)
 	if r := do(w.edge, "POST", accountPasskeysPath+"/"+deviceID+"/delete", url.Values{}, cookies); r.Code != http.StatusSeeOther {
 		t.Fatalf("remove: %d", r.Code)
 	}
@@ -746,6 +796,11 @@ func TestTheAdminCanRemoveAUsersPasskeys(t *testing.T) {
 	if page := do(w.edge, "GET", "/admin/users", nil, w.asAdmin()).Body.String(); !strings.Contains(page, `/admin/users/`+id+`/passkeys/delete`) {
 		t.Fatal("no Remove passkeys button for the member")
 	}
+	// The account holds passkeys: the strip takes the acting admin's vouched
+	// proof, from an account in the gated tier (admin_proof.go).
+	a := adminSelf(t, w)
+	_ = w.s.markStrongFactor(context.Background(), a)
+	grantEnrolTicket(t, w.s, w.fake, a, w.adminAT)
 	rec := do(w.edge, "POST", "/admin/users/"+id+"/passkeys/delete", url.Values{}, w.asAdmin())
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Removed 2 passkeys of pk-admin@invite.test") {
 		t.Fatalf("remove: %d %s", rec.Code, truncate(rec.Body.String(), 400))

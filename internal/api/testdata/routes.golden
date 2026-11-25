@@ -58,6 +58,7 @@ GET /account/credentials
 GET /account/devices/live
 GET /account/features
 GET /account/passkeys
+GET /account/passkeys/proof/status
 GET /account/teams
 GET /account/tokens
 GET /admin/apps
@@ -261,6 +262,9 @@ POST /account/notifications/codename
 POST /account/notifications/tmux
 POST /account/pages/agent-share
 POST /account/passkeys/options
+POST /account/passkeys/proof/options
+POST /account/passkeys/proof/phone
+POST /account/passkeys/proof/verify
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
 POST /account/push/preferences
@@ -333,6 +337,8 @@ POST /api/tasks/{id}/comments
 POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
+POST /attention/asks/{id}/stepup/passkey/options
+POST /attention/asks/{id}/stepup/passkey/verify
 POST /attention/opencode/answer
 POST /attention/wakes/{id}/retry
 POST /auth/claim

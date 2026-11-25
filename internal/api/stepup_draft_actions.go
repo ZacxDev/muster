@@ -19,8 +19,11 @@ import (
 //
 // A confirmation card a host session filed for plugin_draft_decide ("Post to
 // X? · Draft #41", "Reject this draft? · Draft #41") is answered only from the
-// owner's paired phone (hostDecisionForAnswer): no Confirm, no Refuse, no
-// answer box in the browser, and that does not change here.
+// owner's paired phone or with a passkey ceremony made for it
+// (hostDecisionForAnswer). Where its face carries the draft's own decision
+// (below), that decision is what the browser draws, in place of the card's
+// passkey Confirm and Refuse (stepup_web_confirm.go), which it draws when
+// the draft's controls are not offered.
 //
 // What the Open feed's card and the ask page add is the DRAFT's own decision —
 // the owner deciding the draft in muster's web UI, the path that was never
@@ -249,8 +252,22 @@ func (s *Server) settleDraftStepUps(ctx context.Context, d plugins.Draft, via st
 		if a.Status != attention.Open || !a.Asker.System || a.Asker.Label != hostDecisionLabel || a.StepUp == nil || a.StepUp.DraftID != d.ID {
 			continue
 		}
-		s.hostDecisions.take(a.ID)
-		rec, err := s.ext.Attention.Answer(ctx, a.ID, answer)
+		// The same claim as a phone's or a passkey's Confirm
+		// (hostDecisionForAnswer): a door racing this settlement is told the
+		// card is being decided — retry — never that a restart lost it. A
+		// card another door is deciding right now is that door's.
+		// Its decision is dropped either way (the draft is decided): it is
+		// not put back on a failed write, as before.
+		_, claimed := s.hostDecisions.claim(a.ID)
+		if !claimed && s.hostDecisions.isDeciding(a.ID) {
+			continue
+		}
+		rec, err := func() (attention.Ask, error) {
+			if claimed {
+				defer s.hostDecisions.settled(a.ID)
+			}
+			return s.ext.Attention.Answer(ctx, a.ID, answer)
+		}()
 		switch {
 		case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
 			continue

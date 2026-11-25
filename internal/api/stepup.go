@@ -309,29 +309,10 @@ func (s *Server) handleStepUpPasskeyOptions(w http.ResponseWriter, r *http.Reque
 
 // handleStepUpPasskeyVerify is POST /auth/confirm/passkey/verify: a passkey
 // assertion that, when it is this session's user's and carries user
-// verification, replaces the session with a freshly signed-in one.
-//
-// HOW THE ASSERTION IS VERIFIED, AND BY WHOM:
-//
-//  1. muster reads the authenticator-data flags of the credential and refuses
-//     one without USER VERIFICATION before GoTrue sees it — the same guard as
-//     the passkey sign-in, for the same reason (GoTrue's own setting is
-//     "preferred"; gotrue/webauthn.go). The credential forwarded is the
-//     canonical re-encoding of the one checked.
-//  2. GoTrue verifies the signature against the challenge it issued (single
-//     use, origin and RP id bound) and the stored public key, and issues a
-//     session for the user the credential belongs to.
-//  3. 🔴 muster BINDS THAT SESSION TO THE ONE CONFIRMING: the new access
-//     token's `sub` must be the `sub` of the session this request presented.
-//     GoTrue's ceremony is usernameless — it answers "whose passkey is this",
-//     not "is it THIS person's" — so without this check anyone holding any
-//     account's passkey could make another person's session fresh, and worse,
-//     the cookies set below would sign this browser in as them. A mismatch is
-//     refused, sets no cookie, and the session GoTrue just minted is ended.
-//
-// The same sign-in limiter as the password confirm, under the session's
-// account: a confirm is an authentication attempt, and a held session must not
-// be a way to try credentials faster than /login allows.
+// verification, replaces the session with a freshly signed-in one. The
+// assertion is verified, and bound to the session's own user, by
+// verifySessionPasskey; the cookies are set only after that binding holds, so
+// another account's passkey never signs this browser in as them.
 func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Request) {
 	creds, refused := s.stepUpPasskeyRefusal(w, r)
 	if refused {
@@ -347,29 +328,106 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := r.Context()
 	me := authz.MustFrom(ctx).UserID
+	s.verifySessionPasskey(w, r, creds, body.ChallengeID, body.Credential, "passkey confirm", true, func(pk sessionPasskey) signinOutcome {
+		// The same sub is the same muster user (users.gotrue_sub is unique), so
+		// what is left to check is what a sign-in checks: still a muster
+		// account, not disabled.
+		if _, problem, code := s.admitFreshSession(ctx, pk.sess); problem != "" {
+			outcome := outcomeUnjudged
+			if code != http.StatusInternalServerError {
+				outcome = outcomeFailed
+				pk.end()
+			}
+			s.writeJSON(w, code, map[string]any{"error": problem})
+			return outcome
+		}
+		s.setGoTrueCookies(w, pk.sess)
+		s.logger.Printf("stepup: user %d confirmed with a passkey (fresh sign-in)", me)
+		s.writeJSON(w, http.StatusOK, stepUpResult{FreshFor: max(0, pk.at.Add(stepup.Window()).Sub(s.stepUpNow()).Milliseconds())})
+		return outcomeSucceeded
+	})
+}
+
+// sessionPasskey is a passkey assertion GoTrue verified, with user
+// verification, for the SESSION's own user (verifySessionPasskey): the
+// session GoTrue minted for it, that session's sign-in time, and end, which
+// signs that session out of GoTrue.
+type sessionPasskey struct {
+	sess gotrue.Session
+	at   time.Time
+	end  func()
+}
+
+// verifySessionPasskey is THE passkey re-proof of the signed-in person, for
+// both of its doors: the step-up confirm (handleStepUpPasskeyVerify, which
+// then makes the session fresh) and a step-up card's decision in the browser
+// (handleStepUpCardPasskeyVerify, which then decides that one card). It
+// answers every refusal itself; on success it calls then, which answers the
+// request and returns the sign-in limiter's outcome. what names the door in
+// the log and in GoTrue's refusal.
+//
+// HOW THE ASSERTION IS VERIFIED, AND BY WHOM:
+//
+//  1. muster reads the authenticator-data flags of the credential and refuses
+//     one without USER VERIFICATION before GoTrue sees it — the same guard as
+//     the passkey sign-in, for the same reason (GoTrue's own setting is
+//     "preferred"; gotrue/webauthn.go). The credential forwarded is the
+//     canonical re-encoding of the one checked.
+//  2. GoTrue verifies the signature against the challenge it issued (single
+//     use, origin and RP id bound) and the stored public key, and issues a
+//     session for the user the credential belongs to.
+//  3. 🔴 muster BINDS THAT SESSION TO THE ONE CONFIRMING: the new access
+//     token's `sub` must be the `sub` of the session this request presented.
+//     GoTrue's ceremony is usernameless — it answers "whose passkey is this",
+//     not "is it THIS person's" — so without this check anyone holding any
+//     account's passkey could make another person's session fresh (or decide
+//     another person's card). A mismatch is refused, and the session GoTrue
+//     just minted is ended.
+//
+// The same sign-in limiter as the password confirm, under the session's
+// account: a re-proof is an authentication attempt, and a held session must
+// not be a way to try credentials faster than /login allows.
+//
+// keepUnspent says whether a refusal before GoTrue saw the challenge may tell
+// the page its challenge is still good (challenge_unspent: true,
+// stepUpRefuseUnspent): true only where the caller has not itself spent its
+// own binding of that challenge — the step-up confirm. A card decision or an
+// enrolment proof spent its binding first, so the challenge is NOT reusable
+// there, and the flag is never sent.
+func (s *Server) verifySessionPasskey(w http.ResponseWriter, r *http.Request, creds gotrueCreds, challengeID string, credential json.RawMessage,
+	what string, keepUnspent bool, then func(sessionPasskey) signinOutcome) {
+	refuse := func(status int, msg string) {
+		if keepUnspent {
+			s.stepUpRefuseUnspent(w, status, msg)
+			return
+		}
+		s.writeJSON(w, status, map[string]any{"error": msg})
+	}
+	ctx := r.Context()
+	me := authz.MustFrom(ctx).UserID
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: me}, ip, s.gt.now())
 	if !ok {
-		s.stepUpRefuseUnspent(w, http.StatusTooManyRequests, stepUpThrottled)
+		refuse(http.StatusTooManyRequests, stepUpThrottled)
 		return
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
-	flags, canonical, err := gotrue.CanonicalAssertion(body.Credential)
+	flags, canonical, err := gotrue.CanonicalAssertion(credential)
 	if err != nil {
 		outcome = outcomeFailed
-		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
+		refuse(http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	// 🔴 THE UV GUARD. A passkey that only proved PRESENCE is "whoever is
 	// holding the unlocked device", which a step-up exists to rule out.
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
-		s.logger.Printf("stepup: refused a passkey confirm without user verification for user %d (from %s)", me, ip)
-		s.stepUpRefuseUnspent(w, http.StatusUnauthorized, PasskeyNoUVRefusal)
+		s.logger.Printf("stepup: refused a %s without user verification for user %d (from %s)", what, me, ip)
+		refuse(http.StatusUnauthorized, PasskeyNoUVRefusal)
 		return
 	}
-	sess, err := s.gt.Client.PasskeySignInVerify(ctx, ip, body.ChallengeID, canonical)
+	sess, err := s.gt.Client.PasskeySignInVerify(ctx, ip, challengeID, canonical)
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
@@ -380,20 +438,24 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		s.writeGoTrueRefusal(w, "a passkey confirm", err, PasskeyRejectedRefusal)
+		s.writeGoTrueRefusal(w, "a "+what, err, PasskeyRejectedRefusal)
 		return
 	}
 	// end signs the just-minted session out of GoTrue: it is not going to be
 	// handed to anyone.
 	end := func() {
 		ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = s.gt.Client.Logout(ectx, ip, sess.AccessToken, gotrue.ScopeLocal)
+		if err := s.gt.Client.Logout(ectx, ip, sess.AccessToken, gotrue.ScopeLocal); err != nil {
+			// Not swallowed: a session that was not signed out stays valid
+			// at GoTrue until it expires (no cookie of it was set anywhere).
+			s.logger.Printf("stepup: sign out the session a %s minted for user %d: %v", what, me, err)
+		}
 		cancel()
 	}
 	c, err := s.gt.Verifier.Verify(sess.AccessToken)
 	if err != nil {
 		end()
-		s.logger.Printf("stepup: a token GoTrue just issued for a passkey confirm does not verify: %v", err)
+		s.logger.Printf("stepup: a token GoTrue just issued for a %s does not verify: %v", what, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": stepUpUnavailable})
 		return
 	}
@@ -404,19 +466,8 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	if c.Subject != creds.claims.Subject {
 		outcome = outcomeFailed
 		end()
-		s.logger.Printf("stepup: refusing a passkey confirm for user %d: the passkey is another account's (from %s)", me, ip)
+		s.logger.Printf("stepup: refusing a %s for user %d: the passkey is another account's (from %s)", what, me, ip)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": StepUpOtherAccountRefusal})
-		return
-	}
-	// The same sub is the same muster user (users.gotrue_sub is unique), so
-	// what is left to check is what a sign-in checks: still a muster account,
-	// not disabled.
-	if _, problem, code := s.admitFreshSession(ctx, sess); problem != "" {
-		if code != http.StatusInternalServerError {
-			outcome = outcomeFailed
-			end()
-		}
-		s.writeJSON(w, code, map[string]any{"error": problem})
 		return
 	}
 	at, ok := c.AuthenticatedAt()
@@ -426,10 +477,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "GoTrue's session has no sign-in time (amr), so it cannot be confirmed."})
 		return
 	}
-	outcome = outcomeSucceeded
-	s.setGoTrueCookies(w, sess)
-	s.logger.Printf("stepup: user %d confirmed with a passkey (fresh sign-in)", me)
-	s.writeJSON(w, http.StatusOK, stepUpResult{FreshFor: max(0, at.Add(stepup.Window()).Sub(s.stepUpNow()).Milliseconds())})
+	outcome = then(sessionPasskey{sess: sess, at: at, end: end})
 }
 
 // confirmOperatorPassword is the password-mode confirm: the operator password

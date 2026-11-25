@@ -64,8 +64,12 @@ func skewWorldTTL(t *testing.T, ttl, past time.Duration) (*invWorld, string, str
 	t.Helper()
 	w := newPasskeyWorld(t)
 	w.fake.SetAccessTTL(ttl)
-	_, sub, at, rt := w.joinMember("skew@invite.test")
+	uid, sub, at, rt := w.joinMember("skew@invite.test")
 	pkID := w.fake.AddPasskey(sub, "cred-skew")
+	// The account has a passkey, so adding or removing one takes the
+	// enrolment proof (passkey_enrol.go): the session holds it, as a proof
+	// would. The gate itself is under test in passkey_enrol_*_test.go.
+	grantEnrolTicket(t, w.s, w.fake, uid, at)
 	c, err := w.fake.Verifier().Verify(at)
 	if err != nil {
 		t.Fatal(err)

@@ -116,6 +116,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	if a.Status == attention.Open && a.StepUp != nil {
 		it.stepUpDraft = s.stepUpDraftFor(r.Context(), a.StepUp)
+		if isStepUpCard(a) {
+			it.stepUpWeb = s.stepUpWebFor(r.Context(), s.stepUpWebAccount(r.Context()), a.ID)
+		}
 	}
 	// The options the answer form offers: a proposal's less its accept buttons,
 	// as the feed's card offers them (withAskBoxes).
@@ -229,8 +232,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `
 	answerable := a.Status == attention.Open && !notice && a.StepUp == nil
 	if answerable {
-		// 🔴 NO ANSWER FORM ON A STEP-UP CARD: only the paired phone answers it
-		// (errHostDecisionNeedsPhone refuses every other door).
+		// 🔴 NO ANSWER FORM ON A STEP-UP CARD: only the paired phone, or a
+		// passkey ceremony made for the card, answers it (errHostDecisionNeedsPhone
+		// refuses every other door); its live region draws those.
 		b.WriteString(askPageAnswerHTML(r, it, liveRegion))
 	} else {
 		b.WriteString(liveRegion)
@@ -250,6 +254,11 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
+	if a.Status == attention.Open && isStepUpCard(a) {
+		// A step-up card's Confirm and Refuse behind a passkey (it may be
+		// drawn by a live refresh, so whenever the card is open).
+		b.WriteString(stepUpCardScript)
+	}
 	// 🔴 THE CONFIRM DIALOG WHEREVER A FORM NEEDS IT. A form drawn with
 	// data-step-up-form (a step-up card's draft Approve; a settled ask's
 	// session-wake Retry, wakeActionFormHTML) asks "Confirm it's you" on a
@@ -301,8 +310,9 @@ func askQuestionHTML(a attention.Ask) string {
 
 // The ask page's own words and classes.
 const (
-	// askStepUpPhoneLine replaces a step-up card's options and answer box:
-	// the browser can never answer one (errHostDecisionNeedsPhone).
+	// askStepUpPhoneLine replaces a step-up card's options and answer box
+	// where the browser cannot decide it: no passkey on the account, none on
+	// this server, or its decision lost (askStepUpWebHTML).
 	askStepUpPhoneLine = "Confirm this on your phone."
 	// askErrorClass is the inline line under the answer form when an answer
 	// could not be posted (askPageScript).
@@ -313,9 +323,9 @@ const (
 )
 
 // askStepUpPhoneHTML is a step-up card's one line in place of its options and
-// answer box, on the ask page and the feed's card alike: plain text in the
-// card's secondary colour — no border, no fill, no button weight — since
-// nothing here can be tapped (only the paired phone answers the card).
+// answer box, on the ask page and the feed's card alike, when the browser
+// cannot decide it: plain text in the card's secondary colour — no border, no
+// fill, no button weight — since nothing here can be tapped.
 // size is its text size class.
 func askStepUpPhoneHTML(size string) string {
 	return `<p class="break-words ` + size + ` text-fg2" data-ask-stepup-phone>` + askStepUpPhoneLine + `</p>`
@@ -401,11 +411,12 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		return b.String()
 	}
 	if a.StepUp != nil {
-		// A step-up card is answered only from the paired phone
-		// (errHostDecisionNeedsPhone): no options, no suggestions, one line —
-		// a status line, never drawn as a control (askStepUpPhoneHTML) — with,
-		// for a card about a draft the owner may decide, the DRAFT's own
-		// decision controls under it (askStepUpDraftHTML), back to this page.
+		// A step-up card is answered only from the paired phone or with a
+		// passkey ceremony made for it (errHostDecisionNeedsPhone): no options,
+		// no suggestions. For a card about a draft the owner may decide, the
+		// DRAFT's own decision controls (askStepUpDraftHTML), back to this
+		// page; for any other, Confirm and Refuse behind a passkey, or the
+		// phone line (askStepUpWebHTML).
 		review := ""
 		if it.stepUpDraft != nil {
 			review = draftTabLink(it.stepUpDraft.Draft.ID)
@@ -419,7 +430,9 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 			// refresh's DictateRevealEvent shows the mics it redrew.
 			return d + ui.DictateScriptHTML(it.dictate)
 		}
-		return askStepUpPhoneHTML("text-base")
+		// Any other card: Confirm and Refuse behind a passkey, when the
+		// reader's account has one (askStepUpWebHTML), or the phone line.
+		return askStepUpWebHTML(a.ID, it.stepUpWeb, askPagePath(a.ID), "text-base")
 	}
 	// An open ask's suggested replies, the card's chips (askSuggestionChipsHTML):
 	// its options are the answer form's, never live (they do not change).

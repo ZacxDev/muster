@@ -20,6 +20,7 @@ package gotrue
 // GoTrue verifies the signature over (TestTheForwardedCredentialIsTheCheckedOne).
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -134,6 +135,55 @@ func AttestationCredentialID(raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	return CredentialID(c.RawID), nil
+}
+
+// ErrCredentialIDMismatch refuses a registration whose claimed id (rawId) is
+// not the id its SIGNED authenticator data names.
+var ErrCredentialIDMismatch = errors.New("gotrue: the credential's rawId is not the id its authenticator data names")
+
+// AttestedCredentialRawID is the credential id a registration's SIGNED
+// authenticator data names (its attested credential data), whatever the
+// client claims in id and rawId. 🔴 It is the id GoTrue stores the credential
+// under (v2.197.0, go-webauthn v0.16.5, which never compares the two), so it —
+// never rawId — is what muster may record for it.
+func AttestedCredentialRawID(raw json.RawMessage) ([]byte, error) {
+	c, err := decodeCredential[attestationResponse](raw)
+	if err != nil {
+		return nil, err
+	}
+	authData, err := attestationAuthData(c.Response.AttestationObject)
+	if err != nil {
+		return nil, ErrBadCredential
+	}
+	// rpIdHash (32), flags (1), signCount (4), then — with AT (0x40) —
+	// aaguid (16), credentialIdLength (2, big-endian), credentialId.
+	const head = 32 + 1 + 4 + 16 + 2
+	if len(authData) < head || authData[32]&0x40 == 0 {
+		return nil, ErrBadCredential
+	}
+	n := int(authData[head-2])<<8 | int(authData[head-1])
+	if n == 0 || len(authData) < head+n {
+		return nil, ErrBadCredential
+	}
+	return append([]byte(nil), authData[head:head+n]...), nil
+}
+
+// AttestedCredentialID is the id of the credential a registration creates, as
+// CredentialID spells it, read from its SIGNED authenticator data; a
+// registration whose rawId names another is refused (ErrCredentialIDMismatch).
+func AttestedCredentialID(raw json.RawMessage) (string, error) {
+	signed, err := AttestedCredentialRawID(raw)
+	if err != nil {
+		return "", err
+	}
+	c, err := decodeCredential[attestationResponse](raw)
+	if err != nil {
+		return "", err
+	}
+	if !bytes.Equal(signed, c.RawID) {
+		return "", ErrCredentialIDMismatch
+	}
+	return CredentialID(signed), nil
 }
 
 // CanonicalAssertion reads a sign-in credential (PublicKeyCredential JSON) and

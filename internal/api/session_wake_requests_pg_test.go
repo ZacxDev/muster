@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -527,20 +528,28 @@ func TestAStepUpCardRecordsTheSessionThatRaisedIt(t *testing.T) {
 }
 
 // TestAConfirmedStepUpCardIsPastedOnceIntoItsSession and its Refuse twin: the
-// phone's answer is pasted once, as muster's line naming the card and the tool
-// — never the call's arguments.
+// answer — from the paired phone, or in the browser with a passkey ceremony
+// made for the card — is pasted once, as muster's line naming the card and the
+// tool, never the call's arguments. The line names no door: it is the same
+// whichever decided (the audit row and the server log name it).
 func TestAConfirmedStepUpCardIsPastedOnceIntoItsSession(t *testing.T) {
 	for _, tc := range []struct {
-		answer, want string
+		door, answer, want string
 	}{
-		{hostDecisionConfirm, "muster: you confirmed step-up card #%d, which this session's attention_answer call raised, on your phone: muster ran that call once, exactly as asked. Do not call it again; read what it did with the list tools."},
-		{hostDecisionRefuse, "muster: you refused step-up card #%d, which this session's attention_answer call raised, on your phone: the call did not run, and nothing was done."},
+		{"phone", hostDecisionConfirm, "muster: you confirmed step-up card #%d, which this session's attention_answer call raised: muster ran that call once, exactly as asked. Do not call it again; read what it did with the list tools."},
+		{"phone", hostDecisionRefuse, "muster: you refused step-up card #%d, which this session's attention_answer call raised: the call did not run, and nothing was done."},
+		{"passkey", hostDecisionConfirm, "muster: you confirmed step-up card #%d, which this session's attention_answer call raised: muster ran that call once, exactly as asked. Do not call it again; read what it did with the list tools."},
+		{"passkey", hostDecisionRefuse, "muster: you refused step-up card #%d, which this session's attention_answer call raised: the call did not run, and nothing was done."},
 	} {
-		t.Run(tc.answer, func(t *testing.T) {
+		t.Run(tc.door+"/"+tc.answer, func(t *testing.T) {
 			s := newStepUpWorld(t)
 			card := s.card(t, windowCaller())
-			if _, err := s.f.srv.answerAskFrom(asDevice(s.f.owner), card, tc.answer, attention.AnswerSource{}); err != nil {
-				t.Fatalf("the phone's %s: %v", tc.answer, err)
+			ctx := asDevice(s.f.owner)
+			if tc.door == "passkey" {
+				ctx = withStepUpPasskeyDecision(probeOwner(s.f), card, time.Now())
+			}
+			if _, err := s.f.srv.answerAskFrom(ctx, card, tc.answer, attention.AnswerSource{}); err != nil {
+				t.Fatalf("the %s's %s: %v", tc.door, tc.answer, err)
 			}
 			probeTick(t, s.f)
 			probeTick(t, s.f)
@@ -565,7 +574,7 @@ func TestAStepUpCardWhoseCallTheToolRefusedSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	probeTick(t, s.f)
-	want := "muster: you confirmed step-up card #" + itoa(card) + ", which this session's attention_answer call raised, on your phone: " +
+	want := "muster: you confirmed step-up card #" + itoa(card) + ", which this session's attention_answer call raised: " +
 		"muster ran that call once, and the tool refused it. Read why with the list tools before you ask again."
 	if got := s.m.taken(); len(got) != 1 || got[0].text != want {
 		t.Fatalf("the session took %+v; want exactly %q", got, want)

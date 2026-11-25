@@ -265,10 +265,11 @@ var apiExempt = map[string]exemption{
 // pushEmitters are the only functions that may hand a notification to a push
 // service or the router, and why each is safe.
 var pushEmitters = map[string]string{
-	"push_routes.go Server.sendPush":        "the wrapper goNotify and handlePushTest call",
-	"server.go Server.goNotify":             "applies Title (TitleKeeping, keeping TitleKeep: a window's tmux target) to the notification's title (bodies: see checkPushEmitters)",
-	"push_routes.go Server.handlePushTest":  "a fixed test title and body",
-	"devices.go Server.handleDevicePushPut": "a fixed probe payload (devicePushProbe)",
+	"push_routes.go Server.sendPush":         "the wrapper goNotify and handlePushTest call",
+	"server.go Server.goNotify":              "applies Title (TitleKeeping, keeping TitleKeep: a window's tmux target) to the notification's title (bodies: see checkPushEmitters)",
+	"push_routes.go Server.handlePushTest":   "a fixed test title and body",
+	"devices.go Server.handleDevicePushPut":  "a fixed probe payload (devicePushProbe)",
+	"passkey_enrol.go Server.notifySecurity": "fixed titles and bodies (PasskeyAddedTitle, PhoneRemovedTitle, TargetRemovedTitle and their bodies); nothing of the request is in them",
 }
 
 func TestTheTitleSinkLedger(t *testing.T) {

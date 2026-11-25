@@ -311,6 +311,11 @@ type attentionItem struct {
 	// draft's own decision controls (askStepUpDraftHTML). Set by withAskBoxes
 	// and the ask page; not serialised.
 	stepUpDraft *plugins.DraftCard
+	// stepUpWeb is what a step-up card's line offers its reader in the
+	// browser (stepUpWebFor): Confirm and Refuse behind a passkey, the phone
+	// line with where a passkey is added, or the phone line alone. Set by
+	// withAskBoxes and the ask page; not serialised.
+	stepUpWeb stepUpWebOffer
 	// stepUpDraftRead: withAskBoxes read the card's draft (stepUpDraftsFor);
 	// stepUpDraftSrc is who raised it, nil when the reader cannot read it —
 	// what the filter chips name the card by (readAskSources), with no second
@@ -1089,9 +1094,13 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			ids[k] = items[i].stepUp.DraftID
 		}
 		decide, read := s.stepUpDraftsFor(ctx, ids)
+		// What the reader's account allows on a card in the browser: one read
+		// for the whole list (stepUpWebAccount).
+		account := s.stepUpWebAccount(ctx)
 		for _, i := range stepUps {
 			id := items[i].stepUp.DraftID
 			items[i].stepUpDraft = decide[id]
+			items[i].stepUpWeb = s.stepUpWebFor(ctx, account, items[i].AskID)
 			items[i].stepUpDraftRead = true
 			if d, ok := read[id]; ok {
 				src := draftCardSource(d)
@@ -1776,6 +1785,10 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionSummaryPath, s.requireAPIToken(s.handleAttentionSummary))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
+	// A step-up card's Confirm or Refuse in the browser, each behind a passkey
+	// ceremony made for that card (stepup_web_confirm.go).
+	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/stepup/passkey/options", s.requireOperatorWrite(s.handleStepUpCardPasskeyOptions))
+	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/stepup/passkey/verify", s.requireOperatorWrite(s.handleStepUpCardPasskeyVerify))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
 	// A session wake's Retry delivery (session_wake.go): a draft card's.
 	mux.HandleFunc("POST "+attentionPath+"/wakes/{id}/retry", s.requireOperatorWrite(s.handleSessionWakeRetry))
@@ -1985,6 +1998,9 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.
 	b.WriteString(s.draftStepUpHTML(r))
+	// A step-up card's Confirm and Refuse behind a passkey, ALWAYS: a card can
+	// arrive with the live refresh (stepup_web_confirm.go).
+	b.WriteString(stepUpCardScript)
 	title := "Asks"
 	if searching {
 		title = "Search asks"
@@ -2450,7 +2466,8 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
 	var a attention.Ask
 	// A host officer machine's confirmation card (host_stepup.go): answered
-	// only from the owner's paired phone, and on "Confirm" the owner-authority
+	// only from the owner's paired phone or with a passkey ceremony made for
+	// it (stepup_web_confirm.go), and on "Confirm" the owner-authority
 	// call it holds runs once — after the hook has recorded the answer (its
 	// claim on the open card), so nothing is recorded here; any other door
 	// is refused and the card stays open.

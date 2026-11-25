@@ -304,6 +304,19 @@ type Server struct {
 	// hostDecisions are the owner-authority calls from a host officer's
 	// machine waiting for the owner's phone (host_stepup.go).
 	hostDecisions hostDecisions
+	// stepUpCards is the browser door's state for deciding those cards with a
+	// passkey: the challenges minted per card (stepup_web_confirm.go).
+	stepUpCards stepUpCardWeb
+	// passkeyEnrol is the enrolment gate's tickets (passkey_enrol.go).
+	passkeyEnrol passkeyEnrolState
+	// passkeyMeta serialises each account's read-modify-write of its passkey
+	// records (passkeyMetaKey is ONE app_metadata value: two writers each
+	// reading the map and writing it back lose one's change). In process:
+	// muster runs one replica.
+	passkeyMeta keyedLocks
+	// pairingPermits is which pairing codes may pair a step-up key
+	// (pairing_gate.go).
+	pairingPermits pairingPermits
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 

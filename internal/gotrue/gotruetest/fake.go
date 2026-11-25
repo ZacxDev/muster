@@ -110,10 +110,17 @@ type Fake struct {
 	lastCredential  []byte
 	// adminPasskeyFailures: the next N admin passkey calls answer 500.
 	adminPasskeyFailures int
+	// adminPasskeySkip: admin passkey calls let through before those failures.
+	adminPasskeySkip int
 	// adminUserGetFailures: the next N GET /admin/users/{id} calls answer 500.
 	adminUserGetFailures int
 	// settingsFailures: the next N GET /settings calls answer 500.
 	settingsFailures int
+	lastPasskeySID   string
+	// deletePasskeyFailures: the next N user passkey deletes answer 500.
+	deletePasskeyFailures int
+	// beforeRegister: run once before the next registration verify.
+	beforeRegister func()
 }
 
 // Call is one request the fake served.

@@ -241,6 +241,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
+		// A step-up card decided in the browser behind a passkey ceremony made
+		// for it (stepup_web_confirm.go): the session's own user, re-proven.
+		"POST /attention/asks/{id}/stepup/passkey/options",
+		"POST /attention/asks/{id}/stepup/passkey/verify",
 		"POST /attention/asks/{id}/redeliver",
 		"POST /attention/wakes/{id}/retry",
 		"POST /attention/opencode/answer",
@@ -271,6 +275,12 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/features",
 		"POST /account/passkeys/options",
 		"POST /account/passkeys/verify",
+		// The enrolment gate's proofs (passkey_enrol.go): the session's own
+		// account, re-proven by its passkey or its phone.
+		"POST /account/passkeys/proof/options",
+		"POST /account/passkeys/proof/verify",
+		"POST /account/passkeys/proof/phone",
+		"GET /account/passkeys/proof/status",
 		"POST /account/passkeys/{id}/delete",
 		"POST /admin/users/{id}/passkeys/delete",
 		// muster-native Web Push: the subscribe flow and the account page's

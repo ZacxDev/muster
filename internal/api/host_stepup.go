@@ -35,12 +35,15 @@ import (
 // per decision: what it does and why on its face (for a draft, the post
 // itself), the tool and its exact arguments in its Details
 // (host_stepup_card.go) — and runs nothing.
-// The decision runs only when the owner answers that card "Confirm" from
-// their paired phone: a SIGNED ACTION (device_actions.go), whose challenge is
-// single use, lives two minutes and is bound to that card's id and the sha256
-// of the exact answer. A browser answer, an MCP answer (attention_answer from
-// any machine) and an answer after a restart lost the pending decision are
-// refused, and the card stays open (or is withdrawn). The decision runs
+// The decision runs only when the owner answers that card "Confirm" through
+// one of two doors, each a fresh proof made for that one decision: their
+// paired phone's SIGNED ACTION (device_actions.go), whose challenge is single
+// use, lives two minutes and is bound to that card's id and the sha256 of the
+// exact answer; or, on the card in muster, a PASSKEY CEREMONY bound to that
+// card (stepup_web_confirm.go). An ordinary browser answer (a fresh sign-in
+// included), an MCP answer (attention_answer from any machine) and an answer
+// after a restart lost the pending decision are refused, and the card stays
+// open (or is withdrawn). The decision runs
 // once: it is taken out of the pending set, and the card is answered (the
 // store's own open-only update, which a dismissal racing it cannot pass), before
 // it runs. A card that is no longer open (dismissed, withdrawn, expired) runs
@@ -171,6 +174,14 @@ type hostDecision struct {
 	// challenge for this card hands back (stepUpCardConfirms), so the step-up
 	// prompt shows what the signature confirms.
 	question string
+	// confirm, when set, is what a Confirm runs in place of a mirror door
+	// tool: muster's own decision (adding a passkey, passkey_enrol.go). Its
+	// answer is the outcome's words.
+	confirm func(context.Context) string
+	// phoneOnly: only the paired phone decides this card, never a passkey in
+	// the browser (adding a passkey must not be approved by a passkey a
+	// password could have added).
+	phoneOnly bool
 }
 
 // hostDecisions is the pending set, by card (ask) id. In memory: muster runs
@@ -179,6 +190,11 @@ type hostDecision struct {
 type hostDecisions struct {
 	mu      sync.Mutex
 	pending map[int64]hostDecision
+	// deciding is every card whose decision a door has CLAIMED (claim) and
+	// not yet settled: taken out of pending, its answer not yet recorded. A
+	// second door reaching the card then finds no pending decision, and this
+	// tells it the card is being decided, never that a restart lost it.
+	deciding map[int64]bool
 }
 
 func (h *hostDecisions) put(id int64, d hostDecision) {
@@ -197,6 +213,38 @@ func (h *hostDecisions) take(id int64) (hostDecision, bool) {
 	d, ok := h.pending[id]
 	delete(h.pending, id)
 	return d, ok
+}
+
+// claim is take for the door that DECIDES card id: the decision is removed
+// (single use) and the card marked as being decided until settled.
+func (h *hostDecisions) claim(id int64) (hostDecision, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	d, ok := h.pending[id]
+	if !ok {
+		return d, false
+	}
+	delete(h.pending, id)
+	if h.deciding == nil {
+		h.deciding = map[int64]bool{}
+	}
+	h.deciding[id] = true
+	return d, true
+}
+
+// settled ends claim's mark on card id: its answer was recorded, or was not
+// and its decision is pending again (put).
+func (h *hostDecisions) settled(id int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.deciding, id)
+}
+
+// isDeciding reports whether a door has claimed card id and not settled it.
+func (h *hostDecisions) isDeciding(id int64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.deciding[id]
 }
 
 func (h *hostDecisions) peek(id int64) (hostDecision, bool) {
@@ -427,15 +475,20 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	s.hostDecisions.put(ask.ID, hostDecision{owner: p.UserID, host: host, caller: c, tool: name, args: args, question: ask.Question})
 	s.askFiled(ask)
 	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine; %s)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "), firstNonBlank(spawn, "no agent spawn"))
+	where := "on their phone"
+	if s.passkeysServed(ctx) {
+		// Only where a passkey can decide a card at all.
+		where += ", or in muster with their passkey"
+	}
 	return toolJSON(map[string]any{"status": "awaiting_owner_confirmation", "card": ask.ID,
-		"next": "Nothing was done yet. Your owner confirms or refuses this on their phone; it then runs once, exactly as asked. " +
+		"next": "Nothing was done yet. Your owner confirms or refuses this " + where + "; it then runs once, exactly as asked. " +
 			"Do not call it again; read the outcome with the list tools later."}), true
 }
 
 // errHostDecisionNeedsPhone refuses a confirmation card's answer from any door
-// but the owner's paired phone.
-var errHostDecisionNeedsPhone = fmt.Errorf("%w: this confirmation is answered only from your paired phone (a signed action); "+
-	"or decide the request itself in muster's web UI", attention.ErrInvalid)
+// but the owner's paired phone and a passkey ceremony made for that card.
+var errHostDecisionNeedsPhone = fmt.Errorf("%w: this confirmation is answered only from your paired phone (a signed action) "+
+	"or with your passkey on its card in muster; or decide the request itself in muster's web UI", attention.ErrInvalid)
 
 // errHostDecisionLost refuses a card whose pending decision is gone (a restart).
 var errHostDecisionLost = fmt.Errorf("%w: this confirmation's request was lost when muster restarted; the session must ask again", attention.ErrInvalid)
@@ -444,9 +497,27 @@ var errHostDecisionLost = fmt.Errorf("%w: this confirmation's request was lost w
 // (dismissed, withdrawn or expired): its decision is dropped, nothing runs.
 var errHostDecisionClosed = fmt.Errorf("%w: this confirmation was closed, so its request was dropped and nothing ran", attention.ErrNotOpen)
 
+// errHostDecisionDecided refuses an answer to a card another door has
+// already decided (answered, or being answered right now): nothing more runs.
+var errHostDecisionDecided = fmt.Errorf("%w: this confirmation was already decided, so nothing more was run", attention.ErrNotOpen)
+
+// errHostDecisionBusy answers a door that reaches a card another door is
+// deciding at this moment: retry. Not ErrNotOpen — the other door's write may
+// fail and put the decision back, and then this card is open again.
+var errHostDecisionBusy = errors.New("step-up: this confirmation is being decided right now; try again in a moment")
+
+// stepUpCardDecided reports whether card a was DECIDED — answered with one of
+// its own two options, by the phone or the browser's passkey — as opposed to
+// closed some other way (dismissed, expired, settled by its draft's decision
+// on another door, whose answer says so: stepUpDraftAnswer).
+func stepUpCardDecided(a attention.Ask) bool {
+	return a.Status == attention.Answered && (a.Answer == hostDecisionConfirm || a.Answer == hostDecisionRefuse)
+}
+
 // hostDecisionForAnswer is answerAskFrom's hook for a confirmation card:
-// handled false for any other ask. For a card: a door that is not the
-// owner's paired phone is refused (the card stays open); an answer that is
+// handled false for any other ask. For a card: a door that is neither the
+// owner's paired phone nor a passkey ceremony made for this card (stepUpDoor)
+// is refused (the card stays open); an answer that is
 // neither option is refused; otherwise the card is answered HERE — rec is the
 // recorded answer, and answerAskFrom records nothing more — and then
 // "Confirm" runs the decision once, as the session that asked, while
@@ -473,10 +544,22 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 		if err != nil || !a.Asker.System || a.Asker.Label != hostDecisionLabel {
 			return false, rec, nil
 		}
-		if a.Status != attention.Open {
+		switch {
+		case stepUpCardDecided(a):
+			// Decided on another door (the phone, the browser's passkey): the
+			// loser of a race, or a retry, is told so, and nothing more runs.
+			return true, rec, errHostDecisionDecided
+		case a.Status != attention.Open:
 			// Closed (and its decision dropped then): a retry of a refused
 			// Confirm says so, never that a restart lost it.
 			return true, rec, errHostDecisionClosed
+		case s.hostDecisions.isDeciding(id):
+			// 🔴 ANOTHER DOOR HAS CLAIMED IT AND IS RECORDING ITS ANSWER: the
+			// card is still open for that moment, and withdrawing it as lost
+			// (below) would make the winner's claim fail and run nothing. Not
+			// "decided" either: the winner's write may yet fail and put the
+			// decision back — so retry.
+			return true, rec, errHostDecisionBusy
 		}
 		if _, err := s.cancelAsk(ctx, id); err != nil && !errors.Is(err, attention.ErrNotOpen) {
 			s.logger.Printf("step-up: withdraw lost card %d: %v", id, err)
@@ -489,7 +572,12 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 	if !ok || p.UserID != pending.owner {
 		return true, rec, errHostDecisionLost
 	}
-	if p.Via != authz.ViaDevice {
+	// 🔴 TWO DOORS, BOTH A FRESH PROOF MADE FOR THIS DECISION: the paired
+	// phone's signed action (its principal's door, set only after the
+	// signature verified), or a passkey ceremony in the browser bound to THIS
+	// card (stepup_web_confirm.go; its proof names the card it was made for).
+	door := stepUpDoor(ctx, p, id)
+	if door == "" || pending.phoneOnly && door != stepUpDoorPhone {
 		return true, rec, errHostDecisionNeedsPhone
 	}
 	if answer != hostDecisionConfirm && answer != hostDecisionRefuse {
@@ -516,28 +604,61 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 		s.hostDecisions.take(id)
 		return true, rec, errHostDecisionClosed
 	}
-	d, ok := s.hostDecisions.take(id)
+	// 🔴 THE SINGLE-EXECUTION GUARD: one door claims the decision; any other
+	// reaching the card now finds none (and isDeciding).
+	d, ok := s.hostDecisions.claim(id)
 	if !ok {
+		// Another door claimed it between the read above and here: it is
+		// being decided (retry: the winner's write may yet fail and put it
+		// back), or was (the card answered), or was closed.
+		if s.hostDecisions.isDeciding(id) {
+			return true, rec, errHostDecisionBusy
+		}
+		switch cur, gerr := s.ext.Attention.Get(ctx, id); {
+		case gerr == nil && stepUpCardDecided(cur):
+			return true, rec, errHostDecisionDecided
+		case gerr == nil && cur.Status != attention.Open:
+			return true, rec, errHostDecisionClosed
+		}
 		return true, rec, errHostDecisionLost
 	}
-	// The claim: open → answered, or nothing (see above).
-	rec, err = s.ext.Attention.Answer(ctx, id, answer)
+	// The claim: open → answered, or nothing (see above). The mark is cleared
+	// however this ends — a panic in the store included — so a card is never
+	// left "being decided" for good.
+	rec, err = func() (attention.Ask, error) {
+		defer s.hostDecisions.settled(id)
+		rec, err := s.ext.Attention.Answer(ctx, id, answer)
+		if err != nil && !errors.Is(err, attention.ErrNotOpen) && !errors.Is(err, attention.ErrNotFound) {
+			// Not recorded, for a reason that is not the card's: pending
+			// again, for the owner's next Confirm (put before the mark
+			// clears, so no door sees the card as lost in between).
+			s.hostDecisions.put(id, d)
+		}
+		return rec, err
+	}()
 	switch {
 	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
 		// Closed between the read and this write: dropped (taken above).
+		if cur, gerr := s.ext.Attention.Get(ctx, id); gerr == nil && stepUpCardDecided(cur) {
+			return true, rec, errHostDecisionDecided
+		}
 		return true, rec, errHostDecisionClosed
 	case err != nil:
-		// Not recorded, for a reason that is not the card's: pending again,
-		// for the owner's next Confirm.
-		s.hostDecisions.put(id, d)
 		return true, rec, fmt.Errorf("step-up: record card %d's answer: %w", id, err)
 	}
+	s.auditStepUpDecision(ctx, p, id, d.tool, answer, door)
 	if answer == hostDecisionRefuse {
-		s.logger.Printf("step-up: card %d refused: %s from %s/%s not run", id, d.tool, d.host, d.caller.asker.MirrorSession)
+		s.logger.Printf("step-up: card %d refused %s: %s from %s/%s not run", id, stepUpDoorWords(door), d.tool, d.host, d.caller.asker.MirrorSession)
 		s.wakeStepUpDecided(ctx, rec, sessionwake.DecisionRefused)
 		return true, rec, nil
 	}
-	out := s.runStepUpTool(s.stepUpPrincipal(ctx, d.owner), d.host, d.caller, d.tool, d.args)
+	var out string
+	if d.confirm != nil {
+		// muster's own decision (passkey_enrol.go), not a mirror door tool.
+		out = d.confirm(ctx)
+	} else {
+		out = s.runStepUpTool(s.stepUpPrincipal(ctx, d.owner), d.host, d.caller, d.tool, d.args)
+	}
 	outcome, woke := "ran", sessionwake.DecisionConfirmed
 	if isToolErr(out) {
 		outcome, woke = "ran and was refused: "+mirror.OneLine(out, 200), sessionwake.DecisionConfirmedFailed
@@ -545,13 +666,13 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 	// The session whose call raised the card is told it ran (or was refused
 	// by the tool) — the word only, never the tool's output.
 	s.wakeStepUpDecided(ctx, rec, woke)
-	s.logger.Printf("step-up: card %d confirmed on the owner's phone: %s from %s/%s %s", id, d.tool, d.host, d.caller.asker.MirrorSession, outcome)
+	s.logger.Printf("step-up: card %d confirmed %s: %s from %s/%s %s", id, stepUpDoorWords(door), d.tool, d.host, d.caller.asker.MirrorSession, outcome)
 	return true, rec, nil
 }
 
 // stepUpPrincipal is the principal a CONFIRMED owner-authority call runs
-// under: the SAME owner whose phone just confirmed it (hostDecisionForAnswer
-// checked the device principal's user is the card's owner), at the door the
+// under: the SAME owner who just confirmed it, on the phone or with a passkey
+// (hostDecisionForAnswer checked the principal's user is the card's owner), at the door the
 // call was asked through — authz.ViaMirrorHost — so the tool runs exactly as
 // the mirror door would have run it. Never another user id.
 //

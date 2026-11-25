@@ -549,6 +549,8 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// ResetCredentials also REVOKES every personal API token the user holds, in
 	// the cutoff's transaction (accounts PR 6): a reset is what someone does
 	// after a credential leaked, and a token is a credential.
+	// Told FIRST, while its phones are still paired (the reset unpairs them).
+	s.notifySecurity(r.Context(), u.ID, ResetLinkUsedTitle, ResetLinkBody, "/account")
 	cut, err := s.gt.Accounts.ResetCredentials(r.Context(), u.ID)
 	if err != nil {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
@@ -585,6 +587,16 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
 	done := resetDonePath(removePasskeys, 0)
 	if removePasskeys {
+		// Marked first (accountStrongFactors reads the live passkeys and
+		// records them): a reset that stops after deleting them, before the
+		// password is set and the record cleared, leaves the account gated.
+		// Only the mark is wanted here — the reset link, not a session, is the
+		// proof — so the open-tier decision (openTier) is not asked.
+		if _, err := s.accountStrongFactors(r.Context(), u.ID); err != nil {
+			s.logger.Printf("reset: read user %d's factors before removing passkeys: %v", u.ID, err)
+			s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+			return
+		}
 		n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject)
 		if err != nil {
 			s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
@@ -616,6 +628,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
+	// 🔴 THE ONE THING THAT REOPENS THE FIRST-FACTOR TIER (migration 0189): a
+	// completed reset, whose link proves more than the password. The reset
+	// revoked every paired phone; kept passkeys still gate (live rows).
+	s.clearStrongFactor(r.Context(), u.ID)
 	if !removePasskeys {
 		// What the page says about the kept passkeys depends on whether there
 		// are any (resetDonePath). Counted AFTER the password is set and only

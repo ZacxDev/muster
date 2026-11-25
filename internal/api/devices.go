@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -228,17 +229,52 @@ func (s *Server) handleDevicePairCode(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the pairing code could not be created"})
 		return
 	}
+	// 🔴 May this code pair a phone that confirms requests (pairing_gate.go)?
+	stepUp := s.pairingStepUpAllowed(r)
+	if stepUp {
+		s.pairingPermits.allow(code, expires)
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"code": code, "expires_at": expires.UTC().Format(time.RFC3339),
-		"expires_in": int(devices.PairingCodeTTL / time.Second),
-	})
+		"expires_in": int(devices.PairingCodeTTL / time.Second), "stepup_allowed": stepUp,
+	}
+	if !stepUp {
+		out["stepup_note"] = PairStepUpProofNeeded
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 || s.ext.Devices == nil {
 		http.Error(w, "no such device", http.StatusNotFound)
+		return
+	}
+	// The phone first: a removal of one that is not there spends no ticket
+	// and tells nobody anything.
+	list, err := s.ext.Devices.List(r.Context())
+	if err != nil {
+		s.logger.Printf("devices: remove %d: %v", id, err)
+		http.Error(w, "the device could not be removed", http.StatusInternalServerError)
+		return
+	}
+	i := slices.IndexFunc(list, func(d devices.Device) bool { return d.ID == id })
+	if i < 0 {
+		http.Error(w, "no such device", http.StatusNotFound)
+		return
+	}
+	if list[i].HasStepUpKey {
+		// The account has a step-up phone: marked (migration 0189), so
+		// removing it never reopens the first-factor tier.
+		if err := s.markStrongFactor(r.Context(), requestOwner(r.Context())); err != nil {
+			http.Error(w, "the device could not be removed", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	// 🔴 Not with the password alone where the account can prove more
+	// (passkey_removal.go).
+	if !s.gateCredentialRemoval(w, r, PhoneRemovedTitle) {
 		return
 	}
 	found, err := s.ext.Devices.Remove(r.Context(), id)
@@ -301,6 +337,14 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 				`"stepup_key_type","stepup_key_level"}; the three step-up fields are all present or all absent`})
 		return
 	}
+	// 🔴 A STEP-UP KEY ONLY ON A CODE MINTED WITH PERMISSION (pairing_gate.go).
+	// Refused before the code is redeemed, so it is not used up.
+	// Counted as a failed attempt, as a bad code is: a code this server did
+	// not mint with permission may be no code at all.
+	if body.StepUpPubkey != "" && !s.pairingPermits.allowed(body.Code) {
+		failed(http.StatusForbidden, map[string]any{"error": PairStepUpProofNeeded, "code": "stepup_proof_required"})
+		return
+	}
 	tok, d, err := s.ext.Devices.Redeem(r.Context(), body.Code, devices.PairIn{
 		Name: body.Name, AppVersion: body.AppVersion, StepUpKey: body.StepUpPubkey,
 		KeyType: body.StepUpKeyType, KeyLevel: body.StepUpKeyLevel, AllowPINKeys: s.ext.AllowPINKeys})
@@ -324,7 +368,18 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the device could not be paired"})
 		return
 	}
+	// The permission is NOT dropped here: it expires with the code, and a
+	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
+	// A step-up key marked the account (the sticky tier) in Redeem's own
+	// statement: migration 0190's trigger on devices. This best-effort mark is
+	// belt-and-braces for a schema whose trigger was dropped (0190's
+	// rollback note); the trigger is the guarantee.
+	if d.HasStepUpKey {
+		_ = s.markStrongFactor(r.Context(), d.OwnerID)
+	}
+	// Every device already registered is told (pairing_gate.go).
+	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"token": tok,
@@ -339,6 +394,14 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 // Account → Devices' Remove, under the device's owner.
 func (s *Server) handleDeviceUnpair(w http.ResponseWriter, r *http.Request) {
 	d := deviceFromContext(r.Context())
+	// A step-up phone leaving marks its account first (migration 0189): its
+	// own unpair must not reopen the first-factor tier. Fail closed.
+	if d.HasStepUpKey {
+		if err := s.markStrongFactor(r.Context(), d.OwnerID); err != nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "the device could not be unpaired; try again"})
+			return
+		}
+	}
 	if _, err := s.ext.Devices.Remove(r.Context(), d.ID); err != nil {
 		s.logger.Printf("devices: unpair %d: %v", d.ID, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the device could not be unpaired"})
@@ -644,8 +707,12 @@ const appBridgeJS = `(function () {
         return;
       }
       if (!res.ok || !data.code) { status.textContent = data.error || ('Pairing failed (' + res.status + ').'); return; }
-      bridge.postMessage(JSON.stringify({ type: 'pair', code: data.code, expires_at: data.expires_at }));
-      status.textContent = 'The app is finishing the pairing.';
+      bridge.postMessage(JSON.stringify({ type: 'pair', code: data.code, expires_at: data.expires_at, stepup_allowed: data.stepup_allowed === true }));
+      // A code minted without the enrolment proof pairs a phone that cannot
+      // confirm requests (pairing_gate.go): say so, and how to do better.
+      status.textContent = data.stepup_allowed === false && data.stepup_note
+        ? 'The app is finishing the pairing. ' + data.stepup_note
+        : 'The app is finishing the pairing.';
     } catch (e) { status.textContent = 'Pairing failed: ' + e.message; }
   });
 })();`

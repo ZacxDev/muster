@@ -212,6 +212,23 @@ func (s *Server) handlePushRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
 	}
+	// The target first: a removal of one that is not there spends no
+	// ticket and tells nobody anything.
+	targets, err := s.ext.Push.Store().Devices(r.Context())
+	if err != nil {
+		s.logger.Printf("push: remove device %d: %v", id, err)
+		http.Error(w, "the device could not be removed", http.StatusInternalServerError)
+		return
+	}
+	if !slices.ContainsFunc(targets, func(d push.Device) bool { return d.ID == id }) {
+		http.Error(w, "no such device", http.StatusNotFound)
+		return
+	}
+	// 🔴 Not with the password alone where the account can prove more
+	// (passkey_removal.go).
+	if !s.gateCredentialRemoval(w, r, TargetRemovedTitle) {
+		return
+	}
 	found, err := s.ext.Push.Store().Remove(r.Context(), id)
 	if err != nil {
 		s.logger.Printf("push: remove device %d: %v", id, err)

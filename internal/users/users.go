@@ -296,7 +296,8 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 // issued at or before it is refused from now on
 // (TestAResetEndsOtherDevicesAccessTokensAtOnce) — and revokes every live
 // personal API token the user holds (accounts PR 6;
-// TestAPasswordResetRevokesTheUsersAPITokens). It returns the cutoff.
+// TestAPasswordResetRevokesTheUsersAPITokens) and every flow-runner token, as
+// the server recovery does (ResetFactors). It returns the cutoff.
 //
 // ⚠ "SIGN OUT EVERYWHERE" IS NOT THIS: it ends GoTrue sessions only, and the
 // /account page says so next to its button.
@@ -323,7 +324,10 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
-	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+	if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
+	if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
 	return t, tx.Commit(ctx)
@@ -360,7 +364,7 @@ func (s *PGStore) RecordSignOutEverywhere(ctx context.Context, id int64) (time.T
 	if err != nil {
 		return t, err
 	}
-	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+	if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
 	return t, tx.Commit(ctx)
@@ -417,7 +421,7 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 			return User{}, err
 		}
 		// Every paired phone (0039), in THIS transaction.
-		if err := deleteDevicesTx(ctx, tx, id); err != nil {
+		if _, err := deleteDevicesTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
 		// Accounts PR 6: every live personal API token, in THIS transaction.
@@ -493,10 +497,16 @@ func revokeRunnerTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // DELETE CASCADE). An unspent pairing code is left to expire (a minute): the
 // session that minted it signed in at or before the cut, so the redeem's own
 // rule refuses it. Raw SQL for the revokeAPITokensTx reason: internal/devices
-// imports this package.
-func deleteDevicesTx(ctx context.Context, tx pgx.Tx, id int64) error {
-	_, err := tx.Exec(ctx, `DELETE FROM devices WHERE owner_id = $1`, id)
-	return err
+// imports this package. It returns how many phones went.
+//
+// 🔴 A DELETED PHONE WITH A STEP-UP KEY MARKS ITS ACCOUNT (had_strong_factor_at)
+// in this same statement: migration 0190's trigger on devices, which covers
+// every SQL that changes the table, this one included. So a delete-everything
+// path reached with the password alone (Sign out everywhere) can never leave
+// an account that had a step-up phone unmarked.
+func deleteDevicesTx(ctx context.Context, tx pgx.Tx, id int64) (int, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE owner_id = $1`, id)
+	return int(tag.RowsAffected()), err
 }
 
 // accountWritersLockClass is the first key of the ONE advisory lock that
@@ -602,22 +612,30 @@ func (s *PGStore) IDByEmail(ctx context.Context, email string) (int64, bool, err
 	return id, true, nil
 }
 
-// DisabledAmong reports, for each of ids that exists, whether it is disabled,
+// SessionState is what the session sweep re-reads for one user: whether it
+// is disabled, and its session cutoff (migration 0010; moved by a disable, a
+// password reset and the server recovery).
+type SessionState struct {
+	Disabled          bool
+	SessionsNotBefore *time.Time
+}
+
+// SessionStateAmong reports, for each of ids that exists, its SessionState,
 // in one query. An id with no row is absent from the result.
-func (s *PGStore) DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT id, disabled_at IS NOT NULL FROM users WHERE id = ANY($1)`, ids)
+func (s *PGStore) SessionStateAmong(ctx context.Context, ids []int64) (map[int64]SessionState, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT id, disabled_at IS NOT NULL, sessions_not_before FROM users WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[int64]bool, len(ids))
+	out := make(map[int64]SessionState, len(ids))
 	for rows.Next() {
 		var id int64
-		var disabled bool
-		if err := rows.Scan(&id, &disabled); err != nil {
+		var st SessionState
+		if err := rows.Scan(&id, &st.Disabled, &st.SessionsNotBefore); err != nil {
 			return nil, err
 		}
-		out[id] = disabled
+		out[id] = st
 	}
 	return out, rows.Err()
 }
@@ -795,4 +813,102 @@ func looksLikeUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// PasskeyVouchingSince is when this server started recording which passkeys
+// may approve a step-up card (migration 0188, passkey_rules): a passkey with
+// no record counts as added before that only when GoTrue created it earlier
+// (internal/api passkey_enrol.go).
+func (s *PGStore) PasskeyVouchingSince(ctx context.Context) (time.Time, error) {
+	var at time.Time
+	err := s.pool.QueryRow(sys(ctx), `SELECT vouching_since FROM passkey_rules WHERE singleton`).Scan(&at)
+	return at, err
+}
+
+// HadStrongFactor reports whether account id has ever had a passkey or a
+// phone with a step-up key (migration 0189, users.had_strong_factor_at): the
+// enrolment gate's sticky tier (internal/api passkey_enrol.go).
+func (s *PGStore) HadStrongFactor(ctx context.Context, id int64) (bool, error) {
+	var at *time.Time
+	err := s.pool.QueryRow(sys(ctx), `SELECT had_strong_factor_at FROM users WHERE id = $1`, id).Scan(&at)
+	return at != nil, err
+}
+
+// HasStepUpPhone reports whether account id has a paired phone with a step-up
+// key (internal/devices), read by id whoever asks: internal/api's one rule for
+// the gated tier (accountHasStrongFactor) asks it about the acting admin and
+// about the account acted on. Raw SQL for the deleteDevicesTx reason.
+func (s *PGStore) HasStepUpPhone(ctx context.Context, id int64) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(sys(ctx), `SELECT EXISTS (SELECT 1 FROM devices WHERE owner_id = $1 AND stepup_pubkey IS NOT NULL)`, id).Scan(&ok)
+	return ok, err
+}
+
+// MarkStrongFactor records that account id has a passkey or a phone with a
+// step-up key; a mark already set is kept (its first time).
+func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(sys(ctx), `UPDATE users SET had_strong_factor_at = now() WHERE id = $1 AND had_strong_factor_at IS NULL`, id)
+	return err
+}
+
+// ResetFactors is the server recovery's database half (muster-server user
+// reset-factors, internal/api ResetAccountFactors), in ONE transaction under
+// the credentials lock: every paired phone of account id is deleted (their
+// push subscriptions go with them), every session it has is ended
+// (sessions_not_before) and every personal API and flow-runner token revoked
+// (mirror host tokens are kept: they bind a host and decide no factor) — its
+// mark is cleared, and the audit row
+// "user.factors_reset" records by, how many phones went, that the sessions
+// ended, and detail (the GoTrue half, done before: passkeys removed, whether
+// a password was set). ErrNotFound when there is no such account (nothing
+// written).
+//
+// 🔴 THE PHONES GO BEFORE THE MARK IS CLEARED: deleting a step-up phone marks
+// the account (migration 0190's trigger), so the other order would leave it
+// marked.
+func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, detail map[string]any) (phones int, err error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	var got int64
+	err = tx.QueryRow(ctx, `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1 RETURNING id`, id).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	if phones, err = deleteDevicesTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, id); err != nil {
+		return 0, err
+	}
+	audit := map[string]any{"phones_removed": phones, "sessions_ended": true}
+	for k, v := range detail {
+		audit[k] = v
+	}
+	if err := AuditTx(ctx, tx, by, "user.factors_reset", UserObject(id), audit); err != nil {
+		return 0, err
+	}
+	return phones, tx.Commit(ctx)
+}
+
+// ClearStrongFactor clears account id's mark: ONLY a completed password reset
+// does (its link proves more than the password).
+func (s *PGStore) ClearStrongFactor(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(sys(ctx), `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, id)
+	return err
 }

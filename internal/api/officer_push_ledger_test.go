@@ -60,6 +60,7 @@ var officerRouted = map[string]string{
 
 // notOfficerRouted: every other call site, with why the table does not apply.
 var notOfficerRouted = map[string]string{
+	"passkey_enrol.go Server.handlePasskeyProofPhone -> askFiled":         "the owner's own browser asking their phone to confirm adding a passkey (a signed-in session's POST); no officer reaches it",
 	"plugin_server.go Server.uninstallServerApp -> goNotify":              "an admin's uninstall withdrawing each server-app knock still out (a resolved to the person it was for); no officer reaches an uninstall",
 	"fleet_actions.go Server.fleetPushWaiting -> goNotify":                "the batched \"N proposals waiting\" push: fleet actions are filed only by the chief's chief-only fleet tools (agentTool chiefOnly); no officer can file one",
 	"attention.go Server.attentionNotify -> goNotify":                     "a wrapper: its callers are on this ledger",

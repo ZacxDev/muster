@@ -84,14 +84,114 @@ const (
 )
 
 func (s *Server) registerDeviceActionRoutes(mux Mux) {
-	mux.HandleFunc("POST "+deviceChallengePath, s.requireDeviceToken(s.handleDeviceChallenge))
-	mux.HandleFunc(deviceAskAnswerRoute, s.requireDeviceToken(s.handleDeviceAskAnswer))
-	mux.HandleFunc(deviceAskCancelRoute, s.requireDeviceToken(s.handleDeviceAskCancel))
+	mux.HandleFunc("POST "+deviceChallengePath, s.logDeviceRoute(s.requireDeviceToken(s.handleDeviceChallenge), "challenge"))
+	mux.HandleFunc(deviceAskAnswerRoute, s.logDeviceRoute(s.requireDeviceToken(s.handleDeviceAskAnswer), "signed action"))
+	mux.HandleFunc(deviceAskCancelRoute, s.logDeviceRoute(s.requireDeviceToken(s.handleDeviceAskCancel), "signed action"))
 }
 
 // actionRefuse answers a refused signed request: {error, code}.
 func (s *Server) actionRefuse(w http.ResponseWriter, status int, code, msg string) {
+	if lw, ok := w.(*deviceLogWriter); ok {
+		lw.code = code
+	}
 	s.writeJSON(w, status, map[string]any{"error": msg, "code": code})
+}
+
+// ---------------------------------------------------------------------------
+// ONE LOG LINE PER PHONE REQUEST (logDeviceRoute): every POST to the
+// challenge route and to a signed action route, whatever its outcome — so a
+// tap that failed on the phone can be found in the server's log, and a tap
+// that never arrived is the absence of its line.
+//
+//	devices: challenge outcome=ok action=ask_answer ask=41 device=3 owner=7 status=200 in=12ms
+//
+// outcome is the route's refusal code (the actionCode* values the app
+// branches on), "ok", "bad_token" for a credential requireDeviceToken
+// refused, or "status_<n>" for any other answer. 🔴 NOTHING THE REQUEST
+// CARRIES IS LOGGED but those ids, read after they parsed: never the token, the
+// nonce, the signed message, the signature, or the answer's text.
+// ---------------------------------------------------------------------------
+
+// deviceLogWriter is the response of one logged phone request: its status,
+// and the refusal code actionRefuse answered with.
+type deviceLogWriter struct {
+	http.ResponseWriter
+	status int
+	code   string
+	note   deviceLogNote
+}
+
+// deviceLogNote is what the handler learned about the request as it parsed it.
+type deviceLogNote struct {
+	action        string
+	ask           int64
+	device, owner int64
+}
+
+func (w *deviceLogWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *deviceLogWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *deviceLogWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// noteDeviceRequest records, for the request's log line, its action and ask
+// and the device that sent it (zero values are left as they were).
+func noteDeviceRequest(w http.ResponseWriter, r *http.Request, action string, ask int64) {
+	lw, ok := w.(*deviceLogWriter)
+	if !ok {
+		return
+	}
+	if action != "" {
+		lw.note.action = action
+	}
+	if ask > 0 {
+		lw.note.ask = ask
+	}
+	if d := deviceFromContext(r.Context()); d.ID > 0 {
+		lw.note.device, lw.note.owner = d.ID, d.OwnerID
+	}
+}
+
+// logDeviceRoute wraps a phone route (OUTSIDE requireDeviceToken, so a refused
+// credential is logged too) with its one log line. The handler is the FIRST
+// argument, as every route wrapper's is (the route walks read the handler a
+// registration closes over from there).
+func (s *Server) logDeviceRoute(next http.HandlerFunc, route string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lw := &deviceLogWriter{ResponseWriter: w}
+		next(lw, r)
+		status := lw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		outcome := lw.code
+		switch {
+		case outcome != "":
+		case status < 300:
+			outcome = "ok"
+		case status == http.StatusUnauthorized:
+			outcome = "bad_token"
+		default:
+			outcome = "status_" + strconv.Itoa(status)
+		}
+		action := lw.note.action
+		if action == "" {
+			action = "-"
+		}
+		s.logger.Printf("devices: %s outcome=%s action=%s ask=%d device=%d owner=%d status=%d in=%dms",
+			route, outcome, action, lw.note.ask, lw.note.device, lw.note.owner, status, time.Since(start).Milliseconds())
+	}
 }
 
 // challengeRefusal maps a devices error to the route's answer; false when err
@@ -131,6 +231,7 @@ func (s *Server) handleDeviceChallenge(w http.ResponseWriter, r *http.Request) {
 		Target     string `json:"target"`
 		TextSHA256 string `json:"text_sha256"`
 	}
+	noteDeviceRequest(w, r, "", 0)
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceBody)).Decode(&body); err != nil {
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeBadRequest, `the body is {"action","target","text_sha256"}`)
 		return
@@ -139,10 +240,14 @@ func (s *Server) handleDeviceChallenge(w http.ResponseWriter, r *http.Request) {
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeBadRequest, "unknown action "+strconv.Quote(body.Action))
 		return
 	}
-	if id, err := strconv.ParseInt(body.Target, 10, 64); err != nil || id <= 0 || strconv.FormatInt(id, 10) != body.Target {
+	// Only a known action id is logged (never the request's own string).
+	noteDeviceRequest(w, r, body.Action, 0)
+	target, err := strconv.ParseInt(body.Target, 10, 64)
+	if err != nil || target <= 0 || strconv.FormatInt(target, 10) != body.Target {
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeBadRequest, "the target is an ask's id")
 		return
 	}
+	noteDeviceRequest(w, r, "", target)
 	var text []byte
 	switch body.Action {
 	case actionAskAnswer:
@@ -194,6 +299,8 @@ const maxDeviceActionBody = attention.MaxAnswerRunes*12 + 4<<10
 // with text (nil for none). It reports false, the request answered, on any
 // refusal; on success, the challenge it verified (for RecordAction).
 func (s *Server) deviceAskAction(w http.ResponseWriter, r *http.Request, action string, body any, nonce, sig *string, text func() []byte) (int64, devices.Challenge, bool) {
+	pathID, _ := askIDParam(r)
+	noteDeviceRequest(w, r, action, pathID)
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceActionBody)).Decode(body); err != nil {
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeBadRequest, "the body is not the action's JSON")
 		return 0, devices.Challenge{}, false
@@ -263,6 +370,11 @@ func (s *Server) askActionResult(w http.ResponseWriter, r *http.Request, c devic
 	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotice):
 		outcome = actionCodeNotOpen
 		s.actionRefuse(w, http.StatusConflict, actionCodeNotOpen, attentionErrText(err, a))
+	case errors.Is(err, errHostDecisionBusy):
+		// A step-up card another door is deciding this moment: retryable
+		// (its write may fail and put the decision back).
+		outcome = actionCodeFailed
+		s.actionRefuse(w, http.StatusServiceUnavailable, actionCodeFailed, strings.TrimPrefix(err.Error(), "step-up: "))
 	case errors.Is(err, attention.ErrInvalid):
 		outcome = actionCodeInvalidAnswer
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeInvalidAnswer, attentionErrText(err, a))
