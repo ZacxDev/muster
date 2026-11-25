@@ -21,10 +21,26 @@ import (
 // alive in GoTrue. asGoTrueUser is the one way such a call is made
 // (TestEveryUserTokenForwardGoesThroughTheHelper keeps it that way).
 
-// userTokenMargin is how much life an access token must have left to be
+// userTokenMargin is the most life an access token must have left to be
 // forwarded as it is; one with less is refreshed first, so it cannot expire
-// between muster's check and GoTrue's.
+// between muster's check and GoTrue's. forwardMargin scales it down for a
+// short-lived token.
 const userTokenMargin = 10 * time.Second
+
+// forwardMargin is the refresh margin for c: userTokenMargin, or a quarter of
+// the token's own lifetime (exp - iat) when that is shorter.
+//
+// 🔴 NEVER A FIXED MARGIN LONGER THAN THE TOKEN. With GOTRUE_JWT_EXP=5 s (the
+// e2e GoTrue) a 10 s margin is past every token from the moment it is minted,
+// so EVERY forward refreshed first: one spec's GoTrue /token calls went from 9
+// to 37 and into GoTrue's 429 over_request_rate_limit. A token with no iat
+// gets the full margin.
+func forwardMargin(c gotrue.Claims) time.Duration {
+	if c.IssuedAt <= 0 || c.ExpiresAt <= c.IssuedAt {
+		return userTokenMargin
+	}
+	return min(userTokenMargin, time.Duration(c.ExpiresAt-c.IssuedAt)*time.Second/4)
+}
 
 // userTokenRefreshError is a refresh asGoTrueUser needed and did not get. The
 // call was not made. answerUserTokenRefreshFailure turns it into the same
@@ -40,7 +56,7 @@ func (e *userTokenRefreshError) Unwrap() error { return e.err }
 // asGoTrueUser makes call — one GoTrue request authenticated as the person
 // whose session creds is — with an access token GoTrue will accept:
 //
-//  1. a token past its exp, or within userTokenMargin of it, is refreshed
+//  1. a token past its exp, or within forwardMargin of it, is refreshed
 //     BEFORE the call (refreshGoTrueSession, every guard of the session gate).
 //     If that refresh fails only for now (not a verdict on the session) and
 //     the token is still before its exp, the call goes ahead with it;
@@ -53,7 +69,7 @@ func (e *userTokenRefreshError) Unwrap() error { return e.err }
 // forwards anyway, returns a *userTokenRefreshError without making the call.
 func (s *Server) asGoTrueUser(w http.ResponseWriter, r *http.Request, creds *gotrueCreds, call func(accessToken string) error) error {
 	refreshed := false
-	if exp := time.Unix(creds.claims.ExpiresAt, 0); !s.gt.now().Add(userTokenMargin).Before(exp) {
+	if exp := time.Unix(creds.claims.ExpiresAt, 0); !s.gt.now().Add(forwardMargin(creds.claims)).Before(exp) {
 		err := s.refreshUserToken(w, r, creds)
 		switch {
 		case err == nil:

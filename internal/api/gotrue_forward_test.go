@@ -56,8 +56,14 @@ func okCalls(f *gotruetest.Fake, method, path string) int {
 // session's (access, refresh) cookies.
 func skewWorld(t *testing.T, past time.Duration) (*invWorld, string, string, string, string) {
 	t.Helper()
+	return skewWorldTTL(t, time.Minute, past)
+}
+
+// skewWorldTTL is skewWorld with access tokens that live ttl.
+func skewWorldTTL(t *testing.T, ttl, past time.Duration) (*invWorld, string, string, string, string) {
+	t.Helper()
 	w := newPasskeyWorld(t)
-	w.fake.SetAccessTTL(time.Minute)
+	w.fake.SetAccessTTL(ttl)
 	_, sub, at, rt := w.joinMember("skew@invite.test")
 	pkID := w.fake.AddPasskey(sub, "cred-skew")
 	c, err := w.fake.Verifier().Verify(at)
@@ -168,25 +174,33 @@ func TestAUserTokenInsideTheSkewIsRefreshedBeforeItIsForwarded(t *testing.T) {
 	}
 }
 
-// TestTheForwardRefreshMargin measures the margin at two points: a token 5 s
-// before its exp is refreshed before it is forwarded (GoTrue would take it, but
-// it could expire in flight), one 20 s before its exp is forwarded as is.
+// TestTheForwardRefreshMargin measures the margin on either side of its
+// boundary for three token lifetimes. A one-minute and a one-hour token get
+// the full 10 s: refreshed 5 s / 9 s before exp (GoTrue would take it, but it
+// could expire in flight), forwarded as is 20 s / 11 s before. A 5 s token (the
+// e2e GoTrue's) gets a quarter of its life, 1.25 s: refreshed 1 s before exp,
+// forwarded as is 2 s before — with a fixed 10 s margin every forward of such
+// a token refreshed, and the e2e GoTrue answered 429.
 func TestTheForwardRefreshMargin(t *testing.T) {
 	for _, tc := range []struct {
-		before  time.Duration
-		refresh int
-	}{{5 * time.Second, 1}, {20 * time.Second, 0}} {
-		w, _, _, at, rt := skewWorld(t, -tc.before)
+		ttl, before time.Duration
+		refresh     int
+	}{
+		{time.Minute, 5 * time.Second, 1}, {time.Minute, 20 * time.Second, 0},
+		{time.Hour, 9 * time.Second, 1}, {time.Hour, 11 * time.Second, 0},
+		{5 * time.Second, time.Second, 1}, {5 * time.Second, 2 * time.Second, 0},
+	} {
+		w, _, _, at, rt := skewWorldTTL(t, tc.ttl, -tc.before)
 		tokens := w.fake.CountCalls("POST", "/token")
 		rec := do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at, rt), asNavigation)
 		if rec.Code != http.StatusOK || okCalls(w.fake, "GET", "/passkeys") == 0 {
-			t.Fatalf("%s before exp: %d", tc.before, rec.Code)
+			t.Fatalf("%s token, %s before exp: %d", tc.ttl, tc.before, rec.Code)
 		}
 		if n := w.fake.CountCalls("POST", "/token") - tokens; n != tc.refresh {
-			t.Fatalf("%s before exp: refresh calls = %d, want %d", tc.before, n, tc.refresh)
+			t.Fatalf("%s token, %s before exp: refresh calls = %d, want %d", tc.ttl, tc.before, n, tc.refresh)
 		}
 		if got := setCookies(rec)[accessCookieName] != nil; got != (tc.refresh == 1) {
-			t.Fatalf("%s before exp: cookies set = %v, want %v", tc.before, got, tc.refresh == 1)
+			t.Fatalf("%s token, %s before exp: cookies set = %v, want %v", tc.ttl, tc.before, got, tc.refresh == 1)
 		}
 	}
 }
@@ -344,5 +358,22 @@ func TestARefreshReadsTheCutoffFresh(t *testing.T) {
 				t.Fatalf("after %s: GoTrue was asked for %d refresh(es); want none", tc.name, n)
 			}
 		})
+	}
+}
+
+// TestAGoTrueRateLimitedSignInIsLoggedAsGoTrues: GoTrue's 429 on the password
+// grant shows the person the same words as muster's own sign-in limiter, so
+// the log must say whose it was. Without the line, an e2e failure from
+// GoTrue's /token budget (spent by refreshes) read as muster's limiter.
+func TestAGoTrueRateLimitedSignInIsLoggedAsGoTrues(t *testing.T) {
+	w := newPasskeyWorld(t)
+	w.joinMember("skew-429@invite.test")
+	w.fake.FailToken(http.StatusTooManyRequests, 1)
+	rec := do(w.edge, "POST", "/login", url.Values{"email": {"skew-429@invite.test"}, "password": {goodPW}})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("GoTrue 429 on the sign-in: %d, want 429", rec.Code)
+	}
+	if !strings.Contains(w.logs.String(), "login: GoTrue rate-limited a sign-in from") {
+		t.Fatalf("GoTrue's 429 was not logged as GoTrue's:\n%s", w.logs.String())
 	}
 }

@@ -306,6 +306,9 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		var ae *gotrue.APIError
 		switch {
 		case errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests:
+			// GoTrue's own rate limit, not muster's sign-in limiter: logged so
+			// the two are told apart (they show the person the same words).
+			s.logger.Printf("login: GoTrue rate-limited a sign-in from %s: %v", ip, err)
 			s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
