@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -76,7 +77,8 @@ var themeBG = func() theme.RGB {
 // so a parser fault here returns no notes rather than taking the server down.
 func ThemeNotes(blocks []Block) (notes []string) {
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
+			log.Printf("pages: theme check fault, its notes dropped: %v", r)
 			notes = nil
 		}
 	}()
