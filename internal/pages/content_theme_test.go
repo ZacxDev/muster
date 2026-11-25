@@ -79,7 +79,7 @@ func styleOf(t *testing.T, doc string) string {
 // rootTokens resolves every --mu-* custom property on the document's root
 // element with the `dark` class present or absent, by the cascade: the rules
 // whose selector matches the root, the more specific one winning, then the
-// later. It knows the three root selectors the palette is written with and
+// later. It knows the four root selectors the palette is written with and
 // fails on any other that declares a token, so a palette moved under a
 // selector it cannot judge is a red test, not a silently skipped one.
 func rootTokens(t *testing.T, css string, dark bool) map[string]string {
@@ -107,6 +107,9 @@ func rootTokens(t *testing.T, css string, dark bool) map[string]string {
 				if !dark {
 					spec = max(spec, 20)
 				}
+			case ":root:root":
+				// The instance's theme block (internal/theme.Selector).
+				spec = max(spec, 20)
 			default:
 				t.Fatalf("a rule declaring --mu-* tokens has a selector this test cannot resolve: %q", s)
 			}
