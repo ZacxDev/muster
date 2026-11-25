@@ -31,7 +31,7 @@ func TestThePlusOpensAModelMenuWhereAModelMayBePicked(t *testing.T) {
 		t.Run(c.menuID, func(t *testing.T) {
 			bar := &ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true, NewChatModels: []string{"sonnet", "claude-test-model-9", "haiku"}}
 			html := renderString(t, chiefChatStrip(bar, "chiefy", chiefSheetSessions(5), c.surface))
-			plus := regexp.MustCompile(`<button type="button" data-chief-side-chat="" popovertarget="` + c.menuID + `" aria-haspopup="menu"[^>]*aria-label="New side chat"`)
+			plus := regexp.MustCompile(`<button type="button" data-chief-side-chat="" popovertarget="` + c.menuID + `" aria-haspopup="menu"[^>]*title="New session"[^>]*><span aria-hidden="true"[^>]*>\+</span><span>New session</span></button>`)
 			if !plus.MatchString(html) {
 				t.Errorf("the \"+\" is not the menu's trigger:\n%s", html)
 			}

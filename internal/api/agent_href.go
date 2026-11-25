@@ -29,3 +29,10 @@ func (s *Server) latestSessionIDs(ctx context.Context, ids []int64) map[int64]in
 func (s *Server) agentPageHref(ctx context.Context, a agents.Agent) string {
 	return ui.AgentSessionHref(a.Name, s.latestSessionIDs(ctx, []int64{a.ID})[a.ID])
 }
+
+// agentListHref is agentPageHref as a list draws it (ui.AgentListHref): the
+// page re-resolves a link carrying the marker, so it cannot pin a session the
+// page would not open.
+func (s *Server) agentListHref(ctx context.Context, a agents.Agent) string {
+	return ui.AgentListHref(a.Name, s.latestSessionIDs(ctx, []int64{a.ID})[a.ID])
+}

@@ -19,6 +19,7 @@ var chiefSessionPickers = map[string]bool{
 	"DefaultSession": true, "LatestOrCreateSession": true, "CreateSession": true, "CreateSessionOn": true,
 	"FreshPrimary": true, "primarySession": true, "deliverySession": true, "chiefPrimaryID": true,
 	"sessionFor": true, "DeliveryRoute": true, "SetSession": true,
+	"chiefOpenSession": true, "chiefLastViewed": true, "LastViewedSession": true,
 }
 
 // TestEveryChiefSessionPickerIsLedgered is THE LEDGER behind primarySession's
@@ -75,7 +76,13 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		"internal/api/fleet_digest.go (*Server).fleetChat → CreateSession":   "OWNER (the Fleet side chat, a legacy chief)",
 
 		// --- the owner chose the chat
-		"internal/api/agents.go (*Server).resolveSessions → primarySession":                 "OWNER (the chief page opens on the primary)",
+		"internal/api/agents.go (*Server).resolveSessions → primarySession":                 "OWNER (a ?session= naming no chat of the chief's: its primary)",
+		"internal/api/agents.go (*Server).resolveSessions → chiefOpenSession":               "OWNER (no ?session=: the chat the owner was on last)",
+		"internal/api/agents.go (*Server).handleAgentDetail → chiefOpenSession":             "OWNER (a list link to the chief: the chat the owner was on last)",
+		"internal/api/nav_agents.go (*Server).homeResolve → chiefLastViewed":                "OWNER (home: the chat the owner was on last, a read)",
+		"internal/api/chief_open_session.go (*Server).chiefOpenSession → chiefLastViewed":   "OWNER (the chat the owner was on last)",
+		"internal/api/chief_open_session.go (*Server).chiefLastViewed → LastViewedSession":  "OWNER (a read: the chat the owner was on last)",
+		"internal/api/chief_open_session.go (*Server).chiefOpenSession → primarySession":    "OWNER (none viewed yet, or it is archived: the primary)",
 		"internal/api/agents.go (*Server).resolveSessions → LatestOrCreateSession":          "OWNER (any other agent's page)",
 		"internal/api/agents.go (*Server).resolveSession → LatestOrCreateSession":           "OWNER (no ?session on the socket or the composer)",
 		"internal/api/team_agents.go (*Server).resolveTurnSession → deliverySession":        "PRIMARY (a member's message to a team agent: its one shared room)",

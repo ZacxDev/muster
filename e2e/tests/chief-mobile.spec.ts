@@ -392,11 +392,13 @@ for (const vp of [
   test.describe(`the chief's chats on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    // The chats are a strip of chips under the header, not a sheet (operator:
-    // "a simpler ui/ux to manage sidechats, no modal"). The header keeps its
-    // one row and its one list icon, whose sheet is Your messages and Focus
-    // history only. (e2e chief-ux drives the strip's +, chips and ⋯ menus.)
-    test('the strip is one row under the one-row header, every target 44px, and the sheet holds no chats', async ({ page }) => {
+    // The chats are one Sessions button under the header and the drawer it
+    // slides in from the right (operator: "a slide out from the right side of
+    // the screen instead of being big pills at the top"), not the header's
+    // sheet. The header keeps its one row and its one list icon, whose sheet is
+    // Your messages and Focus history only. (e2e chief-ux drives the drawer's
+    // +, rows and ⋯ menus; chief-sessions-drawer the drawer itself.)
+    test('the Sessions bar is one row under the one-row header, every target 44px, and the sheet holds no chats', async ({ page }) => {
       test.setTimeout(120_000);
       setChiefAsks(0);
       await signIn(page, origin);
@@ -416,24 +418,38 @@ for (const vp of [
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
 
-      // The strip: under the header, one 52px row, the ★ Primary chip current
-      // with its ⋯, then "+"; every target 44px.
+      // The bar: under the header, one 52px row holding the one Sessions
+      // button (★ Primary, the chat on screen), a 44px target. Its drawer: the
+      // ★ Primary row current with its ⋯, then "+ New session"; every target
+      // 44px, on screen.
       const hb = (await page.locator('header').boundingBox())!;
       const sb = (await strip.boundingBox())!;
-      expect.soft(sb.y, 'the strip starts under the header').toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
-      expect.soft(sb.height, 'the strip is one row').toBeLessThanOrEqual(52.5);
-      await expect(strip.locator('[aria-current="true"]')).toContainText('★Primary');
+      expect.soft(sb.y, 'the bar starts under the header').toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
+      expect.soft(sb.height, 'the bar is one row').toBeLessThanOrEqual(52.5);
+      const button = strip.locator('button[data-chief-sessions-open]');
+      await expect(button).toHaveAccessibleName('Sessions: Primary');
+      expect.soft((await button.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      await shot(page, `chief-chips-${vp.name}.png`);
+      await button.click();
+      await expect(strip.locator('[data-chief-sessions-drawer]')).toHaveAttribute('data-open', '1');
+      // The slide done: a box measured mid-slide is off the screen's edge.
+      await strip.locator('[data-chief-sessions-drawer]').evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+      await expect(strip.locator('[data-chief-chat-row][aria-current="true"]')).toContainText('★Primary');
+      const vw = page.viewportSize()!.width;
       const targets = await strip
         .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat]')
-        .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width }; }));
-      expect(targets.length, 'the primary\'s link, its ⋯, and +').toBe(3);
+        .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, h: r.height, w: r.width }; }));
+      expect(targets.length, 'the primary\'s link, its ⋯, and + New session').toBe(3);
       for (const t of targets) {
         expect.soft(t.h, 'a 44px target').toBeGreaterThanOrEqual(44);
         expect.soft(t.w, 'a 44px target').toBeGreaterThanOrEqual(44);
-        expect.soft(Math.abs(t.top - targets[0].top), 'on one row').toBeLessThanOrEqual(1);
+        expect.soft(t.left, 'on screen').toBeGreaterThanOrEqual(-0.5);
+        expect.soft(t.right, 'on screen').toBeLessThanOrEqual(vw + 0.5);
       }
       await noSideScroll(page);
-      await shot(page, `chief-chips-${vp.name}.png`);
+      await shot(page, `chief-sessions-${vp.name}.png`);
+      await page.keyboard.press('Escape');
+      await expect(button).toHaveAttribute('aria-expanded', 'false');
 
       // The sheet: two tabs, in order, and nothing chat-related.
       await page.locator('header #chat-index-open').click();

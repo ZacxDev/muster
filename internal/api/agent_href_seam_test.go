@@ -334,6 +334,8 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
 	"AgentSessionHref ← internal/api/chief_chats.go:Server.answerSideChatOpened":          1,
+	// Home on the chief: the chat the owner viewed last (chiefLastViewed).
+	"AgentSessionHref ← internal/api/nav_agents.go:Server.homeResolve": 1,
 	// The views: the session drawer, the chief page's chip strip (its chips name
 	// their session, like the drawer's), a task card's Open chat, the
 	// notification panel's two row kinds, the terminal page's back link.
@@ -363,6 +365,10 @@ var agentHrefCallLedger = map[string]int{
 	// session, as PageHref composes it), which is how the palette finds the
 	// entry on the page.
 	"AgentListHref ← internal/api/palette.go:Server.paletteTargets": 1,
+	// Home with the chief on and no chat of its viewed (or the one viewed last
+	// archived): the chief's sidebar row's link, which the page resolves to
+	// the primary (homeResolve).
+	"AgentListHref ← internal/api/agent_href.go:Server.agentListHref": 1,
 	// The switcher's pin toggle: the page a post without script returns to.
 	"PageHref ← internal/ui/switcher_pin.go:newSwitcherPin": 1,
 	// Home (`/`, GET /agents) with no chief on: the session opened last that

@@ -110,8 +110,9 @@ func (s *Server) handleNavWaiting(w http.ResponseWriter, r *http.Request) {
 // homeTarget is where home — `/`, and GET /agents — sends the viewer, "" for
 // nowhere (the onboarding page, handleAgentsHome):
 //
-//  1. the chief agent's chat (its page on its latest session — the link a list
-//     draws, agentPageHref), when the viewer has a chief and it is on (chiefOn);
+//  1. the chief agent's chat (its page on the chat the viewer was on last,
+//     chiefLastViewed, else on its latest session — the link a list draws,
+//     agentPageHref), when the viewer has a chief and it is on (chiefOn);
 //  2. otherwise the session the viewer opened last that is still listed, else
 //     the sidebar's first row (ui.HomeHref, over the entries the sidebar and
 //     the switcher are built from);
@@ -163,7 +164,16 @@ func (s *Server) homeResolve(r *http.Request, except homeExcept) (to string, tea
 			s.logger.Printf("home: read the chief toggle: %v (opening the last session instead)", err)
 		}
 		if on {
-			return s.agentPageHref(ctx, chief), false, nil
+			// The chat the owner was on last (chiefLastViewed), not the one
+			// touched last: home is how the app is reopened. A read only.
+			if last, ok := s.chiefLastViewed(ctx, chief); ok {
+				return ui.AgentSessionHref(chief.Name, last.ID), false, nil
+			}
+			// None, or it is archived: the sidebar row's link (AgentListHref),
+			// whose marker has the page re-resolve it through chiefOpenSession
+			// (the primary), as the bare page and the panel do. A bare
+			// ?session= of the latest would be kept, and can be an archived chat.
+			return s.agentListHref(ctx, chief), false, nil
 		}
 	}
 	cards, mirrors, err := s.agentsListEntries(ctx)

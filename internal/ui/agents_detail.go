@@ -343,8 +343,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
-				// A chief's chats, as a strip of chips under the header
-				// (chief_chats.go): switch, "+", and each chip's ⋯.
+				// A chief's chats, as a "Sessions" button under the header
+				// (chief_chats.go) and its drawer: switch, New session, each row's ⋯.
 				chiefPageStrip(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
@@ -395,7 +395,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// The agent's focus history (focus_history.go): a dialog the header's
 				// focusHistoryButton opens. The chief's page has the mirrored
 				// session's sheet instead (chat_index.go): Your messages and Focus
-				// history. Its chats are the strip under the header, not a tab.
+				// history. Its chats are the Sessions drawer under the header, not a tab.
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
 				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
@@ -550,7 +550,7 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	// header has (chatIndexButton), opening the same sheet — Your messages and
 	// Focus history. No ＋, no clock, no target: the operator asked for the same
 	// icons a mirrored session has. The chief's chats are switched, made and
-	// archived on the strip of chips under the header (chief_chats.go), never in
+	// archived in the Sessions drawer under the header (chief_chats.go), never in
 	// a sheet. Every other agent is unchanged.
 	if v.ChiefChat != nil {
 		return Div(
@@ -1063,7 +1063,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the strip of chips
+		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the Sessions drawer
 		// under the page's header (chiefPageStrip) or over the panel's pane
 		// (chiefPanelBody), and its context chip is in the header (chief_chats.go).
 		Div(
@@ -1091,6 +1091,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// is not a layout shift. A <noscript> rule shows them without script.
 			// #chat-form carries the same marker (see there).
 			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
+			// A chief's chat comes back where its reader left it (agentChatScript's
+			// scroll memory, ChatScrollMemoryAttr). Every other agent's opens at its
+			// end, as before.
+			g.If(v.ChiefChat != nil, g.Attr(ChatScrollMemoryAttr, "")),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
 			// streams server-side, NOT over this page's WS — appear live without a
@@ -1338,6 +1342,18 @@ func chatNoteTone(ok bool) string {
 // (request). A refetch whose version still matches is answered 204, which htmx
 // does not swap (its default responseHandling), so the page keeps its DOM.
 const ChatLogVersionHeader = "Muster-Chat-Log-Version"
+
+// The chat scroll memory (agentChatScript's window.__cgScrollMem): a
+// #chat-log carrying ChatScrollMemoryAttr — a chief's chat, on the page and in
+// the panel — comes back where its reader left it. Stored under
+// ChatScrollMemoryKey in localStorage, at most ChatScrollMemoryCap chats, none
+// older than ChatScrollMemoryTTLDays.
+const (
+	ChatScrollMemoryAttr    = "data-chat-scroll-memory"
+	ChatScrollMemoryKey     = "muster.chat.scroll.v1"
+	ChatScrollMemoryCap     = 50
+	ChatScrollMemoryTTLDays = 7
+)
 
 // ChatLogBody renders #chat-log's inner HTML for v and its version: a hash of
 // exactly those bytes. The page (chatLogVersioned) and the partial
@@ -2352,6 +2368,76 @@ func agentChatScript(name string) g.Node {
   // BOTH DOMContentLoaded and htmx:load, and dispose any previous connection
   // first. A single global htmx:beforeSwap listener (guarded) disposes on
   // navigate-away. window.__cgChat holds the live session.
+  // THE SCROLL MEMORY (ChatScrollMemoryAttr: a chief's chat). Where its reader
+  // left a chat's transcript, per chat session: saved as they scroll (a beat
+  // after they stop) and as the chat is left — a boosted navigation, the
+  // chief panel's body swapped for another chat or reopened, the page hidden —
+  // and put back when that chat is drawn again, on either surface. A reader
+  // who left it at its END is not remembered: it opens at its end and follows
+  // new messages, as every chat does. A moment (?at=) still wins.
+  //
+  // 🔴 ANCHORED ON A MESSAGE, NOT A PIXEL: the first message on screen
+  // (data-msg-id) and how far below the log's top edge it sat. The transcript
+  // drawn on the way back is not the one left — new messages, a refetch, the
+  // bubble clamp re-applied — and a bare scrollTop would land on whatever is
+  // at that offset now. The pixel is kept as the fallback for a message that is
+  // no longer drawn.
+  //
+  // localStorage, one key, at most CAP chats and none older than TTL, so it is
+  // bounded however many chats are opened.
+  if (!window.__cgScrollMem) window.__cgScrollMem = (function () {
+    var KEY = '` + ChatScrollMemoryKey + `', TTL = ` + strconv.Itoa(ChatScrollMemoryTTLDays) + ` * 864e5, CAP = ` + strconv.Itoa(ChatScrollMemoryCap) + `;
+    function st() { try { return window.localStorage; } catch (e) { return null; } }
+    function load() {
+      var s = st();
+      if (!s) return {};
+      try { var v = JSON.parse(s.getItem(KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; }
+    }
+    function put(m) {
+      var s = st();
+      if (!s) return;
+      var now = Date.now(), ks = [];
+      for (var k in m) if (Object.prototype.hasOwnProperty.call(m, k) && m[k] && now - m[k].t < TTL) ks.push(k);
+      ks.sort(function (a, b) { return m[b].t - m[a].t; });
+      var out = {};
+      for (var i = 0; i < ks.length && i < CAP; i++) out[ks[i]] = m[ks[i]];
+      try { s.setItem(KEY, JSON.stringify(out)); } catch (e) {}
+    }
+    function on(log, sid) { return !!(log && sid && /^\d+$/.test(sid) && log.hasAttribute('` + ChatScrollMemoryAttr + `')); }
+    function atEnd(log) { return log.scrollHeight - log.scrollTop - log.clientHeight < 48; }
+    return {
+      save: function (log, sid) {
+        // Not laid out (a shut panel's log still is; a detached one is not).
+        if (!on(log, sid) || !log.isConnected || log.clientHeight === 0) return;
+        var m = load();
+        if (atEnd(log)) {
+          if (m[sid]) { delete m[sid]; put(m); }
+          return;
+        }
+        var top = log.getBoundingClientRect().top, anchor = '', off = 0;
+        var bs = log.querySelectorAll('[data-msg-id]');
+        for (var i = 0; i < bs.length; i++) {
+          var r = bs[i].getBoundingClientRect();
+          if (r.bottom > top) { anchor = bs[i].getAttribute('data-msg-id') || ''; off = r.top - top; break; }
+        }
+        m[sid] = { m: anchor, o: Math.round(off), y: Math.round(log.scrollTop), t: Date.now() };
+        put(m);
+      },
+      // restore puts log back where chat sid was left; true when it did (and
+      // the log is then not at its end).
+      restore: function (log, sid) {
+        if (!on(log, sid)) return false;
+        var e = load()[sid];
+        if (!e || !(Date.now() - e.t < TTL)) return false;
+        var el = /^\d+$/.test(e.m || '') ? log.querySelector('[data-msg-id="' + e.m + '"]') : null;
+        if (el) log.scrollTop += el.getBoundingClientRect().top - log.getBoundingClientRect().top - (e.o || 0);
+        else if (typeof e.y === 'number') log.scrollTop = e.y;
+        else return false;
+        return !atEnd(log);
+      }
+    };
+  })();
+
   function disposeChat() {
     var c = window.__cgChat;
     if (!c) return;
@@ -2434,7 +2520,17 @@ func agentChatScript(name string) g.Node {
   // programmatic scroll-to-bottom lands AT the bottom, so stick stays true.
   session.stick = true;
   function nearBottom() { return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48; }
-  logEl.addEventListener('scroll', function () { session.stick = nearBottom(); }, { passive: true });
+  // The scroll memory (window.__cgScrollMem): saved a beat after the reader
+  // stops, and at once when the chat is left (saveScroll, the global hooks).
+  var saveTimer = 0;
+  session.saveScroll = function () {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+    window.__cgScrollMem.save(logEl, sessionId);
+  };
+  logEl.addEventListener('scroll', function () {
+    session.stick = nearBottom();
+    if (!saveTimer) saveTimer = setTimeout(function () { saveTimer = 0; window.__cgScrollMem.save(logEl, sessionId); }, 250);
+  }, { passive: true });
   function scroll() { if (session.stick) logEl.scrollTop = logEl.scrollHeight; }
   // The log's box shrinks when the composer grows (composer_fit.go) or the
   // keyboard opens: a reader at the end stays at the end, rather than the last
@@ -2960,6 +3056,14 @@ func agentChatScript(name string) g.Node {
   var moment = document.getElementById('session-moment');
   if (interim && interim.away) {
     session.stick = false;
+    // Put back where this chat was left by window.__cgLayoutLog, and not
+    // moved since: anchored again, now that everything that can change the
+    // messages' heights (the bubble clamp) has run.
+    if (interim.restoredAt >= 0 && Math.abs(logEl.scrollTop - interim.restoredAt) < 2) window.__cgScrollMem.restore(logEl, sessionId);
+  } else if (!interim && !moment && window.__cgScrollMem.restore(logEl, sessionId)) {
+    // Where this chat was left (the scroll memory): not at its end, so not
+    // following it.
+    session.stick = false;
   } else if (moment) {
     // A moment (?at=): open at its marker, not at the end.
     session.stick = false;
@@ -3161,15 +3265,20 @@ func agentChatScript(name string) g.Node {
     // A MOMENT (?at=, an officer's "Show session"): opened at its marker,
     // and counted as scrolled away so nothing pins the log back to the end.
     var moment = document.getElementById('session-moment');
+    var cf = document.getElementById('chat-form');
+    // Or where this chat was left (the scroll memory, window.__cgScrollMem),
+    // counted as scrolled away too.
+    var restored = false;
     if (moment) {
       log.scrollTop += moment.getBoundingClientRect().top - log.getBoundingClientRect().top - log.clientHeight / 3;
+    } else if (window.__cgScrollMem && cf && window.__cgScrollMem.restore(log, cf.getAttribute('data-session') || '')) {
+      restored = true;
     } else {
       log.scrollTop = log.scrollHeight;
     }
     log.removeAttribute('data-cg-unlaid');
-    var cf = document.getElementById('chat-form');
     if (cf) cf.removeAttribute('data-cg-unlaid');
-    var pre = { log: log, away: !!moment, ro: null };
+    var pre = { log: log, away: !!moment || restored, ro: null, restoredAt: restored ? log.scrollTop : -1 };
     pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
     log.addEventListener('scroll', pre.onScroll, { passive: true });
     if (typeof ResizeObserver !== 'undefined') {
@@ -3189,8 +3298,19 @@ func agentChatScript(name string) g.Node {
     // Tear the outgoing socket down when an hx-boost navigation swaps the whole
     // <body> away (target === body). Partial swaps within the page (grants pane,
     // model form, SSE log appends) target sub-elements and must NOT kill the chat.
+    //
+    // The chat being left keeps its place first (the scroll memory): a boosted
+    // navigation, or the chief panel's body swapped for another chat — or for
+    // the same one, on a reopen.
     document.body.addEventListener('htmx:beforeSwap', function (e) {
-      if (e.detail && e.detail.target === document.body) disposeChat();
+      var t = e.detail && e.detail.target;
+      if (t && (t === document.body || t.id === '` + chiefPanelBodyID + `') && window.__cgChat && window.__cgChat.saveScroll) window.__cgChat.saveScroll();
+      if (t === document.body) disposeChat();
+    });
+    // And a page left by a full navigation, or put in the background.
+    window.addEventListener('pagehide', function () { if (window.__cgChat && window.__cgChat.saveScroll) window.__cgChat.saveScroll(); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden' && window.__cgChat && window.__cgChat.saveScroll) window.__cgChat.saveScroll();
     });
     // (Re)connect the chat after a boosted body-swap / history restore brings a
     // chat page in. Idempotent via the form's data-cg-chat marker.

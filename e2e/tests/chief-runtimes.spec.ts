@@ -181,9 +181,11 @@ test('a side chat offers Continue in a new session, posting to its own continue 
 });
 
 // THE SIDE CHAT "+" MODEL MENU (internal/ui chiefNewChatChip): with the
-// runtimes gate on, "+" in the chief page's chip strip opens a small menu
+// runtimes gate on, "+ New session" in the chief page's Sessions drawer opens
+// a small menu
 // (Default, Opus, Sonnet, Haiku), not a modal. Sonnet opens a new side chat on
-// sonnet: its chip is current and tagged "sonnet", the cursor is in its message
+// sonnet: its row is current and tagged "sonnet" (so is the Sessions button),
+// the cursor is in its message
 // box, and the tag is the STORED model (a reload draws it again). The gate-off
 // "+" (a chat at once) is chief-ux.spec.ts's.
 test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonnet tag that survives a reload', async ({ page }) => {
@@ -194,7 +196,8 @@ test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonne
   const pick = async (name: string) => {
     const url0 = page.url();
     const plus = strip().locator('button[data-chief-side-chat]');
-    await expect(plus).toHaveAccessibleName('New side chat');
+    await strip().locator('button[data-chief-sessions-open]').tap();
+    await expect(plus).toHaveAccessibleName('New session');
     await plus.tap();
     await expect(menu).toBeVisible();
     await expect(menu.getByRole('menuitem')).toHaveText(['Default', 'Opus', 'Sonnet', 'Haiku']);
@@ -223,6 +226,7 @@ test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonne
   expect(before, 'Sonnet opened a NEW chat').not.toContain(sid);
   await expect(strip().locator(`[data-chief-chat-row="${sid}"]`)).toHaveAttribute('aria-current', 'true');
   await expect(strip().locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`)).toHaveText('sonnet');
+  await expect(strip().locator('button[data-chief-sessions-open] [data-chief-chip-model]'), 'the button names the chat on screen, with its model').toHaveText('sonnet');
   await expect(page.locator('#chat-input'), "the cursor is in the new chat's message box").toBeFocused();
   // The Default chat, on the chief's own model, is still untagged beside it.
   await expect(strip().locator(`[data-chief-chip="${def}"] [data-chief-chip-model]`)).toHaveCount(0);

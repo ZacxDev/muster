@@ -116,13 +116,15 @@ const (
 	chiefQuickActionAttr = "data-chief-quick-action"
 	// chiefIntroAttr marks the zero-message intro block.
 	chiefIntroAttr = "data-chief-intro"
-	// chiefActiveSessionAttr carries the session id the SERVER just answered with.
+	// chiefActiveSessionAttr carries the session id the SERVER just answered with
+	// (what both test tiers read to know which chat the panel is on).
 	//
-	// 🔴 IT IS THE ONLY WRITER OF THE REMEMBERED THREAD, AND THAT IS WHAT MAKES A
-	// DELETED THREAD SELF-HEAL. A script that stored whatever id it saw on the
-	// clicked row would keep asking for a thread that no longer exists;
-	// resolveSessions answers a stale or foreign id with the LATEST thread, so
-	// storing the server's answer converges on something that is really there.
+	// 🔴 NOTHING IN THE BROWSER REMEMBERS IT ANY MORE. The panel used to keep the
+	// picked thread in localStorage and ask for it on the next open — a memory the
+	// chief PAGE never read, so the page and the panel disagreed about where the
+	// owner had been. The server keeps that now, for both (internal/api
+	// chiefOpenSession, chat_sessions.viewed_at): the body asks with no ?session=
+	// on every open and is answered with the chat the owner was on last.
 	chiefActiveSessionAttr = "data-chief-active-session"
 
 	// The control vocabulary. Spelled as constants because this renderer, the Go
@@ -399,15 +401,14 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// clips it. (The panel's own overflow-hidden does not: the sliver is inside
 			// the panel, not outside it.)
 			Class("relative flex min-h-0 flex-1 flex-col overflow-hidden"),
-			// The session the SERVER resolved — the only writer of the remembered
-			// thread. See chiefActiveSessionAttr.
+			// The session the SERVER resolved. See chiefActiveSessionAttr.
 			g.Attr(chiefActiveSessionAttr, strconv.FormatInt(v.Chat.ActiveSessionID, 10)),
 			// The thread list: checkbox, backdrop, sub-view — in that order, because the
 			// peer-checked:* utilities on the two later siblings select off the checkbox.
 			// The chat pane below carries no peer-checked class, so it is untouched.
 			chiefThreadList(v),
-			// The chief's chats as a strip of chips over the transcript — the
-			// page's strip, answered into this body (chief_chats.go).
+			// The chief's chats: the "Sessions" button and its drawer over the
+			// transcript — the page's, answered into this body (chief_chats.go).
 			chiefChatStrip(v.Chat.ChiefChat, v.Chat.Name, v.Chat.Sessions, ChatSurfaceChiefPanel),
 			// The EXISTING chat pane, unmodified: #chat-log fed by
 			// /ui/agents/{name}/chat-log on sse:chat.reply, plus #chat-form's WebSocket.
@@ -453,7 +454,7 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
 		// No context chip (removed in #871: the page says it in its ⋯ menu,
-		// and only when it is high). Its new chat is the "+" on the chip strip
+		// and only when it is high). Its new chat is the "New session" in the Sessions drawer
 		// over the transcript (chiefChatStrip); the title bar keeps the thread
 		// list.
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
@@ -853,7 +854,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
 				// "Continue in a new session" for the side chat the panel is on
 				// (chief_chats.go). Every other chat action — "+", Fresh primary,
-				// Archive, Unarchive, Make primary — is on the chip strip.
+				// Archive, Unarchive, Make primary — is in the Sessions drawer.
 				chiefPanelContinue(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
 			),
 		),
@@ -897,27 +898,24 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   // is exactly why it survived: nothing ever broke.
   //
   // ⚠ THE RENAME DROPS WHAT WAS STORED, DELIBERATELY, AND NOTHING MIGRATES IT.
-  // The three values are the panel's open state, its width, and the thread it was
-  // last showing; each is rewritten by the next interaction with the panel, so
-  // the whole cost is that the panel opens shut, at its default width, on the
-  // latest thread, ONCE. A migration would be a read of the old key, a write of
-  // the new one and a removal deadline nobody would come back for — more code
-  // than the preference is worth, and the 'v1' segment exists so a reset is
-  // sayable. Orphaned entries under the old prefix are left in place rather than
-  // swept: a cleanup pass is a write on every page load to reclaim three short
-  // strings.
+  // The two values are the panel's open state and its width; each is rewritten
+  // by the next interaction with the panel, so the whole cost is that the panel
+  // opens shut, at its default width, ONCE. A migration would be a read of the
+  // old key, a write of the new one and a removal deadline nobody would come
+  // back for — more code than the preference is worth, and the 'v1' segment
+  // exists so a reset is sayable. Orphaned entries under the old prefix are left
+  // in place rather than swept: a cleanup pass is a write on every page load to
+  // reclaim short strings.
+  //
+  // 🔴 THE CHAT THE PANEL IS ON IS NOT STORED HERE. It was (a third key, the
+  // picked thread), and the chief PAGE never read it, so the page and the panel
+  // each opened on a chat of their own. The server remembers it for both
+  // (internal/api chiefOpenSession): #chief-panel-body asks /ui/chief/panel with
+  // no ?session= on every open and is answered with the chat the owner was on
+  // last, here or on the page. A stale 'muster.chief.v1.session.*' entry is
+  // read by nothing.
   var KEY_OPEN = 'muster.chief.v1.open.' + PANEL_ID;
   var KEY_WIDTH = 'muster.chief.v1.width.' + PANEL_ID;
-  // 🔴 THE PICKED THREAD, UNDER THE SAME STABLE REFERENCE — constraint 2. A
-  // SESSION ID qualifies: it is a database identity, not a description of the
-  // panel's contents, so it cannot be moved by the swaps the memory must survive.
-  //
-  // 🔴 AND IT IS NOT A CONVENIENCE. #chief-panel-body's hx-get carries NO 'once'
-  // (see its comment), so the panel refetches on EVERY open. Without this key a
-  // picked thread held until the operator shut the panel and then snapped back to
-  // "latest" with nothing on screen saying so — the fifth instance of that bug
-  // class in this repo.
-  var KEY_SESSION = 'muster.chief.v1.session.' + PANEL_ID;
   var MIN = ` + strconv.Itoa(chiefPanelMinWidth) + `;
   var MAX = ` + strconv.Itoa(chiefPanelMaxWidth) + `;
   var DEFAULT = ` + strconv.Itoa(chiefPanelDefaultWidth) + `;
@@ -925,8 +923,6 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   var OPEN_EVENT = '` + chiefPanelOpenEvent + `';
   var BODY_ID = '` + chiefPanelBodyID + `';
   var LOADED_ATTR = '` + chiefPanelBodyLoadedAttr + `';
-  var ACTIVE_ATTR = '` + chiefActiveSessionAttr + `';
-  var PANEL_PATH = '/ui/chief/panel';
   var FLEET_ID = '` + fleetDigestSlotID + `';
   var FLEET_PATH = '` + FleetDigestPath + `';
   var FLEET_STEPUP_PATH = '` + FleetStepUpPath + `';
@@ -1008,58 +1004,6 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   function panel() { return document.getElementById(PANEL_ID); }
   function body() { return document.getElementById(BODY_ID); }
 
-  // storedSession returns the remembered thread id, or 0.
-  //
-  // 🔴 A NON-NUMERIC OR NON-POSITIVE STORED VALUE IS 0, NOT NaN — the same
-  // direction storedWidth fails in. '/ui/chief/panel?session=NaN' is a request the
-  // server answers by falling back to the latest thread, so the bug would be
-  // invisible rather than loud; 0 means "ask for the default" explicitly.
-  function storedSession() {
-    var n = parseInt(get(KEY_SESSION), 10);
-    if (!isFinite(n) || n <= 0) return 0;
-    return n;
-  }
-
-  // applySession writes the remembered thread into the body's hx-get.
-  //
-  // 🔴 SETTING THE ATTRIBUTE IS NOT ENOUGH ON ITS OWN, AND THIS PACKAGE HAS
-  // ALREADY PAID FOR THAT. htmx captures the request path in a CLOSURE when it
-  // processes the element — wt() in the vendored bundle reads hx-<verb> once and
-  // hands that value to every later trigger — so an element that is never
-  // re-processed keeps requesting the ORIGINAL url however many times the
-  // attribute is rewritten. #chief-panel-body is swapped innerHTML, i.e. the
-  // element itself is never replaced, so it is exactly that case. Measured on
-  // PR #727 for #tasks-list: the attribute read '/ui/tasks?limit=100' while the
-  // wire carried a bare '/ui/tasks'.
-  //
-  // The htmx:configRequest listener below is the second half, and the only point
-  // at which the attribute can still become the request. Keep the two together:
-  // either alone is a memory that silently does nothing.
-  function applySession() {
-    var b = body();
-    if (!b) return;
-    var n = storedSession();
-    b.setAttribute('hx-get', n ? (PANEL_PATH + '?session=' + n) : PANEL_PATH);
-  }
-
-  // rememberSession stores the session the SERVER just answered with.
-  //
-  // 🔴 THE SERVER'S ANSWER, NOT THE CLICKED ROW'S ID, AND THAT IS WHAT MAKES A
-  // DELETED THREAD SELF-HEAL. resolveSessions answers a stale, deleted or
-  // foreign-agent id with the agent's LATEST thread rather than erroring, so
-  // storing what came back converges on a thread that exists. Storing the click
-  // would keep asking for a row that is gone, for ever, and the panel would look
-  // correct while showing something else.
-  function rememberSession() {
-    var b = body();
-    if (!b) return;
-    var el = b.querySelector('[' + ACTIVE_ATTR + ']');
-    if (!el) return;
-    var n = parseInt(el.getAttribute(ACTIVE_ATTR), 10);
-    if (!isFinite(n) || n <= 0) return;
-    set(KEY_SESSION, String(n));
-    applySession();
-  }
   function clamp(n) { return Math.max(MIN, Math.min(MAX, n)); }
 
   function storedWidth() {
@@ -1107,11 +1051,6 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     applyOpen(p, open);
     set(KEY_OPEN, open ? '1' : '0');
     if (open) {
-      // 🔴 THE REMEMBERED THREAD IS APPLIED BEFORE THE FETCH IS ASKED FOR, NOT
-      // after. A click-to-open is not an htmx settle, so restore() does not run on
-      // this path — applying only there would leave the very first re-open (the
-      // case the memory exists for) asking for the bare url.
-      applySession();
       // Ask the body to (re)fetch. Dispatched on 'document' so the body's
       // 'from:document' trigger catches it wherever the panel sits.
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
@@ -1191,10 +1130,6 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     applyWidth(p, storedWidth());
     var open = storedOpen();
     applyOpen(p, open);
-    // Re-point a FRESH body element at the remembered thread. A boosted
-    // navigation builds a brand-new #chief-panel-body carrying the server's
-    // default hx-get, so this runs on every restore, not only on the open path.
-    applySession();
     // 🔴 A PANEL RESTORED OPEN MUST ALSO LOAD ITS BODY, or a reload leaves the
     // operator looking at 'Loading…' for ever: the body's only trigger is the
     // open event, and a restore is not a click. Dispatched here rather than by
@@ -1431,24 +1366,6 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       var t = evt && evt.target;
       if (!t || t.id !== BODY_ID) return;
       t.setAttribute(LOADED_ATTR, '');
-      // The body that just landed names the thread the server resolved. Storing it
-      // here — one writer, sourced from the server — is what makes a picked thread
-      // survive a close/reopen and what makes a deleted one heal.
-      rememberSession();
-    });
-
-    // 🔴 THE SECOND HALF OF applySession, AND NEITHER HALF WORKS ALONE. htmx
-    // re-reads the request path from this event's detail immediately after
-    // dispatching it, so this is the one point at which a rewritten hx-get can
-    // still become the request the wire carries. Scoped BY ELEMENT ID, not by a
-    // subtree test: every control inside the panel body issues its own requests
-    // (the thread rows, the search input, the chat-log refresh), and a
-    // subtree-wide rewrite would point all of them at the panel url.
-    document.addEventListener('htmx:configRequest', function (evt) {
-      var el = evt && evt.target;
-      if (!el || el.id !== BODY_ID || !evt.detail) return;
-      var want = el.getAttribute('hx-get');
-      if (want) evt.detail.path = want;
     });
 
     // The fleet digest's fetch ON OPEN records a look (the "since you last

@@ -9,9 +9,9 @@ import { startServer, Running } from '../lib/server';
 // A CHIEF SIDE CHAT ON ANY OPENROUTER MODEL (the opencode runtime,
 // docs/chief.md "OpenRouter sessions on opencode"), in a real browser, against
 // a real muster-server with the spend door on: the New session picker and the
-// strip's "+" menu offer OpenRouter with a search of the catalogue; a model is
+// Sessions drawer's New session menu offer OpenRouter with a search of the catalogue; a model is
 // found by part of its name, picked with a tap, and the session it starts is
-// on that model — the thread list and the strip chip say so — and stored as
+// on that model — the thread list and its Sessions row say so — and stored as
 // it (a reload draws the same). A near miss starts nothing.
 //
 // The chief is a claude-code agent of this spec's own (e2e/mkchat), on a server
@@ -89,14 +89,14 @@ async function openPanel(page: Page) {
 }
 
 // openThreads opens the chief panel and then its thread list (which covers
-// the strip). The same steps as chief-runtimes.spec.ts.
+// the Sessions bar). The same steps as chief-runtimes.spec.ts.
 async function openThreads(page: Page) {
   await openPanel(page);
   await page.locator('label[for="chief-threads"]').first().click();
   await expect(page.locator('#chief-thread-search')).toBeVisible();
 }
 
-test('New session: search OpenRouter, pick a model, and the session is on it — listed, on the strip, stored', async ({ page }) => {
+test('New session: search OpenRouter, pick a model, and the session is on it — listed, in the Sessions drawer, stored', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await openThreads(page);
@@ -125,7 +125,7 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
   await expect(active).not.toHaveAttribute('data-chief-active-session', was ?? '');
   await expect(active).not.toHaveAttribute('data-chief-active-session', '');
 
-  // The strip's chip for the chat the panel is now on names the model.
+  // The Sessions row (and button) for the chat the panel is now on names the model.
   const tag = page.locator('[data-chief-chip-model="openrouter/deepseek/deepseek-v4.1-flash"]').first();
   await expect(tag).toHaveText('deepseek-v4.1-flash');
   await expect(tag).toHaveAttribute('title', 'Model: deepseek/deepseek-v4.1-flash');
@@ -141,11 +141,12 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
   await expect(page.locator('#chief-thread-results [data-session-runtime="opencode"]')).toHaveText('OpenRouter · deepseek/deepseek-v4.1-flash');
 });
 
-test('"+": an OpenRouter model picked in the strip menu opens a side chat on it', async ({ page }) => {
+test('"+": an OpenRouter model picked in the Sessions drawer\'s New session menu opens a side chat on it', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
-  // The panel only: its thread list would cover the strip and its "+".
+  // The panel only: its thread list would cover the Sessions drawer.
   await openPanel(page);
+  await page.locator('#chief-panel button[data-chief-sessions-open]').click();
   const plus = page.locator('#chief-panel button[popovertarget="chief-panel-new-chat-menu"]');
   await plus.click();
   const menu = page.locator('#chief-panel-new-chat-menu');
