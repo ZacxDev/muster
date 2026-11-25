@@ -100,6 +100,9 @@ func pageBlocksSchema() map[string]any {
 			"{picks:[{index, asset, caption}]} (index from 0, in the items' order). Captions are one line, at most 120 characters: write one per item, it is the image's name on its buttons and in the response; " +
 			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
+			"The page is drawn full width in the server's dark theme; style html with its CSS variables, never colour literals for backgrounds or text: " +
+			"--bg page, --s1 card/panel, --line border/divider, --edge input border, --fg text, --fg2 secondary text, --accent emphasis/button, --on-accent text on accent, --good, --bad " +
+			"(e.g. .card{background:var(--s1);border:1px solid var(--line);color:var(--fg)}; the result's theme_notes names a literal light background or dark text). " +
 			"Component ids are a letter then letters, digits, _ or -, unique on the page. An image or video at full size is an asset: attach the file with " +
 			"page_asset_upload and write its ref (asset:<id>) where its address goes — ![what it shows](asset:<id>) in markdown, src=\"asset:<id>\" in html. " +
 			"A small image may instead be inline: in markdown only as ![what it shows](data:image/png;base64,...) (png, jpeg, webp or gif); in html as any data: URI. " +
@@ -394,16 +397,21 @@ func (s *Server) toolPageCreate(ctx context.Context, caller toolCaller, c pages.
 		return pageToolRefusal("created", 0, err)
 	}
 	s.pagePublished(p, s.agentIsOfficer(ctx, c.AgentID, p.OwnerID))
-	return toolJSON(withPhoneNotes(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
+	return toolJSON(withPageNotes(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"next": s.pageNext(ctx, caller, p)}, blocks))
 }
 
-// withPhoneNotes adds a published version's phone check (ui.PagePhoneNotes)
-// to a create or update's result as phone_notes, when it has anything to say:
-// advice for the next version, never a refusal (the version is published).
-func withPhoneNotes(out map[string]any, blocks []pages.Block) map[string]any {
+// withPageNotes adds a published version's checks to a create or update's
+// result, each when it has anything to say: phone_notes (ui.PagePhoneNotes)
+// and theme_notes (pages.ThemeNotes: an html block's literal light
+// background or dark text). Advice for the next version, never a refusal
+// (the version is published).
+func withPageNotes(out map[string]any, blocks []pages.Block) map[string]any {
 	if notes := ui.PagePhoneNotes(blocks); len(notes) > 0 {
 		out["phone_notes"] = notes
+	}
+	if notes := pages.ThemeNotes(blocks); len(notes) > 0 {
+		out["theme_notes"] = notes
 	}
 	return out
 }
@@ -432,7 +440,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 	}
 	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator,
 		byOfficer: s.agentIsOfficer(ctx, c.AgentID, p.OwnerID)})
-	return toolJSON(withPhoneNotes(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
+	return toolJSON(withPageNotes(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, caller, p)}, blocks))
 }
 

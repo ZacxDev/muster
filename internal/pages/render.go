@@ -148,6 +148,12 @@ type RenderOptions struct {
 	// ![alt](asset:<id>) is drawn (an <img>, or a <video> for a video). A
 	// reference to anything else is left as it was written.
 	Assets []Asset
+	// ThemeCSS is the server's theme block (internal/theme.CSS of the
+	// instance's preset and accent, the very rules /ui-kit/v1/theme.css
+	// serves), or "" for the default theme. It is inlined after
+	// contentThemeCSS, so the tenant's palette is the page's: its rules are
+	// on `:root:root`, which out-rank the embedded palette's.
+	ThemeCSS string
 }
 
 // TeamUploadsOff is what an upload block says in a team member's own view of
@@ -164,12 +170,14 @@ const TeamUploadsOff = "Files can't be sent from a team page yet."
 // stylesheet is the app's palette (contentThemeCSS); nothing about the viewer
 // (a cookie, a header, the device's colour scheme) is read, so the document
 // stays one document and no cache can hand one viewer's theme to another.
+// The INSTANCE's theme (o.ThemeCSS) is inlined after it: the document
+// depends on the server's branding, never on who is looking.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + contentThemeClass + "\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS)
+		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + themeBlock(o.ThemeCSS) + contentCSS)
 	if HasGallery(v.Blocks) {
 		b.WriteString("\n" + galleryCSS)
 	}
@@ -716,6 +724,15 @@ R(AEL,D,["submit",function(ev){
 })();`
 }
 
+// themeBlock is an inlined theme stylesheet and the newline after it, or
+// nothing (the default theme: the embedded palette already is it).
+func themeBlock(css string) string {
+	if css == "" {
+		return ""
+	}
+	return css + "\n"
+}
+
 // contentThemeClass is the class on the content document's and the shell's
 // <html>: the app's one theme. Every document the app draws carries class="dark" (internal/ui's
 // layouts; the light theme has no toggle since the theme head forces dark), and
@@ -735,8 +752,13 @@ var contentThemeCSS string
 
 // contentCSS is the content document's base styles: readable, phone-first,
 // and overridable by the page's own. Its colours are the palette's roles
-// (contentThemeCSS defines --mu-*); the short names (--fg, --accent, ...) stay
-// defined for a page's own HTML that used them.
+// (contentThemeCSS defines --mu-*, the instance's theme overrides them); the
+// short names (--bg, --fg, --s1, --line, --accent, ...) are the tokens a page's
+// own HTML is told to use (docs/pages.md "Styling: theme and width",
+// pageBlocksSchema), so they follow the theme too.
+//
+// .mp is the full width of the frame, for every block: 16px side gutters and
+// room for the shell's header at the top, no max-width.
 //
 // The .mp-markdown rules are the part of the app's reset (Tailwind's
 // preflight, which this document does not load) the renderer's utilities rely
@@ -751,7 +773,7 @@ var contentThemeCSS string
 // instead of being crushed into one-letter columns. e2e/tests/pages-phone.spec.ts
 // measures both at 390x844.
 const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--bg:rgb(var(--mu-bg));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));` +
-	`--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent));--bad:rgb(var(--mu-st-error-fg));--good:rgb(var(--mu-st-complete-fg))}
+	`--s1:rgb(var(--mu-s1));--s2:rgb(var(--mu-s2));--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent));--bad:rgb(var(--mu-st-error-fg));--good:rgb(var(--mu-st-complete-fg))}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 :where(a){color:var(--accent)}
 .mp-markdown *{border:0 solid var(--line)}
@@ -765,7 +787,7 @@ const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--
 .mp-markdown summary{list-style:none}.mp-markdown details{color:var(--fg)}
 .mp-markdown{overflow-wrap:anywhere}.mp-markdown :is(th,td){overflow-wrap:break-word;min-width:6rem}
 html{scroll-padding-top:` + shellHeaderPx + `px}
-.mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
+.mp{padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}
 form{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px}
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}legend,.mp-label{font-weight:600;padding:0;margin:0 0 4px}
@@ -776,7 +798,7 @@ button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}
-[data-muster-asset]{display:block;width:100%;aspect-ratio:16/9;background:var(--line);border-radius:8px;object-fit:contain}`
+[data-muster-asset]{display:block;width:100%;aspect-ratio:16/9;background:var(--line);border-radius:8px;object-fit:contain;max-height:80vh}`
 
 // The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
 // which fills the window; the content document leaves room for it at its top
@@ -845,6 +867,9 @@ type ShellView struct {
 	// Keeps are the only keys the shell keeps a gallery's unsaved picks under
 	// for the frame (KeepKeys of the version it shows); none keeps nothing.
 	Keeps []string
+	// ThemeCSS is the server's theme block, as RenderOptions.ThemeCSS: the
+	// header is drawn in the instance's palette, as the frame is.
+	ThemeCSS string
 }
 
 // OwnerChrome is what the owner's own view draws beyond a link's: the
@@ -999,7 +1024,7 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>` + contentThemeCSS + "\n" + shellCSS + `</style></head>
+	b.WriteString(`<style>` + contentThemeCSS + "\n" + themeBlock(v.ThemeCSS) + shellCSS + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)

@@ -159,6 +159,7 @@
       "tests/open-perf.spec.ts",
       "tests/opencode-ask-media.spec.ts",
       "tests/opencode-view.spec.ts",
+      "tests/pages-theme-width.spec.ts",
       "tests/pickers.spec.ts",
       "tests/pins.spec.ts",
       "tests/plain-titles.spec.ts",
