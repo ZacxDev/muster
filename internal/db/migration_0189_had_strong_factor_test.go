@@ -5,15 +5,15 @@ import (
 	"time"
 )
 
-// TestMigration0188BackfillsAccountsWithAStepUpPhone: at 0187 users has no
-// had_strong_factor_at (the control); 0188 adds it and marks exactly the
+// TestMigration0189BackfillsAccountsWithAStepUpPhone: at 0188 users has no
+// had_strong_factor_at (the control); 0189 adds it and marks exactly the
 // accounts that have a paired phone with a step-up key — not one with only a
 // read-only phone, not one with none.
-func TestMigration0188BackfillsAccountsWithAStepUpPhone(t *testing.T) {
+func TestMigration0189BackfillsAccountsWithAStepUpPhone(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0188_factor", 187)
+	pool := freshAt(ctx, t, "ms_0189_factor", 188)
 	if _, err := pool.Exec(ctx, `SELECT had_strong_factor_at FROM users LIMIT 1`); err == nil {
-		t.Fatal("control: before 0188 users.had_strong_factor_at exists")
+		t.Fatal("control: before 0189 users.had_strong_factor_at exists")
 	}
 	user := func(name string) int64 {
 		t.Helper()
@@ -37,7 +37,7 @@ func TestMigration0188BackfillsAccountsWithAStepUpPhone(t *testing.T) {
 	keyed, readOnly, none := user("keyed"), user("read-only"), user("none")
 	phone(keyed, "keyed-phone", true)
 	phone(readOnly, "read-only-phone", false)
-	applyThroughFrom(ctx, t, pool, 188)
+	applyThroughFrom(ctx, t, pool, 189)
 	for _, tc := range []struct {
 		id     int64
 		marked bool

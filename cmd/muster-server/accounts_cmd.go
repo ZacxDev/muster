@@ -38,7 +38,7 @@ import (
 //	                                     the account, end every session (and set
 //	                                     a new password read from stdin), and
 //	                                     reopen its first-factor tier (migration
-//	                                     0188): the recovery for a sole admin who
+//	                                     0189): the recovery for a sole admin who
 //	                                     lost every passkey and phone
 //	muster-server app install|rotate|uninstall|list|unlink
 //	                                     server-installed apps (app_cmd.go)

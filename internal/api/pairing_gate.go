@@ -23,7 +23,7 @@ import (
 //     phone's Confirm), which the mint TAKES; a phone redeeming a code without
 //     it is refused if it brings a step-up key (it may still pair read-only);
 //   - on an account that has NEVER had either (accountHasStrongFactor: the
-//     live rows or the sticky record of migration 0188, which Sign out
+//     live rows or the sticky record of migration 0189, which Sign out
 //     everywhere does not clear; only a completed password reset or the
 //     server's reset-factors command does), the first phone pairs with its
 //     key on the password, as before: it is the account's first factor, and it MAY decide

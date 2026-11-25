@@ -206,7 +206,7 @@ var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "team_membe
 //   - plugin_server_pairs (0179, a linked pair of server apps: two server
 //     plugins rows, which have no owner either; policy pinned by
 //     TestMigration0179PluginServerPairs).
-//   - passkey_rules (0187, when the server started recording which passkeys
+//   - passkey_rules (0188, when the server started recording which passkeys
 //     may approve a step-up card).
 var instanceTables = []string{"instance_branding", "passkey_rules", "plugin_server_pairs", "signin_requests"}
 
@@ -551,8 +551,8 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	// muster_revoke_team_page_uploads (a team page's file rows, on its delete).
 	// Their behaviour is TestTheTeamCardAnswerDoorHoldsInTheDatabase's and
 	// TestADemotedCreatorsRevokeAndDeleteLeaveNothingLive's.
-	// 0189 adds muster_devices_mark_strong_factor, the trigger function that
-	// marks a step-up phone's account (TestMigration0189MarksInTheSameStatement).
+	// 0190 adds muster_devices_mark_strong_factor, the trigger function that
+	// marks a step-up phone's account (TestMigration0190MarksInTheSameStatement).
 	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_cancel_team_page_card", "muster_devices_mark_strong_factor",
 		"muster_is_team_member", "muster_owner_is_team", "muster_retire_agent_name", "muster_revoke_team_page_uploads"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)

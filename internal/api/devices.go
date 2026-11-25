@@ -265,7 +265,7 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if list[i].HasStepUpKey {
-		// The account has a step-up phone: marked (migration 0188), so
+		// The account has a step-up phone: marked (migration 0189), so
 		// removing it never reopens the first-factor tier.
 		if err := s.markStrongFactor(r.Context(), requestOwner(r.Context())); err != nil {
 			http.Error(w, "the device could not be removed", http.StatusServiceUnavailable)
@@ -372,8 +372,8 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
 	// A step-up key marked the account (the sticky tier) in Redeem's own
-	// statement: migration 0189's trigger on devices. This best-effort mark is
-	// belt-and-braces for a schema whose trigger was dropped (0189's
+	// statement: migration 0190's trigger on devices. This best-effort mark is
+	// belt-and-braces for a schema whose trigger was dropped (0190's
 	// rollback note); the trigger is the guarantee.
 	if d.HasStepUpKey {
 		_ = s.markStrongFactor(r.Context(), d.OwnerID)
@@ -394,7 +394,7 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 // Account → Devices' Remove, under the device's owner.
 func (s *Server) handleDeviceUnpair(w http.ResponseWriter, r *http.Request) {
 	d := deviceFromContext(r.Context())
-	// A step-up phone leaving marks its account first (migration 0188): its
+	// A step-up phone leaving marks its account first (migration 0189): its
 	// own unpair must not reopen the first-factor tier. Fail closed.
 	if d.HasStepUpKey {
 		if err := s.markStrongFactor(r.Context(), d.OwnerID); err != nil {

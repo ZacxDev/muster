@@ -17,7 +17,7 @@ import (
 // with a step-up key), removing one takes the same ticket as adding a passkey
 // (gateCredentialRemoval: a passkey you have, or your phone's Confirm, on
 // Account → Passkeys). An account that has never had either removes as
-// before (the sticky tier, migration 0188), and every
+// before (the sticky tier, migration 0189), and every
 // device registered for push is told first (the one being removed included).
 //
 // What stays open: a phone removing ITSELF (the app's own unpair, on the

@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// TestMigration0189MarksInTheSameStatement: 0189 backfills an account whose
-// step-up phone was paired unmarked after 0188, and from then on inserting,
+// TestMigration0190MarksInTheSameStatement: 0190 backfills an account whose
+// step-up phone was paired unmarked after 0189, and from then on inserting,
 // deleting, keying or moving a step-up phone marks its account(s) in that statement; a
 // read-only phone marks nothing. Its function is SECURITY DEFINER of 0007's
 // shape and not executable by PUBLIC.
-func TestMigration0189MarksInTheSameStatement(t *testing.T) {
+func TestMigration0190MarksInTheSameStatement(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0189_mark", 188)
+	pool := freshAt(ctx, t, "ms_0190_mark", 189)
 	user := func(name string) int64 {
 		t.Helper()
 		var id int64
@@ -49,15 +49,15 @@ func TestMigration0189MarksInTheSameStatement(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// At 0188 an insert marks nothing (the control).
+	// At 0189 an insert marks nothing (the control).
 	gap := user("paired-in-the-gap")
 	phone(gap, "gap-phone", true)
 	if marked(gap) {
-		t.Fatal("control: at 0188 a keyed insert already marks")
+		t.Fatal("control: at 0189 a keyed insert already marks")
 	}
-	applyThroughFrom(ctx, t, pool, 189)
+	applyThroughFrom(ctx, t, pool, 190)
 	if !marked(gap) {
-		t.Fatal("0189 did not backfill an unmarked account with a step-up phone")
+		t.Fatal("0190 did not backfill an unmarked account with a step-up phone")
 	}
 	// The trigger: insert, delete, key.
 	a, ro := user("keyed"), user("read-only")

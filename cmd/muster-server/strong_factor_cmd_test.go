@@ -120,7 +120,7 @@ func (w *recoveryWorld) marked() bool {
 // TestTheRecoveryCommandResetsEveryFactor: `muster-server user reset-factors
 // <id|email>` — the recovery for a sole admin who lost every passkey and phone
 // — removes every passkey (GoTrue's admin API) and their records, unpairs every
-// phone, clears the sticky record (migration 0188) and writes one audit row,
+// phone, clears the sticky record (migration 0189) and writes one audit row,
 // printing what it removed; by id and by email. It is a server command only:
 // no HTTP route names it.
 func TestTheRecoveryCommandResetsEveryFactor(t *testing.T) {

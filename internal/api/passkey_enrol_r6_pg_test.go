@@ -116,7 +116,7 @@ func TestAnUnmarkedAdminWithAStepUpPhoneTakesTheProofToPromote(t *testing.T) {
 	w := newPasskeyWorld(t)
 	a := adminSelf(t, w)
 	pairStepUpPhone(t, w, a)
-	// The pairing marked the account (migration 0189); a phone paired before
+	// The pairing marked the account (migration 0190); a phone paired before
 	// that, and never marked, is the case.
 	w.s.clearStrongFactor(context.Background(), a)
 	mustBeUnmarked(t, w, a)

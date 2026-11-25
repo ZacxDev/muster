@@ -177,7 +177,7 @@ func run(args []string) error {
 		return err
 	case "unmark":
 		// What a completed password reset does to the sticky tier (migration
-		// 0188): the account adds its next passkey or step-up phone as a first
+		// 0189): the account adds its next passkey or step-up phone as a first
 		// factor. For a spec that re-adds a passkey per test on one account.
 		return users.NewPG(pool).ClearStrongFactor(ctx, owner)
 	case "card", "thread", "lookalike", "answered":

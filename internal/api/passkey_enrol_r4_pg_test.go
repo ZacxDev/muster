@@ -12,7 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 )
 
-// THE STICKY TIER (migration 0188, passkey_enrol.go): an account that has
+// THE STICKY TIER (migration 0189, passkey_enrol.go): an account that has
 // ever had a passkey or a phone with a step-up key stays gated however its
 // live rows are emptied — Sign out everywhere, a removal, an admin's strip —
 // and only a completed password reset reopens its first-factor tier. Red at

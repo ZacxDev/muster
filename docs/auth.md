@@ -678,7 +678,7 @@ with a step-up key, a password alone never reaches card approval** — until a
 password reset completes or the server's recovery command is run.
 
 "Ever had" is recorded on the account (`users.had_strong_factor_at`,
-migration 0188). It is set when a passkey is added or such a phone paired,
+migration 0189). It is set when a passkey is added or such a phone paired,
 when muster first sees either on the account, and before any is removed. It
 was backfilled for every account that already had such a phone. Emptying the
 live rows never clears it: Sign out everywhere (which unpairs every phone),
@@ -732,7 +732,7 @@ From then on, every change below takes a proof.
   An add whose claimed id (`rawId`) differs from the signed one is refused
   before GoTrue registers anything. 🔴 A passkey **with no record** may
   approve a card only when GoTrue created it before muster started recording
-  (`passkey_rules.vouching_since`, set once by migration 0187). A passkey whose
+  (`passkey_rules.vouching_since`, set once by migration 0188). A passkey whose
   creation time GoTrue does not give is not trusted. That keeps
   older passkeys working, card approval included. A newer passkey with no
   record (one added through GoTrue's own endpoints, or one whose record was
@@ -778,7 +778,7 @@ From then on, every change below takes a proof.
   signing out everywhere. That act is announced on every one of them, and the
   account stays gated afterwards. The database guarantees this: deleting a
   phone that confirms requests records, in the same statement, that the
-  account has had one (migration 0189). That covers every path that deletes
+  account has had one (migration 0190). That covers every path that deletes
   phones: Sign out everywhere, a disable, a password reset and a removal.
   Pairing such a phone records it the same way, in the same statement, or
   does not pair it.

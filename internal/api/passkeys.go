@@ -313,7 +313,7 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	s.setGoTrueCookies(w, sess)
 	s.setGoTrueKnownDevice(w, u.ID)
 	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)
-	// The account has a passkey: marked (migration 0188), which closes the
+	// The account has a passkey: marked (migration 0189), which closes the
 	// gap SQL could not backfill (passkeys live in GoTrue).
 	_ = s.markStrongFactor(r.Context(), u.ID)
 	s.logger.Printf("login: user %d signed in with a passkey", u.ID)
@@ -645,7 +645,7 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The account has a passkey: it is marked as having had a factor
-	// (migration 0188), so deleting this one never reopens the first-factor
+	// (migration 0189), so deleting this one never reopens the first-factor
 	// tier.
 	if err := s.markStrongFactor(r.Context(), uid); err != nil {
 		s.renderAccountPasskeys(w, r, http.StatusServiceUnavailable, creds, PasskeyEnrolUnchecked)
@@ -707,7 +707,7 @@ func (s *Server) handleAdminUserPasskeysDelete(w http.ResponseWriter, r *http.Re
 		return
 	}
 	// The account had a passkey: it stays gated after they are removed
-	// (migration 0188), and it is told.
+	// (migration 0189), and it is told.
 	if err := s.markStrongFactor(r.Context(), u.ID); err != nil {
 		s.renderAdminUsers(w, r, http.StatusServiceUnavailable, PasskeyEnrolUnchecked, "")
 		return

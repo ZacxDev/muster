@@ -1,4 +1,4 @@
--- muster 0187 — WHEN MUSTER STARTED RECORDING WHICH PASSKEYS MAY APPROVE A
+-- muster 0188 — WHEN MUSTER STARTED RECORDING WHICH PASSKEYS MAY APPROVE A
 -- STEP-UP CARD (internal/api passkey_enrol.go; docs/auth.md "Adding a
 -- passkey").
 --
@@ -20,7 +20,7 @@
 -- One row (singleton). Read at scope 'all' (authz.System), as
 -- instance_branding is.
 --
--- Must apply after its predecessor, 0186 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0187 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. Nothing to undo: an older image ignores the table, and with it

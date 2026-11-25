@@ -10,7 +10,7 @@ import (
 // THE ADMIN PAGES CANNOT LAUNDER A PASSWORD INTO A FACTOR (operator decision
 // "Proof + server recovery"; docs/auth.md, "Adding a passkey").
 //
-// With only an admin's password, the sticky tier (migration 0188) could be
+// With only an admin's password, the sticky tier (migration 0189) could be
 // walked around through a second account: invite B, promote B to admin, have
 // B mint a reset link for the first admin, complete it (which clears the
 // first admin's mark), and pair a phone on the password. So, from the admin

@@ -500,7 +500,7 @@ func revokeRunnerTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // imports this package. It returns how many phones went.
 //
 // 🔴 A DELETED PHONE WITH A STEP-UP KEY MARKS ITS ACCOUNT (had_strong_factor_at)
-// in this same statement: migration 0189's trigger on devices, which covers
+// in this same statement: migration 0190's trigger on devices, which covers
 // every SQL that changes the table, this one included. So a delete-everything
 // path reached with the password alone (Sign out everywhere) can never leave
 // an account that had a step-up phone unmarked.
@@ -816,7 +816,7 @@ func looksLikeUUID(s string) bool {
 }
 
 // PasskeyVouchingSince is when this server started recording which passkeys
-// may approve a step-up card (migration 0187, passkey_rules): a passkey with
+// may approve a step-up card (migration 0188, passkey_rules): a passkey with
 // no record counts as added before that only when GoTrue created it earlier
 // (internal/api passkey_enrol.go).
 func (s *PGStore) PasskeyVouchingSince(ctx context.Context) (time.Time, error) {
@@ -826,7 +826,7 @@ func (s *PGStore) PasskeyVouchingSince(ctx context.Context) (time.Time, error) {
 }
 
 // HadStrongFactor reports whether account id has ever had a passkey or a
-// phone with a step-up key (migration 0188, users.had_strong_factor_at): the
+// phone with a step-up key (migration 0189, users.had_strong_factor_at): the
 // enrolment gate's sticky tier (internal/api passkey_enrol.go).
 func (s *PGStore) HadStrongFactor(ctx context.Context, id int64) (bool, error) {
 	var at *time.Time
@@ -864,7 +864,7 @@ func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
 // written).
 //
 // 🔴 THE PHONES GO BEFORE THE MARK IS CLEARED: deleting a step-up phone marks
-// the account (migration 0189's trigger), so the other order would leave it
+// the account (migration 0190's trigger), so the other order would leave it
 // marked.
 func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, detail map[string]any) (phones int, err error) {
 	ctx = sys(ctx)

@@ -19,14 +19,14 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// ROUND 7 (migration 0189): every SQL that deletes a step-up phone marks its
+// ROUND 7 (migration 0190): every SQL that deletes a step-up phone marks its
 // account in the same statement, so the password's delete-everything paths
 // (Sign out everywhere, a disable) cannot empty an account's factors without
 // leaving it gated. Red at the previous head.
 
 // unmarkedStepUpPhone is the enrolment rig with a step-up phone whose account
 // is NOT marked: a failed best-effort mark at pairing, or a phone paired by an
-// image older than 0188 after its backfill.
+// image older than 0189 after its backfill.
 func unmarkedStepUpPhone(t *testing.T) *enrolRig {
 	t.Helper()
 	r := newEnrolRig(t, true)
@@ -102,7 +102,7 @@ var (
 
 // writesDevices: SQL that deletes from devices, merges into it, changes a
 // phone's step-up key or its owner, or truncates devices or users (a
-// truncate fires no row trigger: 0189's header).
+// truncate fires no row trigger: 0190's header).
 func writesDevices(raw string) bool {
 	s := normaliseSQL(raw)
 	if devicesDeleteRE.MatchString(s) || devicesMergeRE.MatchString(s) || devicesTruncateRE.MatchString(s) {
@@ -127,7 +127,7 @@ func writesDevices(raw string) bool {
 // TestTheDevicesWritersAreALedger: every SQL in the module's non-test Go that
 // deletes a phone, changes its step-up key or owner, merges into devices, or
 // truncates devices or users. Each row-level one is covered by migration
-// 0189's trigger, which is what marks the account; a truncate would not be,
+// 0190's trigger, which is what marks the account; a truncate would not be,
 // so there must be none. The ledger is how a new writer gets looked at: it
 // fails when the set grows or shrinks.
 func TestTheDevicesWritersAreALedger(t *testing.T) {
@@ -143,12 +143,12 @@ func TestTheDevicesWritersAreALedger(t *testing.T) {
 	}
 	// The trigger the ledger leans on is in the schema's migrations, for each
 	// of the statements and both columns.
-	mig, err := os.ReadFile(filepath.Join(root, "internal", "db", "migrations", "0189_devices_mark_strong_factor.sql"))
+	mig, err := os.ReadFile(filepath.Join(root, "internal", "db", "migrations", "0190_devices_mark_strong_factor.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !regexp.MustCompile(`AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey, owner_id ON public\.devices`).Match(mig) {
-		t.Fatal("0189's trigger does not cover INSERT, DELETE and UPDATE OF stepup_pubkey, owner_id on devices")
+		t.Fatal("0190's trigger does not cover INSERT, DELETE and UPDATE OF stepup_pubkey, owner_id on devices")
 	}
 	// CONTROLS: every spelling measured to walk around a plain match is
 	// caught, and the near misses are not. (A plain INSERT is not a writer

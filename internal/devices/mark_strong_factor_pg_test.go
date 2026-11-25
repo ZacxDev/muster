@@ -10,7 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// MIGRATION 0189: a phone with a step-up key marks its account
+// MIGRATION 0190: a phone with a step-up key marks its account
 // (users.had_strong_factor_at) in the SAME statement as it is paired and as it
 // is deleted — whoever deletes it, under whatever principal.
 
@@ -96,7 +96,7 @@ func TestAStepUpPairingMarksItsAccountOrDoesNotHappen(t *testing.T) {
 func TestRemovingAStepUpPhoneMarksItsAccountUnderItsOwnersPrincipal(t *testing.T) {
 	r := newRig(t)
 	_, d := r.pair(t, r.a, time.Now(), PairIn{Name: "Pixel", AppVersion: "1.2.3", StepUpKey: p256SPKI(t), KeyType: KeyBiometric, KeyLevel: LevelStrongBox})
-	r.unmark(t, r.a) // as a phone paired before 0189 and never marked
+	r.unmark(t, r.a) // as a phone paired before 0190 and never marked
 	refuseMarks(t, r.a)
 	if ok, err := r.s.Remove(as(r.a), d.ID); err == nil || ok {
 		t.Fatalf("a removal whose mark could not be written: %v %v", ok, err)

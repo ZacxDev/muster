@@ -1,4 +1,4 @@
--- muster 0188 — AN ACCOUNT THAT HAS EVER HAD A PASSKEY OR A PHONE WITH A
+-- muster 0189 — AN ACCOUNT THAT HAS EVER HAD A PASSKEY OR A PHONE WITH A
 -- STEP-UP KEY STAYS GATED (internal/api passkey_enrol.go, pairing_gate.go;
 -- docs/auth.md "Adding a passkey").
 --
@@ -22,13 +22,13 @@
 -- key. Passkeys live in GoTrue, where SQL cannot see them: muster marks an
 -- account the first time its gate reads one, and before any removal of one.
 --
--- Must apply after its predecessor, 0187 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0188 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. An older image ignores the column. To remove it before an older
 -- image starts:
 --   ALTER TABLE public.users DROP COLUMN IF EXISTS had_strong_factor_at;
---   DELETE FROM schema_migrations WHERE version = 188;
+--   DELETE FROM schema_migrations WHERE version = 189;
 -- 🔴 Re-applying it later backfills only from the phones paired THEN: an
 -- account whose phones were unpaired in between reopens to a password-only
 -- first factor. Leave the column on a server that has run this version.

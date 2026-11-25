@@ -255,7 +255,7 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 type strongFactors struct {
 	passkey bool // a live passkey (GoTrue's admin API)
 	phone   bool // a paired phone with a step-up key
-	had     bool // the sticky record (users.had_strong_factor_at, 0188)
+	had     bool // the sticky record (users.had_strong_factor_at, 0189)
 }
 
 func (f strongFactors) any() bool { return f.passkey || f.phone || f.had }
@@ -459,7 +459,7 @@ func passkeyStandingOf(rec map[string]any, found bool, created, since time.Time)
 	return standingUnknown
 }
 
-// strongFactorStore is the users store's sticky tier (migration 0188), and
+// strongFactorStore is the users store's sticky tier (migration 0189), and
 // its read of whether an account has a step-up phone.
 type strongFactorStore interface {
 	HasStepUpPhone(ctx context.Context, id int64) (bool, error)
@@ -508,7 +508,7 @@ func (s *Server) clearStrongFactor(ctx context.Context, uid int64) {
 	}
 }
 
-// passkeyVouchingSinceStore is the users store's read of migration 0187.
+// passkeyVouchingSinceStore is the users store's read of migration 0188.
 type passkeyVouchingSinceStore interface {
 	PasskeyVouchingSince(ctx context.Context) (time.Time, error)
 }

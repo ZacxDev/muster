@@ -158,7 +158,7 @@ func TestAStepUpCardIsConfirmedInTheBrowserWithAPasskey(t *testing.T) {
 	r := newWebRig(t)
 	x, card := r.card(t, "Ship it from the browser?")
 	// Unmarked before the decision (as an account whose passkey muster never
-	// saw added): a passkey that decides a card marks it (migration 0188).
+	// saw added): a passkey that decides a card marks it (migration 0189).
 	r.s.clearStrongFactor(context.Background(), r.uid)
 	w := r.decide(t, card, "Confirm")
 	if w.Code != http.StatusOK {

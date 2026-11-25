@@ -1,14 +1,14 @@
--- muster 0189 — A PHONE WITH A STEP-UP KEY MARKS ITS ACCOUNT IN THE SAME
+-- muster 0190 — A PHONE WITH A STEP-UP KEY MARKS ITS ACCOUNT IN THE SAME
 -- TRANSACTION AS IT IS PAIRED, AND AGAIN AS IT IS DELETED (internal/api
 -- passkey_enrol.go accountHasStrongFactor; docs/auth.md "Adding a passkey").
 --
--- 0188 made the gated tier sticky (users.had_strong_factor_at), but the mark
+-- 0189 made the gated tier sticky (users.had_strong_factor_at), but the mark
 -- was written by the application, next to — never inside — the statements
 -- that change the phones: the pairing marked best-effort after its insert, and
 -- Sign out everywhere, a disable and a password reset delete every phone
 -- (users.deleteDevicesTx) without marking. So an account whose step-up phone
 -- was never marked (a failed mark write, or a phone paired by an image older
--- than 0188 after its backfill ran) lost its only record of the phone to
+-- than 0189 after its backfill ran) lost its only record of the phone to
 -- "Sign out everywhere" — the password alone — and then paired the attacker's
 -- phone as a first factor.
 --
@@ -44,7 +44,7 @@
 -- write it back. A completed password reset deletes them in
 -- ResetCredentials' transaction, and clears the mark after.
 --
--- Must apply after its predecessor, 0188 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0189 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. An older image is unaffected (it writes the same rows; the
@@ -55,7 +55,7 @@
 -- it only with an image that predates this migration. To remove it:
 --   DROP TRIGGER IF EXISTS devices_mark_strong_factor ON public.devices;
 --   DROP FUNCTION IF EXISTS public.muster_devices_mark_strong_factor();
---   DELETE FROM schema_migrations WHERE version = 189;
+--   DELETE FROM schema_migrations WHERE version = 190;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -86,7 +86,7 @@ CREATE TRIGGER devices_mark_strong_factor
     AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey, owner_id ON public.devices
     FOR EACH ROW EXECUTE FUNCTION public.muster_devices_mark_strong_factor();
 
--- Accounts whose step-up phone was paired after 0188's backfill without a
+-- Accounts whose step-up phone was paired after 0189's backfill without a
 -- mark (the gap above) are marked now.
 UPDATE public.users u SET had_strong_factor_at = now()
     WHERE u.had_strong_factor_at IS NULL
