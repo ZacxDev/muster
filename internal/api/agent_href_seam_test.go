@@ -365,6 +365,10 @@ var agentHrefCallLedger = map[string]int{
 	// session, as PageHref composes it), which is how the palette finds the
 	// entry on the page.
 	"AgentListHref ← internal/api/palette.go:Server.paletteTargets": 1,
+	// Home with the chief on and no chat of its viewed (or the one viewed last
+	// archived): the chief's sidebar row's link, which the page resolves to
+	// the primary (homeResolve).
+	"AgentListHref ← internal/api/agent_href.go:Server.agentListHref": 1,
 	// The switcher's pin toggle: the page a post without script returns to.
 	"PageHref ← internal/ui/switcher_pin.go:newSwitcherPin": 1,
 	// Home (`/`, GET /agents) with no chief on: the session opened last that
