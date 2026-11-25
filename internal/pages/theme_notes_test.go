@@ -126,3 +126,15 @@ func TestThemeNotesNameTheBlockDedupeAndCap(t *testing.T) {
 		t.Error("no blocks: want nil")
 	}
 }
+
+// A value holding characters whose lower case is shorter (the Kelvin sign
+// U+212A lowers to a 1-byte "k", the Ohm sign U+2126 to a 2-byte omega) must
+// not panic, and must still be judged: the dark text after them is named.
+func TestThemeNotesSurviveCharactersThatShrinkWhenLowered(t *testing.T) {
+	for _, odd := range []string{"KKKKKKKKKK", "ΩΩΩΩ var(--x)"} {
+		notes := pages.ThemeNotes([]pages.Block{{Type: pages.BlockHTML, HTML: "<style>.a{color: " + odd + " #000}</style>"}})
+		if len(notes) != 1 || !strings.Contains(notes[0], "#000") {
+			t.Fatalf("%q: want one note naming #000, got %q", odd, notes)
+		}
+	}
+}

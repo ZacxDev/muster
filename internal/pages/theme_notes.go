@@ -70,8 +70,16 @@ var themeBG = func() theme.RGB {
 // (blocks[i], 0-based, as the call's blocks array), the declaration and the
 // token to use. Equal notes are said once; at most MaxThemeNotes, then one
 // saying how many more. nil when there is nothing to say.
-func ThemeNotes(blocks []Block) []string {
-	var notes []string
+//
+// The check is advisory and runs after the version is published, on paths
+// (an in-process agent's first-turn tool call) with no recover of their own,
+// so a parser fault here returns no notes rather than taking the server down.
+func ThemeNotes(blocks []Block) (notes []string) {
+	defer func() {
+		if recover() != nil {
+			notes = nil
+		}
+	}()
 	seen := map[string]bool{}
 	more := 0
 	for i, b := range blocks {
@@ -208,10 +216,24 @@ func colourLiterals(v string) (out []theme.RGB, other bool) {
 	return out, other
 }
 
+// asciiLower lowers A-Z only, so the result is byte-for-byte as long as s.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // stripFuncs removes every call of the named functions (case-insensitive,
 // nested parentheses included) and reports whether one was a var() or env().
 func stripFuncs(v string, names ...string) (string, bool) {
-	lower := strings.ToLower(v)
+	// ASCII-only lowering keeps every byte at its index; strings.ToLower
+	// shrinks some runes (the Kelvin sign to "k") and the indexes into v
+	// below would then run past the end of lower.
+	lower := asciiLower(v)
 	var b strings.Builder
 	dynamic := false
 	for i := 0; i < len(v); {
