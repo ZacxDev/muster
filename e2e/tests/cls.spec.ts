@@ -132,6 +132,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /morning/{date}': 'measured in morning-report.spec.ts (the report is off on these servers)',
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
   'GET /login/app/status': "the app sign-in's status poll (JSON)",
+  'GET /account/passkeys/proof/status': "the Passkeys page's confirm-on-phone status poll (JSON)",
   'GET /agent/approvals/{id}': 'agent API (JSON)',
   'GET /agent/connectors': 'agent API (JSON)',
   'GET /agent/connectors/{name}': 'agent API (JSON)',
