@@ -93,6 +93,51 @@ for (const vp of [
       expect(await settledY(page), 'Back').toBe(0);
     });
 
+    // 🔴 A PAGE THAT OPENS BEFORE IT CAN SCROLL STAYS AT THE TOP ONCE IT CAN.
+    // With the feed's scroll snap on while the document has no scroll range,
+    // every snap position clamps to 0, Chromium picks the first card among
+    // equals, and re-snaps to it the moment the page can scroll: the page
+    // "opens partially scrolled down". A slow load does it (one card laid out,
+    // then the rest: the flake this was found by, 154px at 1440×900); here a
+    // window opened taller than the page and then made shorter does it every
+    // time. RED at the base: scrollY 154 at both sizes.
+    test('a page opened before it could scroll stays at the top once it can, and the feed still snaps', async ({ page }) => {
+      const { width, height } = vp.use.viewport;
+      await page.setViewportSize({ width, height: 10_000 });
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      await expect(page.locator(`#ask-${ids.mkt_ask}`)).toBeVisible();
+      await page.waitForLoadState('load');
+      // Nothing to scroll yet (else this is the invariant above again).
+      expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBe(0);
+      await page.setViewportSize({ width, height });
+      // The layout after the resize, and the frame after it (a re-snap is not
+      // smooth: it lands in that layout).
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(undefined)))));
+      expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeGreaterThan(400);
+      expect(await page.evaluate(() => Math.round(window.scrollY)), 'the page re-snapped to the first card').toBe(0);
+      // Still a snapping feed: a wheel that stops between cards settles on a
+      // card's top, under the sticky header (its scroll padding).
+      await expect(page.locator('html')).toHaveAttribute('data-asks-snap', '');
+      await page.mouse.move(width / 2, height / 2);
+      // Settled: the browser's scrollend, which comes once the scroll AND its
+      // snap are done.
+      await page.evaluate(() => {
+        (window as unknown as { __ended: Promise<void> }).__ended = new Promise((r) => window.addEventListener('scrollend', () => r(), { once: true }));
+      });
+      await page.mouse.wheel(0, 333);
+      await page.evaluate(() => (window as unknown as { __ended: Promise<void> }).__ended);
+      const { y, tops } = await page.evaluate(() => {
+        const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
+        return {
+          y: Math.round(window.scrollY),
+          tops: Array.from(document.querySelectorAll('#attention-items > li[data-asks-card]')).map((c) => Math.round(c.getBoundingClientRect().top + window.scrollY - pad)),
+        };
+      });
+      expect(y, 'the wheel scrolled').toBeGreaterThan(0);
+      expect(Math.min(...tops.map((t) => Math.abs(t - y))), `the wheel settled on a card's top (scrollY ${y}, tops ${tops.slice(0, 6)})`).toBeLessThanOrEqual(1);
+    });
+
     test('a live refresh never pulls the page down to the last focused card', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/attention');

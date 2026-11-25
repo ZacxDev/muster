@@ -654,6 +654,11 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// asksSnapAttr arms the feed's scroll snap on <html> (web/css/input.css
+// spells it too): asksPageScript sets it once the page's top is a snap
+// position of its own.
+const asksSnapAttr = "data-asks-snap"
+
 // asksPageScript is the page's own behaviour around the tabs (the cards' —
 // expand, answer and dismiss, keys, swipe — is ui/asks_card.go's):
 //
@@ -677,6 +682,31 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 //     id names one element).
 const asksPageScript = `<script>
 (function () {
+  // 🔴 THE FEED'S SNAP IS ARMED ONLY ONCE THE PAGE'S TOP IS A SNAP POSITION OF
+  // ITS OWN (web/css/input.css, html[data-asks-snap]): the document scrolls
+  // past the offset the page's top snaps to. Before that, every snap position
+  // clamps to one offset, the browser picks the first card among equals, and
+  // re-snaps to it — the page scrolled down by itself — as soon as the page
+  // can scroll (the rest of a slow load, a window made shorter). Armed past
+  // it, the top is strictly the nearest snap position from the top.
+  (function () {
+    var d = document.documentElement, page = document.querySelector('[data-testid="attention-page"]');
+    if (!page) return;
+    function arm() {
+      if (d.hasAttribute('` + asksSnapAttr + `')) return true;
+      // The page's top's own snap position: its top, less the scroll padding
+      // and its scroll margin (≤ 0: the very top).
+      var at = page.getBoundingClientRect().top + window.scrollY - (parseFloat(getComputedStyle(d).scrollPaddingTop) || 0) - (parseFloat(getComputedStyle(page).scrollMarginTop) || 0);
+      if (d.scrollHeight - d.clientHeight <= Math.max(0, Math.ceil(at))) return false;
+      d.setAttribute('` + asksSnapAttr + `', '');
+      return true;
+    }
+    if (arm() || typeof ResizeObserver !== 'function') return;
+    function again() { if (arm()) { ro.disconnect(); window.removeEventListener('resize', again); } }
+    var ro = new ResizeObserver(again);
+    ro.observe(document.body);
+    window.addEventListener('resize', again);
+  })();
   var root = document.querySelector('[data-asks-tabs]');
   if (!root) return;
   // filterQuery: the address's filter (?type=, ?from=: asks_filter.go) as a

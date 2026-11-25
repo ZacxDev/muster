@@ -746,9 +746,21 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
  * - ALL OF IT is off under prefers-reduced-motion: reduce (the last block).
  */
 html:has([data-asks-feed]) {
-  scroll-snap-type: y proximity;
   /* Clear of the shell's sticky header, so a snapped card is not under it. */
   scroll-padding-top: 4.5rem;
+}
+/*
+ * 🔴 THE FEED SNAPS ONLY ONCE THE PAGE IS ARMED (data-asks-snap, set by the
+ * Asks page's script, internal/api asksPageScript): once the document scrolls
+ * far enough that the page's top is a snap position of its own. While it
+ * cannot, every snap position clamps to the same offset, the browser picks a
+ * snap target among equals — Chromium picks the FIRST CARD — and once the page
+ * can scroll it re-snaps to that card: the page "opens partially scrolled
+ * down" (a slow load, or a window opened taller than the page and made
+ * shorter). Pinned by e2e/tests/asks-scroll.spec.ts.
+ */
+html[data-asks-snap]:has([data-asks-feed]) {
+  scroll-snap-type: y proximity;
 }
 /*
  * The page's top is a snap point too: near it, the feed settles on the
