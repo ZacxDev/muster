@@ -61,9 +61,17 @@ func (f *wakeFixture) ownerFeedback(t *testing.T, ctx context.Context, page int6
 // admission (requirePageLink): no cookie, no principal of the caller's.
 func (f *wakeFixture) linkFeedback(t *testing.T, token, text string) *httptest.ResponseRecorder {
 	t.Helper()
+	return f.linkFeedbackFrom(t, token, "192.0.2.1", text)
+}
+
+// linkFeedbackFrom is linkFeedback from client address ip (the request's
+// peer: the fixture trusts no proxy, so clientIP is it).
+func (f *wakeFixture) linkFeedbackFrom(t *testing.T, token, ip, text string) *httptest.ResponseRecorder {
+	t.Helper()
 	body, _ := json.Marshal(map[string]string{"text": text})
 	req := httptest.NewRequest(http.MethodPost, pages.LinkPath(token)+pages.FeedbackPathSuffix, strings.NewReader(string(body)))
 	req.SetPathValue("token", token)
+	req.RemoteAddr = ip + ":40000"
 	rec := httptest.NewRecorder()
 	f.srv.requirePageLink(f.srv.handlePageFeedback)(rec, req)
 	f.srv.WaitForAttentionDeliveries()
@@ -189,8 +197,9 @@ func TestALinkViewersFeedbackIsFencedAsUntrustedAndNamesTheLink(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the viewer's feedback: %d %s", rec.Code, rec.Body.String())
 	}
-	if a := decodeFeedback(t, rec); a.Delivery != pageFeedbackSent {
-		t.Fatalf("the answer: %+v", a)
+	// 🔴 A stranger is told nothing of the session: neutral words, no delivery.
+	if a := decodeFeedback(t, rec); a.Delivery != "" || a.Message != "Sent. Thanks for the feedback." {
+		t.Fatalf("the viewer's answer: %+v; want the neutral words and no delivery", a)
 	}
 	rs := f.feedbackResponses(t, pg.ID)
 	if len(rs) != 1 || rs[0].ByOwner || rs[0].LinkID != l.ID || pages.FeedbackText(rs[0].Data) != msg {
@@ -268,11 +277,14 @@ func TestFeedbackIsBoundedInCharactersAndRefusedBlank(t *testing.T) {
 	}
 }
 
-// TestFeedbackIsRateLimitedPerLinkAndRecovers: one link takes 5 messages a
-// minute (pageFeedbackLimit, unlowered) — the 6th is 429 and stored nowhere —
-// another link is not held by it, and once the minute turns the first link
-// takes messages again.
-func TestFeedbackIsRateLimitedPerLinkAndRecovers(t *testing.T) {
+// TestFeedbackIsRateLimitedPerViewerAndPerLinkAndRecovers: one VIEWER (a
+// client address) of a link takes 5 messages a minute (pageFeedbackLimit,
+// unlowered) — the 6th is 429 and stored nowhere — while another viewer of
+// the SAME link is not held by it; all of a link's viewers together take 30
+// a minute (pageFeedbackLinkLimit, unlowered), the 31st refused from a viewer
+// who sent nothing yet; another link is not held; once the minute turns the
+// first viewer sends again.
+func TestFeedbackIsRateLimitedPerViewerAndPerLinkAndRecovers(t *testing.T) {
 	f := newWakeFixture(t)
 	now := time.Now()
 	f.srv.now = func() time.Time { return now }
@@ -285,24 +297,76 @@ func TestFeedbackIsRateLimitedPerLinkAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ip := func(n int) string { return "198.51.100." + itoa(int64(n)) }
 	for i := 1; i <= 5; i++ {
-		if rec := f.linkFeedback(t, l.Token, "burst-msg-"+itoa(int64(i))); rec.Code != http.StatusOK {
-			t.Fatalf("message %d of the burst: %d %s", i, rec.Code, rec.Body.String())
+		if rec := f.linkFeedbackFrom(t, l.Token, ip(1), "burst-msg-"+itoa(int64(i))); rec.Code != http.StatusOK {
+			t.Fatalf("message %d of viewer 1's burst: %d %s", i, rec.Code, rec.Body.String())
 		}
 	}
-	rec := f.linkFeedback(t, l.Token, "burst-msg-6")
+	rec := f.linkFeedbackFrom(t, l.Token, ip(1), "burst-msg-6")
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "60" {
-		t.Fatalf("the 6th message within the minute: %d %v", rec.Code, rec.Header())
+		t.Fatalf("viewer 1's 6th message within the minute: %d %v", rec.Code, rec.Header())
 	}
-	if rec := f.linkFeedback(t, other.Token, "other-link-msg-1"); rec.Code != http.StatusOK {
+	if rec := f.linkFeedbackFrom(t, l.Token, ip(2), "viewer-2-msg"); rec.Code != http.StatusOK {
+		t.Fatalf("a second viewer of the same link, while the first is held: %d %s", rec.Code, rec.Body.String())
+	}
+	// Viewers 2 to 6 bring the link to 30 this minute (5 + 5 + 4×5).
+	for v := 2; v <= 6; v++ {
+		from := 1
+		if v == 2 {
+			from = 2
+		}
+		for i := from; i <= 5; i++ {
+			if rec := f.linkFeedbackFrom(t, l.Token, ip(v), "fill-"+itoa(int64(v))+"-"+itoa(int64(i))); rec.Code != http.StatusOK {
+				t.Fatalf("viewer %d message %d (under the link's 30): %d", v, i, rec.Code)
+			}
+		}
+	}
+	if rec := f.linkFeedbackFrom(t, l.Token, ip(7), "the-31st"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("the link's 31st message this minute, from a fresh viewer: %d; want 429", rec.Code)
+	}
+	if rec := f.linkFeedbackFrom(t, other.Token, ip(1), "other-link-msg-1"); rec.Code != http.StatusOK {
 		t.Fatalf("another link, while the first is held: %d", rec.Code)
 	}
-	if n := len(f.feedbackResponses(t, pg.ID)); n != 6 {
-		t.Fatalf("%d feedback responses; want 5 of the burst and the other link's", n)
+	if n := len(f.feedbackResponses(t, pg.ID)); n != 31 {
+		t.Fatalf("%d feedback responses; want the link's 30 and the other link's 1", n)
 	}
 	now = now.Add(pageLimitWindow + time.Second)
-	if rec := f.linkFeedback(t, l.Token, "after-the-minute-msg"); rec.Code != http.StatusOK {
+	if rec := f.linkFeedbackFrom(t, l.Token, ip(1), "after-the-minute-msg"); rec.Code != http.StatusOK {
 		t.Fatalf("after the minute: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestALinksFeedbackCapIsARolling24Hours: a link at MaxFeedbackPerLink (2
+// here) in the last 24 hours refuses feedback (409, its own words); rows older
+// than 24 hours do not count, so the same link takes feedback again.
+func TestALinksFeedbackCapIsARolling24Hours(t *testing.T) {
+	defer func(fb int) { pages.MaxFeedbackPerLink = fb }(pages.MaxFeedbackPerLink)
+	pages.MaxFeedbackPerLink = 2
+	f := newWakeFixture(t)
+	pg := f.pageOfSession(t)
+	l, err := f.pages.CreateLink(f.ownerCtx(), pg.ID, pages.LinkLive, "you", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if rec := f.linkFeedbackFrom(t, l.Token, "203.0.113.1", "day-1-msg-"+itoa(int64(i))); rec.Code != http.StatusOK {
+			t.Fatalf("message %d: %d", i, rec.Code)
+		}
+	}
+	if rec := f.linkFeedbackFrom(t, l.Token, "203.0.113.2", "day-1-msg-3"); rec.Code != http.StatusConflict || decodeFeedback(t, rec).Error != PageFeedbackFullText {
+		t.Fatalf("a link at its cap in the last 24 hours: %d %s", rec.Code, rec.Body.String())
+	}
+	// One of the two is now 25 hours old: it no longer counts.
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE page_responses SET created_at = now() - interval '25 hours'
+		WHERE id = (SELECT min(id) FROM page_responses WHERE link_id = $1 AND kind = 'feedback')`, l.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := f.linkFeedbackFrom(t, l.Token, "203.0.113.3", "day-2-msg-1"); rec.Code != http.StatusOK {
+		t.Fatalf("with one message older than 24 hours: %d %s; want it taken", rec.Code, rec.Body.String())
+	}
+	if rec := f.linkFeedbackFrom(t, l.Token, "203.0.113.4", "day-2-msg-2"); rec.Code != http.StatusConflict {
+		t.Fatalf("at the cap again (2 in the last 24 hours): %d; want 409", rec.Code)
 	}
 }
 
@@ -334,6 +398,17 @@ func TestFeedbackOnAPageNoSessionCanReceiveIsStoredAndSaysSo(t *testing.T) {
 		if rs := f.feedbackResponses(t, id); len(rs) != 1 || pages.FeedbackText(rs[0].Data) != "unreached-msg-"+itoa(id) {
 			t.Fatalf("%s: stored %+v", name, rs)
 		}
+	}
+	// A link's viewer is answered the SAME neutral words on an unreachable
+	// page as on a reachable one (TestALinkViewersFeedbackIsFencedAsUntrusted
+	// AndNamesTheLink): nothing of the session's reach.
+	l, err := f.pages.CreateLink(f.ownerCtx(), agentPage.ID, pages.LinkLive, "you", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := f.linkFeedback(t, l.Token, "unreached-viewer-msg")
+	if a := decodeFeedback(t, rec); rec.Code != http.StatusOK || a.Delivery != "" || a.Message != "Sent. Thanks for the feedback." {
+		t.Fatalf("a viewer on an unreachable page: %d %+v; want the neutral words and no delivery", rec.Code, a)
 	}
 	if ws := f.feedbackWakes(t); len(ws) != 0 {
 		t.Fatalf("%d wakes for pages no session here can receive; want 0: %+v", len(ws), ws)

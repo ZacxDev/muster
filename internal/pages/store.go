@@ -1090,7 +1090,7 @@ func insertResponse(ctx context.Context, tx pgx.Tx, owner, page, linkID int64, v
 	// against the form's (MaxResponsesPerLink): a viewer's messages from the
 	// Feedback pill never use up the room a page's own form has.
 	const counts = `SELECT count(*) FILTER (WHERE kind <> 'feedback'), count(*) FILTER (WHERE kind = 'upload'),
-		count(*) FILTER (WHERE kind = 'feedback') FROM page_responses WHERE `
+		count(*) FILTER (WHERE kind = 'feedback' AND created_at > now() - make_interval(secs => $2)) FROM page_responses WHERE `
 	who, count := "this link", counts+`link_id = $1`
 	arg := any(linkID)
 	if byOwner {
@@ -1101,14 +1101,14 @@ func insertResponse(ctx context.Context, tx pgx.Tx, owner, page, linkID int64, v
 		who += " has"
 	}
 	var all, files, feedback int
-	if err := tx.QueryRow(ctx, count, arg).Scan(&all, &files, &feedback); err != nil {
+	if err := tx.QueryRow(ctx, count, arg, FeedbackCapWindow.Seconds()).Scan(&all, &files, &feedback); err != nil {
 		return Response{}, err
 	}
 	if kind == KindFeedback {
 		// A link's feedback is capped; the owner's own is bounded only by
 		// its rate limit (internal/api page_feedback.go).
 		if !byOwner && feedback >= MaxFeedbackPerLink {
-			return Response{}, fmt.Errorf("%w: %d feedback messages", ErrFeedbackFull, feedback)
+			return Response{}, fmt.Errorf("%w: %d feedback messages in %s", ErrFeedbackFull, feedback, FeedbackCapWindow)
 		}
 	} else if all >= MaxResponsesPerLink {
 		return Response{}, fmt.Errorf("%w: %s recorded %d responses, the most one link may", ErrTooMany, who, all)

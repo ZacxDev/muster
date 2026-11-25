@@ -76,11 +76,16 @@ var (
 	// MaxUploadsPerLink bounds the files one link may record.
 	MaxUploadsPerLink = 50
 	// MaxFeedbackPerLink bounds the feedback messages one link may record
-	// (KindFeedback), apart from MaxResponsesPerLink: feedback never uses up
-	// the room a page's form has, nor the form feedback's. The owner's own
-	// feedback has no such cap (only its rate limit).
+	// (KindFeedback) in any FeedbackCapWindow, apart from MaxResponsesPerLink:
+	// feedback never uses up the room a page's form has, nor the form
+	// feedback's. Rolling, not lifetime, so one viewer of a shared link cannot
+	// close it to every other for good. The owner's own feedback has no such
+	// cap (only its rate limit).
 	MaxFeedbackPerLink = 200
 )
+
+// FeedbackCapWindow is MaxFeedbackPerLink's window.
+const FeedbackCapWindow = 24 * time.Hour
 
 // The errors a caller turns into words. Every "not yours" reads as
 // ErrNotFound, exactly as a missing id.
@@ -92,8 +97,9 @@ var (
 	ErrInvalid      = errors.New("pages: invalid")
 	// ErrTooMany is a cap reached (pages, versions, links, responses).
 	ErrTooMany = errors.New("pages: too many")
-	// ErrFeedbackFull is a link at MaxFeedbackPerLink (a cap of its own,
-	// so its sender is told it is feedback that is full, not the page).
+	// ErrFeedbackFull is a link at MaxFeedbackPerLink in FeedbackCapWindow (a
+	// cap of its own, so its sender is told it is feedback that is full, not
+	// the page).
 	ErrFeedbackFull = errors.New("pages: this link has sent as much feedback as it may")
 	// ErrNotPending is a decision on a link that is no longer pending.
 	ErrNotPending = errors.New("pages: that link is no longer waiting for a decision")

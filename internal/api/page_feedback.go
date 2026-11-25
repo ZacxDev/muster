@@ -25,10 +25,14 @@ import (
 // page's owner from their own view: their session and muster's own Origin,
 // requireOperatorWrite), each {text}:
 //
-//   - refused past pageFeedbackLimit messages per responder (a link, or the
-//     owner on one page) per pageLimitWindow (429), past
-//     pages.MaxFeedbackPerLink messages through one link (409; a budget of
-//     its own, so feedback never uses up the page form's responses), over
+//   - refused (429) past pageFeedbackLimit messages per pageLimitWindow from
+//     one VIEWER of a link (the link and their client address, clientIP: the
+//     trusted-proxy rule), or from the owner on one page, and past
+//     pageFeedbackLinkLimit from all of a link's viewers together; refused
+//     (409) past pages.MaxFeedbackPerLink messages through one link in the
+//     last pages.FeedbackCapWindow (a budget of its own, so feedback never
+//     uses up the page form's responses, and rolling, so one viewer cannot
+//     close a shared link for good); over
 //     pages.MaxFeedbackRunes characters (413, never cut) or blank (400) — and
 //     everything a link's submit is refused for: a link that is revoked,
 //     pending, denied or expired (the one 404, requirePageLink and the store's
@@ -42,15 +46,33 @@ import (
 //     (held, like any, for a fresh sign-in); a link viewer's is a stranger's,
 //     fenced as untrusted on the line (renderWake).
 //
-// The answer says which (pageFeedbackDelivery): sent, held for a sign-in, or
-// not reachable — decided by fileWakeRow itself, the wakes' ONE filer, never
-// by a second reading of its rules.
+// The OWNER's answer says which (delivery): sent, held for a sign-in, or not
+// reachable — decided by fileWakeRow itself, the wakes' ONE filer, never by a
+// second reading of its rules. 🔴 A LINK'S VIEWER is answered the same
+// neutral words either way (PageFeedbackViewerText, no delivery): whether the
+// owner's session is reachable is not a stranger's to learn.
 // ---------------------------------------------------------------------------
 
 // pageFeedbackLimit is how many feedback messages one responder (a link, or
 // the owner on one page) may send per pageLimitWindow (a minute): a burst of
 // that many, then 429 until the window turns. A var so a test can lower it.
 var pageFeedbackLimit = 5
+
+// pageFeedbackLinkLimit is how many feedback messages ALL of one link's
+// viewers together may send per pageLimitWindow. A var so a test can lower it.
+var pageFeedbackLinkLimit = 30
+
+// pageFeedbackAllowed takes one message from p's rate limits: the owner's per
+// page; a link viewer's per (link, client address) and then the link's own
+// ceiling across its viewers.
+func (s *Server) pageFeedbackAllowed(r *http.Request, p pageResponder) bool {
+	now := s.now()
+	if p.owner {
+		return s.pageState.feedback.take(p.rateKey(), now, pageLimitWindow, pageFeedbackLimit)
+	}
+	return s.pageState.feedback.take("viewer-"+p.rateKey()+"-"+clientIP(r), now, pageLimitWindow, pageFeedbackLimit) &&
+		s.pageState.feedback.take("link-"+p.rateKey(), now, pageLimitWindow, pageFeedbackLinkLimit)
+}
 
 // pageFeedbackBodyMax bounds a feedback request's body: a message of
 // pages.MaxFeedbackRunes characters, JSON-escaped at its worst (\uXXXX, six
@@ -69,8 +91,11 @@ const (
 	PageFeedbackSentText        = "Sent to the session that made this page."
 	PageFeedbackHeldText        = "Saved. It goes to the session that made this page once you sign in again."
 	PageFeedbackUnreachableText = "Saved with this page's responses, but the session that made this page isn't reachable, so it was not sent to it."
-	// PageFeedbackFullText: the link is at pages.MaxFeedbackPerLink.
-	PageFeedbackFullText = "This link has sent as much feedback as one link may. Nothing more can be sent through it."
+	// PageFeedbackFullText: the link is at pages.MaxFeedbackPerLink for now.
+	PageFeedbackFullText = "This link has had as much feedback as it takes in a day. Try again tomorrow."
+	// PageFeedbackViewerText is a link viewer's answer, whatever happened
+	// to the wake.
+	PageFeedbackViewerText = "Sent. Thanks for the feedback."
 )
 
 // pageFeedbackText is the answer's words for delivery d.
@@ -103,7 +128,7 @@ func (s *Server) handleOwnerPageFeedback(w http.ResponseWriter, r *http.Request)
 func (s *Server) pageFeedback(w http.ResponseWriter, r *http.Request, p pageResponder) {
 	ctx := r.Context()
 	kind := string(pages.KindFeedback)
-	if !s.pageState.feedback.take(p.rateKey(), s.now(), pageLimitWindow, pageFeedbackLimit) {
+	if !s.pageFeedbackAllowed(r, p) {
 		metrics.PageResponses.WithLabelValues(kind, "throttled").Inc()
 		w.Header().Set("Retry-After", "60")
 		s.pageWriteError(w, http.StatusTooManyRequests, "That is a lot of feedback at once. Wait a minute, then send it again.")
@@ -165,6 +190,10 @@ func (s *Server) pageFeedback(w http.ResponseWriter, r *http.Request, p pageResp
 	d := s.wakePageFeedback(ctx, owner, p.page, resp, v)
 	s.pageResponded(ctx, p, v, resp)
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !p.owner {
+		s.writeJSON(w, http.StatusOK, map[string]any{"id": resp.ID, "message": PageFeedbackViewerText})
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": resp.ID, "delivery": d, "message": pageFeedbackText(d)})
 }
 

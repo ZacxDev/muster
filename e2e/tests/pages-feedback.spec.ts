@@ -19,12 +19,14 @@ import { startServer, Running } from '../lib/server';
 //   - a share link's viewer: the pill pinned bottom right; tapped, the panel
 //     opens below the header — at phone width the full width, the textarea on
 //     its own row and Send beneath it — with NO microphone; Escape folds it
-//     back with the draft kept; Send clears the box and says where it went,
-//     the panel still open; the owner then reads the message, kind
+//     back with the draft kept; Send clears the box and thanks them (the
+//     same words whether or not the session is reachable), the panel still
+//     open; the owner then reads the message, kind
 //     "feedback", through their responses route;
 //   - the owner's own view: the same pill with the microphone, which records
 //     (the shell's Permissions-Policy grants it) and inserts the transcript;
-//     Send; the owner's response is theirs (by_owner).
+//     Send, told the session is not reachable; the owner's response is theirs
+//     (by_owner).
 //
 // ⚠ WHAT THIS CANNOT SHOW: a real phone's safe-area insets (Chromium's are
 // 0), a real microphone, or the session's wake.
@@ -34,6 +36,7 @@ import { startServer, Running } from '../lib/server';
 const origin = `http://localhost:${pagesFeedbackPort}`;
 const KEY = Buffer.alloc(32, 0x5d).toString('base64');
 const FAKE_TEXT = 'feedback from the fake mic';
+const NEUTRAL = 'Sent. Thanks for the feedback.';
 const UNREACHABLE = "Saved with this page's responses, but the session that made this page isn't reachable, so it was not sent to it.";
 let server: Running | undefined;
 let token = '';
@@ -182,7 +185,8 @@ for (const vp of [
       await page.locator('[data-feedback-pill]').click();
       await expect(page.locator('#page-feedback-text')).toHaveValue(msg);
 
-      const id = await send(page, UNREACHABLE);
+      // A stranger is told nothing of the session's reach: the neutral words.
+      const id = await send(page, NEUTRAL);
       const stored = await ownerReads(browser, id);
       expect(stored.kind).toBe('feedback');
       expect(stored.part).toBe('__feedback');

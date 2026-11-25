@@ -820,23 +820,29 @@ What happens to a message (migration 0191, `internal/api/page_feedback.go`):
   line carrying your words does), a link viewer's as a stranger's
   (`<<<viewer-feedback untrusted …>>>`, naming the link: *a viewer of share
   link #41 sent feedback on page #12 (version 3) …*);
-- after **Send** the box is cleared and the panel says where it went: *Sent to
-  the session that made this page.*; *Saved. It goes to the session that made
-  this page once you sign in again.* (your sign-in is older than the step-up
-  window); or *Saved with this page's responses, but the session that made
-  this page isn't reachable, so it was not sent to it.* — a page a dispatched
-  agent made, a team's (through its share link), or one whose host no longer
-  mirrors here. The panel stays open for another message.
+- after **Send** the box is cleared and, in your own view, the panel says
+  where it went: *Sent to the session that made this page.*; *Saved. It goes
+  to the session that made this page once you sign in again.* (your sign-in
+  is older than the step-up window); or *Saved with this page's responses, but
+  the session that made this page isn't reachable, so it was not sent to it.*
+  — a page a dispatched agent made, a team's (through its share link), or one
+  whose host no longer mirrors here. A share link's viewer is always told
+  *Sent. Thanks for the feedback.*: whether your session is reachable is not
+  theirs to learn. The panel stays open for another message.
 
 A share link's viewer can **type only**: the microphone posts to
 `/transcribe`, which is yours alone, so their panel has none. Their message
 goes through the link like a submit (`POST /s/<token>/feedback`, no cookie):
-a revoked, pending, denied or expired link takes none. A link takes at most
-**200 feedback messages**, a budget of its own: feedback never counts toward
-the link's 1000 form responses, nor they toward it. Yours goes to `POST
-/pages/{id}/versions/{v}/feedback` with your session, with no such cap.
-Either is refused past **5 messages a minute** (per link; for you, per page)
-and over **4000 characters** (refused whole, never cut). A [team's
+a revoked, pending, denied or expired link takes none. Each viewer of a link
+(by client address, read by the same trusted-proxy rule as every other
+limit) may send **5 messages a minute**, and all of a link's viewers together
+**30 a minute**. A link takes at most **200 feedback messages in any 24
+hours** (a rolling window, so one viewer cannot close a shared link for
+good), a budget of its own: feedback never counts toward the link's 1000 form
+responses, nor they toward it. Yours goes to `POST
+/pages/{id}/versions/{v}/feedback` with your session: **5 a minute** per page,
+no count cap. Every message is refused over **4000 characters** (refused
+whole, never cut). A [team's
 page](#a-teams-pages) draws no pill in a member's own view (a team's pages
 wake no session), and that route refuses a member; its share link's viewers
 can still send feedback.
@@ -911,7 +917,7 @@ means a push service accepted it, not that the device showed it.
 | a page's author assets | 100 MiB and 200 assets in all |
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
-| [feedback](#feedback) messages per link (yours: per page) | 5 a minute; each at most 4000 characters; 200 per link in all (not counted in its 1000 responses; yours uncapped) |
+| [feedback](#feedback) messages | 5 a minute per viewer (client address) of a link, 30 a minute per link, 200 per link in any 24 hours (not counted in its 1000 responses); yours 5 a minute per page, no count cap; each at most 4000 characters |
 | uploads per link | 10 a minute |
 | asset reads per link and viewer (client address) | 600 a minute (a repeat view reads from the browser's cache) |
 | asset bytes per link, all viewers | 2 GiB a minute |
