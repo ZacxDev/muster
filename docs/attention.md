@@ -127,7 +127,10 @@ chip and Clear lead it.
 
 Every tab is a feed of cards, one per item, scrolling vertically. The feed
 **snaps** to a card's top as it settles (proximity, never mandatory, so a card
-taller than the screen still scrolls through).
+taller than the screen still scrolls through). The snap is switched on only
+once the page can scroll past its own top: while it cannot, every snap
+position is the same offset, and the browser would pick the first card and
+pull the page down to it as soon as it could scroll.
 
 - **Tap a card** (anywhere outside its buttons, box and links) to **expand** it
   in place: the question and the why-it's-here line unclamp, and the card shows
