@@ -99,7 +99,14 @@ func TestTheChiefOpensOnTheChatViewedLast(t *testing.T) {
 	}
 	listLink := ui.AgentListHref(name, b.ID) // the sidebar row, drawn while B was latest
 
-	// Nobody has opened it: the primary.
+	// Nobody has opened it: the primary, home's link included (not the latest
+	// session B).
+	if got, want := home(), listLink; got != want {
+		t.Errorf("never opened: home goes to %q, want %q (the sidebar's link, which the page resolves)", got, want)
+	}
+	if got := opens(home()); got != primary.ID {
+		t.Errorf("never opened: home's link opens %d, want the primary %d, not the latest %d", got, primary.ID, b.ID)
+	}
 	if got := opens(ui.AgentPath(name)); got != primary.ID {
 		t.Errorf("never opened: the bare page opens %d, want the primary %d", got, primary.ID)
 	}
@@ -161,5 +168,9 @@ func TestTheChiefOpensOnTheChatViewedLast(t *testing.T) {
 	}
 	if got := panelOn(""); got != primary.ID {
 		t.Errorf("side A archived: the panel opens on %d, want the primary %d", got, primary.ID)
+	}
+	view(a.ID, nil) // an archived chat, opened by its link, is viewed last again
+	if got := opens(home()); got != primary.ID {
+		t.Errorf("side A archived and viewed last: home's link opens %d, want the primary %d", got, primary.ID)
 	}
 }

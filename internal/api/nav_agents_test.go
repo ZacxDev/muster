@@ -91,7 +91,7 @@ func homeGet(s *Server, h http.Handler, path string, hdr map[string]string) *htt
 }
 
 // chiefHref is the chief's page as the fixture's list would link it.
-var chiefHref = ui.AgentSessionHref("zesty-stoat", homeChiefSess)
+var chiefHref = ui.AgentListHref("zesty-stoat", homeChiefSess)
 
 // TestHomeOpensTheChiefsChat: GET / sends a browser to the chief agent's page
 // on its latest session (302), an htmx request the same place by HX-Redirect,

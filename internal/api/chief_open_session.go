@@ -66,7 +66,8 @@ func (s *Server) chiefOpenSession(ctx context.Context, a agents.Agent) (agents.C
 // chiefLastViewed is chiefOpenSession's first half, a READ only: the session
 // of a's its owner viewed last, when there is one and it is not archived. Home
 // asks this alone (homeResolve): a GET of `/` elects and creates nothing, and a
-// chief nobody has opened is linked as before, on its latest session.
+// chief with no such session is linked as the sidebar row links it
+// (agentListHref), which the page resolves to the primary.
 func (s *Server) chiefLastViewed(ctx context.Context, a agents.Agent) (agents.ChatSession, bool) {
 	st, ok := s.sessionViewStore()
 	if !ok {

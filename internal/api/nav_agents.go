@@ -169,7 +169,11 @@ func (s *Server) homeResolve(r *http.Request, except homeExcept) (to string, tea
 			if last, ok := s.chiefLastViewed(ctx, chief); ok {
 				return ui.AgentSessionHref(chief.Name, last.ID), false, nil
 			}
-			return s.agentPageHref(ctx, chief), false, nil
+			// None, or it is archived: the sidebar row's link (AgentListHref),
+			// whose marker has the page re-resolve it through chiefOpenSession
+			// (the primary), as the bare page and the panel do. A bare
+			// ?session= of the latest would be kept, and can be an archived chat.
+			return s.agentListHref(ctx, chief), false, nil
 		}
 	}
 	cards, mirrors, err := s.agentsListEntries(ctx)
