@@ -23,7 +23,7 @@ func TestResetFactorsRefusesAnUnknownAccountAndAuditsARealOne(t *testing.T) {
 		}
 		return n
 	}
-	if _, err := st.ResetFactors(ctx, Actor{Via: "cli"}, 9_999_999, 0); !errors.Is(err, ErrNotFound) {
+	if _, err := st.ResetFactors(ctx, Actor{Via: "cli"}, 9_999_999, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an unknown account: %v, want ErrNotFound", err)
 	}
 	if n := audits(); n != 0 {
@@ -41,7 +41,7 @@ func TestResetFactorsRefusesAnUnknownAccountAndAuditsARealOne(t *testing.T) {
 		t.Fatalf("fixture: no step-up phone (%v %v)", ok, err)
 	}
 	_ = st.MarkStrongFactor(ctx, id)
-	phones, err := st.ResetFactors(ctx, Actor{Via: "cli"}, id, 3)
+	phones, err := st.ResetFactors(ctx, Actor{Via: "cli"}, id, map[string]any{"passkeys_removed": 3, "password_set": true})
 	if err != nil || phones != 1 {
 		t.Fatalf("a real reset: %d phones, %v", phones, err)
 	}
@@ -55,7 +55,7 @@ func TestResetFactorsRefusesAnUnknownAccountAndAuditsARealOne(t *testing.T) {
 	if err := pool.QueryRow(sys, `SELECT detail FROM audit_log WHERE action = 'user.factors_reset' AND object = $1`, UserObject(id)).Scan(&detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail["phones_removed"] != float64(1) || detail["passkeys_removed"] != float64(3) {
+	if detail["phones_removed"] != float64(1) || detail["passkeys_removed"] != float64(3) || detail["password_set"] != true || detail["sessions_ended"] != true {
 		t.Fatalf("audit detail %v", detail)
 	}
 }

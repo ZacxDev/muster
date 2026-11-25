@@ -201,8 +201,11 @@ func readAll(t *testing.T, res *http.Response) string {
 // in this package or anywhere in the module — fails this.
 func TestOnlyOneFunctionReadsTheStrongFactorRecord(t *testing.T) {
 	assertCallers(t, ".", "hadStrongFactor", []string{"passkey_enrol.go:accountStrongFactors"})
-	assertCallers(t, ".", "accountStrongFactors", []string{"passkey_enrol.go:accountHasStrongFactor", "passkey_enrol.go:passkeyEnrolNeed"})
-	assertCallers(t, ".", "accountHasStrongFactor", []string{"admin_proof.go:adminProof", "admin_proof.go:targetMarked", "login_invite.go:handleResetSubmit"})
+	assertCallers(t, ".", "accountStrongFactors", []string{"login_invite.go:handleResetSubmit", "passkey_enrol.go:accountHasStrongFactor", "passkey_enrol.go:passkeyEnrolNeed"})
+	assertCallers(t, ".", "accountHasStrongFactor", []string{"admin_proof.go:adminProof", "admin_proof.go:targetMarked"})
+	// THE open-tier decision, with its fresh session check (round 8): every
+	// grant of the open tier goes through it.
+	assertCallers(t, ".", "openTier", []string{"passkey_enrol.go:accountHasStrongFactor", "passkey_enrol.go:passkeyEnrolNeed"})
 
 	root := filepath.Join("..", "..")
 	// The store method, across the module.

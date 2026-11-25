@@ -791,8 +791,9 @@ From then on, every change below takes a proof.
   - **on a server with one admin**, whoever runs the server runs
     `muster-server user reset-factors <user-id|email> --new-password-stdin`
     where the server's environment is (its `DATABASE_URL` and GoTrue secret;
-    for example `kubectl exec -i` into its pod), with the new password on
-    standard input. Give a new password whenever anyone else may know the
+    for example `kubectl exec -i` into its pod), with the new password piped
+    on standard input (a terminal is refused: it would show the password as
+    it is typed). Give a new password whenever anyone else may know the
     old one: the reset reopens the account, and whoever signs in first with
     the password could pair their own phone as its first factor. Without
     `--new-password-stdin` the password is kept. In this order, it:
@@ -800,16 +801,28 @@ From then on, every change below takes a proof.
        changes nothing, with no audit row;
     2. records the account as gated, so every later stop leaves it gated;
     3. sets the new password, when one is given;
-    4. signs out every GoTrue session of the account;
+    4. signs out every GoTrue session of the account (skipped for a disabled
+       account: its disable already did, and GoTrue refuses the sign-out of
+       a banned user);
     5. deletes every passkey of the account through GoTrue's admin API, and
        muster's records of them;
     6. in one transaction, unpairs every phone (their push targets go with
-       them), ends every muster session, revokes every personal API token,
-       clears the record and writes the audit row (`user.factors_reset`,
-       with how many passkeys and phones went).
+       them), moves the account's session cutoff, revokes its personal API
+       and flow-runner tokens, clears the record and writes the audit row
+       (`user.factors_reset`: how many passkeys and phones went, whether a
+       password was set, and that the sessions were cut off). Mirror host
+       tokens are kept: they connect a host and decide no factor.
 
-    If any step fails, it stops there, says how many passkeys went, and
-    exits non-zero with the account still gated: run it again. It prints
+    On a running server, a session from before the cutoff is granted
+    nothing that needs the reopened tier from that moment: that decision
+    re-reads the cutoff from the database every time. Its open streams
+    close within 10 seconds, and every other request it makes is refused
+    within 30 seconds (the server's user cache). The same holds after a
+    password reset on another replica.
+
+    If any step fails, it stops there. It says how many passkeys went and
+    whether the new password is already set, and exits non-zero with the
+    account still gated: run it again. It prints
     what it removed. Then sign in with the (new) password and pair the
     Android app's phone, or add a passkey: it is added as a first factor.
     It has no HTTP route: the shell is the proof.

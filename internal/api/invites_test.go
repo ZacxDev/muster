@@ -81,7 +81,8 @@ func newInviteWorld(t *testing.T) *invWorld {
 			`DELETE FROM users WHERE id <> 1 AND lower(email) LIKE '%@invite.test'`,
 			// had_strong_factor_at too (migration 0188): a test that marked the
 			// admin must not leave the next one gated.
-			`UPDATE users SET gotrue_sub = NULL, email = NULL, role = 'admin', disabled_at = NULL, had_strong_factor_at = NULL WHERE id = 1`,
+			// sessions_not_before too: the recovery test moves user 1's cutoff.
+			`UPDATE users SET gotrue_sub = NULL, email = NULL, role = 'admin', disabled_at = NULL, had_strong_factor_at = NULL, sessions_not_before = NULL WHERE id = 1`,
 		} {
 			if _, err := pool.Exec(sys, q); err != nil {
 				t.Fatal(err)

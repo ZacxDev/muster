@@ -81,7 +81,7 @@ var usersReads = map[string]string{
 	"internal/users PGStore.BySub":                         readPerson,
 	"internal/users PGStore.ByID":                          readPerson,
 	"internal/users PGStore.IDByEmail":                     readPerson,
-	"internal/users PGStore.DisabledAmong":                 readByID,
+	"internal/users PGStore.SessionStateAmong":             readByID,
 	"internal/users PGStore.CreateClaimInvite":             readPerson,
 	"internal/users PGStore.ClaimInviteLive":               readByID,
 	"internal/users PGStore.RedeemClaim":                   readByID,

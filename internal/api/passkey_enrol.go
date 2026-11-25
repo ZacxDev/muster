@@ -233,7 +233,11 @@ func (s *Server) passkeyEnrolNeed(ctx context.Context, creds gotrueCreds, ip str
 	if err != nil {
 		return enrolNeed{}, err
 	}
-	return enrolNeed{passkey: f.passkey, phone: f.phone, open: !f.any()}, nil
+	open, err := s.openTier(ctx, f)
+	if err != nil {
+		return enrolNeed{}, err
+	}
+	return enrolNeed{passkey: f.passkey, phone: f.phone, open: open}, nil
 }
 
 // strongFactors is what account has, or has had, beyond its password.
@@ -253,7 +257,58 @@ func (f strongFactors) any() bool { return f.passkey || f.phone || f.had }
 // (TestOnlyOneFunctionReadsTheStrongFactorRecord).
 func (s *Server) accountHasStrongFactor(ctx context.Context, uid int64) (bool, error) {
 	f, err := s.accountStrongFactors(ctx, uid)
-	return f.any(), err
+	if err != nil {
+		return true, err
+	}
+	open, err := s.openTier(ctx, f)
+	return !open, err
+}
+
+// errOpenTierStale: the requesting session was issued at or before its
+// account's session cutoff as the database has it now.
+var errOpenTierStale = errors.New("the session predates its account's cutoff: sign in again")
+
+// openTier is THE decision that an account is in the open (first-factor)
+// tier — so that a passkey or a step-up phone is added on the password, or
+// an admin page's change needs no proof. It is true only when f has nothing
+// AND the requesting session is still good by a FRESH read of its account's
+// row.
+//
+// 🔴 WHY THE FRESH READ. Every request checks its session against the
+// account's cutoff (users.sessions_not_before) — through the user cache,
+// which may be up to userCacheTTL old. A cutoff moved in ANOTHER process (the
+// server recovery muster-server user reset-factors, or a password reset on
+// another replica) moves it in the same transaction as it clears the mark, so
+// the account reads open the moment that commits, while this process may still
+// admit the old session from its cache. The open tier is exactly what that
+// old session must not be granted: it re-reads the row here, as the API token
+// mint does (handleAccountTokenCreate), and refuses a session issued at or
+// before the cutoff, or of a disabled account (TestARecoveredAccountIsNotOpenToItsOldSession).
+// A session with no issued-at in GoTrue mode is a wiring bug and is refused.
+func (s *Server) openTier(ctx context.Context, f strongFactors) (bool, error) {
+	if f.any() {
+		return false, nil
+	}
+	if !s.auth.goTrueMode() || s.gt == nil || s.gt.Users == nil {
+		return true, nil
+	}
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return false, errors.New("open tier: no requesting account")
+	}
+	iat, _ := ctx.Value(sessionIssuedAtKey{}).(int64)
+	if iat <= 0 {
+		return false, errors.New("open tier: the requesting session has no issued-at")
+	}
+	u, err := s.gt.Users.ByID(ctx, p.UserID)
+	if err != nil {
+		return false, err
+	}
+	if u.Disabled() || issuedBeforeCutoff(u, gotrue.Claims{IssuedAt: iat}) {
+		s.gt.forgetUser(p.UserID)
+		return false, errOpenTierStale
+	}
+	return true, nil
 }
 
 // accountStrongFactors reads the three sources for account uid:

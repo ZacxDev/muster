@@ -12,7 +12,7 @@ import (
 // (users.PGStore).
 type FactorsResetter interface {
 	MarkStrongFactor(ctx context.Context, id int64) error
-	ResetFactors(ctx context.Context, by users.Actor, id int64, passkeysRemoved int) (phones int, err error)
+	ResetFactors(ctx context.Context, by users.Actor, id int64, detail map[string]any) (phones int, err error)
 }
 
 // FactorsReset is what ResetAccountFactors removed.
@@ -20,8 +20,13 @@ type FactorsReset struct {
 	UserID   int64
 	Passkeys int
 	Phones   int
-	// PasswordSet: a new password was set (newPassword was given).
+	// PasswordSet: a new password was set (newPassword was given) — reported
+	// on a failure too, since it is already in effect then.
 	PasswordSet bool
+	// GoTrueSignOutSkipped: the account is disabled, so GoTrue (which refuses
+	// /logout for a banned user) was not asked; the disable already signed
+	// it out there.
+	GoTrueSignOutSkipped bool
 	// RecordsKept: the passkey records muster keeps in GoTrue (app_metadata)
 	// could not be cleared. Harmless — each names a passkey that is gone — and
 	// reported so the operator knows.
@@ -40,12 +45,18 @@ type FactorsReset struct {
 //  3. a new password is set, when one is given (newPassword): whoever else
 //     knew the old one could otherwise sign in first and pair their phone on
 //     the reopened account;
-//  4. every GoTrue session is signed out (its refresh tokens die);
+//  4. every GoTrue session is signed out (its refresh tokens die) — skipped
+//     for a disabled account, which the disable already signed out and
+//     whose /logout GoTrue refuses;
 //  5. every passkey goes, through GoTrue's admin API, and muster's records of
 //     them;
 //  6. in one transaction: every paired phone is deleted, muster's session
-//     cutoff moved and every API token revoked, the mark cleared and the
-//     audit row written.
+//     cutoff moved and every personal API and flow-runner token revoked, the
+//     mark cleared and the audit row written. A running server ends the
+//     account's open streams within its sweep interval (sweepDisabled reads
+//     the cutoff), and grants no old session the reopened tier at once
+//     (openTier's fresh read). Mirror host tokens are not touched: they
+//     authenticate a host, and decide no factor.
 //
 // There is no HTTP route to it: a shell with the server's database and GoTrue
 // secret is the proof.
@@ -76,8 +87,10 @@ func ResetAccountFactors(ctx context.Context, g GoTrueAuth, st FactorsResetter, 
 			}
 			out.PasswordSet = true
 		}
-		if err := g.Client.AdminSignOutEverywhere(ctx, ip, u.GotrueSub); err != nil {
-			return out, fmt.Errorf("signing out every session: %w", err)
+		if u.Disabled() {
+			out.GoTrueSignOutSkipped = true
+		} else if err := g.Client.AdminSignOutEverywhere(ctx, ip, u.GotrueSub); err != nil {
+			return out, fmt.Errorf("signing out every GoTrue session: %w", err)
 		}
 		n, err := g.Client.AdminDeleteAllPasskeys(ctx, ip, u.GotrueSub)
 		out.Passkeys = n
@@ -86,7 +99,11 @@ func ResetAccountFactors(ctx context.Context, g GoTrueAuth, st FactorsResetter, 
 		}
 		out.RecordsKept = g.Client.AdminSetAppMetadata(ctx, ip, u.GotrueSub, passkeyMetaKey, nil)
 	}
-	phones, err := st.ResetFactors(ctx, by, id, out.Passkeys)
+	phones, err := st.ResetFactors(ctx, by, id, map[string]any{"passkeys_removed": out.Passkeys, "password_set": out.PasswordSet})
 	out.Phones = phones
+	if errors.Is(err, users.ErrNotFound) {
+		// Looked up above, gone now: not "no such user, nothing changed".
+		return out, errors.New("the account was deleted while it was being reset")
+	}
 	return out, err
 }

@@ -608,22 +608,30 @@ func (s *PGStore) IDByEmail(ctx context.Context, email string) (int64, bool, err
 	return id, true, nil
 }
 
-// DisabledAmong reports, for each of ids that exists, whether it is disabled,
+// SessionState is what the session sweep re-reads for one user: whether it
+// is disabled, and its session cutoff (migration 0010; moved by a disable, a
+// password reset and the server recovery).
+type SessionState struct {
+	Disabled          bool
+	SessionsNotBefore *time.Time
+}
+
+// SessionStateAmong reports, for each of ids that exists, its SessionState,
 // in one query. An id with no row is absent from the result.
-func (s *PGStore) DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT id, disabled_at IS NOT NULL FROM users WHERE id = ANY($1)`, ids)
+func (s *PGStore) SessionStateAmong(ctx context.Context, ids []int64) (map[int64]SessionState, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT id, disabled_at IS NOT NULL, sessions_not_before FROM users WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[int64]bool, len(ids))
+	out := make(map[int64]SessionState, len(ids))
 	for rows.Next() {
 		var id int64
-		var disabled bool
-		if err := rows.Scan(&id, &disabled); err != nil {
+		var st SessionState
+		if err := rows.Scan(&id, &st.Disabled, &st.SessionsNotBefore); err != nil {
 			return nil, err
 		}
-		out[id] = disabled
+		out[id] = st
 	}
 	return out, rows.Err()
 }
@@ -843,16 +851,18 @@ func (s *PGStore) MarkStrongFactor(ctx context.Context, id int64) error {
 // reset-factors, internal/api ResetAccountFactors), in ONE transaction under
 // the credentials lock: every paired phone of account id is deleted (their
 // push subscriptions go with them), every session it has is ended
-// (sessions_not_before) and every personal API token revoked — as a password
-// reset does (ResetCredentials) — its mark is cleared, and the audit row
-// "user.factors_reset" records by, how many phones went and passkeysRemoved
-// (the GoTrue half, done before). ErrNotFound when there is no such account
-// (nothing written).
+// (sessions_not_before) and every personal API and flow-runner token revoked
+// (mirror host tokens are kept: they bind a host and decide no factor) — its
+// mark is cleared, and the audit row
+// "user.factors_reset" records by, how many phones went, that the sessions
+// ended, and detail (the GoTrue half, done before: passkeys removed, whether
+// a password was set). ErrNotFound when there is no such account (nothing
+// written).
 //
 // 🔴 THE PHONES GO BEFORE THE MARK IS CLEARED: deleting a step-up phone marks
 // the account (migration 0189's trigger), so the other order would leave it
 // marked.
-func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, passkeysRemoved int) (phones int, err error) {
+func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, detail map[string]any) (phones int, err error) {
 	ctx = sys(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -873,14 +883,20 @@ func (s *PGStore) ResetFactors(ctx context.Context, by Actor, id int64, passkeys
 	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 		return 0, err
 	}
+	if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
+		return 0, err
+	}
 	if phones, err = deleteDevicesTx(ctx, tx, id); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE users SET had_strong_factor_at = NULL WHERE id = $1`, id); err != nil {
 		return 0, err
 	}
-	if err := AuditTx(ctx, tx, by, "user.factors_reset", UserObject(id),
-		map[string]any{"phones_removed": phones, "passkeys_removed": passkeysRemoved}); err != nil {
+	audit := map[string]any{"phones_removed": phones, "sessions_ended": true}
+	for k, v := range detail {
+		audit[k] = v
+	}
+	if err := AuditTx(ctx, tx, by, "user.factors_reset", UserObject(id), audit); err != nil {
 		return 0, err
 	}
 	return phones, tx.Commit(ctx)

@@ -76,43 +76,101 @@ func TestADisableMarksAnUnmarkedStepUpPhonesAccount(t *testing.T) {
 	r.refusesAKeyedPairing(t, "a disable and an enable")
 }
 
-// devicesWriteRE is SQL that deletes from devices, removes or sets a step-up
-// key, or truncates the table.
-var devicesWriteRE = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+(public\.)?devices\b|\bUPDATE\s+(public\.)?devices\b.*\bstepup|\bTRUNCATE\b[^;]*\bdevices\b`)
+// normaliseSQL is s as the devices-writers ledger matches it: comments
+// stripped (-- and /* */), lower case, double-quoted identifiers unquoted,
+// the public. schema and ONLY dropped, whitespace collapsed. So a spelling of
+// the same statement cannot walk around the matcher.
+func normaliseSQL(s string) string {
+	s = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(s, " ")
+	s = regexp.MustCompile(`--[^\n]*`).ReplaceAllString(s, " ")
+	s = strings.ToLower(s)
+	s = regexp.MustCompile(`"([a-z_][a-z0-9_]*)"`).ReplaceAllString(s, "$1")
+	s = regexp.MustCompile(`\bpublic\s*\.\s*`).ReplaceAllString(s, "")
+	s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+	s = regexp.MustCompile(`\b(from|update|into|truncate|table) only\b`).ReplaceAllString(s, "$1")
+	return s
+}
+
+var (
+	devicesDeleteRE   = regexp.MustCompile(`\bdelete from devices\b`)
+	devicesMergeRE    = regexp.MustCompile(`\bmerge into devices\b`)
+	devicesUpdateRE   = regexp.MustCompile(`\bupdate devices\b(?: as)?(?: [a-z_]+)? set (.*?)(?: where |$| returning | from )`)
+	devicesTruncateRE = regexp.MustCompile(`\btruncate(?: table)? [^;]*\b(devices|users)\b`)
+)
+
+// writesDevices: SQL that deletes from devices, merges into it, changes a
+// phone's step-up key or its owner, or truncates devices or users (a
+// truncate fires no row trigger: 0189's header).
+func writesDevices(raw string) bool {
+	s := normaliseSQL(raw)
+	if devicesDeleteRE.MatchString(s) || devicesMergeRE.MatchString(s) || devicesTruncateRE.MatchString(s) {
+		return true
+	}
+	for _, m := range devicesUpdateRE.FindAllStringSubmatch(s, -1) {
+		if strings.Contains(m[1], "stepup") || strings.Contains(m[1], "owner_id") {
+			return true
+		}
+	}
+	return false
+}
 
 // TestTheDevicesWritersAreALedger: every SQL in the module's non-test Go that
-// deletes a phone or changes its step-up key. Each is covered by migration
-// 0189's trigger, which is what marks the account; the ledger is how a new one
-// gets looked at. It fails when the set grows or shrinks.
+// deletes a phone, changes its step-up key or owner, merges into devices, or
+// truncates devices or users. Each row-level one is covered by migration
+// 0189's trigger, which is what marks the account; a truncate would not be,
+// so there must be none. The ledger is how a new writer gets looked at: it
+// fails when the set grows or shrinks.
 func TestTheDevicesWritersAreALedger(t *testing.T) {
 	root := filepath.Join("..", "..")
-	got := moduleSQLSites(t, root, func(s string) bool { return devicesWriteRE.MatchString(s) })
+	got := moduleSQLSites(t, root, writesDevices)
 	want := []string{
 		"internal/devices/devices.go:Remove",      // a phone removed (by itself, its owner, or an admin's page)
 		"internal/users/users.go:deleteDevicesTx", // every phone: sign out everywhere, a disable, a reset, the recovery
 	}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
-		t.Errorf("SQL deleting from devices or changing a step-up key: %v\nwant exactly %v", got, want)
+		t.Errorf("SQL writing devices (or truncating devices/users): %v\nwant exactly %v", got, want)
 	}
 	// The trigger the ledger leans on is in the schema's migrations, for each
-	// of the three statements.
+	// of the statements and both columns.
 	mig, err := os.ReadFile(filepath.Join(root, "internal", "db", "migrations", "0189_devices_mark_strong_factor.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey ON public\.devices`).Match(mig) {
-		t.Fatal("0189's trigger does not cover INSERT, DELETE and UPDATE OF stepup_pubkey on devices")
+	if !regexp.MustCompile(`AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey, owner_id ON public\.devices`).Match(mig) {
+		t.Fatal("0189's trigger does not cover INSERT, DELETE and UPDATE OF stepup_pubkey, owner_id on devices")
 	}
-	// The positive control: the matcher sees each shape.
-	for _, q := range []string{"DELETE FROM devices WHERE id = $1", "delete from public.devices", "UPDATE devices SET stepup_pubkey = NULL", "TRUNCATE devices"} {
-		if !devicesWriteRE.MatchString(q) {
-			t.Fatalf("control: the matcher misses %q", q)
+	// CONTROLS: every spelling measured to walk around a plain match is
+	// caught, and the near misses are not.
+	for _, q := range []string{
+		"DELETE FROM devices WHERE id = $1",
+		`DELETE FROM "devices" WHERE id = $1`,
+		`DELETE FROM public."devices" WHERE id = $1`,
+		"DELETE FROM ONLY devices WHERE id = $1",
+		"DELETE/**/FROM devices",
+		"DELETE -- a comment\n FROM\n\tdevices",
+		"delete from public . devices",
+		"MERGE INTO devices d USING x ON d.id = x.id WHEN MATCHED THEN DELETE",
+		"UPDATE devices SET owner_id = $2 WHERE id = $1",
+		"UPDATE devices SET stepup_pubkey = NULL WHERE id = $1",
+		`UPDATE ONLY "devices" AS d SET name = 'x', stepup_key_type = NULL`,
+		"TRUNCATE devices",
+		"TRUNCATE TABLE ONLY public.devices",
+		"TRUNCATE users CASCADE",
+		"TRUNCATE audit_log, users RESTART IDENTITY CASCADE",
+	} {
+		if !writesDevices(q) {
+			t.Errorf("control: the matcher misses %q", q)
 		}
 	}
-	for _, q := range []string{"DELETE FROM device_pairing_codes WHERE x", "UPDATE devices SET last_seen_at = now()"} {
-		if devicesWriteRE.MatchString(q) {
-			t.Fatalf("control: the matcher flags %q", q)
+	for _, q := range []string{
+		"DELETE FROM device_pairing_codes WHERE owner_id = $1",
+		"UPDATE devices SET last_seen_at = now() WHERE id = $1",
+		"SELECT owner_id, stepup_pubkey FROM devices WHERE id = $1",
+		"UPDATE users SET had_strong_factor_at = NULL WHERE id = $1",
+	} {
+		if writesDevices(q) {
+			t.Errorf("control: the matcher flags %q", q)
 		}
 	}
 }

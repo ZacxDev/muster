@@ -232,7 +232,7 @@ func TestTheRecoveryCommandStopsWhilePasskeysMayRemain(t *testing.T) {
 	w.fake.FailAdminPasskeysAfter(2, 10)
 	rc, out := w.run(strconv.FormatInt(w.id, 10))
 	w.fake.FailAdminPasskeysAfter(0, 0)
-	if rc == 0 || !strings.Contains(out, "1 passkey(s) removed") || !strings.Contains(out, "still gated") {
+	if rc == 0 || !strings.Contains(out, "1 passkey(s) removed") || !strings.Contains(out, "still gated") || !strings.Contains(out, "The password was not changed.") {
 		t.Fatalf("a GoTrue failure part-way: rc %d %s", rc, out)
 	}
 	if n := len(w.fake.Passkeys(w.sub)); n != 2 {
@@ -265,7 +265,7 @@ func TestTheRecoveryCommandSetsANewPassword(t *testing.T) {
 	}
 	const pw = "a-brand-new-long-password"
 	rc, out := run(pw + "\n")
-	if rc != 0 || !strings.Contains(out, "set the new password") {
+	if rc != 0 || !strings.Contains(out, "The new password is set.") {
 		t.Fatalf("with a new password: rc %d %s", rc, out)
 	}
 	if fu, _ := w.fake.User(w.sub); fu.Password != pw {
@@ -273,5 +273,43 @@ func TestTheRecoveryCommandSetsANewPassword(t *testing.T) {
 	}
 	if w.marked() {
 		t.Fatal("the account is still marked")
+	}
+}
+
+// TestTheRecoveryCommandRefusesATerminalForThePassword: a terminal would echo
+// the password, so --new-password-stdin takes it piped only (/dev/null is a
+// character device, as a terminal is); nothing is changed.
+func TestTheRecoveryCommandRefusesATerminalForThePassword(t *testing.T) {
+	w := newRecoveryWorld(t)
+	_ = w.pg.MarkStrongFactor(w.ctx, w.id)
+	tty, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tty.Close()
+	old := accountStdin
+	accountStdin = tty
+	defer func() { accountStdin = old }()
+	rc, out := w.run(strconv.FormatInt(w.id, 10), "--new-password-stdin")
+	if rc == 0 || !strings.Contains(out, "standard input is a terminal") || !w.marked() || w.audit("user.factors_reset") != 0 {
+		t.Fatalf("a terminal for the password: rc %d %s", rc, out)
+	}
+}
+
+// TestTheRecoveryCommandOnADisabledAccount: GoTrue refuses /logout for a
+// banned user, and the disable already signed it out there: the step is
+// skipped and said so, and the rest of the reset is done.
+func TestTheRecoveryCommandOnADisabledAccount(t *testing.T) {
+	w := newRecoveryWorld(t)
+	w.fake.AddPasskey(w.sub, "disabled-cred")
+	if _, err := w.pool.Exec(authz.System(w.ctx), `UPDATE users SET disabled_at = now() WHERE id = $1`, w.id); err != nil {
+		t.Fatal(err)
+	}
+	rc, out := w.run(strconv.FormatInt(w.id, 10))
+	if rc != 0 || !strings.Contains(out, "The account is disabled, so GoTrue") || !strings.Contains(out, "removed 1 passkey(s)") {
+		t.Fatalf("a disabled account: rc %d %s", rc, out)
+	}
+	if w.marked() || len(w.fake.Passkeys(w.sub)) != 0 {
+		t.Fatal("a disabled account's reset did not complete")
 	}
 }

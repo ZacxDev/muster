@@ -286,3 +286,28 @@ func TestAFailedDisableSweepCancelsNothing(t *testing.T) {
 		s.close()
 	}
 }
+
+// TestACutoffFromAnotherProcessEndsOpenStreams: the server recovery (or a
+// reset on another replica) moves the session cutoff in the database only;
+// the sweep reads it and ends every open stream of a session issued at or
+// before it.
+func TestACutoffFromAnotherProcessEndsOpenStreams(t *testing.T) {
+	f := newStreamFixture(t)
+	at, rt, _ := f.fake.Mint(f.sub)
+	c, err := f.fake.Verifier().Verify(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := f.openAll(t, at, rt)
+	requireOpen(t, "before the cutoff", ss)
+	cut := time.Unix(c.IssuedAt, 0)
+	f.store.mu.Lock()
+	f.store.rows[1].SessionsNotBefore = &cut // the row only, as the CLI does
+	f.store.mu.Unlock()
+	for _, s := range ss {
+		if !s.ended(2 * time.Second) {
+			t.Errorf("a row-only cutoff: the %s stream is still open after 2s (sweep every 50ms)", s.name)
+		}
+		s.close()
+	}
+}

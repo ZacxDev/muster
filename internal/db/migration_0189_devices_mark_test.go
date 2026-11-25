@@ -8,7 +8,7 @@ import (
 
 // TestMigration0189MarksInTheSameStatement: 0189 backfills an account whose
 // step-up phone was paired unmarked after 0188, and from then on inserting,
-// deleting or keying a step-up phone marks its account in that statement; a
+// deleting, keying or moving a step-up phone marks its account(s) in that statement; a
 // read-only phone marks nothing. Its function is SECURITY DEFINER of 0007's
 // shape and not executable by PUBLIC.
 func TestMigration0189MarksInTheSameStatement(t *testing.T) {
@@ -78,6 +78,16 @@ func TestMigration0189MarksInTheSameStatement(t *testing.T) {
 	}
 	if !marked(ro) {
 		t.Fatal("keying a phone left its account unmarked")
+	}
+	// A keyed phone moved between accounts marks BOTH (UPDATE OF owner_id).
+	from, to := user("moved-from"), user("moved-to")
+	pm := phone(from, "moved-phone", true)
+	unmark(from)
+	if _, err := pool.Exec(ctx, `UPDATE devices SET owner_id = $2 WHERE id = $1`, pm, to); err != nil {
+		t.Fatal(err)
+	}
+	if !marked(from) || !marked(to) {
+		t.Fatalf("a keyed phone moved between owners: old marked %v, new marked %v (want both)", marked(from), marked(to))
 	}
 	var definer, public bool
 	var config []string

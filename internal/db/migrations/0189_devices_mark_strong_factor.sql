@@ -14,14 +14,22 @@
 --
 --   muster_devices_mark_strong_factor()   the trigger function: for every row
 --       of public.devices INSERTED with a step-up key, DELETED with one, or
---       UPDATED so that either side has one, it sets the owner's
---       had_strong_factor_at (kept when already set). It runs in the
---       statement's own transaction, so the phone row and the mark commit or
---       roll back together: a mark that cannot be written refuses the
---       pairing, the unpairing and the delete-everything paths alike, and no
---       SQL that changes devices — present or future, from any package or a
---       hand-run psql — can skip it. (TRUNCATE fires no row trigger; nothing
---       in the module truncates devices: internal/api's devices-delete ledger.)
+--       UPDATED in its step-up key or its OWNER so that either side has one,
+--       it sets had_strong_factor_at (kept when already set) of the old row's
+--       owner when the old row had a key, and of the new row's owner when the
+--       new row has one — so a keyed phone moved between accounts marks BOTH.
+--       It runs in the statement's own transaction, so the phone row and the
+--       mark commit or roll back together: a mark that cannot be written
+--       refuses the pairing, the unpairing and the delete-everything paths
+--       alike, and no row-level INSERT, UPDATE or DELETE of devices — from any
+--       package or a hand-run psql — skips it.
+--
+--   ⚠ WHAT A ROW TRIGGER DOES NOT SEE: TRUNCATE (of devices, or of users
+--   CASCADE) fires no row trigger, and a session with
+--   session_replication_role = replica fires no ordinary trigger at all. No Go
+--   code in the module does either (internal/api TestTheDevicesWritersAreALedger
+--   pins every SQL that writes devices, and refuses a TRUNCATE of devices or
+--   users); a hand-run one is outside this guarantee.
 --
 -- SECURITY DEFINER with the 0007 shape (search_path pinned to pg_catalog,
 -- every relation schema-qualified, muster.scope = 'all' for its own duration):
@@ -40,7 +48,11 @@
 -- 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK. An older image is unaffected (it writes the same rows; the
--- trigger only adds the mark). To remove it:
+-- trigger only adds the mark). 🔴 DROPPING THE TRIGGER UNDER THIS IMAGE REOPENS
+-- THE GAP ABOVE for the delete-everything paths (Sign out everywhere, a
+-- disable, a reset): this image marks a pairing best-effort in Go too
+-- (internal/api devices.go), but nothing in Go marks before those deletes. Do
+-- it only with an image that predates this migration. To remove it:
 --   DROP TRIGGER IF EXISTS devices_mark_strong_factor ON public.devices;
 --   DROP FUNCTION IF EXISTS public.muster_devices_mark_strong_factor();
 --   DELETE FROM schema_migrations WHERE version = 189;
@@ -71,7 +83,7 @@ REVOKE ALL ON FUNCTION public.muster_devices_mark_strong_factor() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS devices_mark_strong_factor ON public.devices;
 CREATE TRIGGER devices_mark_strong_factor
-    AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey ON public.devices
+    AFTER INSERT OR DELETE OR UPDATE OF stepup_pubkey, owner_id ON public.devices
     FOR EACH ROW EXECUTE FUNCTION public.muster_devices_mark_strong_factor();
 
 -- Accounts whose step-up phone was paired after 0188's backfill without a

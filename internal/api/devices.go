@@ -372,7 +372,12 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	// spent code is then refused by Redeem itself (401), as any spent code is.
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
 	// A step-up key marked the account (the sticky tier) in Redeem's own
-	// statement: migration 0189's trigger on devices.
+	// statement: migration 0189's trigger on devices. This best-effort mark is
+	// belt-and-braces for a schema whose trigger was dropped (0189's
+	// rollback note); the trigger is the guarantee.
+	if d.HasStepUpKey {
+		_ = s.markStrongFactor(r.Context(), d.OwnerID)
+	}
 	// Every device already registered is told (pairing_gate.go).
 	s.notifySecurity(r.Context(), d.OwnerID, PhonePairedTitle, PhonePairedBody, "/account#devices")
 	w.Header().Set("Cache-Control", "no-store")
