@@ -350,6 +350,7 @@ func TestCookieLiteralsAndSignInCallersAreLedgered(t *testing.T) {
 		"handleLoginSubmit",         // POST /login
 		"handlePasskeySignInVerify", // POST /auth/passkey/verify
 		"handleStepUpPasskeyVerify", // POST /auth/confirm/passkey/verify
+		"refreshUserToken",          // asGoTrueUser: refreshes a session the request carries
 		"requireGoTrueSession",      // every page: refreshes a session the request carries
 		"signInAfterCutoff",         // POST /invite, /auth/reset
 		"signInNewLogin",            // POST /invite, /auth/reset

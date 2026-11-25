@@ -577,6 +577,9 @@ type gotrueSession struct {
 	user   users.User
 	claims gotrue.Claims
 	access string
+	// refresh is the refresh token paired with access: the cookie's, or the
+	// new one when this request refreshed.
+	refresh string
 	// refreshed is the new pair when this request had to refresh; the caller
 	// must set it as cookies.
 	refreshed *gotrue.Session
@@ -604,90 +607,13 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
 	c, err := g.Verifier.Verify(at)
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
-		// TWO refresh throttles, applied by the flight's LEADER only (the one
-		// request that calls GoTrue; joiners of a flight cost GoTrue nothing),
-		// and both RESERVED before the call — see refreshGuard for why a
-		// check-call-record cap let a parallel flood through.
-		//
-		// 🔴 PER SUBJECT, ONLY FAILURES COUNT, AND A TOKEN THIS PROCESS ISSUED
-		// IS EXEMPT. With a signed expired access token, a caller can attach a
-		// fresh junk refresh token to every request; a per-token cap alone
-		// bounds nothing (measured: every one of 500 requests a minute reached
-		// GoTrue). So failed refreshes are counted against the expired token's
-		// SUBJECT (one in flight per subject), and over failedRefreshLimit a refresh is answered 503
-		// without calling GoTrue — unless the refresh token is one this process
-		// issued (issued), which is what the subject's real browser holds. The
-		// victim's own refresh therefore keeps working through a junk flood
-		// aimed at them (TestAJunkRefreshFloodIsBoundedAndSparesTheVictim);
-		// after a restart, when nothing is known as issued, it waits out the
-		// window with its cookies kept.
-		//
-		// And per refresh token, a ceiling on calls (a replay of one token).
-		expiredSub := c.Subject
-		// 🔴 NO REFRESH FROM A TOKEN ISSUED BEFORE THE USER'S SESSION CUTOFF
-		// (accounts PR 5). GoTrue accepts a pre-ban refresh token again once a
-		// ban is lifted, so after disable → enable the old refresh token is
-		// live in GoTrue; this check, on the expired access token it is paired
-		// with, is what keeps it dead (TestEnablingDoesNotResurrectOldSessions).
-		//
-		// 🔴 FAIL CLOSED: a lookup error refuses the refresh (503 with cookies
-		// kept, or the end of the session for an unknown subject — see
-		// endsTheSession). Skipping the check on an error would mint a
-		// post-cutoff token and walk past the cutoff once the lookup recovered
-		// (TestARefreshFailsClosedWhenTheCutoffCannotBeRead).
-		u, uerr := g.user(r.Context(), expiredSub)
-		if uerr != nil {
-			return sess, uerr
-		}
-		if issuedBeforeCutoff(u, c) {
-			return sess, errRevoked
-		}
-		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
-			rtSum := sha256.Sum256([]byte(rt))
-			rtKey := hex.EncodeToString(rtSum[:])
-			now := g.now()
-			exempt := g.issued.count(rtKey, now, issuedWindow) > 0
-			var guard refreshTicket
-			if !exempt {
-				var ok bool
-				if guard, ok = g.failedRefreshes.reserve(expiredSub, now, time.Minute, failedRefreshLimit); !ok {
-					return nil, false
-				}
-			}
-			if !g.refreshPerToken.take(rtKey, now, time.Minute, refreshPerTokenLimit) {
-				if !exempt {
-					g.failedRefreshes.release(guard, false)
-				}
-				return nil, false
-			}
-			return func(rerr error) {
-				if exempt {
-					return
-				}
-				// The slot stands only when GoTrue judged the token bad;
-				// success, a 429 or no answer refunds it.
-				var ae *gotrue.APIError
-				judgedBad := errors.As(rerr, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusTooManyRequests
-				g.failedRefreshes.release(guard, judgedBad)
-			}, true
-		})
+		// The refresh and every guard on it: refreshGoTrueSession.
+		fresh, fc, rerr := s.refreshGoTrueSession(r, c, rt)
 		if rerr != nil {
 			return sess, rerr
 		}
-		at = fresh.AccessToken
-		if c, err = g.Verifier.Verify(at); err != nil {
-			s.logger.Printf("gotrue: a token GoTrue just issued does not verify (%v) — check "+
-				"MUSTER_GOTRUE_JWT_SECRET and the issuer/audience against GoTrue's", err)
-			return sess, err
-		}
-		if c.Subject != expiredSub {
-			// 🔴 THE REFRESH TOKEN BELONGS TO SOMEONE ELSE. The pair in the
-			// cookies is not one session: a planted muster_rt beside the
-			// victim's own expired access token would otherwise sign the
-			// victim in as the PLANTER (TestARefreshForAnotherSubjectIsRefused).
-			s.logger.Printf("session: refusing a refresh whose new subject differs from the expired token's")
-			return sess, errRefreshMismatch
-		}
+		at, c, err = fresh.AccessToken, fc, nil
+		rt = fresh.RefreshToken
 		sess.refreshed = &fresh
 	}
 	if err != nil {
@@ -706,8 +632,104 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	if issuedBeforeCutoff(u, c) {
 		return sess, errRevoked
 	}
-	sess.user, sess.claims, sess.access = u, c, at
+	sess.user, sess.claims, sess.access, sess.refresh = u, c, at, rt
 	return sess, nil
+}
+
+// refreshGoTrueSession exchanges rt for a new pair on behalf of the session
+// whose access token, already signature-verified, carried expired's claims,
+// and returns the new pair with its verified claims. Every refresh muster makes
+// goes through here: the session gate's (an expired cookie) and the forwarding
+// one's (asGoTrueUser, a token about to reach GoTrue). The guards are the same
+// for both, because the refresh token is the same credential either way.
+func (s *Server) refreshGoTrueSession(r *http.Request, expired gotrue.Claims, rt string) (gotrue.Session, gotrue.Claims, error) {
+	g := s.gt
+	c := expired
+	// TWO refresh throttles, applied by the flight's LEADER only (the one
+	// request that calls GoTrue; joiners of a flight cost GoTrue nothing),
+	// and both RESERVED before the call — see refreshGuard for why a
+	// check-call-record cap let a parallel flood through.
+	//
+	// 🔴 PER SUBJECT, ONLY FAILURES COUNT, AND A TOKEN THIS PROCESS ISSUED
+	// IS EXEMPT. With a signed expired access token, a caller can attach a
+	// fresh junk refresh token to every request; a per-token cap alone
+	// bounds nothing (measured: every one of 500 requests a minute reached
+	// GoTrue). So failed refreshes are counted against the expired token's
+	// SUBJECT (one in flight per subject), and over failedRefreshLimit a refresh is answered 503
+	// without calling GoTrue — unless the refresh token is one this process
+	// issued (issued), which is what the subject's real browser holds. The
+	// victim's own refresh therefore keeps working through a junk flood
+	// aimed at them (TestAJunkRefreshFloodIsBoundedAndSparesTheVictim);
+	// after a restart, when nothing is known as issued, it waits out the
+	// window with its cookies kept.
+	//
+	// And per refresh token, a ceiling on calls (a replay of one token).
+	expiredSub := c.Subject
+	// 🔴 NO REFRESH FROM A TOKEN ISSUED BEFORE THE USER'S SESSION CUTOFF
+	// (accounts PR 5). GoTrue accepts a pre-ban refresh token again once a
+	// ban is lifted, so after disable → enable the old refresh token is
+	// live in GoTrue; this check, on the expired access token it is paired
+	// with, is what keeps it dead (TestEnablingDoesNotResurrectOldSessions).
+	//
+	// 🔴 FAIL CLOSED: a lookup error refuses the refresh (503 with cookies
+	// kept, or the end of the session for an unknown subject — see
+	// endsTheSession). Skipping the check on an error would mint a
+	// post-cutoff token and walk past the cutoff once the lookup recovered
+	// (TestARefreshFailsClosedWhenTheCutoffCannotBeRead).
+	u, uerr := g.user(r.Context(), expiredSub)
+	if uerr != nil {
+		return gotrue.Session{}, gotrue.Claims{}, uerr
+	}
+	if issuedBeforeCutoff(u, c) {
+		return gotrue.Session{}, gotrue.Claims{}, errRevoked
+	}
+	fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
+		rtSum := sha256.Sum256([]byte(rt))
+		rtKey := hex.EncodeToString(rtSum[:])
+		now := g.now()
+		exempt := g.issued.count(rtKey, now, issuedWindow) > 0
+		var guard refreshTicket
+		if !exempt {
+			var ok bool
+			if guard, ok = g.failedRefreshes.reserve(expiredSub, now, time.Minute, failedRefreshLimit); !ok {
+				return nil, false
+			}
+		}
+		if !g.refreshPerToken.take(rtKey, now, time.Minute, refreshPerTokenLimit) {
+			if !exempt {
+				g.failedRefreshes.release(guard, false)
+			}
+			return nil, false
+		}
+		return func(rerr error) {
+			if exempt {
+				return
+			}
+			// The slot stands only when GoTrue judged the token bad;
+			// success, a 429 or no answer refunds it.
+			var ae *gotrue.APIError
+			judgedBad := errors.As(rerr, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusTooManyRequests
+			g.failedRefreshes.release(guard, judgedBad)
+		}, true
+	})
+	if rerr != nil {
+		return gotrue.Session{}, gotrue.Claims{}, rerr
+	}
+	c, err := g.Verifier.Verify(fresh.AccessToken)
+	if err != nil {
+		s.logger.Printf("gotrue: a token GoTrue just issued does not verify (%v) — check "+
+			"MUSTER_GOTRUE_JWT_SECRET and the issuer/audience against GoTrue's", err)
+		return gotrue.Session{}, gotrue.Claims{}, err
+	}
+	if c.Subject != expiredSub {
+		// 🔴 THE REFRESH TOKEN BELONGS TO SOMEONE ELSE. The pair in the
+		// cookies is not one session: a planted muster_rt beside the
+		// victim's own expired access token would otherwise sign the
+		// victim in as the PLANTER (TestARefreshForAnotherSubjectIsRefused).
+		s.logger.Printf("session: refusing a refresh whose new subject differs from the expired token's")
+		return gotrue.Session{}, gotrue.Claims{}, errRefreshMismatch
+	}
+	return fresh, c, nil
 }
 
 // issuedBeforeCutoff reports whether c was issued at or before u's session
@@ -758,6 +780,26 @@ func endsTheSession(err error) bool {
 	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusTooManyRequests
 }
 
+// answerSessionFailure answers a session that could not be resolved or
+// refreshed: when err ends it (endsTheSession), the cookies are cleared and the
+// caller is sent to sign in; otherwise muster could not judge it right now, so
+// the cookies are kept and the caller asked to retry. The session gate and
+// asGoTrueUser's refresh (answerUserTokenRefreshFailure) both answer here.
+func (s *Server) answerSessionFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if endsTheSession(err) {
+		s.clearGoTrueCookies(w)
+		s.refuseUnauthenticated(w, r)
+		return
+	}
+	s.logger.Printf("session: could not resolve (cookies kept): %v", err)
+	if isDocumentNavigation(r) {
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "muster cannot check your sign-in right now",
+			"Reload in a moment; you are still signed in.")
+		return
+	}
+	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "sign-in could not be checked right now; retry"})
+}
+
 // requireGoTrueSession is requireSession in gotrue mode.
 func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	if s.gt == nil {
@@ -775,19 +817,8 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 		return
 	}
 	sess, err := s.resolveGoTrueSession(r)
-	if err != nil && !endsTheSession(err) {
-		s.logger.Printf("session: could not resolve (cookies kept): %v", err)
-		if isDocumentNavigation(r) {
-			s.renderNotice(w, r, http.StatusServiceUnavailable, "muster cannot check your sign-in right now",
-				"Reload in a moment; you are still signed in.")
-			return
-		}
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "sign-in could not be checked right now; retry"})
-		return
-	}
 	if err != nil {
-		s.clearGoTrueCookies(w)
-		s.refuseUnauthenticated(w, r)
+		s.answerSessionFailure(w, r, err)
 		return
 	}
 	ctx, untrack, ok := s.gt.track(r.Context(), sess.user.ID, sess.claims)
@@ -809,7 +840,7 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	// The passkey handlers act AS the user at GoTrue (its /passkeys API takes
 	// the user's own access token) and read the session's amr; both ride here.
 	// Set only by this function, so only a GoTrue browser session carries it.
-	ctx = context.WithValue(ctx, gotrueSessionKey{}, gotrueCreds{access: sess.access, claims: sess.claims})
+	ctx = context.WithValue(ctx, gotrueSessionKey{}, gotrueCreds{access: sess.access, refresh: sess.refresh, claims: sess.claims})
 	// The step-up gate's input: when this person last SIGNED IN (the token's
 	// `amr`), which a refresh does not move. No `amr`, no time — never fresh.
 	if at, ok := sess.claims.AuthenticatedAt(); ok {
@@ -826,10 +857,15 @@ type sessionIssuedAtKey struct{}
 type gotrueSessionKey struct{}
 
 // gotrueCreds is the access token a request was admitted on (after any
-// refresh) and its verified claims.
+// refresh), the refresh token paired with it, and its verified claims.
+//
+// 🔴 access IS FORWARDED TO GoTrue ONLY THROUGH asGoTrueUser (gotrue_forward.go),
+// which refreshes it first when GoTrue would refuse it
+// (TestEveryUserTokenForwardGoesThroughTheHelper).
 type gotrueCreds struct {
-	access string
-	claims gotrue.Claims
+	access  string
+	refresh string
+	claims  gotrue.Claims
 }
 
 // gotrueCredsFrom returns the request's GoTrue session, if it has one.

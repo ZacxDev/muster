@@ -262,3 +262,50 @@ func TestSignOutEverywhereRevokesEverySessionOfTheUser(t *testing.T) {
 		t.Fatal("another user's session was revoked")
 	}
 }
+
+// TestTheFakeRefusesAUserTokenFromItsExp pins the fake's user API to GoTrue's
+// own rule: NO leeway on exp. Measured at three points around one token's exp:
+// 1 s before it is accepted; at exp, and 2 s past it (inside muster's own
+// gotrue.DefaultSkew allowance), every user-token route answers 403 bad_jwt
+// "token is expired". A fake that shared muster's allowance hid a production
+// failure: handlers forwarded a token GoTrue had already stopped accepting.
+func TestTheFakeRefusesAUserTokenFromItsExp(t *testing.T) {
+	f := gotruetest.New(t, secret)
+	c := f.Client()
+	ctx := context.Background()
+	f.EnablePasskeys()
+	id := f.AddUser("exp@example.com", "a-long-enough-password")
+	f.SetAccessTTL(time.Minute)
+	userCalls := map[string]func(at string) error{
+		"Passkeys": func(at string) error { _, err := c.Passkeys(ctx, "192.0.2.1", at); return err },
+		"PasskeyRegisterOptions": func(at string) error {
+			_, err := c.PasskeyRegisterOptions(ctx, "192.0.2.1", at)
+			return err
+		},
+		"Logout": func(at string) error { return c.Logout(ctx, "192.0.2.1", at, gotrue.ScopeLocal) },
+	}
+	for name, call := range userCalls {
+		for _, tc := range []struct {
+			at      time.Duration // relative to exp
+			refused bool
+		}{{-time.Second, false}, {0, true}, {2 * time.Second, true}} {
+			at, _, _ := f.Mint(id)
+			cl, err := f.Verifier().Verify(at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// exp is whole seconds: move the clock to it EXACTLY, not by the TTL,
+			// which would land up to a second past it.
+			f.Advance(time.Unix(cl.ExpiresAt, 0).Sub(f.Now()) + tc.at)
+			err = call(at)
+			var ae *gotrue.APIError
+			isExpired := errors.As(err, &ae) && ae.Status == 403 && ae.Code == "bad_jwt" && ae.Msg == gotruetest.ExpiredJWTMsg
+			if tc.refused != isExpired || (!tc.refused && err != nil) {
+				t.Fatalf("%s at exp%+v: err = %v, want refused-as-expired = %v", name, tc.at, err, tc.refused)
+			}
+			if _, verr := f.Verifier().Verify(at); verr != nil && tc.at <= 2*time.Second {
+				t.Fatalf("CONTROL: muster's verifier refuses the token at exp%+v: %v", tc.at, verr)
+			}
+		}
+	}
+}

@@ -391,7 +391,14 @@ func (s *Server) handleAccountPasskeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, code int, creds gotrueCreds, problem string) {
 	ctx := r.Context()
-	list, err := s.gt.Client.Passkeys(ctx, clientIP(r), creds.access)
+	var list []gotrue.Passkey
+	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		list, err = s.gt.Client.Passkeys(ctx, clientIP(r), accessToken)
+		return err
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
 		s.logger.Printf("passkeys: list: %v", err)
 		s.renderNotice(w, r, http.StatusBadGateway, "Passkeys could not be loaded", "Try again in a moment.")
@@ -484,7 +491,14 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 	if !ok || s.refuseStaleCredentialChange(w, r) {
 		return
 	}
-	o, err := s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), creds.access)
+	var o gotrue.PasskeyOptions
+	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		o, err = s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), accessToken)
+		return err
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
 		s.writeGoTrueRefusal(w, "registration options", err, "A passkey cannot be added right now.")
 		return
@@ -520,7 +534,14 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyNoUVRefusal})
 		return
 	}
-	p, err := s.gt.Client.PasskeyRegisterVerify(r.Context(), clientIP(r), creds.access, body.ChallengeID, canonical)
+	var p gotrue.Passkey
+	err = s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		p, err = s.gt.Client.PasskeyRegisterVerify(r.Context(), clientIP(r), accessToken, body.ChallengeID, canonical)
+		return err
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
 	if err != nil {
 		s.writeGoTrueRefusal(w, "a passkey registration", err, "That passkey could not be added.")
 		return
@@ -547,7 +568,13 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.gt.Client.DeletePasskey(r.Context(), clientIP(r), creds.access, id); err != nil {
+	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) error {
+		return s.gt.Client.DeletePasskey(r.Context(), clientIP(r), accessToken, id)
+	})
+	if s.answerUserTokenRefreshFailure(w, r, err) {
+		return
+	}
+	if err != nil {
 		if gotrue.IsClientError(err) {
 			s.renderAccountPasskeys(w, r, http.StatusNotFound, creds, "That passkey is not one of yours.")
 			return

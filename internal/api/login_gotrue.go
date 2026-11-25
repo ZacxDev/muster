@@ -383,7 +383,14 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			failed = SignOutEverywhereUnresolved
 		}
 		if err == nil {
-			if err := s.gt.Client.Logout(r.Context(), clientIP(r), sess.access, scope); err != nil {
+			// The session's own token signs it out of GoTrue, refreshed first
+			// when GoTrue would refuse it: a refused /logout leaves the
+			// refresh side alive in GoTrue. The cookies are cleared below
+			// whatever happens, the refreshed pair's included.
+			creds := gotrueCreds{access: sess.access, refresh: sess.refresh, claims: sess.claims}
+			if err := s.asGoTrueUser(w, r, &creds, func(accessToken string) error {
+				return s.gt.Client.Logout(r.Context(), clientIP(r), accessToken, scope)
+			}); err != nil {
 				// The local revocation below still applies; the refresh side
 				// may survive in GoTrue, so it is logged rather than swallowed.
 				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
@@ -470,7 +477,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		}
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + html.EscapeString(note) + `</p>`
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			resetNote += s.resetSignalNode(r)
+			resetNote += s.resetSignalNode(w, r)
 		}
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
@@ -502,12 +509,20 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 // now, never the query's count (which anyone can type): a hand-typed
 // ?reset=1&passkeys=3 signals only what is really there. "" when GoTrue
 // cannot list them.
-func (s *Server) resetSignalNode(r *http.Request) string {
+//
+// Any failure — a refresh asGoTrueUser could not make included — is only
+// logged: the note is an extra on the account page, which the session gate
+// already admitted.
+func (s *Server) resetSignalNode(w http.ResponseWriter, r *http.Request) string {
 	creds, ok := gotrueCredsFrom(r.Context())
 	if !ok || s.gt == nil {
 		return ""
 	}
-	list, err := s.gt.Client.Passkeys(r.Context(), clientIP(r), creds.access)
+	var list []gotrue.Passkey
+	err := s.asGoTrueUser(w, r, &creds, func(accessToken string) (err error) {
+		list, err = s.gt.Client.Passkeys(r.Context(), clientIP(r), accessToken)
+		return err
+	})
 	if err != nil {
 		s.logger.Printf("passkeys: list for the reset signal: %v", err)
 		return ""
