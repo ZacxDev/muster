@@ -76,7 +76,14 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, chiefSheetSessions(c.bar.SessionID))
 		p := ChiefPanelView{Configured: true, Chat: chat}
 		body := renderString(t, chiefPanelBody(p))
-		strip := regexp.MustCompile(`(?s)<nav ` + chiefChatStripAttr + `="".*?</nav>`).FindString(body)
+		// The bar: its button, its drawer and their scripts, up to the
+		// transcript it sits over.
+		strip := ""
+		if i := strings.Index(body, `<div `+chiefChatStripAttr+`=""`); i >= 0 {
+			if j := strings.Index(body[i:], `id="chat-log"`); j >= 0 {
+				strip = body[i : i+j]
+			}
+		}
 		if strip == "" {
 			t.Fatalf("%s: the panel body has no chip strip", c.kind)
 		}
@@ -236,11 +243,11 @@ func TestTheChiefSheetHasNoChatsTab(t *testing.T) {
 			t.Errorf("%s: the sheet still holds the chats", kind)
 		}
 		// The strip: once, before the sheet, under the header.
-		if n := strings.Count(html, `<nav `+chiefChatStripAttr+`=""`); n != 1 {
+		if n := strings.Count(html, `<div `+chiefChatStripAttr+`=""`); n != 1 {
 			t.Errorf("%s: %d chip strips on the page, want 1", kind, n)
 		}
 		head := strings.Index(html, "</header>")
-		strip := strings.Index(html, `<nav `+chiefChatStripAttr)
+		strip := strings.Index(html, `<div `+chiefChatStripAttr)
 		log := strings.Index(html, `id="chat-log"`)
 		if !(head >= 0 && head < strip && strip < log) {
 			t.Errorf("%s: the strip is not between the header and the transcript (header end %d, strip %d, log %d)", kind, head, strip, log)
@@ -303,8 +310,11 @@ func TestTheStripSwitchesAndManagesChats(t *testing.T) {
 		if n := strings.Count(html, `aria-current="true" class=`); n != 1 {
 			t.Errorf("%s: %d chips current, want 1", c.kind, n)
 		}
-		if n := strings.Count(html, sessionDefaultAttr+`=""`); n != 1 {
-			t.Errorf("%s: %d ★, want 1", c.kind, n)
+		// One ★ among the rows (the button carries its own while the primary is
+		// the chat on screen: TestTheSessionsButtonNamesTheChatOnScreen).
+		rows := html[strings.Index(html, `<nav aria-label="Chief sessions">`):]
+		if n := strings.Count(rows, sessionDefaultAttr+`=""`); n != 1 {
+			t.Errorf("%s: %d ★ among the rows, want 1", c.kind, n)
 		}
 		if !regexp.MustCompile(`(?s)<li ` + chiefChipAttr + `="5" ` + chiefChipKindAttr + `="primary".*?★.*?Primary</span>`).MatchString(html) {
 			t.Errorf("%s: the primary chip is not ★ Primary", c.kind)
@@ -356,10 +366,10 @@ func TestTheStripSwitchesAndManagesChats(t *testing.T) {
 		if strings.Contains(html, "surface=chief-panel") {
 			t.Errorf("%s: a page action asks for the panel's answer", c.kind)
 		}
-		// The "+", after the scroller.
-		plus := regexp.MustCompile(`</ul><form hx-post="/agents/42/sessions/side" hx-swap="none" class="contents"><button type="submit" ` + chiefSideChatAttr + `="" aria-label="New side chat"`)
+		// "+ New session", at the drawer's top, before the rows.
+		plus := regexp.MustCompile(`<form hx-post="/agents/42/sessions/side" hx-swap="none" class="contents"><button type="submit" ` + chiefSideChatAttr + `="" title="New session"[^>]*>.*?<span>New session</span></button></form><nav aria-label="Chief sessions">`)
 		if !plus.MatchString(html) {
-			t.Errorf("%s: no + posting to the side chat route at the strip's end", c.kind)
+			t.Errorf("%s: no New session posting to the side chat route above the rows", c.kind)
 		}
 	}
 	// Not a chief's chat: no strip.

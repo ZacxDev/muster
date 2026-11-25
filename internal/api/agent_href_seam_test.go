@@ -334,6 +334,8 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
 	"AgentSessionHref ← internal/api/chief_chats.go:Server.answerSideChatOpened":          1,
+	// Home on the chief: the chat the owner viewed last (chiefLastViewed).
+	"AgentSessionHref ← internal/api/nav_agents.go:Server.homeResolve": 1,
 	// The views: the session drawer, the chief page's chip strip (its chips name
 	// their session, like the drawer's), a task card's Open chat, the
 	// notification panel's two row kinds, the terminal page's back link.

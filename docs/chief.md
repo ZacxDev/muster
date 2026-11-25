@@ -304,8 +304,8 @@ auth-failure marks: a team's agent is not placed on, or failed over to, an
 account the admin's agents found exhausted, and the reverse.
 
 A member sees the team chief's one shared conversation and its earlier chats,
-and the chips switch between them, but the strip has no **+** (New side
-chat) and no **⋯** (Fresh primary, Make primary, Archive, Unarchive): the
+and the Sessions drawer switches between them, but it has no **+ New session**
+and no **⋯** (Fresh primary, Make primary, Archive, Unarchive): the
 server refuses those to every member. Opening a team agent's page is not recorded in the member's
 **recently viewed**.
 
@@ -1201,7 +1201,7 @@ fixed for the session's life:
 Open one from the chief panel: its thread list has a **New session** picker.
 Each thread names its runtime and model. The route underneath is
 `POST /agents/{id}/sessions` with `runtime` and `model` form fields. A side
-chat can be opened on a model from the chat strip's **+** too
+chat can be opened on a model from the Sessions drawer's **New session** too
 ([Primary and side chats](#primary-and-side-chats)): its route,
 `POST /agents/{id}/sessions/side`, takes an optional `model` field, checked the
 same way. A session's runtime and model never change; open a new session to use
@@ -1265,13 +1265,13 @@ only while the spend door is on: the same checks the door makes. When
 `opencode` is named but the door is off, muster boots, the picker shows Claude
 Code only, and the boot log says why.
 
-**Choosing a model.** New session, **Continue in a new session** and the strip's
+**Choosing a model.** New session, **Continue in a new session** and the drawer's
 **+** menu each have an **OpenRouter** row with a search field. Type part of a
 model's name or id; the matches (name, id, list price per million tokens,
 context) come from OpenRouter's catalogue, ranked fuzzily. Tap one, then
 **Start** (or **Continue**). Typing an exact catalogue id works without the
 search. The model is stored as `openrouter/<id>` and checked against the
-catalogue as the [spend door](#openrouter-sessions-budget) describes. The chip
+catalogue as the [spend door](#openrouter-sessions-budget) describes. The Sessions row
 and the thread list show the model's name.
 
 **What runs the session.** `ccd` starts an `opencode serve` of its own for the
@@ -1336,7 +1336,8 @@ The chief has one **primary chat** and any number of **side chats**.
   or task route's note, answer and hand-back, outcome and proposal notes, a
   session's `chief_ask` question, a refused draft, a closed PR, a task
   mention, a memo, a line typed on a session's view, and `muster chief ask`.
-  The chief page and the chief panel open on it. On a `claude-code` chief whose
+  The chief page and the chief panel open on it until you open another chat
+  ([which chat the chief opens on](#which-chat-the-chief-opens-on)). On a `claude-code` chief whose
   primary is a `ccd` lane (after a **Fresh primary**), that lane is **pinned**
   (`X-Muster-CC-Pinned`): `ccd` never stops its CLI for another session and does
   not count it against `CCD_MAX_SESSIONS`, so a delivery always gets its CLI. When the pin moves (another fresh primary), `ccd` stops the least recently used idle lanes until the unpinned ones fit the cap again, and a former primary still finishing its handover is stopped when that turn ends: the cap is exceeded only by the one pinned CLI. Memos reach the primary on its own route (its lane), like every other delivery.
@@ -1354,58 +1355,94 @@ The chief has one **primary chat** and any number of **side chats**.
   they go to the primary instead; nothing is ever delivered into an archived
   chat.
 
-The chats are a strip of chips under the chief page's header, and over the
-transcript in the chief panel. There is no sheet or dialog for them:
+The chats are behind one **Sessions** button under the chief page's header,
+and over the transcript in the chief panel. The button names the chat you are
+on (**★ Primary**, or the side chat's title and its model tag) and shows a dot
+when another chat has a reply you have not read. It slides a drawer in from the
+right — from the right edge of the screen on the page, and of the panel in the
+panel — listing every chat:
 
-    [★ Primary] [side chats, most recent first…] [Archived (n)]   [+]
+    Sessions                               ✕
+    [+ New session]
+    ★ Primary                              ⋯
+    side chats, most recent first…   ●     ⋯
+    Archived (n) ›
 
-- **Tap a chip** to switch to its chat. The chip of the chat you are on is
-  highlighted. A side chat's chip shows a dot when a reply arrived since you
-  last opened it. A side chat is named by its title, and **New chat** until
-  its first line gives it one.
-- **+** opens a new side chat and puts the cursor in its message box. While the
-  newest side chat is still empty, **+** takes you back to that one instead
-  of opening a second (a double tap opens one chat), and still puts the cursor
-  in its box.
-- **Pick a model from +.** Where the deployment offers the Claude Code session
-  runtime to a claude-code chief (`MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`,
-  [the runtime picker](#sessions-on-more-than-one-runtime)), **+** opens a
-  small menu instead: **Default** (the chief's own model, what **+** opens
+- **Tap a row** to switch to its chat; the drawer shuts. The row of the chat
+  you are on is highlighted. A side chat's row shows a dot when a reply arrived
+  since you last opened it. A side chat is named by its title, and **New chat**
+  until its first line gives it one.
+- **+ New session** opens a new side chat and puts the cursor in its message
+  box. While the newest side chat is still empty, it takes you back to that one
+  instead of opening a second (a double tap opens one chat), and still puts the
+  cursor in its box.
+- **Pick a model from New session.** Where the deployment offers the Claude Code
+  session runtime to a claude-code chief (`MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`,
+  [the runtime picker](#sessions-on-more-than-one-runtime)), **New session**
+  opens a small menu instead: **Default** (the chief's own model, what it opens
   everywhere else), **Opus**, **Sonnet** and **Haiku**. Picking one opens the
   side chat on that model and puts the cursor in its message box. A chat's
-  model is fixed once it is made, and its chip shows the model as a small tag
+  model is fixed once it is made, and its row shows the model as a small tag
   (for example `sonnet`); a chat on the chief's own model has none. The empty
   newest side chat is reused only when it is on the model you picked. Without
-  that setting, **+** opens a chat at once as before, and the route refuses a
-  model (`400`) rather than open a chat on one you did not get.
-- **Pick an OpenRouter model from +.** Where the `opencode` runtime is offered
-  ([OpenRouter sessions on opencode](#openrouter-sessions-on-opencode)), the
-  menu also has an **OpenRouter model** field: type part of a name, tap a
-  match, then **Start**. The chip's tag shows the model's name (for example
+  that setting, **New session** opens a chat at once as before, and the route
+  refuses a model (`400`) rather than open a chat on one you did not get.
+- **Pick an OpenRouter model from New session.** Where the `opencode` runtime is
+  offered ([OpenRouter sessions on opencode](#openrouter-sessions-on-opencode)),
+  the menu also has an **OpenRouter model** field: type part of a name, tap a
+  match, then **Start**. The row's tag shows the model's name (for example
   `deepseek-v4.1-flash`; its title is the full catalogue id).
-- **Archived (n)** is the last chip. Tap it to show the archived chats' chips
-  in the strip, and again to hide them. The chat you are on is never hidden
+- **Archived (n)** comes after the side chats. Tap it to show the archived
+  chats' rows, and again to hide them. The chat you are on is never hidden
   there.
-- **⋯** on each chip holds that chat's actions (keyboard: Enter opens it, Tab
-  moves through it, Escape closes it).
+- **⋯** on each row holds that chat's actions (keyboard: Enter opens it, Tab
+  moves through it, Escape closes it). After an action the drawer is open
+  again on the answer.
 
-On a phone the strip scrolls sideways, and it scrolls the chip of the chat you
-are on into view. In the panel every one of these answers inside the panel:
-you stay on the grid.
+The drawer is a dialog: opening it puts the focus on the row of the chat you
+are on, Tab stays inside it, and Escape, a tap beside it or **✕** shuts it and
+puts the focus back on the button. Escape with a ⋯ menu open closes only the
+menu, and Escape on the drawer in the panel shuts the drawer, not the panel.
+In the panel every one of these answers inside the panel: you stay on the
+grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
-| the primary | **Fresh primary** | the primary chip's ⋯ | after a confirm, starts a new primary chat (below) |
-| a side chat | **Make primary** | its chip's ⋯ | makes it the primary (you stay on the chat you are on) |
-| a side chat | **Archive** | its chip's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
-| an archived chat | **Unarchive** | its chip's ⋯ | puts it back among the side chats |
+| every chat | **+ New session** | the top of the drawer | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
+| the primary | **Fresh primary** | the primary row's ⋯ | after a confirm, starts a new primary chat (below) |
+| a side chat | **Make primary** | its row's ⋯ | makes it the primary (you stay on the chat you are on) |
+| a side chat | **Archive** | its row's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
+| an archived chat | **Unarchive** | its row's ⋯ | puts it back among the side chats |
 | a side chat | **Continue in a new session** | the panel: under its thread list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
 
-The primary cannot be archived. The strip puts the primary first, marked
+The primary cannot be archived. The drawer puts the primary first, marked
 **★ Primary**, then the side chats by last activity, and the archived chats
 last, behind **Archived (n)**. The panel's thread list (its title bar's list
 button) lists the same chats in the same order, for search.
+
+### Which chat the chief opens on
+
+The chief opens on **the chat you were on last**, on either surface: open a
+side chat on the chief page, and the chief's sidebar row, home (`/`), the bare
+`/agents/<chief>` address and the chief panel all open on it next time; pick one
+in the panel, and the page opens on it. A link that names a chat
+(`?session=<id>`, a notification's) opens that chat and makes it the one you
+were on last.
+
+It is remembered on the server, per chief (`chat_sessions.viewed_at`,
+migration 0187): a chat is "viewed" when the page or the panel draws it for
+you, not on a prefetch, so your phone and your desktop agree. A chief nobody
+has opened yet opens on its primary, and so does one whose last chat has since
+been archived. A link naming a chat that is not the chief's opens the primary.
+
+**Your place in a chat is kept too.** Come back to a chief chat you left
+scrolled up — by the drawer, by leaving the page and returning, or by shutting
+and reopening the panel — and it opens where you left it, anchored on the
+message that was at the top. A chat you left at its end opens at its end and
+follows new messages, as before. The place is kept in the browser
+(`localStorage`, `muster.chat.scroll.v1`): at most 50 chats, each for 7 days. A
+link to a moment (`?at=`, an officer's **Show session**) still opens at that
+moment.
 
 **Memory used.** When the chat's context is high — its latest turn sent more
 than 350k tokens — the chief page's ⋯ menu says so in plain words ("Memory

@@ -1,6 +1,6 @@
 -- muster 0187 — WHEN THE OWNER LAST OPENED A CHAT SESSION
 -- (internal/agents/session_viewed.go; internal/api chiefOpenSession;
--- docs/chief.md#which-session-the-chief-opens-on).
+-- docs/chief.md#which-chat-the-chief-opens-on).
 --
 --   chat_sessions.viewed_at   stamped when the chat is DRAWN for its owner: the
 --       agent page on that session (a real view, not a prefetch) and the chief

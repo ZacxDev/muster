@@ -6,7 +6,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-// WHERE THE CHIEF OPENS (docs/chief.md#which-session-the-chief-opens-on).
+// WHERE THE CHIEF OPENS (docs/chief.md#which-chat-the-chief-opens-on).
 //
 // 🔴 ON THE CHAT ITS OWNER WAS ON LAST, ON EITHER SURFACE. The chief page
 // (/agents/<chief>, its sidebar row, home `/`) and the chief panel used three
@@ -57,14 +57,25 @@ func (s *Server) markSessionViewed(ctx context.Context, sid int64) {
 // ⚠ A DELETED SESSION has no row, so the latest of the rest is the answer: the
 // chat viewed before it, which still exists.
 func (s *Server) chiefOpenSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
-	if st, ok := s.sessionViewStore(); ok {
-		sess, found, err := st.LastViewedSession(ctx, a.ID)
-		if err != nil {
-			s.logger.Printf("agents: last viewed session of %d: %v (opening the primary)", a.ID, err)
-		}
-		if err == nil && found && sess.AgentID == a.ID && sess.ArchivedAt == nil {
-			return sess, nil
-		}
+	if sess, ok := s.chiefLastViewed(ctx, a); ok {
+		return sess, nil
 	}
 	return s.primarySession(ctx, a)
+}
+
+// chiefLastViewed is chiefOpenSession's first half, a READ only: the session
+// of a's its owner viewed last, when there is one and it is not archived. Home
+// asks this alone (homeResolve): a GET of `/` elects and creates nothing, and a
+// chief nobody has opened is linked as before, on its latest session.
+func (s *Server) chiefLastViewed(ctx context.Context, a agents.Agent) (agents.ChatSession, bool) {
+	st, ok := s.sessionViewStore()
+	if !ok {
+		return agents.ChatSession{}, false
+	}
+	sess, found, err := st.LastViewedSession(ctx, a.ID)
+	if err != nil {
+		s.logger.Printf("agents: last viewed session of %d: %v (opening the primary)", a.ID, err)
+		return agents.ChatSession{}, false
+	}
+	return sess, found && sess.AgentID == a.ID && sess.ArchivedAt == nil
 }

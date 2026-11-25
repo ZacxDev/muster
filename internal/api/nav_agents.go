@@ -111,7 +111,8 @@ func (s *Server) handleNavWaiting(w http.ResponseWriter, r *http.Request) {
 // nowhere (the onboarding page, handleAgentsHome):
 //
 //  1. the chief agent's chat (its page on the chat the viewer was on last,
-//     chiefOpenSession), when the viewer has a chief and it is on (chiefOn);
+//     chiefLastViewed, else on its latest session — the link a list draws,
+//     agentPageHref), when the viewer has a chief and it is on (chiefOn);
 //  2. otherwise the session the viewer opened last that is still listed, else
 //     the sidebar's first row (ui.HomeHref, over the entries the sidebar and
 //     the switcher are built from);
@@ -163,10 +164,10 @@ func (s *Server) homeResolve(r *http.Request, except homeExcept) (to string, tea
 			s.logger.Printf("home: read the chief toggle: %v (opening the last session instead)", err)
 		}
 		if on {
-			// The chat the owner was on last (chiefOpenSession), not the one
-			// touched last: home is how the app is reopened.
-			if open, err := s.chiefOpenSession(ctx, chief); err == nil && open.ID > 0 {
-				return ui.AgentSessionHref(chief.Name, open.ID), false, nil
+			// The chat the owner was on last (chiefLastViewed), not the one
+			// touched last: home is how the app is reopened. A read only.
+			if last, ok := s.chiefLastViewed(ctx, chief); ok {
+				return ui.AgentSessionHref(chief.Name, last.ID), false, nil
 			}
 			return s.agentPageHref(ctx, chief), false, nil
 		}

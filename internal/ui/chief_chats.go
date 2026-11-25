@@ -343,7 +343,7 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 			// nothing to animate from. chiefChipsScript opens and shuts it.
 			g.Attr("inert", ""),
 			g.Attr("data-open", "0"),
-			Class(drawer+" invisible flex translate-x-full flex-col border-line bg-bg shadow-2xl transition-[transform,visibility] duration-200 ease-out"),
+			Class(drawer+" invisible flex translate-x-full flex-col border-line bg-bg shadow-2xl transition-transform duration-200 ease-out"),
 			Div(
 				Class("flex flex-none items-center gap-2 border-b border-line py-1 pl-4 pr-1"),
 				H2(ID(titleID), Class("mr-auto text-sm font-semibold text-fg"), g.Text(ChiefSessionsLabel)),
@@ -754,8 +754,14 @@ func chiefChipsScript() g.Node {
   function setOpen(d, open, focusBack) {
     d.setAttribute('data-open', open ? '1' : '0');
     d.classList.toggle('translate-x-full', !open);
-    d.classList.toggle('invisible', !open);
     d.classList.toggle('translate-x-0', open);
+    // 🔴 VISIBLE AT ONCE, HIDDEN ONLY ONCE THE SLIDE IS DONE. A transitioned
+    // visibility is still hidden on a transition's first frame, so the focus
+    // moved in below was refused; and hidden at once, the slide out would not
+    // be seen.
+    clearTimeout(d.__hideT);
+    if (open) d.classList.remove('invisible');
+    else d.__hideT = setTimeout(function () { if (!isOpen(d)) d.classList.add('invisible'); }, 250);
     if (open) d.removeAttribute('inert'); else d.setAttribute('inert', '');
     var bk = document.querySelector('[' + BACK + '="' + d.id + '"]');
     if (bk) bk.hidden = !open;
@@ -781,7 +787,10 @@ func chiefChipsScript() g.Node {
     return out;
   }
   // reopen: a ⋯ action's answer has landed; its drawer opens again.
-  function reopen() {
+  // evt: the settle that brought it, when one did — only a settle whose target
+  // holds the drawer is the answer (a transcript refresh settling meanwhile is
+  // not, and must not spend the record on the drawer about to be replaced).
+  function reopen(evt) {
     var s = ss(), raw = null;
     if (s) { try { raw = s.getItem(KEY); } catch (e) {} }
     if (!raw) return;
@@ -790,10 +799,17 @@ func chiefChipsScript() g.Node {
     var d = v && v.id && document.getElementById(v.id);
     if (!v || !(Date.now() - v.t < 15000)) { clearReopen(); return; }
     if (!d) return;
+    var t = evt && evt.target;
+    if (t && t !== document && t !== document.body && !(t.contains && t.contains(d))) return;
     clearReopen();
     setOpen(d, true);
   }
-  if (window.__musterChiefSessions) { reopen(); return; }
+  // 🔴 A SWAPPED-IN DRAWER IS OPENED AFTER THE SWAP SETTLES, NOT WHEN THIS
+  // SCRIPT RUNS INSIDE IT: htmx's settle puts back the class the server drew
+  // (shut, translate-x-full) over whatever ran in between, so a drawer opened
+  // here was open by its attributes and off screen by its class. The
+  // afterSettle listener below does it; a full load, DOMContentLoaded.
+  if (window.__musterChiefSessions) return;
   window.__musterChiefSessions = true;
   document.addEventListener('click', function (e) {
     var t = e.target;
@@ -850,6 +866,7 @@ func chiefChipsScript() g.Node {
   });
   document.addEventListener('htmx:responseError', clearReopen);
   document.addEventListener('htmx:sendError', clearReopen);
+  document.addEventListener('htmx:afterSettle', reopen);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', reopen);
   else reopen();
 })();
