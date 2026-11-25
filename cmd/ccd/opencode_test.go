@@ -316,6 +316,50 @@ func TestAnOpencodeTurnRoundTripsThroughMustersClient(t *testing.T) {
 	}
 }
 
+// onWriteRecorder records an answer and calls after with each write once it
+// is recorded: what a client has read by then.
+type onWriteRecorder struct {
+	*httptest.ResponseRecorder
+	after func(b []byte)
+}
+
+func (w *onWriteRecorder) Write(b []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(b)
+	if w.after != nil {
+		w.after(b)
+	}
+	return n, err
+}
+
+// TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy: muster's client stops
+// reading at the answer's terminal event (agents.parseResponsesSSE), so the
+// session's next turn can arrive while the first turn's handler is still
+// writing. That turn runs: the lane's turn slot is free once the answer goes
+// out. The follow-up is sent from inside the first answer's response.completed
+// write, so the window the CI flake hit by chance is hit every run.
+func TestAFollowUpTurnSentOnTheAnswerIsNotRefusedBusy(t *testing.T) {
+	srv, _, _ := ocTestServer(t, 3)
+	var second *httptest.ResponseRecorder
+	first := &onWriteRecorder{ResponseRecorder: httptest.NewRecorder()}
+	first.after = func(b []byte) {
+		if second != nil || !bytes.Contains(b, []byte("event: response.completed")) {
+			return
+		}
+		second = httptest.NewRecorder()
+		srv.handleOpencodeResponses(second, ocTurnReq(srv, ocTestKey, ocTestModel, "follow-up"))
+	}
+	srv.handleOpencodeResponses(first, ocTurnReq(srv, ocTestKey, ocTestModel, "first"))
+	if body := first.Body.String(); !strings.Contains(body, "fake reply: first") {
+		t.Fatalf("the first turn's answer: %s", body)
+	}
+	if second == nil {
+		t.Fatal("no response.completed was written: the follow-up was never sent")
+	}
+	if body := second.Body.String(); second.Code != http.StatusOK || !strings.Contains(body, "fake reply: follow-up") {
+		t.Fatalf("a follow-up sent on the first answer's terminal event: HTTP %d %s", second.Code, body)
+	}
+}
+
 // TestAnOldCcdAnswers404ToTheOpencodePath: the opencode path is a path of
 // its own, so a ccd that does not serve it answers 404 and runs nothing. An
 // INVARIANT GUARD of the mux (the request is the one muster sends).
