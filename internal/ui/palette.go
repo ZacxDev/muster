@@ -398,7 +398,10 @@ const paletteJS = `
   window.__musterPalette = true;
 ` + paletteMatchJS + `  var PAL = '` + paletteID + `', INPUT = '` + paletteInputID + `', RESULTS = '` + paletteResultsID + `';
   var OPEN = '[` + paletteOpenAttr + `]', TYPES = '` + paletteTypesID + `';
-  var shown = [], active = -1, opener = null, type = 'all';
+  // chosen: the operator moved the highlight (an arrow) since the list was
+  // last started over (typing, a pill). Only then is it THEIR selection, for
+  // a redraw to keep (render).
+  var shown = [], active = -1, chosen = false, opener = null, type = 'all';
   function byId(id) { return document.getElementById(id); }
   function isOpen(p) { try { return !!p && p.matches(':popover-open'); } catch (e) { return false; } }
   function hide(p) { try { if (isOpen(p)) p.hidePopover(); } catch (e) {} }
@@ -582,19 +585,27 @@ const paletteJS = `
   }
   // render draws the list: the page's sessions and screens, and the server's
   // answers for the same query merged in, narrowed to the pill's kind; keep
-  // holds the highlighted result (a server answer landing must not move the
-  // operator's selection).
+  // holds the highlighted result the operator CHOSE (a server answer landing
+  // must not move the operator's selection).
+  //
+  // 🔴 A HIGHLIGHT NOBODY CHOSE IS NOT KEPT: it follows the best match. Left
+  // where typing put it (the first row), it is only "the best match so far";
+  // kept across an answer that lists a better one above it — an ask named by
+  // its id, over a session whose codename merely holds the same digits — it
+  // sat on the second row while the first was the one in view, and Enter
+  // opened the session.
   function render(keep) {
     var pal = byId(PAL), input = byId(INPUT), list = byId(RESULTS);
     if (!pal || !input || !list) return;
     var q = input.value, mine = srv.q && srv.q === q.trim();
-    var was = keep && active >= 0 && shown[active] ? shown[active].href : null;
+    var was = keep && chosen && active >= 0 && shown[active] ? shown[active].href : null;
     var sessions = window.musterPaletteRank(entries(), q, mine ? srv.hits : []).slice(0, 50);
     shown = window.musterPaletteAll(sessions, screens(), mine ? { asks: srv.asks, pages: srv.pages } : {}, q, type);
     list.textContent = '';
     shown.forEach(function (it, i) { list.appendChild(row(it, i)); });
     active = shown.length ? 0 : -1;
-    if (was) for (var k = 0; k < shown.length; k++) if (shown[k].href === was) { active = k; break; }
+    chosen = false;
+    if (was) for (var k = 0; k < shown.length; k++) if (shown[k].href === was) { active = k; chosen = true; break; }
     pal.querySelector('[data-switcher-search-empty]').hidden = shown.length > 0;
     mark();
   }
@@ -639,8 +650,8 @@ const paletteJS = `
     input.addEventListener('keydown', function (e) {
       if (e.isComposing) return;
       var n = shown.length, next = flipped() ? 'ArrowUp' : 'ArrowDown', prev = flipped() ? 'ArrowDown' : 'ArrowUp';
-      if (e.key === next) { e.preventDefault(); if (n) { active = (active + 1) % n; mark(); } }
-      else if (e.key === prev) { e.preventDefault(); if (n) { active = (active - 1 + n) % n; mark(); } }
+      if (e.key === next) { e.preventDefault(); if (n) { active = (active + 1) % n; chosen = true; mark(); } }
+      else if (e.key === prev) { e.preventDefault(); if (n) { active = (active - 1 + n) % n; chosen = true; mark(); } }
       else if (e.key === 'Enter') { e.preventDefault(); go(active); }
     });
     // A pill picked: the list narrowed to its kind. A tap keeps the input's

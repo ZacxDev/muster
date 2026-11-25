@@ -134,6 +134,36 @@ for (const vp of [
       await expect(options(page).first()).toHaveAttribute('data-ask-id', String(ids.deploy));
     });
 
+    // 🔴 REGRESSION: typing an ask's id when a session's codename also holds
+    // those digits. The session is listed as the digits are typed, so it is the
+    // first row and highlighted; the server's answer then lists the ask above
+    // it — and the redraw KEPT the highlight on the session (a highlight nobody
+    // chose, held as if the operator had picked it), so the ask was the row in
+    // view and Enter opened the session. The test above hit this whenever its
+    // agent's random codename happened to contain the ask's id; here a second
+    // agent is named to contain it, every run.
+    test("an ask's id beats a session whose codename holds the same digits; Enter opens the ask", async ({ page }) => {
+      const n = String(ids.rotate);
+      const twin = `e2e-pal-${stamp}-x${n}`;
+      feedFix('seed', '1', twin);
+      try {
+        await open(page);
+        // CONTROL: the twin's row is on the page before the query is typed,
+        // so the palette lists it from the first keystroke.
+        await expect(page.locator(`#sidebar-agents-list a[data-nav-agent][href^="/agents/${twin}"]`)).toHaveCount(1);
+        await input(page).pressSequentially(n);
+        const first = options(page).first();
+        await expect(first).toHaveAttribute('data-ask-id', n);
+        // CONTROL: the twin matched, below the ask — there was a highlight to keep.
+        await expect(options(page).and(page.locator(`[data-href^="/agents/${twin}"]`))).toHaveCount(1);
+        await expect(first).toHaveAttribute('aria-selected', 'true');
+        await input(page).press('Enter');
+        await expect(page).toHaveURL(`${origin}/attention/asks/${n}`);
+      } finally {
+        feedFix('clear', '1', twin);
+      }
+    });
+
     test('a Pages document is found by its title', async ({ page }) => {
       await open(page);
       await input(page).pressSequentially('sandpiper rev');
