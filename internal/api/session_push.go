@@ -680,12 +680,14 @@ func (s *Server) clearHoldFrom(ep sessionstate.Episode) time.Time {
 	return from
 }
 
-// episodeClearRetries is the withdrawals clearEpisode deferred, one per
-// episode, and the re-shows this process sent (reshowEpisode) that their hold
-// is measured from. after, when set (a test), replaces time.AfterFunc.
+// episodeClearRetries is the re-checks of withdrawals deferred or sent (one
+// pending per key: an episode's clearEpisodeLater, and recheckLater's for the
+// other withdrawn families — push_order.go), and the re-shows this process
+// sent (reshowEpisode) that an episode's hold is measured from. after, when
+// set (a test), replaces time.AfterFunc for every one of them.
 type episodeClearRetries struct {
 	mu      sync.Mutex
-	pending map[int64]bool
+	pending map[string]bool
 	reshown map[int64]time.Time
 	after   func(d time.Duration, f func())
 }
@@ -732,27 +734,38 @@ func (r *episodeClearRetries) forgetReshow(id int64) {
 // and is cancelled by the server's shutdown (streams): once muster is shutting
 // down it does nothing, and the backstop of the next process withdraws it.
 func (s *Server) clearEpisodeLater(octx context.Context, ep sessionstate.Episode, wait time.Duration) {
+	s.recheckLater(octx, "episode-"+strconv.FormatInt(ep.ID, 10), wait, func(rctx context.Context) {
+		s.clearEpisode(rctx, ep)
+	})
+}
+
+// recheckLater runs fn once after wait, on octx's values (its principal), not
+// its deadline — the caller's context (a pass's, a hook's, a request's) has
+// ended by then — and cancelled by the server's shutdown (streams): once muster
+// is shutting down it does nothing. One per key is pending at a time: a second
+// call while one waits is dropped (the first re-reads the truth when it runs).
+// THE one deferred re-check: an episode's withdrawal (clearEpisodeLater) and
+// the re-sent withdrawals of push_order.go.
+func (s *Server) recheckLater(octx context.Context, key string, wait time.Duration, fn func(rctx context.Context)) {
 	r := &s.clearRetry
 	r.mu.Lock()
-	if r.pending[ep.ID] {
+	if r.pending[key] {
 		r.mu.Unlock()
 		return
 	}
 	if r.pending == nil {
-		r.pending = map[int64]bool{}
+		r.pending = map[string]bool{}
 	}
-	r.pending[ep.ID] = true
+	r.pending[key] = true
 	after := r.after
 	r.mu.Unlock()
 	if after == nil {
 		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	}
-	// octx's values (its principal), not its deadline: the caller's context
-	// (a pass's, a hook's) has ended by the time this runs.
 	kept := context.WithoutCancel(octx)
 	after(wait, func() {
 		r.mu.Lock()
-		delete(r.pending, ep.ID)
+		delete(r.pending, key)
 		r.mu.Unlock()
 		base := s.streams.context()
 		if base.Err() != nil {
@@ -761,7 +774,7 @@ func (s *Server) clearEpisodeLater(octx context.Context, ep sessionstate.Episode
 		rctx, cancel := context.WithCancel(kept)
 		defer cancel()
 		defer context.AfterFunc(base, cancel)()
-		s.clearEpisode(rctx, ep)
+		fn(rctx)
 	})
 }
 

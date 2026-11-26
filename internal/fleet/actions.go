@@ -371,8 +371,32 @@ type Actions interface {
 	ProposedOn(ctx context.Context, episode int64, class string) (bool, error)
 	// ClaimPush records a batched push at now when one is due: the last was
 	// PushEvery or more ago (or never) and a proposal was made after it. The
-	// count is the open proposals the push names.
+	// count is the open proposals the push names. A due push also records the
+	// waiting proposals it shows (SyncPush's baseline).
 	ClaimPush(ctx context.Context, now time.Time) (count int, due bool, err error)
+	// SyncPush compares the proposals waiting now with the ones the owner's
+	// "N proposals waiting" notification shows, and records the new set when
+	// it changed. It never touches ClaimPush's clock.
+	SyncPush(ctx context.Context) (PushSync, error)
+	// HidePush records that no such notification is showing; showing reports
+	// whether one was (fleet proposals turned off).
+	HidePush(ctx context.Context) (showing bool, err error)
+	// PushShown is the waiting set the notification shows, as recorded; nil
+	// when none is showing (a withdrawal's re-check reads it).
+	PushShown(ctx context.Context) ([]int64, error)
+}
+
+// PushSync is what SyncPush found. Nothing to do unless Withdraw or Replace.
+type PushSync struct {
+	// Withdraw: a notification was showing and no proposal waits now.
+	Withdraw bool
+	// Replace: a notification is showing and a proposal it counted no longer
+	// waits: it is replaced in place with Count and the newest still waiting
+	// (Newest). A set that only GREW is not replaced (the swipe rule: a new
+	// proposal waits for ClaimPush's alert, never resurrects the push).
+	Replace bool
+	Count   int
+	Newest  int64
 }
 
 const actionCols = `id, owner_id, created_at, class, proposer, subject_kind, subject_key, mirror_host, mirror_session, mirror_window,
@@ -537,16 +561,21 @@ func (p *PG) ClaimPush(ctx context.Context, now time.Time) (int, bool, error) {
 		if last != nil && now.Sub(*last) < PushEvery {
 			return nil
 		}
+		// 🔴 ONE READ: the count the push says and the set it records are the
+		// same rows, so a proposal filed between two reads cannot make them
+		// disagree.
 		var fresh bool
-		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'proposed'),
-				coalesce(bool_or(state = 'proposed' AND ($1::timestamptz IS NULL OR created_at > $1)), false)
-			FROM fleet_actions WHERE finished_at IS NULL`, last).Scan(&count, &fresh); err != nil {
+		var ids []int64
+		if err := tx.QueryRow(ctx, `SELECT coalesce(array_agg(id ORDER BY created_at, id), '{}'),
+				coalesce(bool_or($1::timestamptz IS NULL OR created_at > $1), false)
+			FROM fleet_actions WHERE state = 'proposed' AND finished_at IS NULL`, last).Scan(&ids, &fresh); err != nil {
 			return err
 		}
+		count = len(ids)
 		if !fresh || count == 0 {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, updated_at = now()`, now); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, proposals_push_ids = $2, updated_at = now()`, now, ids); err != nil {
 			return err
 		}
 		due = true
@@ -556,6 +585,91 @@ func (p *PG) ClaimPush(ctx context.Context, now time.Time) (int, bool, error) {
 		return 0, false, err
 	}
 	return count, due, nil
+}
+
+// waitingIDs is the principal's waiting proposals' ids, oldest first: the
+// set the "N proposals waiting" notification shows.
+const waitingIDs = `SELECT coalesce(array_agg(id ORDER BY created_at, id), '{}') FROM fleet_actions WHERE state = 'proposed' AND finished_at IS NULL`
+
+// SyncPush implements Actions.
+//
+// 🔴 ONE ROW LOCK DECIDES: two passes (or a pass and a tap) that race read
+// the same mark under FOR UPDATE, so a change is acted on once — the second
+// finds the set already recorded. NULL (nothing showing) is left NULL: a
+// notification is only ever replaced or withdrawn, never raised, here.
+//
+// 🔴 ONLY A SHRINK IS ACTED ON (operator decision "respect the swipe"): a
+// proposal the push counted that no longer waits. Growth alone — a new
+// proposal — changes nothing here and leaves the mark as it was: a quiet
+// replacement would resurrect a push the owner swiped away for news they have
+// not been alerted to, and ClaimPush's next alert tells them (out loud).
+func (p *PG) SyncPush(ctx context.Context) (PushSync, error) {
+	var out PushSync
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO fleet_owner_marks DEFAULT VALUES ON CONFLICT (owner_id) DO NOTHING`); err != nil {
+			return err
+		}
+		var shown []int64
+		if err := tx.QueryRow(ctx, `SELECT proposals_push_ids FROM fleet_owner_marks FOR UPDATE`).Scan(&shown); err != nil {
+			return err
+		}
+		if shown == nil {
+			return nil
+		}
+		var now []int64
+		if err := tx.QueryRow(ctx, waitingIDs).Scan(&now); err != nil {
+			return err
+		}
+		if !shrank(shown, now) {
+			return nil
+		}
+		var next any = now
+		if len(now) == 0 {
+			next = nil
+			out.Withdraw = true
+		} else {
+			out.Replace, out.Count, out.Newest = true, len(now), now[len(now)-1]
+		}
+		_, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_push_ids = $1, updated_at = now()`, next)
+		return err
+	})
+	if err != nil {
+		return PushSync{}, err
+	}
+	return out, nil
+}
+
+// PushShown implements Actions.
+func (p *PG) PushShown(ctx context.Context) ([]int64, error) {
+	var ids []int64
+	err := p.pool.QueryRow(ctx, `SELECT proposals_push_ids FROM fleet_owner_marks`).Scan(&ids)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return ids, err
+}
+
+// HidePush implements Actions.
+func (p *PG) HidePush(ctx context.Context) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_push_ids = NULL, updated_at = now() WHERE proposals_push_ids IS NOT NULL`)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// shrank reports whether an id of shown is not in now.
+func shrank(shown, now []int64) bool {
+	in := make(map[int64]bool, len(now))
+	for _, id := range now {
+		in[id] = true
+	}
+	for _, id := range shown {
+		if !in[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // ActionObject is an action's audit object.

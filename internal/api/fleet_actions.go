@@ -786,6 +786,12 @@ func (s *Server) fleetReject(ctx context.Context, id int64, via string) bool {
 
 // fleetMove moves a (from from, default its own state) to m, logging a
 // failure; the moved row and whether it moved.
+//
+// 🔴 A PROPOSAL THAT STOPS WAITING MOVES ITS NOTIFICATION (fleetPushSync):
+// whatever took it out of `proposed` — an expiry, a tap, a reject, a
+// suppression — the "N proposals waiting" push is withdrawn when none is
+// left, or replaced quietly with the new count. A batch (the pass, a draw, a
+// bulk decision: fleetBatch) syncs once, after it, instead.
 func (s *Server) fleetMove(ctx context.Context, a fleet.Action, m fleet.Move, from ...string) (fleet.Action, bool) {
 	if len(from) == 0 {
 		from = []string{a.State}
@@ -797,9 +803,27 @@ func (s *Server) fleetMove(ctx context.Context, a fleet.Action, m fleet.Move, fr
 	}
 	if ok {
 		s.fleetChanged(a.Owner)
+		if a.State == fleet.StateProposed && moved.State != fleet.StateProposed && !fleetBatched(ctx) {
+			s.fleetPushSync(ctx, a.Owner)
+		}
 		return moved, true
 	}
 	return a, false
+}
+
+// fleetBatchKey marks a context whose caller syncs the fleet push once,
+// after all its moves (fleetBatch).
+type fleetBatchKey struct{}
+
+// fleetBatch is ctx for a run of fleetMoves whose caller calls fleetPushSync
+// itself once they are done.
+func fleetBatch(ctx context.Context) context.Context {
+	return context.WithValue(ctx, fleetBatchKey{}, true)
+}
+
+func fleetBatched(ctx context.Context) bool {
+	b, _ := ctx.Value(fleetBatchKey{}).(bool)
+	return b
 }
 
 // fleetChanged redraws owner's digest (the attention queue's event: the
@@ -870,17 +894,22 @@ func (s *Server) fleetPass(octx context.Context, owner int64, facts []nudgeCandi
 	if !s.fleetProposeOn() {
 		// 🔴 TURNED OFF, ITS NOTICE GOES TOO: an "N proposals waiting" item
 		// filed while it was on would point at a Proposed group that is no
-		// longer drawn.
+		// longer drawn — and so does its push.
 		s.fleetNoticeWithdraw(octx)
+		s.fleetPushHide(octx, owner)
 		return
 	}
 	if _, err := s.chiefAgent(octx); err != nil {
 		return
 	}
-	s.fleetSettle(octx, facts)
-	s.fleetProposeWraps(octx, facts)
-	s.fleetProposeCIResults(octx, facts)
+	bctx := fleetBatch(octx)
+	s.fleetSettle(bctx, facts)
+	s.fleetProposeWraps(bctx, facts)
+	s.fleetProposeCIResults(bctx, facts)
 	s.fleetPushWaiting(octx, owner)
+	// After the claim: a push it just sent recorded the set it shows, so only
+	// a change it did not push is acted on.
+	s.fleetPushSync(octx, owner)
 }
 
 // fleetSettle moves each open action of octx's owner on.
@@ -1223,9 +1252,98 @@ func (s *Server) fleetPushWaiting(octx context.Context, owner int64) {
 		return
 	}
 	if due {
-		s.goNotify(owner, push.EventAttention, fleetPushNotification(n, s.fleetNewestWaiting(octx)), nil)
+		// In order with its withdrawal and replacements (push_order.go).
+		s.goNotifyOrdered(owner, push.EventAttention, fleetPushNotification(n, s.fleetNewestWaiting(octx)))
 	}
 	s.fleetNoticeSync(octx, due, n)
+}
+
+// fleetPushSync keeps owner's "N proposals waiting" notification true to the
+// proposals waiting now (fleet.Actions.SyncPush), acting only when the set it
+// shows changed:
+//
+//   - none waits now: it is WITHDRAWN (a resolved push, its tag);
+//   - some do: it is REPLACED IN PLACE — the new count and the newest still
+//     waiting, linked — Update and Silent, so a device that already shows it
+//     swaps it without sound, vibration or a second alert.
+//
+// 🔴 IT NEVER RAISES ONE: nothing showing (none pushed, or withdrawn) stays so,
+// and it never moves ClaimPush's clock — a genuinely new proposal still gets
+// its own alert on fleet.PushEvery's cadence. A pass where nothing changed
+// sends nothing. octx is the owner's.
+func (s *Server) fleetPushSync(octx context.Context, owner int64) {
+	if s.ext.FleetActions == nil {
+		return
+	}
+	r, err := s.ext.FleetActions.SyncPush(octx)
+	if err != nil {
+		s.logger.Printf("fleet: owner %d: the proposals push's sync: %v", owner, err)
+		return
+	}
+	switch {
+	case r.Withdraw:
+		s.fleetPushWithdraw(octx, owner)
+	case r.Replace:
+		s.fleetPushReplace(octx, owner, r.Count, r.Newest)
+		s.fleetPushRecheck(octx, owner)
+	}
+}
+
+// fleetPushReplace replaces owner's push in place, quietly: count waiting,
+// linking proposal newest (none when it no longer waits: the digest then
+// highlights the newest waiting one, fleetFocus).
+func (s *Server) fleetPushReplace(octx context.Context, owner int64, count int, newest int64) {
+	a, err := s.ext.FleetActions.GetAction(octx, newest)
+	if err != nil || a.State != fleet.StateProposed {
+		a = fleet.Action{}
+	}
+	n := fleetPushNotification(count, a)
+	n.Update, n.Silent = true, true
+	s.goNotifyOrdered(owner, push.EventAttention, n)
+}
+
+// fleetPushWithdraw withdraws owner's "N proposals waiting" notification, in
+// order with its other sends, and re-checks it (fleetPushRecheck).
+func (s *Server) fleetPushWithdraw(octx context.Context, owner int64) {
+	s.goNotifyOrdered(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: fleetPushTag, Tag: fleetPushTag})
+	s.fleetPushRecheck(octx, owner)
+}
+
+// fleetPushRecheck sends owner's push again, after one fan-out, as the mark
+// says it should be now (push_order.go): nothing showing is the withdrawal
+// again — an alert or replacement still in flight when it was sent (another
+// replica's included) has landed by then, and this closes it — and a set
+// showing is the quiet replacement for it. The mark is the truth whoever
+// wrote it last.
+func (s *Server) fleetPushRecheck(octx context.Context, owner int64) {
+	s.recheckLater(octx, "fleet-push-"+strconv.FormatInt(owner, 10), pushBroadcastTimeout, func(rctx context.Context) {
+		ids, err := s.ext.FleetActions.PushShown(rctx)
+		if err != nil {
+			s.logger.Printf("fleet: owner %d: the proposals push's re-check: %v", owner, err)
+			return
+		}
+		if len(ids) == 0 {
+			s.goNotifyOrdered(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: fleetPushTag, Tag: fleetPushTag})
+			return
+		}
+		s.fleetPushReplace(rctx, owner, len(ids), ids[len(ids)-1])
+	})
+}
+
+// fleetPushHide withdraws owner's "N proposals waiting" notification if one is
+// showing (fleet proposals turned off: its link opens a group no longer drawn).
+func (s *Server) fleetPushHide(octx context.Context, owner int64) {
+	if s.ext.FleetActions == nil {
+		return
+	}
+	showing, err := s.ext.FleetActions.HidePush(octx)
+	if err != nil {
+		s.logger.Printf("fleet: owner %d: hide the proposals push: %v", owner, err)
+		return
+	}
+	if showing {
+		s.fleetPushWithdraw(octx, owner)
+	}
 }
 
 // fleetNoticeLabel is the "N proposals waiting" Attention item's asker label:

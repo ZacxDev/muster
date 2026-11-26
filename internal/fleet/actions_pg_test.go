@@ -262,3 +262,77 @@ func TestTheSubjectFilterIsExactAndBeforeTheLimit(t *testing.T) {
 		t.Fatalf("control: no filter lists %d; want all 7", len(got))
 	}
 }
+
+// TestSyncPushFollowsTheWaitingSetOnlyWhileAPushShows: with no push recorded,
+// SyncPush does nothing whatever waits (it never raises one). ClaimPush's due
+// push records the set it shows — the same rows its count is (one read). A set
+// that only GREW (a new proposal) is NOT replaced and the mark is kept (the
+// swipe rule); a proposal it counted leaving is Replace (the count, the newest
+// still waiting) — once: the next call finds it recorded — and none waiting
+// is Withdraw, after which nothing again. Neither moves ClaimPush's clock.
+// HidePush says whether one was showing.
+func TestSyncPushFollowsTheWaitingSetOnlyWhileAPushShows(t *testing.T) {
+	p := pgActions(t)
+	ctx := asUser(2)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_pushed_at = NULL, proposals_push_ids = NULL WHERE owner_id = 2`)
+	a, err := p.Propose(ctx, proposal("5yncpu5h-0001", 9201, ClassContinue, ContinueText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{}) {
+		t.Fatalf("no push recorded: %+v %v; want nothing", r, err)
+	}
+	b, err := p.Propose(ctx, proposal("5yncpu5h-0002", 9202, ClassStopNote, StopNoteText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now().Add(time.Hour).Truncate(time.Millisecond).UTC()
+	if n, due, err := p.ClaimPush(ctx, t0); err != nil || !due || n != 2 {
+		t.Fatalf("the claim: %d %v %v", n, due, err)
+	}
+	var recorded []int64
+	if err := p.pool.QueryRow(ctx, `SELECT proposals_push_ids FROM fleet_owner_marks`).Scan(&recorded); err != nil || len(recorded) != 2 || recorded[0] != a.ID || recorded[1] != b.ID {
+		t.Fatalf("the claim recorded %v (%v); want [%d %d], the two it counted", recorded, err, a.ID, b.ID)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{}) {
+		t.Fatalf("right after the claim: %+v %v; want nothing (it shows this set)", r, err)
+	}
+	c, err := p.Propose(ctx, proposal("5yncpu5h-0003", 9203, ClassCustom, "a custom text for the growth case"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{}) {
+		t.Fatalf("the set only grew: %+v; want nothing (a new proposal waits for the alert)", r)
+	}
+	if _, ok, err := p.MoveAction(ctx, b.ID, []string{StateProposed}, Move{State: StateExpired, Outcome: "gone", Finish: true}); err != nil || !ok {
+		t.Fatalf("expire b: %v %v", ok, err)
+	}
+	if r, err := p.SyncPush(ctx); err != nil || r != (PushSync{Replace: true, Count: 2, Newest: c.ID}) {
+		t.Fatalf("b left: %+v %v; want Replace, 2, newest %d", r, err, c.ID)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{}) {
+		t.Fatalf("again with no change: %+v; want nothing", r)
+	}
+	for _, id := range []int64{a.ID, c.ID} {
+		if _, ok, err := p.MoveAction(ctx, id, []string{StateProposed}, Move{State: StateRejected, Finish: true}); err != nil || !ok {
+			t.Fatalf("reject %d: %v %v", id, ok, err)
+		}
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{Withdraw: true}) {
+		t.Fatalf("none waiting: %+v; want Withdraw", r)
+	}
+	if r, _ := p.SyncPush(ctx); r != (PushSync{}) {
+		t.Fatalf("after the withdrawal: %+v; want nothing", r)
+	}
+	var clock time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT proposals_pushed_at FROM fleet_owner_marks`).Scan(&clock); err != nil || !clock.Equal(t0) {
+		t.Fatalf("the alert clock: %v %v; want the claim's %v", clock, err, t0)
+	}
+	if showing, err := p.HidePush(ctx); err != nil || showing {
+		t.Fatalf("HidePush with nothing showing: %v %v", showing, err)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_push_ids = '{1}' WHERE owner_id = 2`)
+	if showing, err := p.HidePush(ctx); err != nil || !showing {
+		t.Fatalf("HidePush with one showing: %v %v", showing, err)
+	}
+}

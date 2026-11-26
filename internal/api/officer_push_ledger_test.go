@@ -36,7 +36,7 @@ import (
 // sink) and the package's wrappers that end in it.
 var pushEntryPoints = map[string]bool{
 	"goNotify": true, "pushTask": true, "attentionNotify": true, "askFiled": true,
-	"proposalCardFiled": true, "repushAsk": true,
+	"proposalCardFiled": true, "repushAsk": true, "goNotifyOrdered": true, "withdrawSettled": true,
 }
 
 // officerRouted: call sites on an officer path, by the officerPush row(s)
@@ -51,7 +51,7 @@ var officerRouted = map[string]string{
 	"officer_cap_hold.go Server.officerBudgetNotice -> goNotify":         string(officerPushBudget),
 	"officer_cap_hold.go Server.officerCapHoldNotice -> goNotify":        string(officerPushCapHold),
 	"officer_autorestart.go Server.officerAutoRestartNotice -> goNotify": string(officerPushRestartHeld),
-	"connectors.go Server.onConnectorRequested -> goNotify":              string(officerPushConnectorRequest),
+	"connectors.go Server.onConnectorRequested -> goNotifyOrdered":       string(officerPushConnectorRequest),
 	"page_tools.go Server.pagePublished -> pushTask":                     string(officerPushPagePublished),
 	"page_tools.go Server.pageShareAuto -> pushTask":                     string(officerPushPageShared),
 	"notify_owner.go Server.pageUpdated -> pushTask":                     string(officerPushPageUpdated),
@@ -62,7 +62,14 @@ var officerRouted = map[string]string{
 var notOfficerRouted = map[string]string{
 	"passkey_enrol.go Server.handlePasskeyProofPhone -> askFiled":         "the owner's own browser asking their phone to confirm adding a passkey (a signed-in session's POST); no officer reaches it",
 	"plugin_server.go Server.uninstallServerApp -> goNotify":              "an admin's uninstall withdrawing each server-app knock still out (a resolved to the person it was for); no officer reaches an uninstall",
-	"fleet_actions.go Server.fleetPushWaiting -> goNotify":                "the batched \"N proposals waiting\" push: fleet actions are filed only by the chief's chief-only fleet tools (agentTool chiefOnly); no officer can file one",
+	"fleet_actions.go Server.fleetPushWaiting -> goNotifyOrdered":         "the batched \"N proposals waiting\" push: fleet actions are filed only by the chief's chief-only fleet tools (agentTool chiefOnly); no officer can file one",
+	"fleet_actions.go Server.fleetPushReplace -> goNotifyOrdered":         "the same push replaced in place (Update, Silent) when a proposal it counted left: never a new alert, and no officer can file a fleet action",
+	"fleet_actions.go Server.fleetPushWithdraw -> goNotifyOrdered":        "a withdrawal (resolved), never a new notification",
+	"fleet_actions.go Server.fleetPushRecheck -> goNotifyOrdered":         "a withdrawal re-sent after one fan-out (resolved), never a new notification",
+	"connectors.go Server.connectorRequestsWithdraw -> withdrawSettled":   "a withdrawal (resolved), never a new notification",
+	"plugin_pairing.go Server.pairSettled -> withdrawSettled":             "a withdrawal (resolved), never a new notification",
+	"push_order.go Server.goNotifyOrdered -> goNotify":                    "a wrapper: its callers are on this ledger",
+	"push_order.go Server.withdrawSettled -> goNotifyOrdered":             "a withdrawal (resolved), and its re-send: never a new notification",
 	"attention.go Server.attentionNotify -> goNotify":                     "a wrapper: its callers are on this ledger",
 	"attention_suggest.go Server.askFiled -> attentionNotify":             "a wrapper: its callers are on this ledger (an officer's own asks come through officerAskFiled)",
 	"attention_suggest.go Server.proposalCardFiled -> attentionNotify":    "a wrapper: its callers are on this ledger",
@@ -101,7 +108,7 @@ var notOfficerRouted = map[string]string{
 	"team_dispatch.go Server.pushTeamDispatch -> pushTask":                "not officer-reachable: the chief's team dispatch",
 	"unrouted.go Server.raiseUnroutedAsk -> askFiled":                     "not officer-reachable: muster's own ask about a plugin message nothing routed",
 	"plugin_autostart.go Server.autostartStarted -> attentionNotify":      "not officer-reachable: muster's own stop ask for an agent it auto-started on a plugin's task (the owner's per-plugin opt-in); the plugin door files the task, never an officer",
-	"plugin_pairing.go Server.pairRequested -> goNotify":                  "not officer-reachable: an unauthenticated plugin process asks to pair",
+	"plugin_pairing.go Server.pairRequested -> goNotifyOrdered":           "not officer-reachable: an unauthenticated plugin process asks to pair",
 	"pages.go Server.pageResponded -> pushTask":                           "not an officer's push: an outside viewer responded through a page's link",
 	"push_task.go Server.flushCreatedTasks -> pushTask":                   "not officer-reachable: the machine routes' task creation (the CLI, the hook token)",
 	"push_task.go Server.flushCommentedTasks -> pushTask":                 "not officer-reachable: the machine route's task comment (an agent's comment pushes no one)",

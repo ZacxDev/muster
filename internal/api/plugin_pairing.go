@@ -81,6 +81,7 @@ type pairStore interface {
 	PendingPairs(ctx context.Context, now time.Time) ([]plugins.PairRequest, error)
 	DecidePair(ctx context.Context, id int64, approve, requireCode bool, code, via string, now time.Time) (plugins.PairRequest, error)
 	RedeemPair(ctx context.Context, publicID, secret string, now time.Time) (plugins.PairPoll, error)
+	TakeExpiredPairs(ctx context.Context, now time.Time) ([]plugins.ExpiredPair, error)
 }
 
 func (s *Server) pairs() pairStore {
@@ -144,10 +145,39 @@ func (s *Server) pairRequested(c plugins.PairCreated) {
 	if !ok {
 		return
 	}
-	s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: pairKey(id), Title: PairPushTitle,
+	// In order with its withdrawal (push_order.go).
+	s.goNotifyOrdered(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: pairKey(id), Title: PairPushTitle,
 		Body: "A plugin named " + mirror.OneLine(name, plugins.MaxLabelRunes) + " asks for a token. Approve it with the code it printed.",
-		Tag:  pairKey(id), Data: map[string]string{"url": pairLink(id)}}, nil)
+		Tag:  pairKey(id), Data: map[string]string{"url": pairLink(id)}})
 	s.attentionChanged(owner, pairKey(id))
+}
+
+// pairSettled is every path that took pairing request id out of pending —
+// approved, denied, expired: its notification is withdrawn (a tap would open
+// a request that no longer waits), in order and re-checked (push_order.go:
+// leaving pending is final, so the re-check always sends it again), and
+// owner's views move.
+func (s *Server) pairSettled(ctx context.Context, owner, id int64) {
+	s.withdrawSettled(ctx, owner, pairKey(id), pairKey(id), nil)
+	s.attentionChanged(owner, pairKey(id))
+}
+
+// withdrawExpiredPairs withdraws the notification of every pairing request
+// that expired undecided (plugins.PairTTL), once: the Attention sweep's step,
+// so an expiry is acted on within a sweep of it, not only when a page reads.
+func (s *Server) withdrawExpiredPairs(ctx context.Context) {
+	ps := s.pairs()
+	if ps == nil {
+		return
+	}
+	due, err := ps.TakeExpiredPairs(ctx, s.now())
+	if err != nil {
+		s.logger.Printf("plugins: expired pairing requests: %v", err)
+		return
+	}
+	for _, p := range due {
+		s.pairSettled(ctx, p.OwnerID, p.ID)
+	}
 }
 
 // PairPushTitle is a pairing request's push title.
@@ -247,7 +277,7 @@ func (s *Server) decidePairForm(w http.ResponseWriter, r *http.Request, approve 
 		s.renderPluginsPage(w, r, code, "", msg)
 		return
 	}
-	s.attentionChanged(requestOwner(r.Context()), pairKey(id))
+	s.pairSettled(r.Context(), requestOwner(r.Context()), id)
 	http.Redirect(w, r, pluginsPath, http.StatusSeeOther)
 }
 
@@ -405,7 +435,7 @@ func (s *Server) toolPluginRequestDecide(ctx context.Context, c toolCaller, argu
 		_, msg := pairRefusal(err)
 		return toolErr("pairing request %d: %s", in.ID, msg)
 	}
-	s.attentionChanged(requestOwner(ctx), pairKey(p.ID))
+	s.pairSettled(ctx, requestOwner(ctx), p.ID)
 	s.logger.Printf("plugins: pairing %d %s by the owner via %s", p.ID, p.Status, via)
 	out := map[string]any{"id": p.ID, "status": p.Status}
 	if p.Status == plugins.PairApproved {

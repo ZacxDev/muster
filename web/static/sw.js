@@ -302,7 +302,8 @@ self.addEventListener('push', (event) => {
   // A "resolved" control message: close any open notification for this id on
   // this device (it was decided elsewhere). Render nothing.
   if (payload.type === 'resolved') {
-    event.waitUntil(closeByTag(payload.tag || payload.id));
+    const t = payload.tag || payload.id;
+    event.waitUntil(Promise.all([closeByTag(t), forgetDismissed(t)]));
     return;
   }
 
@@ -314,14 +315,16 @@ self.addEventListener('push', (event) => {
     const data = Object.assign({ type: 'notify' }, payload.data || {});
     if (!data.url) data.url = '/';
     event.waitUntil(
-      self.registration.showNotification(payload.title || 'muster', {
-        body: payload.body || '',
-        icon: payload.icon || '/static/icons/icon-192.png',
-        badge: '/static/icons/badge-72.png',
-        tag: payload.tag || undefined,
-        data: data,
-        requireInteraction: false,
-      })
+      forgetDismissed(payload.tag).then(() =>
+        self.registration.showNotification(payload.title || 'muster', {
+          body: payload.body || '',
+          icon: payload.icon || '/static/icons/icon-192.png',
+          badge: '/static/icons/badge-72.png',
+          tag: payload.tag || undefined,
+          data: data,
+          requireInteraction: false,
+        })
+      )
     );
     return;
   }
@@ -356,7 +359,17 @@ self.addEventListener('push', (event) => {
     silent: payload.silent === true,
     renotify: false,
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  // 🔴 RESPECT THE SWIPE (docs/push.md "When a notification is withdrawn"):
+  // a quiet payload (`silent`: a replacement in place, a re-show) for a tag the
+  // user closed is NOT shown — the browser would bring the closed notification
+  // back. A loud one (a genuine new alert) is shown, and forgets the close.
+  if (options.silent) {
+    event.waitUntil(
+      isDismissed(tag).then((closed) => (closed ? undefined : self.registration.showNotification(title, options)))
+    );
+    return;
+  }
+  event.waitUntil(forgetDismissed(tag).then(() => self.registration.showNotification(title, options)));
 });
 
 async function closeByTag(tag) {
@@ -364,6 +377,46 @@ async function closeByTag(tag) {
   const notes = await self.registration.getNotifications({ tag });
   notes.forEach((n) => n.close());
 }
+
+// --- Tags the user closed --------------------------------------------------
+//
+// `notificationclose` fires when the USER dismisses a notification (a swipe,
+// the ×), never for the worker's own close() (closeByTag, a tap's close), so
+// the record is the user's alone. Kept in its own cache — never a shell cache,
+// which activate prunes — under a path no request ever asks for.
+const DISMISSED_CACHE = 'muster-dismissed-v1';
+const dismissedKey = (tag) => '/__muster/dismissed-tag/' + encodeURIComponent(tag);
+
+async function markDismissed(tag) {
+  if (!tag) return;
+  try {
+    await (await caches.open(DISMISSED_CACHE)).put(dismissedKey(tag), new Response('1'));
+  } catch (e) {
+    /* storage refused: a later quiet update may show it again, nothing worse */
+  }
+}
+
+async function isDismissed(tag) {
+  if (!tag) return false;
+  try {
+    return !!(await (await caches.open(DISMISSED_CACHE)).match(dismissedKey(tag)));
+  } catch (e) {
+    return false;
+  }
+}
+
+async function forgetDismissed(tag) {
+  if (!tag) return;
+  try {
+    await (await caches.open(DISMISSED_CACHE)).delete(dismissedKey(tag));
+  } catch (e) {
+    /* nothing recorded, or storage refused */
+  }
+}
+
+self.addEventListener('notificationclose', (event) => {
+  event.waitUntil(markDismissed(event.notification && event.notification.tag));
+});
 
 // --- Notification clicks ---
 

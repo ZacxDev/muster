@@ -460,7 +460,7 @@ for (const vp of [
       // nothing waits.
       fix('endepisode', '1', set.gone.sid);
       await arrive(ids.gone);
-      await expect(group().locator('[data-fleet-gone]')).toHaveText(/^That proposal expired at \d{1,2}:\d\d(\s?[AP]M)?\.$/);
+      await expect(group().locator('[data-fleet-gone]')).toHaveText(/^No longer needed: the session moved on at \d{1,2}:\d\d(\s?[AP]M)?\.$/);
       await expect(group().locator('[data-fleet-proposal]')).toHaveCount(0);
       await expect(group()).toContainText('None.');
       // The one already approved: decided, and said so.

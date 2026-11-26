@@ -1842,12 +1842,35 @@ the rest: "Wrap 'muster-asks-ux'? +2 more. Nothing is sent until you approve
 them." It never carries a message's text, and it has no buttons. Each push
 replaces the last on the phone.
 
+**The push follows the proposals.** Whenever proposals it counted stop
+waiting — one expired (its 12 hours passed, or its session moved on), was
+approved, rejected or not sent, or fleet proposals were turned off:
+
+- once **none** waits, the push is withdrawn from your devices;
+- while **some** still wait, it is replaced in place with the new count and a
+  link to the newest one still waiting, **quietly**: no sound, no vibration,
+  no second alert.
+
+A new proposal arriving while the push shows changes nothing: it waits for the
+next 30-minute alert, which alerts as before. **A push you swiped away stays
+away**: a quiet replacement never brings it back (on the Android app and in
+browsers that keep the record), and the next real alert shows as usual. A
+quiet update never counts as the 30-minute push, and nothing is sent when
+nothing changed. Muster records which proposals the push showed, so it acts
+only on a real change and never raises a push that is not showing. Safari
+(an iPhone or a Mac) keeps the old push: it ignores "quiet", and muster does
+not send it a withdrawal (see [push.md](push.md#when-a-notification-is-withdrawn)).
+
 Tapping it opens the board (`/tasks?chief=open&fleet=proposed&proposal=<id>`)
 with the chief panel open on the digest's **Proposed group** (on a phone, its
 sheet), scrolled to that proposal and outlined, with its Approve, Edit and
 Reject on screen. If it no longer waits when you get there, a line says so:
-"That proposal expired at 10:07 PM.", "That proposal was already approved at
-…", "…rejected at …", or "That proposal was not sent: its session moved on".
+"No longer needed: the session moved on at 10:07 PM." (its stop ended, or a
+new message or pull-request head came), "Expired after 12 hours at 10:07 PM.",
+"That proposal was already approved at …", "…rejected at …", or "That
+proposal was not sent: its session moved on". Which expiry it was is read
+from the outcome muster recorded when it expired, so a proposal that expired
+before this change is told the same way.
 The newest one still waiting is outlined instead, or the group says "None.".
 An older push's `/?chief=open` opens the board with the panel open too.
 

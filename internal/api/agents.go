@@ -1506,6 +1506,9 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	}
 	// A destroyed pod cannot post its own clear: forget its work report now.
 	s.clearAgentWork(id)
+	// Its pending connector requests go with its row (ON DELETE CASCADE):
+	// read them now, to withdraw their prompts once it is gone.
+	pendingGrants := s.agentPendingGrants(ctx, id)
 	opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
 	// Registered HERE, before the goroutine exists, so a waiter that runs after
 	// destroyAgent returns cannot miss it (sync.WaitGroup: an Add from zero must
@@ -1531,6 +1534,9 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 		// the sidebar (agent.changed) and the attention queue, which lost
 		// the agent's asks with its row (attention_queue.changed).
 		s.releaseChiefStart(opCtx, a)
+		if len(pendingGrants) > 0 {
+			s.connectorRequestsWithdraw(opCtx, a.OwnerID, pendingGrants...)
+		}
 		// An auto-start's Stop ask has nothing left to stop (plugin_autostart.go).
 		if a.NoteID != nil {
 			s.settleAutostartAsks(opCtx, *a.NoteID, a.ID)

@@ -500,7 +500,10 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 		// A request still waiting from before a standing grant covered it:
 		// asking again applies the shared approval. Not one this very request
 		// re-opened because the credential source changed: that one asks.
-		s.approveFromStanding(ctx, g)
+		// Approved so, its prompt is withdrawn.
+		if _, ok := s.approveFromStanding(ctx, g); ok {
+			s.connectorRequestsWithdraw(ctx, requestOwner(ctx), g.ID)
+		}
 	}
 	v, err := s.agentConnectorView(ctx, a, name)
 	if err == nil && v.Grant == connectors.StatusPending {
@@ -600,17 +603,56 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 		}
 		link = officerDecisionCard(officerPushConnectorRequest, ref)
 	}
-	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
+	// In order with its withdrawal (push_order.go).
+	s.goNotifyOrdered(requestOwner(ctx), push.EventConnector, RouterNotification{
 		Type:         "connector",
 		ID:           strconv.FormatInt(g.ID, 10),
 		Title:        "Connector request: " + g.AgentName,
 		Body:         body,
-		Tag:          "connector-" + strconv.FormatInt(g.ID, 10),
+		Tag:          connectorTag(g.ID),
 		Data:         map[string]string{"url": link},
 		managersOnly: team,
-	}, func(n int) {
-		s.logger.Printf("push: delivered connector request id=%d owner=%d to %d device(s)", g.ID, requestOwner(ctx), n)
 	})
+}
+
+// connectorTag is connector request id's notification tag.
+func connectorTag(id int64) string { return "connector-" + strconv.FormatInt(id, 10) }
+
+// connectorRequestsWithdraw withdraws owner's notifications of connector
+// requests ids, which no longer wait: decided (decideConnectorGrant), approved
+// by a shared approval or by a standing grant on a re-ask, revoked, gone with
+// their connector or their agent. owner is who the request was pushed to (the
+// agent's owner: a person, or a team). In order and re-checked
+// (push_order.go): the re-check sends it again unless the request is pending
+// again (re-opened: that is a new prompt of its own).
+func (s *Server) connectorRequestsWithdraw(ctx context.Context, owner int64, ids ...int64) {
+	for _, id := range ids {
+		id := id
+		s.withdrawSettled(ctx, owner, strconv.FormatInt(id, 10), connectorTag(id), func(rctx context.Context) bool {
+			g, err := s.ext.Connectors.GetGrant(rctx, id)
+			return err != nil || g.Status != connectors.StatusPending
+		})
+	}
+}
+
+// agentPendingGrants is agent id's pending connector requests' ids (none
+// when there is no connector store or they cannot be read).
+func (s *Server) agentPendingGrants(ctx context.Context, id int64) []int64 {
+	if s.ext.Connectors == nil {
+		return nil
+	}
+	pending, err := s.ext.Connectors.ListPendingGrants(ctx)
+	if err != nil {
+		s.logger.Printf("connectors: agent %d's pending requests: %v", id, err)
+		return nil
+	}
+	var out []int64
+	for _, g := range pending {
+		if g.AgentID == id {
+			out = append(out, g.ID)
+		}
+	}
+	return out
 }
 
 // --- the operator's surface ---------------------------------------------------------------
@@ -1043,11 +1085,24 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	// The requests waiting on it go with its grants: read them first, to
+	// withdraw their notifications once it is gone.
+	var waiting []int64
+	if pending, err := s.ext.Connectors.ListPendingGrants(r.Context()); err != nil {
+		s.logger.Printf("connectors: delete %q: pending requests: %v", name, err)
+	} else {
+		for _, g := range pending {
+			if g.Connector == name {
+				waiting = append(waiting, g.ID)
+			}
+		}
+	}
 	if err := s.ext.Connectors.DeleteConnector(r.Context(), name); err != nil && !errors.Is(err, connectors.ErrNotFound) {
 		s.logger.Printf("connectors: delete %q: %v", name, err)
 		http.Error(w, "could not delete", http.StatusInternalServerError)
 		return
 	}
+	s.connectorRequestsWithdraw(r.Context(), requestOwner(r.Context()), waiting...)
 	s.auditGrant(r.Context(), connectors.Grant{Connector: name}, "connector deleted by the operator; its grants were removed")
 	s.broadcast(r.Context(), EventConnectorChanged, name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: "Connector " + name + " deleted."})
@@ -1146,6 +1201,13 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 	if approve {
 		shared = s.shareApproval(ctx, g, via)
 	}
+	// 🔴 ITS NOTIFICATION GOES WITH IT, and so do those of the requests the
+	// shared approval approved: each would open a card already decided.
+	settled := []int64{g.ID}
+	for _, o := range shared.Approved {
+		settled = append(settled, o.ID)
+	}
+	s.connectorRequestsWithdraw(ctx, requestOwner(ctx), settled...)
 	// An officer's items the pending grant refused are settled now
 	// (officer_connector_rerun.go, settleGrantBlocks): re-run on THE approval
 	// of an officer's grant, settled without a re-run on its denial.
@@ -1243,6 +1305,9 @@ func (s *Server) handleConnectorRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGrant(r.Context(), g, "revoked")
+	// A revoked PENDING request no longer waits: its prompt goes. (An approved
+	// one's went at its approval; sending it again closes nothing.)
+	s.connectorRequestsWithdraw(r.Context(), requestOwner(r.Context()), id)
 	s.broadcast(r.Context(), EventConnectorChanged, strconv.FormatInt(id, 10))
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + "'s access to " + g.Connector + " was revoked."})
 }

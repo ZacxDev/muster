@@ -43,6 +43,10 @@ func newProposeFixture(t *testing.T) *proposeFixture {
 	f.srv.ext.FleetPropose, f.srv.ext.FleetActions = true, fleet.NewPG(f.pool)
 	f.srv.ext.Mirror = observedMirror{f.mirror}
 	f.srv.now = func() time.Time { return f.at }
+	// No real re-check timers (push_order.go): a withdrawal's 15 s re-check
+	// would read f.at from its own goroutine after the test moved it. A test
+	// of the re-check captures it.
+	f.srv.clearRetry.after = func(time.Duration, func()) {}
 	return f
 }
 

@@ -314,6 +314,67 @@ test('an attention notification is shown with its tag and link, and its resolved
   await expect.poll(async () => (await shown()).find((n) => n.tag === 'attention-ask-42')?.icon).toBe('/brand/icon-192.png?v=0123456789abcdef');
 });
 
+// "N PROPOSALS WAITING" FOLLOWS ITS PROPOSALS, the worker's half
+// (internal/api fleetPushSync; docs/push.md "When a notification is
+// withdrawn"): the alert is shown; the replacement under the same tag — a new
+// count, a link to a proposal still waiting, `silent` — is shown in its place
+// with silent set and renotify off (no sound, no second alert) and its new
+// link; the resolved message closes it. Same stub as above: headless Chromium
+// refuses showNotification, so the sink records what the worker asked for.
+//
+// ⚠ AN INVARIANT GUARD, NOT THIS CHANGE'S REGRESSION TEST: sw.js already
+// passed `silent` with `renotify: false` and closed by tag on `resolved`
+// before the fleet push used them; this pins that the fleet's payloads ride
+// that existing behaviour. It was green before the change too.
+test('the fleet push is replaced quietly in place, then closed by its resolved message', async ({ page, context }) => {
+  await signIn(page, origin);
+  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
+  await page.goto(origin + '/tasks');
+  const worker = await registered;
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await worker.evaluate(() => {
+    type Note = { title: string; tag: string; url: string; silent: boolean; renotify: boolean; open: boolean; close: () => void };
+    const sink: Note[] = [];
+    (self as unknown as { __fleet: Note[] }).__fleet = sink;
+    const reg = (self as unknown as { registration: ServiceWorkerRegistration }).registration;
+    reg.showNotification = async (title: string, o?: NotificationOptions & { renotify?: boolean }) => {
+      // A notification under a tag already showing REPLACES it (the
+      // Notifications API's rule): the old one is no longer open.
+      for (const old of sink) if (old.open && old.tag === (o?.tag ?? '')) old.open = false;
+      const n: Note = { title, tag: o?.tag ?? '', url: (o?.data || {}).url, silent: o?.silent === true, renotify: o?.renotify === true, open: true, close: () => (n.open = false) };
+      sink.push(n);
+    };
+    reg.getNotifications = (async (f?: { tag?: string }) =>
+      sink.filter((n) => n.open && (!f?.tag || n.tag === f.tag))) as unknown as typeof reg.getNotifications;
+  });
+  const cdp = await context.newCDPSession(page);
+  const regs: { registrationId: string; scopeURL: string; isDeleted?: boolean }[] = [];
+  cdp.on('ServiceWorker.workerRegistrationUpdated', (e) => regs.push(...e.registrations));
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)?.registrationId ?? '').not.toBe('');
+  const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
+  const open = () =>
+    worker.evaluate(() =>
+      (self as unknown as { __fleet: { title: string; tag: string; url: string; silent: boolean; renotify: boolean; open: boolean }[] }).__fleet
+        .filter((n) => n.open)
+        .map((n) => ({ title: n.title, tag: n.tag, url: n.url, silent: n.silent, renotify: n.renotify })),
+    );
+  const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
+
+  await deliver(
+    '{"type":"attention","id":"fleet-proposals","title":"2 proposals waiting","body":"Wrap \'quartz-ledger\'? +1 more. Nothing is sent until you approve them.","tag":"fleet-proposals","data":{"url":"/tasks?chief=open\\u0026fleet=proposed\\u0026proposal=907"}}',
+  );
+  await expect.poll(open).toEqual([{ title: '2 proposals waiting', tag: 'fleet-proposals', url: '/tasks?chief=open&fleet=proposed&proposal=907', silent: false, renotify: false }]);
+  await deliver(
+    '{"type":"attention","id":"fleet-proposals","title":"1 proposal waiting","body":"Continue \'basalt-intake\'? Nothing is sent until you approve it.","tag":"fleet-proposals","data":{"url":"/tasks?chief=open\\u0026fleet=proposed\\u0026proposal=906"},"silent":true}',
+  );
+  await expect.poll(open).toEqual([{ title: '1 proposal waiting', tag: 'fleet-proposals', url: '/tasks?chief=open&fleet=proposed&proposal=906', silent: true, renotify: false }]);
+  await deliver('{"type":"resolved","id":"fleet-proposals","tag":"fleet-proposals"}');
+  await expect.poll(open).toEqual([]);
+});
+
 
 // TAPPING an attention notification (operator ask: "go straight to the
 // session"): the notification brings the OPEN muster tab forward and moves it
@@ -581,4 +642,72 @@ test('the page follows a NAVIGATE only to its own origin', async ({ page, contex
   expect(await worker.evaluate(() => (self as unknown as { __acks: string[] }).__acks), 'only the same-origin url is answered').toEqual(['same-origin']);
   expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned), 'the javascript: url ran nothing').toBeUndefined();
   expect(elsewhere, 'no request left for the other origin').toEqual([]);
+});
+
+// RESPECT THE SWIPE, the worker's half (docs/push.md "When a notification is
+// withdrawn"): the user closes the fleet push (`notificationclose`, which the
+// browser fires only for a user's dismissal); a quiet replacement for that tag
+// is then NOT shown — the browser would bring the closed notification back. A
+// loud alert for the tag is shown and forgets the close (a quiet one after it
+// shows again); closed again, a `resolved` forgets it too. The close is
+// dispatched to the real worker's listener by hand: headless Chromium has no
+// notification to swipe (the sink is stubbed, as above).
+//
+// Red before this change: the quiet replacement was shown over the close.
+test('a quiet replacement does not bring back a notification the user closed', async ({ page, context }) => {
+  await signIn(page, origin);
+  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
+  await page.goto(origin + '/tasks');
+  const worker = await registered;
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await worker.evaluate(async () => {
+    type Note = { title: string; tag: string; silent: boolean };
+    const sink: Note[] = [];
+    (self as unknown as { __swipe: Note[] }).__swipe = sink;
+    const reg = (self as unknown as { registration: ServiceWorkerRegistration }).registration;
+    reg.showNotification = async (title: string, o?: NotificationOptions) => {
+      sink.push({ title, tag: o?.tag ?? '', silent: o?.silent === true });
+    };
+    reg.getNotifications = (async () => []) as unknown as typeof reg.getNotifications;
+    await caches.delete('muster-dismissed-v1');
+  });
+  const cdp = await context.newCDPSession(page);
+  const regs: { registrationId: string; scopeURL: string; isDeleted?: boolean }[] = [];
+  cdp.on('ServiceWorker.workerRegistrationUpdated', (e) => regs.push(...e.registrations));
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)?.registrationId ?? '').not.toBe('');
+  const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
+  const shown = () => worker.evaluate(() => (self as unknown as { __swipe: { title: string }[] }).__swipe.map((n) => n.title));
+  const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
+  const close = () =>
+    worker.evaluate(async () => {
+      const e = new Event('notificationclose') as Event & { notification: { tag: string }; waitUntil: (p: Promise<unknown>) => void };
+      const pending: Promise<unknown>[] = [];
+      e.notification = { tag: 'fleet-proposals' };
+      e.waitUntil = (p) => pending.push(p);
+      self.dispatchEvent(e);
+      await Promise.all(pending);
+    });
+  const loud = (title: string) =>
+    `{"type":"attention","id":"fleet-proposals","title":"${title}","body":"b","tag":"fleet-proposals","data":{"url":"/tasks"}}`;
+  const quiet = (title: string) =>
+    `{"type":"attention","id":"fleet-proposals","title":"${title}","body":"b","tag":"fleet-proposals","data":{"url":"/tasks"},"silent":true}`;
+
+  await deliver(loud('2 proposals waiting'));
+  await expect.poll(shown).toEqual(['2 proposals waiting']);
+  await close();
+  await deliver(quiet('1 proposal waiting'));
+  // A marker after it: the quiet one, had it been shown, would be before it.
+  await deliver(loud('3 proposals waiting'));
+  await expect.poll(shown).toEqual(['2 proposals waiting', '3 proposals waiting']);
+  // The loud alert forgot the close: a quiet replacement shows again.
+  await deliver(quiet('2 proposals waiting (quiet)'));
+  await expect.poll(shown).toEqual(['2 proposals waiting', '3 proposals waiting', '2 proposals waiting (quiet)']);
+  // Closed again, then withdrawn: the withdrawal forgets the close too.
+  await close();
+  await deliver('{"type":"resolved","id":"fleet-proposals","tag":"fleet-proposals"}');
+  await deliver(quiet('1 proposal waiting (after resolved)'));
+  await expect.poll(async () => (await shown()).at(-1)).toBe('1 proposal waiting (after resolved)');
 });
