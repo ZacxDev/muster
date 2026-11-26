@@ -629,6 +629,15 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   function applyOpen(p, open) {
     p.classList.toggle('translate-x-full', !open);
     p.classList.toggle('translate-x-0', !!open);
+    // 🔴 A SHUT PANEL SHUTS ITS SHEET (chat_index.go), BEFORE IT GOES INERT (an
+    // inert sheet is no longer "current"): left open inside the now-inert
+    // panel, the sheet's keyboard handling still held Tab (the focus stuck on
+    // the page) and took the first Escape. No focus back: the opener is in the
+    // panel being shut.
+    if (!open && window.muIndex) {
+      var s = window.muIndex.current();
+      if (s && p.contains(s)) window.muIndex.close({ focus: false });
+    }
     if (open) { p.removeAttribute('inert'); } else { p.setAttribute('inert', 'inert'); }
     p.setAttribute('` + chiefPanelOpenAttr + `', open ? '1' : '0');
     // Every launcher on the page reports the state. There can be more than one

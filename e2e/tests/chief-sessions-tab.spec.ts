@@ -538,6 +538,37 @@ for (const vp of [
 // panel's body — its sheet and its title bar's icon — fetched and put beside
 // it. Each icon opens its own sheet, the other stays shut, and the page's
 // "Your messages" is still built into the page's sheet.
+// 🔴 SHUTTING THE PANEL SHUTS ITS SHEET. The panel's sheet left open inside a
+// panel shut by its toggle (or ✕) was still "open" to the sheet's keyboard
+// handling: Tab was trapped into the now-inert panel (focus stuck) and the
+// first Escape was taken. Shut with the sheet open, the page's Tab moves the
+// focus out, and Escape is nobody's.
+test.describe('the panel shut with its sheet open', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+  test('Tab and Escape are the page\'s again', async ({ page }) => {
+    await makeChief(page);
+    await page.goto('/tasks');
+    await openPanel(page);
+    await icon(page, 'panel').click();
+    await expect(sheet(page, 'panel')).toBeVisible();
+    await closePanel(page);
+    await page.evaluate(() => {
+      window.addEventListener('keydown', (e) => { if (e.key === 'Escape') (window as any).__esc = e; }, true);
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    await page.keyboard.press('Tab');
+    const at = await page.evaluate(() => {
+      const a = document.activeElement;
+      return { body: !a || a === document.body, inPanel: !!a?.closest('#chief-panel') };
+    });
+    expect(at.body, 'Tab moved the focus').toBe(false);
+    expect(at.inPanel, 'Tab moved the focus outside the shut panel').toBe(false);
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => (window as any).__esc?.defaultPrevented), 'Escape was not taken').toBe(false);
+    await expect(sheet(page, 'panel'), 'the shut panel\'s sheet is shut too').toBeHidden();
+  });
+});
+
 test.describe('two sheets (invariant guard)', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
   test('invariant: the page\'s sheet and the panel\'s, on one document, each open their own', async ({ page }) => {

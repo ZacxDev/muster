@@ -269,8 +269,9 @@ func chatIndexScript() g.Node {
     for (var i = 0; i < t.length; i++) { var s = t[i].trim(); if (s) return s; }
     return '';
   }
-  // isOpen: s is a sheet on the page, shown.
-  function isOpen(s) { return !!(s && s.isConnected && !s.hidden); }
+  // isOpen: s is a sheet on the page, shown — and not inside an inert
+  // ancestor (a shut chief panel: whatever shut it, its sheet holds no key).
+  function isOpen(s) { return !!(s && s.isConnected && !s.hidden && !s.closest('[inert]')); }
 
   // rows is every sent message, oldest first: the host's index (each with its
   // bubble when the page has it), then the page's bubbles it does not name —
