@@ -44,7 +44,7 @@ type ChatSwitcher struct {
 }
 
 // SwitcherOrder is THE switcher's order, for every surface that lists a
-// chief's chats (the chief page's drawer and the panel's thread list): the
+// chief's chats (the Sessions tab, on the chief page and in the panel): the
 // primary first, then the side chats by last activity (updated_at, newest
 // first; id breaks a tie, newest first), and the archived ones apart, in the
 // same order. 🔴 ONE RULE, ONE PLACE: a surface that sorted on its own would

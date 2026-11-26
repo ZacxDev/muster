@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,11 +12,12 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	focusstore "github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // TestTheChiefPagesStripIsTheSwitcherOrder: the chief page's strip of chips
-// (ui chiefChatStrip) places the chats in agents.SwitcherOrder — the primary
+// (ui chiefSessionsTab) places the chats in agents.SwitcherOrder — the primary
 // first, then the side chats by last activity, newest first, then the archived
 // ones, newest first — as the server reads them (chiefChatViews), the seam
 // between the store's order and the renderer.
@@ -156,4 +158,113 @@ func mustID(t *testing.T, s string) int64 {
 		t.Fatalf("not a session id: %q", s)
 	}
 	return id
+}
+
+// TestThePanelsSheetLoadsTheChiefsFocusHistory: the chief PANEL's body carries
+// its own sheet (#chief-panel-index: Sessions, Your messages, What it worked on)
+// and, with a focus store, its "What it worked on" tab loads the chief's own
+// history (subject agent:<id>), as the chief page's does; with none, the tab is
+// the empty state and loads nothing. RED at main: the panel had no sheet, and
+// its view carried no focus history.
+func TestThePanelsSheetLoadsTheChiefsFocusHistory(t *testing.T) {
+	f := newChatsFixture(t, "")
+	want := `data-href="` + html.EscapeString(ui.FocusHistoryPath(focusstore.AgentSubject(f.chief.ID).String(), "")) + `"`
+	body := func() string {
+		r := f.call(t, http.MethodGet, "/ui/chief/panel", nil, f.operator())
+		if r.Code != http.StatusOK {
+			t.Fatalf("GET the chief panel: %d", r.Code)
+		}
+		b := r.Body.String()
+		i := strings.Index(b, `id="chief-panel-index-tabs-panel-focus"`)
+		if i < 0 {
+			t.Fatalf("the panel body has no sheet with a focus tab:\n%s", b)
+		}
+		// The tab's own list, not the scripts after it (which name its marks).
+		b = b[i:]
+		if j := strings.Index(b, "</ol>"); j >= 0 {
+			b = b[:j]
+		}
+		return b
+	}
+	f.srv.ext.Focus = nil
+	if tab := body(); strings.Contains(tab, "data-focus-history-more") || !strings.Contains(tab, "data-focus-history-empty") {
+		t.Error("with no focus store the panel's focus tab should be the empty state, loading nothing")
+	}
+	f.srv.ext.Focus = focusstore.NewPG(f.pool)
+	if tab := body(); !strings.Contains(tab, want) {
+		t.Errorf("the panel's focus tab does not load the chief's history (%s)", want)
+	}
+}
+
+// TestTheMessageSearchAnswersTheSessionsTab: GET /ui/chief/threads/search (the
+// Sessions tab's message search, folded in from the panel's thread list)
+// answers the chats whose MESSAGES hold the words — not a chat matched by its
+// title alone, which is already a row of the tab — under "Matches in messages",
+// with the words around the match, linked the way the asking surface switches:
+// the chief page's link, or the panel body's hx-get. A blank query answers
+// nothing. RED before the fold: the route answered the thread list's rows
+// (title matches included, panel buttons only, the blank query the whole list).
+func TestTheMessageSearchAnswersTheSessionsTab(t *testing.T) {
+	f := newChatsFixture(t, "")
+	ctx := asUser(1)
+	sys := authz.System(context.Background())
+	chat := func(title, body string) int64 {
+		t.Helper()
+		s, err := f.srv.ext.Agents.CreateSession(ctx, f.chief.ID, f.chief.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.srv.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: f.chief.ID, SessionID: s.ID, Role: "user", Content: body}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.pool.Exec(sys, `UPDATE chat_sessions SET title = $2 WHERE id = $1`, s.ID, title); err != nil {
+			t.Fatal(err)
+		}
+		return s.ID
+	}
+	byTitle := chat("Kestrel notes", "first words")
+	byBody := chat("unrelated", "the kestrel came back at dawn")
+	none := chat("nothing here", "nope")
+	get := func(q, surface string) string {
+		t.Helper()
+		path := "/ui/chief/threads/search?q=" + q + "&session=" + strconv.FormatInt(none, 10)
+		if surface != "" {
+			path += "&surface=" + surface
+		}
+		r := f.call(t, http.MethodGet, path, nil, f.operator())
+		if r.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", path, r.Code)
+		}
+		return r.Body.String()
+	}
+	ids := func(body string) []string {
+		var out []string
+		for _, m := range regexp.MustCompile(`data-chief-message-match="(\d+)"`).FindAllStringSubmatch(body, -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
+	b := strconv.FormatInt(byBody, 10)
+	page := get("kestrel", "page")
+	if got := strings.Join(ids(page), ","); got != b {
+		t.Errorf("the page's matches are %q, want only the body match %s (title-only %d is a row already)", got, b, byTitle)
+	}
+	if !strings.Contains(page, `<a href="`+ui.AgentSessionHref(f.chief.Name, byBody)+`" data-chief-message-match="`+b+`"`) {
+		t.Errorf("the page's match is not a link to its chat:\n%s", page)
+	}
+	if !strings.Contains(page, `data-chief-message-matches-state="rows"`) || !strings.Contains(page, ">Matches in messages<") ||
+		!strings.Contains(page, "kestrel came back") {
+		t.Errorf("the page's matches lack their heading, state or the words around the match:\n%s", page)
+	}
+	panel := get("kestrel", "chief-panel")
+	if !strings.Contains(panel, `<button type="button" data-chief-message-match="`+b+`"`) ||
+		!strings.Contains(panel, `hx-get="/ui/chief/panel?session=`+b+`" hx-target="#chief-panel-body"`) || strings.Contains(panel, "<a href") {
+		t.Errorf("the panel's match does not switch the panel's body:\n%s", panel)
+	}
+	if body := get("", "page"); strings.TrimSpace(body) != "" {
+		t.Errorf("a blank query answered %q, want nothing", body)
+	}
+	if body := get("zzzz-no-such-words", "page"); strings.TrimSpace(body) != "" {
+		t.Errorf("no message match answered %q, want nothing", body)
+	}
 }

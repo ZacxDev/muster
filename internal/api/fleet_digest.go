@@ -337,7 +337,7 @@ func (s *Server) fleetLastMessage(ctx context.Context, sub fleetSubject) (role, 
 
 // --- the Fleet side chat ----------------------------------------------------------
 
-// fleetChatTitle is the Fleet side chat's name in the thread list.
+// fleetChatTitle is the Fleet side chat's name in the Sessions tab.
 const fleetChatTitle = "Fleet"
 
 // sessionTitleSetter is the agent store's title write (agents.PGStore).

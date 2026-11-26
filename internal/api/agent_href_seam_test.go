@@ -351,9 +351,11 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/ui/agent_href.go:AgentMomentHref":               1,
 	"AgentSessionHref ← internal/api/officer_origin.go:Server.officerOriginHref": 1,
 	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChip":                    1,
-	"AgentSessionHref ← internal/ui/notifications.go:activeRow":                  1,
-	"AgentSessionHref ← internal/ui/notifications.go:notifRow":                   1,
-	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":               1,
+	// The Sessions tab's message search, on the chief page: a match's link.
+	"AgentSessionHref ← internal/ui/chief_chats.go:chiefMessageMatches": 1,
+	"AgentSessionHref ← internal/ui/notifications.go:activeRow":         1,
+	"AgentSessionHref ← internal/ui/notifications.go:notifRow":          1,
+	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":      1,
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,

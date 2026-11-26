@@ -258,7 +258,7 @@ const pluginfix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
 // A chief agent with threads, so the panel's open state is a real one (intro,
-// thread list), not the "no chief" notice. Its own agent, removed afterwards.
+// the chat on screen named, the Sessions tab), not the "no chief" notice. Its own agent, removed afterwards.
 const chiefName = 'e2e-cls-chief-' + Date.now().toString(36);
 function mkchief(del: boolean) {
   execFileSync('go', ['run', './e2e/mkchat'], {
@@ -466,7 +466,7 @@ for (const vp of viewports) {
           b.click();
         });
         await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
-        await expect(page.locator('#chief-panel-body [data-chief-thread], #chief-panel-body #chat-form').first()).toBeAttached({ timeout: 15_000 });
+        await expect(page.locator('#chief-panel-body [data-chief-chat-strip], #chief-panel-body #chat-form').first()).toBeAttached({ timeout: 15_000 });
         await settle(page);
         const opened = await readCls(page);
         // Restored open: the next page load comes up with the panel open and

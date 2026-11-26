@@ -68,8 +68,8 @@ func spendCapCard(content string, b *ChiefChatBar, claudeModels []string) g.Node
 	}
 	if b != nil && len(claudeModels) > 0 {
 		if kind, _ := chiefChatKind(*b); kind == ChiefChatKindSide {
-			lines = append(lines, chiefContinuePicker(b.AgentID, b.SessionID,
-				[]SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}, claudeModels))
+			lines = append(lines, chiefContinueGroup(b,
+				[]SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}, claudeModels, ChatSurfaceChiefPanel))
 		}
 	}
 	return Div(

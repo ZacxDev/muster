@@ -506,7 +506,7 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 // refuses them (teamAgentRoutes).
 //
 // NewChatModels is the "+" menu's models (agents.ClaudeCodeModels, the one list
-// the New session picker offers too) where a side chat's model may be picked,
+// Continue in a new session offers too) where a side chat's model may be picked,
 // i.e. the runtimes gate offers claude-code to this chief (sideChatModel's own
 // test), and none elsewhere: "+" then opens a chat at once, as before.
 func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
@@ -517,6 +517,16 @@ func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agent
 		b.NewChatModels = agents.ClaudeCodeModels
 	}
 	b.OpenRouter = slices.Contains(rts, agents.SessionRuntimeOpencode)
+	// "Continue in a new session"'s runtimes: the same gate, labelled.
+	b.Runtimes = s.pickerRuntimes(ctx, a)
+	// 🔴 THE MESSAGE SEARCH ONLY ON THE VIEWER'S OWN CHIEF: its route
+	// (handleChiefThreadSearch) searches the chief chiefAgent resolves for the
+	// VIEWER, so on a team's chief (a member's shared room) or another owner's
+	// (an admin viewing it) it would list another agent's chats. The same
+	// resolution, compared: this chief is the one the route would search.
+	if own, err := s.chiefAgent(ctx); err == nil && own.ID == a.ID {
+		b.MessageSearch = true
+	}
 	return b
 }
 

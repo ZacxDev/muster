@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { openSessions, sessionsTab } from '../lib/chief-sessions';
 import { signIn } from '../lib/signin';
 import { chiefOpenRouterCatalogPort, chiefOpenRouterConnectPort, chiefOpenRouterPort, versionTerm } from '../lib/env';
 import { mkchat } from '../lib/mirrorhost';
@@ -8,10 +9,11 @@ import { startServer, Running } from '../lib/server';
 
 // A CHIEF SIDE CHAT ON ANY OPENROUTER MODEL (the opencode runtime,
 // docs/chief.md "OpenRouter sessions on opencode"), in a real browser, against
-// a real muster-server with the spend door on: the New session picker and the
-// Sessions drawer's New session menu offer OpenRouter with a search of the catalogue; a model is
-// found by part of its name, picked with a tap, and the session it starts is
-// on that model — the thread list and its Sessions row say so — and stored as
+// a real muster-server with the spend door on: the Sessions tab's "+ New
+// session" menu offers OpenRouter with a search of the catalogue (the chief
+// panel's thread list had a picker of its own until it was folded into the
+// tab); a model is found by part of its name, picked with a tap, and the
+// session it starts is on that model — its Sessions row says so — and stored as
 // it (a reload draws the same). A near miss starts nothing.
 //
 // The chief is a claude-code agent of this spec's own (e2e/mkchat), on a server
@@ -85,26 +87,25 @@ async function openPanel(page: Page) {
     });
     await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
   }
-  await expect(page.locator('#chief-thread-search')).toBeAttached({ timeout: 15_000 });
+  await expect(page.locator('#chief-panel-index-open')).toBeVisible({ timeout: 15_000 });
 }
 
-// openThreads opens the chief panel and then its thread list (which covers
-// the Sessions bar). The same steps as chief-runtimes.spec.ts.
-async function openThreads(page: Page) {
+// openPlus opens the panel's Sessions tab and its "+ New session" menu, and
+// answers the menu's OpenRouter form.
+async function openPlus(page: Page) {
   await openPanel(page);
-  await page.locator('label[for="chief-threads"]').first().click();
-  await expect(page.locator('#chief-thread-search')).toBeVisible();
+  await openSessions(sessionsTab(page, 'panel'));
+  await sessionsTab(page, 'panel').locator('button[popovertarget="chief-panel-new-chat-menu"]').click();
+  const menu = page.locator('#chief-panel-new-chat-menu');
+  await expect(menu).toBeVisible();
+  return menu.locator('form[data-chief-new-chat-openrouter]');
 }
 
-test('New session: search OpenRouter, pick a model, and the session is on it — listed, in the Sessions drawer, stored', async ({ page }) => {
+test('New session: search OpenRouter, pick a model, and the session is on it — listed in the Sessions tab, stored; the next one lists it as recent', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
-  await openThreads(page);
-
-  const picker = page.locator('[data-session-picker]');
-  await expect(picker.locator('form[data-new-session="claude-code"]')).toHaveCount(1);
-  const oc = picker.locator('form[data-new-session="opencode"]');
-  await expect(oc).toHaveCount(1);
+  const oc = await openPlus(page);
+  await expect(oc.locator('input[name="runtime"]')).toHaveValue('opencode');
   await expect(oc.locator('select')).toHaveCount(0);
 
   // Part of the name, not the id: the search ranks fuzzily.
@@ -124,35 +125,67 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
   await oc.getByRole('button', { name: 'Start' }).click();
   await expect(active).not.toHaveAttribute('data-chief-active-session', was ?? '');
   await expect(active).not.toHaveAttribute('data-chief-active-session', '');
+  const sid = (await active.getAttribute('data-chief-active-session'))!;
 
-  // The Sessions row (and button) for the chat the panel is now on names the model.
-  const tag = page.locator('[data-chief-chip-model="openrouter/deepseek/deepseek-v4.1-flash"]').first();
+  // Its Sessions row (and the bar) names the model.
+  const tag = sessionsTab(page, 'panel').locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`);
   await expect(tag).toHaveText('deepseek-v4.1-flash');
   await expect(tag).toHaveAttribute('title', 'Model: deepseek/deepseek-v4.1-flash');
+  await expect(page.locator('#chief-panel [data-chief-chat-strip] [data-chief-chip-model]')).toHaveText('deepseek-v4.1-flash');
 
-  await openThreads(page);
-  const line = page.locator('#chief-thread-results [data-session-runtime="opencode"]');
-  await expect(line).toHaveCount(1);
-  await expect(line).toHaveText('OpenRouter · deepseek/deepseek-v4.1-flash');
+  // The next New session lists it under "Recent" BEFORE anything is typed (an
+  // operator ask: "when I start a new session, it should show most recently
+  // used models in the model list"); a tap on it puts it in the field.
+  const again = await openPlus(page);
+  const field2 = again.locator('[data-openrouter-model-search]');
+  await expect(field2).toHaveValue('');
+  const recent = again.locator('[data-openrouter-model-recent]');
+  await expect(recent, 'the menu opening shows the recent models').toBeVisible({ timeout: 10_000 });
+  await expect(recent).toContainText('Recent');
+  const first = recent.locator('button[data-openrouter-model-pick]').first();
+  await expect(first).toHaveAttribute('data-openrouter-model-pick', 'openrouter/deepseek/deepseek-v4.1-flash');
+  await expect(first).toContainText('DeepSeek: DeepSeek V4.1 Flash');
+  await first.click();
+  await expect(field2).toHaveValue('openrouter/deepseek/deepseek-v4.1-flash');
+  // Typing still searches the catalogue: the recent list gives way to matches.
+  await field2.fill('');
+  await field2.pressSequentially('qwen3');
+  await expect(again.locator('button[data-openrouter-model-pick="openrouter/qwen/qwen3-coder"]')).toBeVisible({ timeout: 10_000 });
+  await expect(again.locator('[data-openrouter-model-recent]')).toHaveCount(0);
+  // The menu SHUTTING asks nothing (its toggle is filtered to the opening).
+  // The field is emptied first, so a close that did ask would ask for the
+  // recent models: a request this would count.
+  await field2.fill('');
+  await page.waitForTimeout(600);
+  let asked = 0;
+  page.on('request', (r) => { if (r.url().includes('/api/chief/openrouter-models/options')) asked++; });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#chief-panel-new-chat-menu')).toBeHidden();
+  await page.waitForTimeout(600);
+  expect(asked, 'the menu shutting asked for the models').toBe(0);
 
   // Stored, not only drawn.
   await page.reload();
-  await openThreads(page);
-  await expect(page.locator('#chief-thread-results [data-session-runtime="opencode"]')).toHaveText('OpenRouter · deepseek/deepseek-v4.1-flash');
+  await openPanel(page);
+  await expect(sessionsTab(page, 'panel').locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`)).toHaveAttribute('title', 'Model: deepseek/deepseek-v4.1-flash');
 });
 
-test('"+": an OpenRouter model picked in the Sessions drawer\'s New session menu opens a side chat on it', async ({ page }) => {
+test('"+": an OpenRouter model picked in the Sessions tab\'s New session menu opens a side chat on it', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
-  // The panel only: its thread list would cover the Sessions drawer.
+  // The panel's Sessions tab.
   await openPanel(page);
-  await page.locator('#chief-panel button[data-chief-sessions-open]').click();
+  await openSessions(sessionsTab(page, 'panel'));
   const plus = page.locator('#chief-panel button[popovertarget="chief-panel-new-chat-menu"]');
   await plus.click();
   const menu = page.locator('#chief-panel-new-chat-menu');
   await expect(menu).toBeVisible();
   const form = menu.locator('form[data-chief-new-chat-openrouter]');
   const field = form.locator('[data-openrouter-model-search]');
+  // The menu opening lists the recent models (the test above started a
+  // session on DeepSeek V4.1 Flash) before anything is typed.
+  await expect(form.locator('[data-openrouter-model-recent] button[data-openrouter-model-pick="openrouter/deepseek/deepseek-v4.1-flash"]'),
+    'the "+" menu shows the recent models on opening').toBeVisible({ timeout: 10_000 });
   await field.click();
   await field.pressSequentially('qwen3');
   const pick = form.locator('button[data-openrouter-model-pick="openrouter/qwen/qwen3-coder"]');
@@ -168,12 +201,11 @@ test('"+": an OpenRouter model picked in the Sessions drawer\'s New session menu
 
 test('a near-miss OpenRouter model is refused and starts no session', async ({ page }) => {
   await signIn(page, origin);
-  const count = async () =>
-    ((await (await page.request.get(origin + '/ui/chief/threads/search?q=')).text()).match(/data-chief-thread=/g) || []).length;
+  const count = async () => ((await (await page.request.get(origin + '/ui/chief/panel')).text()).match(/<li data-chief-chip=/g) || []).length;
   const before = await count();
   const panel = await page.request.get(origin + '/ui/chief/panel');
-  const post = /hx-post="(\/agents\/\d+\/sessions)\?surface=chief-panel"/.exec(await panel.text());
-  expect(post, 'the panel names the session-create route').not.toBeNull();
+  const post = /hx-post="(\/agents\/\d+\/sessions)\/side\?surface=chief-panel"/.exec(await panel.text());
+  expect(post, 'the panel names the side chat route, under the session-create one').not.toBeNull();
   for (const model of ['deepseek/deepseek-v4', 'not/in-the-catalogue', '']) {
     const r = await page.request.post(origin + post![1], { form: { runtime: 'opencode', model }, headers: { Origin: origin } });
     expect(r.status(), `model ${JSON.stringify(model)}`).toBe(400);

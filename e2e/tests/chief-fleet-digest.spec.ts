@@ -376,10 +376,14 @@ for (const vp of [
       await expect(page.locator('[data-fleet-sheet]:not([hidden])')).toHaveCount(0);
       await expect(card).toBeVisible();
       await above(page);
-      // The open chat is a side chat called Fleet, not the primary.
+      // The open chat is a side chat called Fleet, not the primary: the bar
+      // over the transcript names it, and its row in the Sessions tab is the
+      // current one.
       const active = await page.locator('#chief-panel-body [data-chief-active-session]').getAttribute('data-chief-active-session');
-      const threads = await (await page.request.get(rig.origin + '/ui/chief/threads/search?q=Fleet&session=' + active)).text();
-      expect(threads).toContain(`data-chief-thread="${active}"`);
+      const named = page.locator('#chief-panel [data-chief-chat-strip]');
+      await expect(named).toHaveAttribute('data-chief-chat-kind', 'side');
+      await expect(named).toHaveText('Session: Fleet');
+      await expect(page.locator(`#chief-panel-index [data-chief-chat-row="${active}"]`)).toHaveAttribute('aria-current', 'true');
       await page.waitForTimeout(1500);
       expect(turns.length, 'the runtime heard no turn').toBe(asked);
       await expect(page.locator('#chat-log [data-bubble]')).toHaveCount(0);

@@ -201,8 +201,11 @@ var uiExempt = map[string]exemption{
 	"notes.go statusFilterRow taskstatus.Label":         {1, whyStatic},
 	"notes.go TaskTitle n.Title":                        {1, whyAccessor},
 	"tabs.go TabsSelected t.Label":                      {1, whyStatic},
-	"tags.go tasksFilteredEmpty taskstatus.Label":       {1, whyStatic},
-	"terminal.go quickKeyButton k.Label":                {1, whyStatic},
+	// The index sheet's accessible name: chatIndexLabel or chiefIndexLabel,
+	// muster's own constants (chatIndexSheet, chiefIndexSheet), never a title.
+	"chat_index.go chatIndexSheetOf sp.Label":     {1, whyStatic},
+	"tags.go tasksFilteredEmpty taskstatus.Label": {1, whyStatic},
+	"terminal.go quickKeyButton k.Label":          {1, whyStatic},
 	// The fleet digest (fleet_digest.go): a group's label is muster's own
 	// (internal/fleet GroupLabel), and a pull request's is "<owner/repo>#<n>"
 	// that muster built from session_prs — neither is author text.

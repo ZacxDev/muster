@@ -92,8 +92,9 @@ type ChatRelay struct {
 // `transition-transform`, so a transform on it makes the PANEL that ancestor.
 // Inside the panel the drawer therefore sits at the panel's own right edge, and
 // when the panel is shut it is translated off-screen and `inert` along with it:
-// unreachable, with nothing on screen saying so. The panel gets a sub-view of its
-// own column instead (chiefThreadList), which is what this field selects.
+// unreachable, with nothing on screen saying so. The panel draws no drawer: its
+// chats are the Sessions tab of its own sheet, absolute in its own column
+// (chiefIndexSheet), which is what this field selects.
 //
 // ⚠ THE ZERO VALUE IS THE PAGE, DELIBERATELY. AgentDetailPage and OperatorPage
 // construct this view in several places and none of them may change behaviour;
@@ -253,15 +254,14 @@ type SessionView struct {
 	DefaultPath string
 	// Title is the session's name, derived by the store from its first user message.
 	//
-	// 🔴 AN EMPTY TITLE RENDERS DIFFERENTLY ON THE TWO SURFACES THAT DRAW THESE ROWS,
-	// AND THAT IS DELIBERATE RATHER THAN DRIFT: sessionDrawer (the agent-detail and
-	// operator pages) renders "New chat"; chiefThreadRows (the chief slide-out)
-	// renders "New thread". Each matches the noun its own surface uses everywhere else
-	// — the page's control is "New chat", the panel's is "New thread" and its list is
-	// headed "Threads" — so making them agree would leave one of the two surfaces
-	// naming a thing its own buttons do not. This comment is the only written answer
-	// to "what does an untitled session show", so it names both; the pair is pinned
-	// two-way by ui.TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered.
+	// 🔴 AN EMPTY TITLE RENDERS AS "New chat" WHEREVER THESE ROWS ARE DRAWN:
+	// sessionDrawer (the agent-detail and operator pages), and the chief's Sessions
+	// tab on its page and in its panel (chiefChip, chiefCurrentChat,
+	// chiefMessageMatches: ChiefNewChatLabel). The chief panel's thread list, which
+	// rendered "New thread" to match its own "Threads" heading, was folded into the
+	// Sessions tab, so no surface names an untitled chat differently any more. This
+	// comment is the only written answer to "what does an untitled session show";
+	// the renderers are pinned by ui.TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered.
 	//
 	// 🔴 THAT GUARD DERIVES THE RENDERER SET FROM THE PACKAGE'S OWN AST rather than
 	// enumerating the two it knows about — but its reach is ONE SYNTACTIC SHAPE, and
@@ -343,8 +343,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
-				// A chief's chats, as a "Sessions" button under the header
-				// (chief_chats.go) and its drawer: switch, New session, each row's ⋯.
+				// A chief's chat on screen, named under the header (chief_chats.go);
+				// its chats are the Sessions tab of the header's list icon's sheet.
 				chiefPageStrip(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
@@ -394,12 +394,11 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
 				// focusHistoryButton opens. The chief's page has the mirrored
-				// session's sheet instead (chat_index.go): Your messages and Focus
-				// history. Its chats are the Sessions drawer under the header, not a tab.
+				// session's sheet instead (chat_index.go), with its chats as the
+				// FIRST tab: Sessions, Your messages and Focus history.
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
-				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
-				g.If(v.ChiefChat != nil, chatIndexScript()),
+				chiefIndexSheet(v),
 				// The Open button's panel, closed (plugin_chip.go): the agent's
 				// pages.
 				previewPanel(v.Open),
@@ -547,16 +546,17 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	}
 	phone := headerPhoneTools
 	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
-	// header has (chatIndexButton), opening the same sheet — Your messages and
-	// Focus history. No ＋, no clock, no target: the operator asked for the same
-	// icons a mirrored session has. The chief's chats are switched, made and
-	// archived in the Sessions drawer under the header (chief_chats.go), never in
-	// a sheet. Every other agent is unchanged.
+	// header has (chiefIndexButton), opening the same sheet with the chief's
+	// Sessions as its first tab — then Your messages and Focus history. No ＋, no
+	// clock, no target: the operator asked for the same icons a mirrored session
+	// has, and for the chats in that sheet ("just make it another tab"). The
+	// icon carries the dot that says another chat has an unread reply. Every
+	// other agent is unchanged.
 	if v.ChiefChat != nil {
 		return Div(
 			g.Attr("data-header-tools", ""),
 			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
-			chatIndexButton("chat-log"),
+			chiefIndexButton(chatIndexPageID, chiefUnreadElsewhere(v.Sessions) > 0),
 		)
 	}
 	n := 2
@@ -889,9 +889,9 @@ func agentSessionsPath(agentID int64) string {
 }
 
 // chatHistoryButton is the header control that opens the session drawer. It is a
-// <label for=...> driving the pure-CSS checkbox-hack toggle (sessionDrawer on the
-// page surfaces, chiefThreadList in the panel) — the TOGGLE needs no JS and is
-// boost-safe. ≥44px tap target.
+// <label for=...> driving the pure-CSS checkbox-hack toggle (sessionDrawer, on
+// the page surfaces) — the TOGGLE needs no JS and is boost-safe. ≥44px tap
+// target.
 //
 // ⚠ forID IS A PARAMETER RATHER THAN THE CONSTANT IT USED TO BE, so the panel
 // reuses this control instead of growing a second launcher with its own styling,
@@ -1048,12 +1048,13 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// `translate-x-full` makes the panel the containing block for every fixed
 		// descendant — so inside the panel the drawer renders at the PANEL's right
 		// edge and, when the panel is shut, is translated off-screen and inert with
-		// it. The panel renders chiefThreadList instead: an absolutely-positioned
-		// sub-view of the panel's OWN column, which needs no viewport-relative
-		// positioning at all. See ChatSurface.
+		// it. The panel's chats are the Sessions tab of its own sheet instead
+		// (chiefIndexSheet), absolute in the panel's OWN column, which needs no
+		// viewport-relative positioning at all. See ChatSurface.
 		//
-		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
-		// header (chiefPageStrip), and nothing there opens a drawer.
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the Sessions tab of the sheet the
+		// header's list icon opens (chiefIndexSheet), and nothing there opens a
+		// drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
 		// The header's asks badge's live refresh, which must sit INSIDE this
 		// SSE section (askerAsksRefresh). No asks block: the asks are the
@@ -1063,9 +1064,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the Sessions drawer
-		// under the page's header (chiefPageStrip) or over the panel's pane
-		// (chiefPanelBody), and its context chip is in the header (chief_chats.go).
+		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the Sessions tab of
+		// the list icon's sheet (chiefIndexSheet) — the page's header's, the
+		// panel's title bar's — the chat on screen is named in the bar over the
+		// pane (chiefCurrentChat), and its memory line is in the header's ⋯ menu
+		// (chief_chats.go).
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the

@@ -304,7 +304,7 @@ auth-failure marks: a team's agent is not placed on, or failed over to, an
 account the admin's agents found exhausted, and the reverse.
 
 A member sees the team chief's one shared conversation and its earlier chats,
-and the Sessions drawer switches between them, but it has no **+ New session**
+and the Sessions tab switches between them, but it has no **+ New session**
 and no **⋯** (Fresh primary, Make primary, Archive, Unarchive): the
 server refuses those to every member. Opening a team agent's page is not recorded in the member's
 **recently viewed**.
@@ -1198,13 +1198,13 @@ fixed for the session's life:
 | `claude-code` | a Claude model (`opus`, `sonnet`, `haiku`, or a model id) | a Claude Code CLI of its own in the chief's pod, started with `--model`. Needs a `claude-code` chief. |
 | `opencode` | any OpenRouter model, stored as `openrouter/<catalogue id>` | an opencode server of its own in the chief's pod, its model calls through muster's [spend door](#openrouter-sessions-budget). Needs a `claude-code` chief, `MUSTER_CHIEF_SESSIONS_OPENROUTER=1`, and the admin's chief. See [OpenRouter sessions on opencode](#openrouter-sessions-on-opencode). |
 
-Open one from the chief panel: its thread list has a **New session** picker.
-Each thread names its runtime and model. The route underneath is
-`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A side
-chat can be opened on a model from the Sessions drawer's **New session** too
-([Primary and side chats](#primary-and-side-chats)): its route,
-`POST /agents/{id}/sessions/side`, takes an optional `model` field, checked the
-same way. A session's runtime and model never change; open a new session to use
+Open one from the Sessions tab's **+ New session** menu, on the chief page or
+in the panel ([Primary and side chats](#primary-and-side-chats)): **Default**,
+each Claude Code model, and an **OpenRouter** search. Each chat's row shows its
+model as a small tag. The route underneath is
+`POST /agents/{id}/sessions/side`, which takes an optional `model` (and
+`runtime`) field, checked against what the deployment offers (a model it
+does not offer is refused, `400`). A session's runtime and model never change; open a new session to use
 another.
 
 A turn for a `claude-code` session runs in a CLI of its own (tmux session
@@ -1236,8 +1236,8 @@ conversation instead of one per plugin. This is so whether or not
 `MUSTER_CHIEF_SESSION_RUNTIMES` is set; that setting only adds the runtime
 picker. Until you choose one, it is the chief's original
 session (the one keyed `agent:<name>:webchat`, or the oldest). Move it with
-`POST /agents/{id}/sessions/{sid}/default` (**Make primary** in the panel's
-thread list).
+`POST /agents/{id}/sessions/{sid}/default` (**Make primary** in a row's ⋯ in the
+Sessions tab).
 
 **Tool names.** The gateway runtime refuses a whole turn when one of the tools
 muster offers has the name of one of its built-in tools. `agents_list` was such
@@ -1265,14 +1265,24 @@ only while the spend door is on: the same checks the door makes. When
 `opencode` is named but the door is off, muster boots, the picker shows Claude
 Code only, and the boot log says why.
 
-**Choosing a model.** New session, **Continue in a new session** and the drawer's
+**Choosing a model.** New session, **Continue in a new session** and the Sessions tab's
 **+** menu each have an **OpenRouter** row with a search field. Type part of a
 model's name or id; the matches (name, id, list price per million tokens,
 context) come from OpenRouter's catalogue, ranked fuzzily. Tap one, then
 **Start** (or **Continue**). Typing an exact catalogue id works without the
 search. The model is stored as `openrouter/<id>` and checked against the
 catalogue as the [spend door](#openrouter-sessions-budget) describes. The Sessions row
-and the thread list show the model's name.
+shows the model's name.
+
+**Recent models.** Before you type, the field lists the models your chief's
+sessions were opened on under **Recent**: when you tap into it, when you empty
+it, and when the **+** menu opens. The most recently used comes first, by the
+last message in any of its sessions (archived chats included); each model is
+listed once, at most six. A model that is no longer in OpenRouter's catalogue
+is left out, because the session routes would refuse it. With no OpenRouter
+session yet, the field shows nothing until you type, as before. The list is
+your own chief's: the route answers only the owner the spend door serves, the
+same as the search.
 
 **What runs the session.** `ccd` starts an `opencode serve` of its own for the
 session, on loopback, and drives it over opencode's HTTP API:
@@ -1355,23 +1365,44 @@ The chief has one **primary chat** and any number of **side chats**.
   they go to the primary instead; nothing is ever delivered into an archived
   chat.
 
-The chats are behind one **Sessions** button under the chief page's header,
-and over the transcript in the chief panel. The button names the chat you are
-on (**★ Primary**, or the side chat's title and its model tag) and shows a dot
-when another chat has a reply you have not read. It slides a drawer in from the
-right — from the right edge of the screen on the page, and of the panel in the
-panel — listing every chat:
+The chats are the **Sessions** tab of the sheet the list icon opens: the icon
+in the chief page's header, and in the chief panel's title bar. The sheet has
+three tabs, **Sessions** first, then **Your messages** and **What it worked on**;
+it opens on the tab you used last, so on Sessions the first time. Where the
+chats used to be listed, over the transcript, the chat you are on is named in
+plain text: **★ Primary**, or the side chat's title (**New chat** until its
+first line gives it one) and its model tag. The list icon shows a dot when
+another chat has a reply you have not read, and the Sessions tab counts those
+chats.
 
-    Sessions                               ✕
+    [ Search sessions…                     ]
+    (All) (Unread) (Archived) (qwen3-coder)
     [+ New session]
     ★ Primary                              ⋯
     side chats, most recent first…   ●     ⋯
     Archived (n) ›
 
-- **Tap a row** to switch to its chat; the drawer shuts. The row of the chat
+- **Tap a row** to switch to its chat; the sheet shuts. The row of the chat
   you are on is highlighted. A side chat's row shows a dot when a reply arrived
-  since you last opened it. A side chat is named by its title, and **New chat**
-  until its first line gives it one.
+  since you last opened it.
+- **Search** filters the rows by their title as you type, archived chats
+  included. It also searches the chats' messages: a moment after you stop
+  typing, the chats whose messages hold the words are listed under **Matches in
+  messages**, each with the words around the match (best match first; a tap
+  opens that chat). A chat whose title matches is already among the rows, so it
+  is listed there only when its messages match too. Only your own chief's
+  chats, and only the text of messages (not tool output), are searched; on
+  a chief that is not your own (a team's chief), the box filters the rows by
+  title only. The chips show **All** chats, only the **Unread** ones, only the
+  **Archived** ones (when there are any), or only the chats on one OpenRouter
+  model (a chip per OpenRouter model a chat was opened on; a chat on a Claude
+  model such as `sonnet` gets none). One chip is on at a time; tap it again to go
+  back to All. Filters apply to every row alike, the chat you are on included
+  (it is named over the transcript either way); the chips narrow the rows, not
+  the matches in messages. When neither a row nor a message matches, the tab
+  says **No sessions match**. The title search and the chips work in the
+  browser, on the rows the page already has; the message search asks the
+  server.
 - **+ New session** opens a new side chat and puts the cursor in its message
   box. While the newest side chat is still empty, it takes you back to that one
   instead of opening a second (a double tap opens one chat), and still puts the
@@ -1394,31 +1425,34 @@ panel — listing every chat:
   `deepseek-v4.1-flash`; its title is the full catalogue id).
 - **Archived (n)** comes after the side chats. Tap it to show the archived
   chats' rows, and again to hide them. The chat you are on is never hidden
-  there.
+  there. While a search or a chip is on, the archived chats that match are
+  listed with the others instead.
 - **⋯** on each row holds that chat's actions (keyboard: Enter opens it, Tab
-  moves through it, Escape closes it). After an action the drawer is open
-  again on the answer.
+  moves through it, Escape closes it). After an action the sheet is open
+  again on the Sessions tab.
 
-The drawer is a dialog: opening it puts the focus on the row of the chat you
-are on, Tab stays inside it, and Escape, a tap beside it or **✕** shuts it and
-puts the focus back on the button. Escape with a ⋯ menu open closes only the
-menu, and Escape on the drawer in the panel shuts the drawer, not the panel.
-In the panel every one of these answers inside the panel: you stay on the
-grid.
+The sheet is a dialog: opening it on Sessions puts the focus on the row of the
+chat you are on, Tab stays inside it, and Escape, a tap beside it or **✕**
+shuts it and puts the focus back on the list icon. Escape with a ⋯ menu open
+closes only the menu, and Escape on the sheet in the panel shuts the sheet, not
+the panel. In the panel the sheet opens inside the panel, and every one of
+these answers inside the panel: you stay on the grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+ New session** | the top of the drawer | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
+| every chat | **+ New session** | the top of the Sessions tab | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
 | the primary | **Fresh primary** | the primary row's ⋯ | after a confirm, starts a new primary chat (below) |
 | a side chat | **Make primary** | its row's ⋯ | makes it the primary (you stay on the chat you are on) |
 | a side chat | **Archive** | its row's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
 | an archived chat | **Unarchive** | its row's ⋯ | puts it back among the side chats |
-| a side chat | **Continue in a new session** | the panel: under its thread list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
+| a side chat | **Continue in a new session** | the Sessions tab, under **+ New session**, for the chat you are on (where the runtime picker is offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
 
-The primary cannot be archived. The drawer puts the primary first, marked
+The primary cannot be archived. The Sessions tab puts the primary first, marked
 **★ Primary**, then the side chats by last activity, and the archived chats
-last, behind **Archived (n)**. The panel's thread list (its title bar's list
-button) lists the same chats in the same order, for search.
+last, behind **Archived (n)**. It is the one list of the chief's chats, on the
+page and in the panel: the panel's own thread list (its title bar's clock
+button), which listed the same chats with a search of their messages, a **New
+session** picker and **Continue**, was folded into it.
 
 ### Which chat the chief opens on
 
@@ -1436,7 +1470,7 @@ has opened yet opens on its primary, and so does one whose last chat has since
 been archived. A link naming a chat that is not the chief's opens the primary.
 
 **Your place in a chat is kept too.** Come back to a chief chat you left
-scrolled up — by the drawer, by leaving the page and returning, or by shutting
+scrolled up — by the Sessions tab, by leaving the page and returning, or by shutting
 and reopening the panel — and it opens where you left it, anchored on the
 message that was at the top. A chat you left at its end opens at its end and
 follows new messages, as before. The place is kept in the browser
@@ -1498,12 +1532,12 @@ NEW side chat on another model. The use it is built for: do the reading around
 — which sessions are stalled, what a task's history says — in a cheap side chat
 (say `haiku`), then hand over to a more capable model (say `opus`) to do the
 work, starting from a short structured handover instead of the whole recon
-conversation. In the panel, open the thread list (the title bar's list button)
-while on the side chat, and use **Continue in a new session** under the list:
-pick the runtime and model (the
-same picker as **New session**) and confirm. The route underneath is
+conversation. While on the side chat, open the Sessions tab (the list icon, on
+the page or in the panel) and use **Continue in a new session** under **+ New
+session**: pick the runtime and model (the ones **New session** offers) and
+confirm. The route underneath is
 `POST /agents/{id}/sessions/{sid}/continue` with `runtime` and `model` form
-fields, validated exactly as **New session** validates them.
+fields, validated exactly as a new session's are.
 
 1. A new side chat opens on the chosen runtime and model, and the panel moves
    to it. It shows "working…" until the handover has arrived.

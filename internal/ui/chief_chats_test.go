@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	g "maragu.dev/gomponents"
 )
 
 // chiefChatView is a chief's chat view on surface, on chat sid.
@@ -65,33 +67,32 @@ func TestTheChiefChatHasNoChatBar(t *testing.T) {
 	}
 }
 
-// TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody: the chief PANEL draws the
-// page's strip of chips over its transcript — a chip switches with an hx-get
-// of the panel body (never a navigation), the "+" and every ⋯ action post with
+// TestThePanelsSessionsTabIsAnsweredIntoItsBody: the chief PANEL's sheet has
+// the page's Sessions tab — a row switches with an hx-get of the panel body
+// (never a navigation), the "+" and every ⋯ action post with
 // ?surface=chief-panel into #chief-panel-body — and its thread list keeps no
-// chat action but "Continue in a new session"; its title bar carries the
-// context chip for the panel's chat.
-func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
+// chat action but "Continue in a new session"; its title bar carries no
+// context chip.
+func TestThePanelsSessionsTabIsAnsweredIntoItsBody(t *testing.T) {
 	for _, c := range chiefKinds {
 		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, chiefSheetSessions(c.bar.SessionID))
 		p := ChiefPanelView{Configured: true, Chat: chat}
 		body := renderString(t, chiefPanelBody(p))
-		// The bar: its button, its drawer and their scripts, up to the
-		// transcript it sits over.
+		// The Sessions tab: from its panel to the next tab's.
 		strip := ""
-		if i := strings.Index(body, `<div `+chiefChatStripAttr+`=""`); i >= 0 {
-			if j := strings.Index(body[i:], `id="chat-log"`); j >= 0 {
+		if i := strings.Index(body, `id="chief-panel-index-tabs-panel-sessions"`); i >= 0 {
+			if j := strings.Index(body[i:], `id="chief-panel-index-tabs-panel-messages"`); j >= 0 {
 				strip = body[i : i+j]
 			}
 		}
 		if strip == "" {
-			t.Fatalf("%s: the panel body has no chip strip", c.kind)
+			t.Fatalf("%s: the panel body has no Sessions tab", c.kind)
 		}
 		if !strings.Contains(strip, chiefChatKindAttr+`="`+c.kind+`"`) {
-			t.Errorf("%s: the strip does not name the chat's kind", c.kind)
+			t.Errorf("%s: the tab does not name the chat's kind", c.kind)
 		}
 		if strings.Contains(strip, "<a ") || strings.Contains(strip, "href=") {
-			t.Errorf("%s: a panel chip navigates", c.kind)
+			t.Errorf("%s: a panel row navigates", c.kind)
 		}
 		for _, id := range []string{"5", "6", "7", "8"} {
 			if !regexp.MustCompile(`<button type="button" ` + chiefChatRowAttr + `="` + id + `"[^>]*hx-get="/ui/chief/panel\?session=` + id + `" hx-target="#` + chiefPanelBodyID + `" hx-swap="innerHTML"`).MatchString(strip) {
@@ -109,7 +110,7 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 			`hx-post="/agents/42/sessions/7/unarchive?surface=chief-panel` + cur + `" hx-target="#chief-panel-body"`,
 		} {
 			if !strings.Contains(strip, want) {
-				t.Errorf("%s: the panel strip lacks %s", c.kind, want)
+				t.Errorf("%s: the panel's Sessions tab lacks %s", c.kind, want)
 			}
 		}
 		if strings.Contains(strip, `hx-swap="none"`) {
@@ -121,13 +122,13 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 		// The menus are placed: the shell the panel lives in has no
 		// floatingMenuScript of its own.
 		if !strings.Contains(strip, "__musterFloatingMenu") {
-			t.Errorf("%s: the panel strip does not bring floatingMenuScript", c.kind)
+			t.Errorf("%s: the panel's Sessions tab does not bring floatingMenuScript", c.kind)
 		}
-		// The thread list: no chat action but Continue.
-		list := renderString(t, chiefThreadList(p))
-		for _, banned := range []string{chiefSideChatAttr, chiefFreshPrimaryAttr, chiefArchiveAttr + `=""`, chiefUnarchiveAttr, chiefChatsAttr} {
-			if strings.Contains(list, banned) {
-				t.Errorf("%s: the thread list still carries %s", c.kind, banned)
+		// One list of the chats: the panel's thread list is gone (folded into
+		// the Sessions tab).
+		for _, banned := range []string{`for="chief-threads"`, `id="chief-thread-search"`, "data-chief-thread=", "data-session-picker"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s: the panel still draws its thread list (%s)", c.kind, banned)
 			}
 		}
 		// No token chip in the panel's title bar (operator decision,
@@ -140,8 +141,9 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 }
 
 // TestTheChiefHeaderHasTheChatIndexButtonOnly: a chief's header has the one
-// list icon a mirrored session's has (chatIndexButton, onto #chat-log) — and
-// no ＋, no Chat history (clock), no Focus history (target) — in both headers
+// list icon a mirrored session's has (chiefIndexButton, onto #chat-log, its
+// sheet's first tab the chief's Sessions) — and no ＋, no Chat history
+// (clock), no Focus history (target) — in both headers
 // (compact: a claude-code chief's folded row; not: a gateway chief's). Every
 // other agent keeps its three.
 //
@@ -161,8 +163,8 @@ func TestTheChiefHeaderHasTheChatIndexButtonOnly(t *testing.T) {
 		if !strings.Contains(html, `id="chat-index-open"`) || !strings.Contains(html, `data-chat-index-log="chat-log"`) {
 			t.Errorf("compact=%v: the chief's header has no chat index button onto #chat-log:\n%s", compact, html)
 		}
-		if !strings.Contains(html, `aria-label="`+chatIndexLabel+`"`) {
-			t.Errorf("compact=%v: the chat index button is not the mirrored session's", compact)
+		if !strings.Contains(html, `aria-label="`+chiefIndexLabel+`"`) || !strings.Contains(html, `aria-controls="chat-index"`) {
+			t.Errorf("compact=%v: the chat index button does not name the chief's sheet", compact)
 		}
 		for _, banned := range []string{`aria-label="New chat session"`, `aria-label="Chat history"`, `id="focus-history-open"`, `for="` + sessionDrawerID + `"`} {
 			if strings.Contains(html, banned) {
@@ -216,57 +218,6 @@ func chiefSheetSessions(active int64) []SessionView {
 	return s
 }
 
-// TestTheChiefSheetHasNoChatsTab: the chief's page draws the mirrored
-// session's sheet with its two tabs IN THIS ORDER — Your messages, Focus
-// history — and no Chats tab: the chats are the strip under the header, drawn
-// once, outside the sheet. Not the agent page's separate focus dialog either.
-//
-// Replaces TestTheChiefSheetHasChatsMessagesAndFocusHistory (operator
-// decision: no modal for the chats).
-func TestTheChiefSheetHasNoChatsTab(t *testing.T) {
-	for _, kind := range []string{"claude-code", "gateway"} {
-		html := chiefPage(t, kind, ChiefChatBar{SessionID: 5, Primary: true}, chiefSheetSessions(5))
-		i := strings.Index(html, `<div id="chat-index"`)
-		if i < 0 {
-			t.Fatalf("%s: the chief's page has no chat index sheet", kind)
-		}
-		sheet := html[i:]
-		tabs := regexp.MustCompile(`role="tab" data-tab="([a-z]+)"`).FindAllStringSubmatch(sheet, -1)
-		var got []string
-		for _, m := range tabs {
-			got = append(got, m[1])
-		}
-		if strings.Join(got, ",") != "messages,focus" {
-			t.Errorf("%s: the sheet's tabs are %v, want messages, focus", kind, got)
-		}
-		if strings.Contains(sheet, chiefChatsAttr) || strings.Contains(sheet, ">Chats</button>") || strings.Contains(sheet, chiefSideChatAttr) {
-			t.Errorf("%s: the sheet still holds the chats", kind)
-		}
-		// The strip: once, before the sheet, under the header.
-		if n := strings.Count(html, `<div `+chiefChatStripAttr+`=""`); n != 1 {
-			t.Errorf("%s: %d chip strips on the page, want 1", kind, n)
-		}
-		head := strings.Index(html, "</header>")
-		strip := strings.Index(html, `<div `+chiefChatStripAttr)
-		log := strings.Index(html, `id="chat-log"`)
-		if !(head >= 0 && head < strip && strip < log) {
-			t.Errorf("%s: the strip is not between the header and the transcript (header end %d, strip %d, log %d)", kind, head, strip, log)
-		}
-		if strings.Contains(html, `id="focus-history"`) || strings.Contains(html, `id="focus-history-open"`) {
-			t.Errorf("%s: the chief's page still draws the separate focus history dialog or its button", kind)
-		}
-		if !strings.Contains(sheet, chatIndexPartialPage) || strings.Contains(sheet, "muster-mirror") {
-			t.Errorf("%s: the messages tab's note speaks of a mirrored host", kind)
-		}
-	}
-	// The control: a worker's page keeps the focus dialog and has no sheet and
-	// no strip.
-	w := renderString(t, AgentDetailPage(AgentDetailView{ID: 3, Name: "w", Kind: "claude-code", FocusHistory: "/ui/focus/history?agent=3"}, Features{}))
-	if !strings.Contains(w, `id="focus-history"`) || strings.Contains(w, `<div id="chat-index"`) || strings.Contains(w, chiefChatStripAttr) {
-		t.Error("a worker's page changed: it should keep its focus dialog and have no chat index sheet and no chip strip")
-	}
-}
-
 // chipIDs is the chat ids of html's chips, in document order.
 func chipIDs(html string) []string {
 	var out []string
@@ -289,7 +240,7 @@ func chipIDs(html string) []string {
 //   - "+" posting to the side chat route, after the chips' scroller.
 func TestTheStripSwitchesAndManagesChats(t *testing.T) {
 	for _, c := range chiefKinds {
-		html := renderString(t, chiefChatStrip(chiefChatView(ChatSurfacePage, c.bar, nil).ChiefChat, "chiefy", chiefSheetSessions(c.bar.SessionID), ChatSurfacePage))
+		html := renderString(t, sessionsPanel(chiefChatView(ChatSurfacePage, c.bar, nil).ChiefChat, "chiefy", chiefSheetSessions(c.bar.SessionID), ChatSurfacePage))
 		if !strings.Contains(html, chiefChatKindAttr+`="`+c.kind+`"`) {
 			t.Errorf("%s: the strip does not name the open chat's kind", c.kind)
 		}
@@ -373,8 +324,8 @@ func TestTheStripSwitchesAndManagesChats(t *testing.T) {
 		}
 	}
 	// Not a chief's chat: no strip.
-	if chiefChatStrip(nil, "w", nil, ChatSurfacePage) != nil || chiefPageStrip(AgentDetailView{ID: 1, Name: "w"}) != nil {
-		t.Error("a worker's chat has a chip strip")
+	if chiefCurrentChat(nil, nil, ChatSurfacePage) != nil || chiefPageStrip(AgentDetailView{ID: 1, Name: "w"}) != nil || chiefIndexSheet(AgentDetailView{ID: 1, Name: "w"}) != nil {
+		t.Error("a worker's chat has a chief's bar or sheet")
 	}
 }
 
@@ -387,7 +338,7 @@ func TestTheArchivedChipCountsItsChats(t *testing.T) {
 	toggle := regexp.MustCompile(`<button type="button" ` + chiefArchivedAttr + `="" aria-expanded="false"[^>]*>([^<]*)<svg`)
 	for _, want := range []string{"Archived (1)", "Archived (2)", "Archived (3)"} {
 		sessions = append(sessions, SessionView{ID: int64(len(sessions) + 10), Title: "old " + want, Archived: true})
-		m := toggle.FindStringSubmatch(renderString(t, chiefChatStrip(bar, "chiefy", sessions, ChatSurfacePage)))
+		m := toggle.FindStringSubmatch(renderString(t, sessionsPanel(bar, "chiefy", sessions, ChatSurfacePage)))
 		if m == nil || m[1] != want {
 			t.Errorf("the archived chip reads %v, want %q", m, want)
 		}
@@ -395,11 +346,11 @@ func TestTheArchivedChipCountsItsChats(t *testing.T) {
 	// The open archived chat is with the others, not counted.
 	open := append([]SessionView{}, sessions...)
 	open[1].Active, open[0].Active = true, false
-	m := toggle.FindStringSubmatch(renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: open[1].ID, Archived: true}, "chiefy", open, ChatSurfacePage)))
+	m := toggle.FindStringSubmatch(renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: open[1].ID, Archived: true}, "chiefy", open, ChatSurfacePage)))
 	if m == nil || m[1] != "Archived (2)" {
 		t.Errorf("with one archived chat open, the chip reads %v, want \"Archived (2)\"", m)
 	}
-	if html := renderString(t, chiefChatStrip(bar, "chiefy", sessions[:1], ChatSurfacePage)); strings.Contains(html, chiefArchivedAttr+`=""`) {
+	if html := renderString(t, sessionsPanel(bar, "chiefy", sessions[:1], ChatSurfacePage)); strings.Contains(html, chiefArchivedAttr+`=""`) {
 		t.Error("an Archived chip with no archived chat")
 	}
 }
@@ -411,8 +362,8 @@ func TestTheArchivedChipCountsItsChats(t *testing.T) {
 // owner's strip, the same chats, has them (the control).
 func TestASharedRoomsStripOnlySwitches(t *testing.T) {
 	sessions := chiefSheetSessions(5)
-	shared := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true, SharedRoom: true}, "chiefy", sessions, ChatSurfacePage))
-	owner := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", sessions, ChatSurfacePage))
+	shared := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true, SharedRoom: true}, "chiefy", sessions, ChatSurfacePage))
+	owner := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", sessions, ChatSurfacePage))
 	for name, html := range map[string]string{"shared": shared, "owner": owner} {
 		if got := strings.Join(chipIDs(html), ","); got != "5,6,8,7" {
 			t.Errorf("%s: chips %s, want 5,6,8,7", name, got)
@@ -480,10 +431,10 @@ func TestTheChiefHeaderHasNoTokenChipButItsMenuHasTheMemorySlot(t *testing.T) {
 	}
 }
 
-// TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots: both lists (the
-// strip and the panel's thread list) draw the chats in the order given — the
-// server's agents.SwitcherOrder — with the primary marked on the primary, an
-// unread dot only on an unread chat, and the archived ones last.
+// TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots: the Sessions tab, on
+// both surfaces, draws the chats in the order given — the server's
+// agents.SwitcherOrder — with the primary marked on the primary, an unread dot
+// only on an unread chat, and the archived ones last.
 func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 	now := time.Now()
 	sessions := []SessionView{
@@ -513,13 +464,10 @@ func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 			t.Errorf("%s: the primary mark is not on the primary", name)
 		}
 	}
-	strip := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 9, Primary: true}, "chiefy", sessions, ChatSurfacePage))
-	check("page strip", strip, "★", []string{"Primary", "Newest side", "Older side", "Archived (1)", "Put away"})
-	var b bytes.Buffer
-	if err := chiefThreadRows(ChiefThreadsView{Threads: sessions}).Render(&b); err != nil {
-		t.Fatal(err)
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		tab := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 9, Primary: true}, "chiefy", sessions, surface))
+		check(string(surface)+" tab", tab, "★", []string{"Primary", "Newest side", "Older side", "Archived (1)", "Put away"})
 	}
-	check("panel list", b.String(), ">Primary<", []string{"Main line", "Newest side", "Older side", chiefArchivedLabel, "Put away"})
 }
 
 // TestTheComposerIsFocusedOnlyWhenTheServerAsks: #chat-input carries
@@ -581,75 +529,96 @@ func TestTheMemoryLineShowsOnlyAboveTheThreshold(t *testing.T) {
 	}
 }
 
-// TestTheContinuePickerIsOnASideChatOnly: "Continue in a new session" is under
-// the panel's list on a SIDE chat, with the New session picker's runtime and
-// models, posting runtime + model to that chat's continue route with a confirm
-// and its controls disabled while the request runs — and on no other chat, nor
-// anywhere when no runtime is offered.
+// TestTheContinuePickerIsOnASideChatOnly: "Continue in a new session" is in the
+// Sessions tab, on BOTH surfaces, when the chat on screen is a SIDE chat — one
+// form per runtime the bar offers (ChiefChatBar.Runtimes), the Claude Code one
+// with the "+" menu's models (NewChatModels), each posting runtime + model to
+// that chat's continue route the way its surface answers (HX-Redirect on the
+// page; the panel body in the panel), with a confirm and its controls disabled
+// while the request runs — and on no other chat, nor anywhere when no runtime
+// is offered, nor in a team's shared room. RED before the fold: Continue was
+// under the panel's thread list, never in the tab, never on the page.
 func TestTheContinuePickerIsOnASideChatOnly(t *testing.T) {
-	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}
+	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}
 	models := []string{"opus", "sonnet", "haiku"}
-	for _, c := range chiefKinds {
-		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, []SessionView{{ID: c.bar.SessionID, Active: true}})
-		html := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, SessionRuntimes: runtimes, ClaudeModels: models}))
-		has := strings.Contains(html, chiefContinueAttr+`=""`)
-		if has != (c.kind == ChiefChatKindSide) {
-			t.Errorf("%s: Continue shown=%v, want only on a side chat", c.kind, has)
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		post := `hx-post="/agents/42/sessions/6/continue" hx-swap="none"`
+		if surface == ChatSurfaceChiefPanel {
+			post = `hx-post="/agents/42/sessions/6/continue\?surface=chief-panel" hx-target="#chief-panel-body" hx-swap="innerHTML"`
 		}
-		if !has {
-			continue
-		}
-		form := regexp.MustCompile(`<form ` + chiefContinueFormAttr + `="claude-code" hx-post="/agents/42/sessions/6/continue\?surface=chief-panel" ` +
-			`hx-target="#chief-panel-body" hx-swap="innerHTML" hx-confirm="[^"]+" hx-disabled-elt="find button, find select"[^>]*>` +
-			`<input type="hidden" name="runtime" value="claude-code">`)
-		if !form.MatchString(html) {
-			t.Errorf("side: no continue form posting to the chat's continue route:\n%s", html)
-		}
-		for _, m := range models {
-			if !strings.Contains(html, `<option value="`+m+`">`+m+`</option>`) {
-				t.Errorf("side: the continue picker lacks model %s", m)
+		for _, c := range chiefKinds {
+			bar := c.bar
+			bar.AgentID, bar.Runtimes, bar.NewChatModels = 42, runtimes, models
+			html := renderString(t, sessionsPanel(&bar, "chiefy", chiefSheetSessions(bar.SessionID), surface))
+			has := strings.Contains(html, chiefContinueAttr+`=""`)
+			if has != (c.kind == ChiefChatKindSide) {
+				t.Errorf("%s %s: Continue shown=%v, want only on a side chat", surface, c.kind, has)
 			}
-		}
-		if !strings.Contains(html, ">Continue in a new session</summary>") {
-			t.Error("side: the continue group is not labelled")
-		}
-		// No runtime offered: no picker.
-		bare := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, ClaudeModels: models}))
-		if strings.Contains(bare, chiefContinueAttr) {
-			t.Error("side: Continue offered with no runtime offered")
+			if !has {
+				continue
+			}
+			for _, rt := range []string{"claude-code", "opencode"} {
+				form := regexp.MustCompile(`<form ` + chiefContinueFormAttr + `="` + rt + `" ` + post + ` hx-confirm="[^"]+" hx-disabled-elt="find button, find select"[^>]*>` +
+					`<input type="hidden" name="runtime" value="` + rt + `">`)
+				if !form.MatchString(html) {
+					t.Errorf("%s side: no %s continue form posting to the chat's continue route:\n%s", surface, rt, html)
+				}
+			}
+			for _, m := range models {
+				if !strings.Contains(html, `<option value="`+m+`">`+m+`</option>`) {
+					t.Errorf("%s side: the continue picker lacks model %s", surface, m)
+				}
+			}
+			if !strings.Contains(html, ">Continue in a new session</summary>") {
+				t.Errorf("%s side: the continue group is not labelled", surface)
+			}
+			bare := bar
+			bare.Runtimes = nil
+			if strings.Contains(renderString(t, sessionsPanel(&bare, "chiefy", chiefSheetSessions(6), surface)), chiefContinueAttr) {
+				t.Errorf("%s side: Continue offered with no runtime offered", surface)
+			}
+			shared := bar
+			shared.SharedRoom = true
+			if strings.Contains(renderString(t, sessionsPanel(&shared, "chiefy", chiefSheetSessions(6), surface)), chiefContinueAttr) {
+				t.Errorf("%s side: Continue offered in a shared room", surface)
+			}
 		}
 	}
 }
 
-// TestContinueOffersExactlyTheNewSessionChoices: on a side chat, where both
-// pickers are drawn, the Continue forms offer exactly the runtimes and models
-// the New session forms do — runtime by runtime, model by model, in order.
+// TestContinueOffersExactlyTheNewSessionChoices: on a side chat the Continue
+// forms offer exactly what the "+ New session" menu does — the Claude Code
+// models in order (NewChatModels), and OpenRouter when the menu offers it.
 func TestContinueOffersExactlyTheNewSessionChoices(t *testing.T) {
-	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}
 	models := []string{"opus", "sonnet", "haiku", "claude-opus-4-1[1m]"}
-	chat := chiefChatView(ChatSurfaceChiefPanel, ChiefChatBar{SessionID: 6}, []SessionView{{ID: 6, Active: true}})
-	html := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, SessionRuntimes: runtimes, ClaudeModels: models}))
-	choices := func(attr string) []string {
-		forms := regexp.MustCompile(`<form `+attr+`="[^"]*"[\s\S]*?</form>`).FindAllString(html, -1)
-		var out []string
-		for _, f := range forms {
-			rt := regexp.MustCompile(`name="runtime" value="([^"]*)"`).FindStringSubmatch(f)
-			if rt == nil {
-				out = append(out, "<no runtime>")
-				continue
-			}
-			for _, o := range regexp.MustCompile(`<option value="([^"]*)">`).FindAllStringSubmatch(f, -1) {
-				out = append(out, rt[1]+" · "+o[1])
-			}
+	bar := &ChiefChatBar{AgentID: 42, SessionID: 6, NewChatModels: models, OpenRouter: true,
+		Runtimes: []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}}
+	html := renderString(t, sessionsPanel(bar, "chiefy", chiefSheetSessions(6), ChatSurfacePage))
+	var cont []string
+	for _, f := range regexp.MustCompile(`<form `+chiefContinueFormAttr+`="[^"]*"[\s\S]*?</form>`).FindAllString(html, -1) {
+		rt := regexp.MustCompile(`name="runtime" value="([^"]*)"`).FindStringSubmatch(f)[1]
+		if rt == "opencode" {
+			cont = append(cont, "opencode · search")
+			continue
 		}
-		return out
+		for _, o := range regexp.MustCompile(`<option value="([^"]*)">`).FindAllStringSubmatch(f, -1) {
+			cont = append(cont, rt+" · "+o[1])
+		}
 	}
-	start, cont := choices(newSessionAttr), choices(chiefContinueFormAttr)
-	if len(start) != len(models) {
-		t.Fatalf("control: the New session forms offer %v, want each of %v", start, models)
+	var plus []string
+	for _, m := range newChatEntryRE.FindAllStringSubmatch(html, -1) {
+		if m[4] != "" {
+			plus = append(plus, "claude-code · "+m[4])
+		}
 	}
-	if strings.Join(cont, "\n") != strings.Join(start, "\n") {
-		t.Errorf("Continue offers %v, New session offers %v: they must be the same choices", cont, start)
+	if strings.Contains(html, chiefNewChatOpenRouterAttr) {
+		plus = append(plus, "opencode · search")
+	}
+	if len(plus) != len(models)+1 {
+		t.Fatalf("control: the + menu offers %v", plus)
+	}
+	if strings.Join(cont, "\n") != strings.Join(plus, "\n") {
+		t.Errorf("Continue offers %v, + New session offers %v: they must be the same choices", cont, plus)
 	}
 }
 
@@ -659,7 +628,7 @@ func TestContinueOffersExactlyTheNewSessionChoices(t *testing.T) {
 // shows and hides, by their ids, on both surfaces.
 func TestEachChipsMenuIsNamedForItsChat(t *testing.T) {
 	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
-		html := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", chiefSheetSessions(5), surface))
+		html := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", chiefSheetSessions(5), surface))
 		var names []string
 		for _, m := range regexp.MustCompile(`aria-haspopup="menu" aria-expanded="false" aria-label="([^"]*)"`).FindAllStringSubmatch(html, -1) {
 			names = append(names, m[1])
@@ -690,5 +659,40 @@ func TestThePanelsEscapeStepsAsideForAnOpenPopover(t *testing.T) {
 	}
 	if esc < 0 || guard < esc || shut < 0 || shut > 400 {
 		t.Errorf("the panel's Escape handler has no :popover-open guard before it shuts the panel (%d, %d, %d)", esc, guard, shut)
+	}
+}
+
+// sessionsPanel is the Sessions tab's panel for b on surface (in that
+// surface's sheet).
+func sessionsPanel(b *ChiefChatBar, name string, sessions []SessionView, surface ChatSurface) g.Node {
+	return chiefSessionsTab(b, name, sessions, surface, chiefIndexID(surface)).Panel
+}
+
+// TestTheSessionsScriptReadsTextNotMarkup: the Sessions tab's filter reads a
+// row's words by textContent and an attribute's value — never innerHTML or
+// innerText's markup-sensitive cousins — and a ⋯ action's answer reopens the
+// sheet the action was in (its closest sheet), on the Sessions tab. A spelled
+// guard on the script's source, paired with e2e's behaviour; a title carrying
+// markup is escaped where it is drawn (TestFocusTextIsEscapedEverywhereItIsDrawn's
+// rule, textplain).
+func TestTheSessionsScriptReadsTextNotMarkup(t *testing.T) {
+	js := renderString(t, chiefSessionsScript())
+	for _, banned := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "eval("} {
+		if strings.Contains(js, banned) {
+			t.Errorf("the Sessions script uses %s", banned)
+		}
+	}
+	for _, want := range []string{"a.textContent", "el.closest('[' + SHEET + ']')", `[data-tab="' + SESSIONS_TAB + '"]`, "window.muIndex.open(d)"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the Sessions script lacks %s", want)
+		}
+	}
+	// A title with markup in it is text in the row and in the bar.
+	sessions := chiefSheetSessions(8)
+	sessions[2].Title = `<svg onload="alert(1)">x`
+	for surface, markup := range chiefSurfaces(t, 8, sessions) {
+		if strings.Contains(markup, `<svg onload`) {
+			t.Errorf("%s: a title's markup is drawn as markup", surface)
+		}
 	}
 }

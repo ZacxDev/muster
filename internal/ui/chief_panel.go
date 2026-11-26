@@ -6,8 +6,6 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
-
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -69,47 +67,6 @@ const (
 	// package (18 other uses in components.go).
 	chiefPanelActionsID = "chief-panel-actions"
 
-	// chiefThreadsToggleID is the checkbox-hack peer for the panel's thread list.
-	chiefThreadsToggleID = "chief-threads"
-	// chiefThreadResultsID is the swap target the search route answers into. It
-	// holds the thread ROWS — the recent list on first paint, the matches after a
-	// query — so one renderer serves both and a cleared query restores the list.
-	chiefThreadResultsID = "chief-thread-results"
-	// chiefThreadSearchID is the search input.
-	chiefThreadSearchID = "chief-thread-search"
-
-	// chiefThreadStateAttr names WHICH answer the results container is, as a machine
-	// -readable state rather than as a sentence.
-	//
-	// 🔴 THE SENTENCES ALONE CANNOT BE GUARDED AND WERE ALREADY WRONG ONCE. Every
-	// failure path in handleChiefThreadSearch — a Postgres error, a chief that has
-	// gone missing — used to render "No thread matches that.", i.e. the answer to a
-	// question the server never managed to ask. A guard on the WORDS is walkable by
-	// rewording; this attribute is the state, so a copy edit cannot make a broken search
-	// look like an empty one.
-	//
-	// ⚠ WHO READS IT, AND THE TWO TIERS DO NOT READ ALL FOUR STATES. Go asserts every
-	// state including `error` (which needs an injected store failure, so only a Go
-	// fixture can reach it: api.TestAFailedSearchIsNotRenderedAsAnANSWER,
-	// api.TestAFailedThreadListReadIsNEVERRenderedAsAnEmptyHistory,
-	// ui.TestAFailedReadIsAThirdStateAndNamesItself). The Playwright tier asserts the two
-	// a browser can produce — `rows` and `no-match` — in e2e/tests/chief-threads.spec.ts.
-	// This comment used to say "both tiers assert the same fact" while the attribute
-	// appeared in NO spec at all; the overlap is real now, and it is an overlap rather
-	// than a duplicate.
-	chiefThreadStateAttr = "data-chief-threads-state"
-
-	// The state vocabulary. `rows` and `empty` and `no-match` are ANSWERS; `error` is
-	// the absence of one, and that difference is the whole point of the attribute.
-	chiefThreadStateRows    = "rows"
-	chiefThreadStateEmpty   = "empty"
-	chiefThreadStateNoMatch = "no-match"
-	chiefThreadStateError   = "error"
-
-	// chiefThreadAttr marks a thread row IN THE PANEL. The agent-detail and
-	// operator drawers render boosted <a href> rows and carry no such mark, which
-	// is what lets one guard assert the two surfaces differ.
-	chiefThreadAttr = "data-chief-thread"
 	// chiefQuickActionAttr carries a quick action's prompt text. The attribute IS
 	// the payload: the delegated handler reads it off the element it was clicked
 	// on, so a button rebuilt by a swap needs no rebind (constraint 3).
@@ -168,7 +125,7 @@ const (
 // half-typed message — on the one surface where the intro renders, an EMPTY thread,
 // with the three buttons sitting directly above the box at 390px. A non-empty draft
 // is therefore kept and the prompt appended to it; see the click handler in
-// chiefPanelScript, and e2e/tests/chief-threads.spec.ts for the browser fact.
+// chiefPanelScript.
 //
 // The prefill goes into the EXISTING #chat-input and rides #chat-form's
 // existing WebSocket submit: the optimistic bubble, the mid-stream refresh guard
@@ -195,29 +152,6 @@ type ChiefPanelView struct {
 	Reason string
 	// Chat is the chief's agent-detail view, re-used as-is.
 	Chat AgentDetailView
-	// ThreadsFailed says the SESSION-LIST read behind Chat.Sessions broke, so the
-	// panel's thread list must render the failure state instead of an answer.
-	//
-	// 🔴 IT IS ON *THIS* STRUCT AND NOT ON THE SHARED AgentDetailView, AND THAT IS
-	// WHAT KEEPS THE TWO PAGE SURFACES OUT OF IT. AgentDetailView is built by
-	// AgentDetailPage and OperatorPage in several places; a failure flag there would
-	// be a field those renderers could start reading, and the fix for the panel would
-	// have a surface area of three screens. Only chiefPanelBody constructs a
-	// ChiefPanelView, so this field can only ever change what the panel draws.
-	//
-	// 🔴 AND IT IS THE FREQUENT PATH, WHICH IS WHY IT EXISTS AT ALL. api.resolveSessions
-	// discarded the ListSessions error, so a failed read reached this renderer as an
-	// EMPTY list and #chief-panel-body — refetched on EVERY panel open — rendered
-	// "No threads yet.": the operator was told their whole thread history was gone
-	// because one read failed. The search route already said so (ChiefThreadsView.Failed);
-	// the first paint did not, and the first paint is the path the operator takes first
-	// and most often.
-	ThreadsFailed bool
-	// SessionRuntimes are the runtimes a NEW session may be started on, and
-	// ClaudeModels the Claude Code models offered; none: no picker
-	// (chief_sessions.go).
-	SessionRuntimes []SessionRuntimeView
-	ClaudeModels    []string
 	// Prefill is a draft for the chat box (the fleet digest's "Ask the chief
 	// about this", fleet_digest.go): the panel script puts it in the box once
 	// the body lands, after any draft already there, and sends nothing.
@@ -301,7 +235,7 @@ func ChiefPanel(fleet, propose bool) g.Node {
 				Span(Class("text-sm font-semibold text-fg"), g.Text("Chief")),
 				Span(Class("text-[10px] text-muted"), g.Text(ChiefPanelSubtitle)),
 			),
-			// The launcher slot: new-thread + thread-list, filled out of band by the
+			// The launcher slot: the list icon (or new-thread), filled out of band by the
 			// body partial (see chiefPanelActionsID). It renders EMPTY here rather
 			// than with disabled placeholders — a control that looks tappable and
 			// does nothing until a fetch lands is worse than one that appears when
@@ -385,31 +319,21 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 		chiefPanelActions(v),
 		Div(
 			// 🔴 `relative` IS LOAD-BEARING, NOT COSMETIC. It makes THIS element the
-			// containing block for chiefThreadList's `absolute inset-0`, which is how the
-			// thread list becomes a sub-view of the panel's own column rather than a
-			// second viewport-relative overlay. Drop it and the list anchors to whatever
-			// ancestor happens to be positioned — which, because ChiefPanel carries a
-			// transform, is the panel: it would still LOOK right while being anchored to
-			// something this file does not control.
-			// 🔴 `overflow-hidden` IS PART OF THE SLIDE, NOT HOUSEKEEPING, AND IT WAS
-			// ADDED AGAINST A MEASUREMENT. `translate-x-full` moves the list by 100% of
-			// its OWN width, which lands its left edge exactly on this element's right
-			// edge — and #chief-panel-body carries `p-3`, so that is 12px INSIDE the
-			// panel. Measured in Chromium at 1280×720: the shut list occupied
-			// 1268→1703 while the panel ended at 1280, leaving a 12px dark sliver of
-			// its background and ring visible down the right of the conversation. This
-			// clips it. (The panel's own overflow-hidden does not: the sliver is inside
-			// the panel, not outside it.)
+			// containing block for the chief's sheet's `absolute inset-0`
+			// (chiefIndexSheet), which is how the sheet becomes a part of the panel's
+			// own column rather than a second viewport-relative overlay. Drop it and the
+			// sheet anchors to whatever ancestor happens to be positioned — which,
+			// because ChiefPanel carries a transform, is the panel: it would still LOOK
+			// right while being anchored to something this file does not control.
+			// `overflow-hidden` clips the sheet to this column: the panel's own
+			// overflow-hidden would not, since the column sits inside the panel's
+			// padding (#chief-panel-body's p-3).
 			Class("relative flex min-h-0 flex-1 flex-col overflow-hidden"),
 			// The session the SERVER resolved. See chiefActiveSessionAttr.
 			g.Attr(chiefActiveSessionAttr, strconv.FormatInt(v.Chat.ActiveSessionID, 10)),
-			// The thread list: checkbox, backdrop, sub-view — in that order, because the
-			// peer-checked:* utilities on the two later siblings select off the checkbox.
-			// The chat pane below carries no peer-checked class, so it is untouched.
-			chiefThreadList(v),
-			// The chief's chats: the "Sessions" button and its drawer over the
-			// transcript — the page's, answered into this body (chief_chats.go).
-			chiefChatStrip(v.Chat.ChiefChat, v.Chat.Name, v.Chat.Sessions, ChatSurfaceChiefPanel),
+			// The chat on screen, named over the transcript, where the page names
+			// it (chief_chats.go chiefCurrentChat).
+			chiefCurrentChat(v.Chat.ChiefChat, v.Chat.Sessions, ChatSurfaceChiefPanel),
 			// The EXISTING chat pane, unmodified: #chat-log fed by
 			// /ui/agents/{name}/chat-log on sse:chat.reply, plus #chat-form's WebSocket.
 			agentChatPane(v.Chat),
@@ -436,29 +360,35 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			agentChatScript(v.Chat.Name),
 			DispatchCardGuard(),
 			chiefPrefill(v.Prefill),
+			// 🔴 THE PANEL'S OWN SHEET, IN THIS COLUMN (chiefIndexSheet): Sessions,
+			// Your messages and What it worked on, opened by the list icon in the
+			// title bar (chiefPanelActions). `absolute` here, never `fixed` — the
+			// panel's transform would place a fixed one by the panel — so this
+			// relative, overflow-hidden column is its containing block; and its ids
+			// are its own (#chief-panel-index), so it is never the page's #chat-index.
+			chiefIndexSheet(v.Chat),
 		),
 	}
 }
 
-// chiefPanelActions renders the TITLE-BAR launcher pair, out of band.
-//
-// 🔴 BOTH LAUNCHERS, IN THE TITLE BAR, AND NEITHER IS A SECOND IMPLEMENTATION.
-// The thread-list launcher IS chatHistoryButton — the same 44px control, the same
-// icon and the same keyboard contract the agent-detail header uses, pointed at the
-// panel's own checkbox. The new-thread control reuses POST /agents/{id}/sessions,
-// the route the page surfaces already post to, so its empty-session reuse comes
-// along rather than being re-derived.
+// chiefPanelActions renders the TITLE-BAR launcher, out of band: the chief's
+// list icon (chiefIndexButton, the page header's own control, opening the
+// panel's sheet), or — a panel with no chief chat bar — the new-thread control,
+// which reuses POST /agents/{id}/sessions, the route the page surfaces already
+// post to, so its empty-session reuse comes along rather than being re-derived.
 func chiefPanelActions(v ChiefPanelView) g.Node {
 	return Div(
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
 		// No context chip (removed in #871: the page says it in its ⋯ menu,
-		// and only when it is high). Its new chat is the "New session" in the Sessions drawer
-		// over the transcript (chiefChatStrip); the title bar keeps the thread
-		// list.
+		// and only when it is high). The chief's chats — switching, New session,
+		// Continue, the search through their messages — are the Sessions tab of
+		// the sheet the list icon here opens (chiefIndexButton, with the dot when
+		// another chat has an unread reply): the ONE list of them, on the page and
+		// here (it replaced the panel's own thread list, an operator decision).
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
-		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
+		g.If(v.Configured && v.Chat.ChiefChat != nil, chiefIndexButton(chiefPanelIndexID, chiefUnreadElsewhere(v.Chat.Sessions) > 0)),
 	)
 }
 
@@ -527,338 +457,6 @@ func chiefIntro() g.Node {
 			g.Text("Tapping one fills the box below — you send it."),
 		),
 	)
-}
-
-// ChiefThreadsView is the thread ROWS the panel's list shows.
-type ChiefThreadsView struct {
-	// Threads are the rows to render, most-recently-active first. Every one of them
-	// is rendered: the panel applies no cap of its own, and a search answers with
-	// its own bounded set (agents.SearchSessionsMaxLimit).
-	//
-	// 🔴 SO THE FIRST PAINT IS UNCAPPED WHILE SEARCH IS CAPPED AT 50, AND THE
-	// MEASUREMENT THAT MAKES THAT SAFE BELONGS HERE RATHER THAN IN A SESSION'S HEAD.
-	// The first paint is the FREQUENT path — #chief-panel-body refetches on every
-	// open, and each of those renders this list in full — so "the cap only matters for
-	// search" would have been the wrong way round. MEASURED against a live database
-	// on the project muster was extracted from: the chief agent carried FOUR
-	// chat_sessions rows, two of which were empty recap rows deleted in that arc.
-	// ⚠ THAT IS A MEASUREMENT ON ANOTHER DEPLOYMENT, so it is the ORDER OF
-	// MAGNITUDE that carries across, not the number. Threads are created by an operator
-	// tapping New thread or by an agent's first webchat turn, so the row count is
-	// operator-paced, not fleet-paced — nothing on a loop writes one.
-	//
-	// ⚠ IT IS NOT BOUNDED HERE BECAUSE THE LIST IS NOT THIS RENDERER'S TO TRUNCATE.
-	// The rows come from api.resolveSessions, which also feeds the agent-detail and
-	// operator drawers; capping it would silently drop threads from three surfaces,
-	// and a cap with no "older threads" affordance hides history rather than bounding
-	// a cost. If the count ever does grow, the bound belongs in resolveSessions with
-	// an affordance beside it — and the search box above is already the way to reach
-	// an old thread.
-	Threads []SessionView
-	// Query is what was searched, echoed so the empty state can name it.
-	Query string
-	// Searched distinguishes "no threads at all" from "no MATCHES", which are
-	// different sentences and the reason this is not derived from Query != "".
-	Searched bool
-	// Failed says the server never got an answer — the read itself broke.
-	//
-	// 🔴 IT IS A THIRD STATE, NOT A FLAVOUR OF EMPTY, AND CONFLATING THEM IS THE
-	// DEFECT THIS FIELD EXISTS TO CLOSE. The search route deliberately answers 200
-	// with rows on every failure (htmx does not swap a non-2xx body, so a 500 leaves
-	// the PREVIOUS query's matches on screen as though they were the answer) — and
-	// that correct decision was rendering a Postgres error, a chief-resolution
-	// failure and a genuinely empty result set as one sentence, "No thread matches
-	// that.", traced only in a server log. The operator could not tell "nothing
-	// matched" from "search is broken", and on the blank-query path they were told
-	// their thread history was EMPTY when the list read had simply failed.
-	//
-	// ⚠ IT OUTRANKS Searched. A failed search has no result set to describe, so
-	// there is no answer to describe and the query text is echoed only to say what was
-	// being attempted.
-	//
-	// 🔴 IT ALSO OUTRANKS THE ROW COUNT, AND chiefThreadRows ENFORCES THAT RATHER THAN
-	// TRUSTING THE CALLER — which this comment used to do, and which failed. It read
-	// "Threads must be empty whenever this is set": a PRECONDITION, stated in prose,
-	// honoured by the search route (it discards the list on every failure) and violated
-	// by the first paint the moment that call site was added. api.resolveSessions returns
-	// `views, err` from one read, and agents.PGStore.ListSessions ends `return out, rows.Err()`
-	// — so a mid-stream failure (connection reset, server-side cancellation) hands the
-	// panel a TRUNCATED slice AND a non-nil error. That rendered as state="rows" with no
-	// failure sentence anywhere: a partial thread history presented as the whole of it.
-	// The renderer now answers the failure state at EVERY row count, so a caller cannot
-	// reintroduce it by forgetting; see chiefThreadRows for why the rows are dropped
-	// rather than shown alongside the sentence.
-	Failed bool
-	// Reason replaces the failure SENTENCE when the absence of an answer is not a
-	// transient read at all. Ignored unless Failed is set.
-	//
-	// 🔴 IT EXISTS BECAUSE "Try again." WAS A LIE IN ONE STATE. handleChiefThreadSearch
-	// renders the failure state when s.ext.Agents is nil — a muster booted with no
-	// database — and that read cannot succeed on a retry, not now and not ever: there is
-	// no store to ask. Telling the operator to try again is an instruction that can only
-	// waste their time. The STATE is still `error` (it is the absence of an answer, which
-	// is exactly what that state means); only the sentence differs.
-	Reason string
-}
-
-// RenderChiefThreadRows writes the thread-row partial the search route answers with.
-func RenderChiefThreadRows(w io.Writer, v ChiefThreadsView) error {
-	return chiefThreadRows(v).Render(w)
-}
-
-// chiefThreadRows renders one row per thread.
-//
-// 🔴 A ROW IS AN hx-get INTO THE PANEL BODY, NOT A LINK. The page surfaces use
-// boosted <a href="/agents/<name>?session=<id>"> and must keep doing so — their
-// tests pin it. In the panel a navigation would leave the grid, so a row asks the
-// panel handler (which already honours ?session=) for that thread and swaps it
-// into #chief-panel-body. It is a <button> rather than an <a> with hx-get because
-// there is no URL it degrades to: without JS a bare href here would navigate,
-// which is the behaviour being removed.
-//
-// 🔴 A FAILED READ IS ANSWERED BEFORE THE ROWS ARE EVEN COUNTED, AND THE ROWS ARE
-// DROPPED. That ordering is the whole of round-3 finding 1. ChiefThreadsView.Failed
-// documented "Threads must be empty whenever this is set" as a precondition on the
-// CALLER; the search route honours it, the panel's first paint passed both — and a
-// truncated read (agents.PGStore.ListSessions ends `return out, rows.Err()`, so a
-// mid-stream failure yields rows AND an error) therefore rendered state="rows" with no
-// failure sentence at all. Checking Failed here, first, makes the precondition a
-// property of the renderer: no present or future call site can render a partial list
-// as a complete one by forgetting to discard it.
-//
-// 🔴 AND THE ROWS THAT DID ARRIVE ARE NOT SHOWN BESIDE THE SENTENCE, DELIBERATELY.
-// A broken read does not say how much of the answer it lost: `out, rows.Err()` can be
-// the first row of hundreds or every row but one, and nothing in the error
-// distinguishes them — so rows rendered here are a list of UNKNOWN completeness, drawn
-// as tappable, active-highlighted, visually identical to a whole one. An operator who
-// reads the rows and not the sentence above them draws exactly the false conclusion
-// this arc exists to prevent. With the rows gone the warning sentence is the only thing
-// in the container, so it cannot be skimmed past, and nothing reachable is lost.
-//
-// 🔴 AND THE RETRY IS IN PLACE, WHICH IS THE CHEAPEST ONE AND NOT THE ONE THIS COMMENT
-// USED TO NAME. The search input above this list carries
-// hx-trigger="input changed delay:300ms, search" against /ui/chief/threads/search, and a
-// BLANK q on that route is the SAME agents.ListSessions read (api.handleChiefThreadSearch
-// renders the recent list rather than an empty result set) — so a keystroke and a clear,
-// or the type=search clear affordance, re-issues this read and swaps the answer over
-// #chief-thread-results without the panel moving. Reopening the panel refetches the body
-// too, but that is close-then-open — TWO taps, not the "one tap" this said before — and
-// the threads drawer's own toggle is a pure-CSS checkbox that fetches nothing at all.
-// A NON-blank query is a different read (SearchSessions) and reaches a named thread
-// without this one ever succeeding.
-func chiefThreadRows(v ChiefThreadsView) g.Node {
-	if v.Failed {
-		msg := "Could not search threads just now — this is not an empty result. Try again."
-		// 🔴 "Try again." IS ONLY TRUE OF A TRANSIENT READ. A no-database boot cannot
-		// answer this on a retry ever, so the caller may hand this renderer the
-		// honest sentence instead. See ChiefThreadsView.Reason.
-		if v.Reason != "" {
-			msg = v.Reason
-		}
-		// Not the muted text colour: the operator has to be able to tell at a glance that they are
-		// looking at a broken read rather than at an answer.
-		return chiefThreadNotice(chiefThreadStateError, msg, "text-st-warning-fg")
-	}
-	if len(v.Threads) == 0 {
-		// Two remaining facts, two different sentences, and the STATE on the element so
-		// neither tier has to assert the wording.
-		state, msg := chiefThreadStateEmpty, "No threads yet."
-		if v.Searched {
-			state, msg = chiefThreadStateNoMatch, "No thread matches that."
-		}
-		return chiefThreadNotice(state, msg, "text-muted")
-	}
-	rows := make([]g.Node, 0, len(v.Threads)+1)
-	archivedShown := false
-	// The thread the panel is on: a row's Make primary keeps the panel on it.
-	var current int64
-	for _, sess := range v.Threads {
-		if sess.Active {
-			current = sess.ID
-		}
-	}
-	for _, sess := range v.Threads {
-		// The archived chats come last (agents.SwitcherOrder), under their heading.
-		if sess.Archived && !archivedShown {
-			archivedShown = true
-			rows = append(rows, H3(Class("mt-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(chiefArchivedLabel)))
-		}
-		title := textplain.Title(sess.Title)
-		if title == "" {
-			title = "New thread"
-		}
-		cls := "press flex min-h-[44px] w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left text-sm transition ring-1 ring-inset "
-		if sess.Active {
-			cls += "bg-accent/15 text-fg ring-accent/50"
-		} else {
-			cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
-		}
-		id := strconv.FormatInt(sess.ID, 10)
-		row := Button(
-			Type("button"),
-			g.Attr(chiefThreadAttr, id),
-			g.If(sess.Active, g.Attr("aria-current", "true")),
-			hx("hx-get", "/ui/chief/panel?session="+id),
-			hx("hx-target", "#"+chiefPanelBodyID),
-			hx("hx-swap", "innerHTML"),
-			Class(cls),
-			Div(
-				Class("flex w-full items-baseline gap-2"),
-				Span(Class("mr-auto truncate"), g.Text(title)),
-				chiefChatRowExtras(sess),
-				g.If(!sess.LastActive.IsZero(),
-					Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
-				),
-			),
-			// The session's runtime and model, when it was started on one.
-			sessionRuntimeLine(sess),
-			// The matched excerpt, body matches only. A title-only match renders no
-			// snippet — see SessionView.Snippet.
-			g.If(sess.Snippet != "", Span(
-				Class("line-clamp-2 w-full text-[11px] leading-snug text-muted [overflow-wrap:anywhere]"),
-				g.Text(sess.Snippet),
-			)),
-		)
-		// "Make default" sits BESIDE the row, never inside it: a form in a button is
-		// not valid HTML, and a tap meant to open the thread must not move the default.
-		if mk := makeDefaultControl(sess, current); mk != nil {
-			rows = append(rows, Div(Class("flex items-stretch gap-1"), row, mk))
-		} else {
-			rows = append(rows, row)
-		}
-	}
-	return Div(
-		ID(chiefThreadResultsID),
-		// The state is on EVERY answer, not only on the empty ones: a guard that reads
-		// the attribute must be able to tell "rows" from "the attribute is missing",
-		// and an absent mark would make a broken read indistinguishable from a full list.
-		g.Attr(chiefThreadStateAttr, chiefThreadStateRows),
-		Class("flex flex-1 flex-col gap-2 overflow-y-auto"),
-		g.Group(rows),
-	)
-}
-
-// chiefThreadNotice is the results container holding ONE sentence instead of rows —
-// the shape all three non-rows answers take (empty, no-match, failed read).
-//
-// It exists so the three share one container: the id, the class list and the state
-// attribute are what both test tiers read, and three copies of them is three chances
-// for one answer to drop the mark and become indistinguishable from a full list.
-func chiefThreadNotice(state, msg, cls string) g.Node {
-	return Div(
-		ID(chiefThreadResultsID),
-		g.Attr(chiefThreadStateAttr, state),
-		Class("flex flex-1 flex-col gap-2 overflow-y-auto"),
-		P(Class("px-1 py-2 text-xs "+cls), g.Text(msg)),
-	)
-}
-
-// chiefThreadList is the panel's thread picker: a sub-view of the panel's own
-// column, driven by the same pure-CSS checkbox hack the page drawer uses.
-//
-// 🔴 `absolute inset-0`, NOT `fixed`. sessionDrawer's `fixed inset-y-0 right-0`
-// is the hazard this function exists to avoid: a transform on ChiefPanel makes the
-// panel the containing block for any fixed descendant, so the page drawer rendered
-// inside the panel sits at the panel's right edge at w-80/85vw — two nested
-// right-side slide-outs inside a 28rem column — and goes off-screen and inert with
-// the panel when it shuts. An absolutely-positioned child of the panel body has no
-// such dependence: it covers the panel's content area at every width, and the
-// panel's own `overflow-hidden` clips it while it is translated away.
-//
-// 🔴 THE CHECKBOX SHAPE IS COPIED FROM sessionDrawer DELIBERATELY, INCLUDING WHAT
-// IT DOES NOT CARRY. It is NOT aria-hidden and NOT tabindex="-1": sr-only is
-// clip/1px rather than display:none, so the input stays natively focusable, and
-// hiding a focusable element from the a11y tree is exactly what axe's
-// aria-hidden-focus forbids — while stripping it from the tab order instead made
-// the whole drawer pointer-only, because a <label for> has no native keyboard
-// activation. Both findings are already paid for. Do not re-add either attribute.
-//
-// 🔴 IT TAKES THE PANEL VIEW, NOT THE CHAT VIEW, BECAUSE THE FIRST PAINT HAS TO BE
-// ABLE TO SAY THE LIST READ FAILED. The rows below are the SAME renderer the search
-// route answers with, and that route has carried ChiefThreadsView.Failed since the
-// sentence conflation was fixed — while this call site passed Threads and nothing
-// else, so a failed read arrived here as an empty slice and rendered "No threads
-// yet." ThreadsFailed lives on ChiefPanelView (see its comment) precisely so this
-// signature could widen without touching AgentDetailView, which the two page
-// surfaces share.
-func chiefThreadList(p ChiefPanelView) g.Node {
-	v := p.Chat
-	return g.Group{
-		Input(Type("checkbox"), ID(chiefThreadsToggleID), Class("peer sr-only"),
-			g.Attr("aria-label", "Threads")),
-		// Backdrop: scoped to the panel's own column, not the viewport. NO
-		// aria-label — a bare <label> has no widget role, so aria-label is
-		// prohibited on it (axe aria-prohibited-attr) and the name has to come from
-		// visually-hidden content.
-		Label(
-			g.Attr("for", chiefThreadsToggleID),
-			Class("absolute inset-0 z-10 hidden bg-black/60 peer-checked:block"),
-			Span(Class("sr-only"), g.Text("Close threads")),
-		),
-		Div(
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Threads"),
-			Class("absolute inset-0 z-20 flex translate-x-full flex-col rounded-lg bg-bg ring-1 ring-line transition-transform duration-200 ease-out peer-checked:translate-x-0"),
-			Div(
-				Class("flex flex-none items-center gap-2 border-b border-line px-3 py-2"),
-				H2(Class("mr-auto text-sm font-semibold text-fg"), g.Text("Threads")),
-				// role="button" + tabindex="0" IS claimed here and IS honoured, by
-				// appScript's delegated label[role="button"] Enter/Space handler — the
-				// same contract chatHistoryButton relies on. The backdrop above is
-				// deliberately left pointer-only (a full-screen tab stop is worse than
-				// none), so this is the in-view keyboard close; Space on the checkbox
-				// itself remains the JS-free fallback.
-				Label(
-					g.Attr("for", chiefThreadsToggleID),
-					g.Attr("role", "button"),
-					g.Attr("tabindex", "0"),
-					Class("press inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
-					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
-					Span(Class("sr-only"), g.Text("Close threads")),
-				),
-			),
-			Div(
-				Class("flex min-h-0 flex-1 flex-col gap-2 p-3"),
-				// A new session on a runtime and a model (chief_sessions.go).
-				chiefNewSessionPicker(v.ID, p.SessionRuntimes, p.ClaudeModels),
-				// 🔴 SERVER-SIDE SEARCH, DEBOUNCED WITH htmx's OWN `delay:` MODIFIER
-				// rather than a hand-rolled timer — the same idiom internal/ui/tmux.go
-				// already uses on its snapshot trigger. `search` is in the trigger list
-				// so the type=search clear affordance re-queries instead of leaving the
-				// last matches on screen.
-				Input(
-					ID(chiefThreadSearchID),
-					Type("search"),
-					Name("q"),
-					g.Attr("autocomplete", "off"),
-					g.Attr("aria-label", "Search threads"),
-					Placeholder("Search threads and messages…"),
-					Class("min-h-[40px] w-full rounded-lg border-0 bg-s1 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-					// The ACTIVE thread travels in the url so the answer can highlight it
-					// without the handler resolving (and therefore possibly CREATING) a
-					// session on a read — see handleChiefThreadSearch.
-					hx("hx-get", "/ui/chief/threads/search?session="+strconv.FormatInt(v.ActiveSessionID, 10)),
-					hx("hx-trigger", "input changed delay:300ms, search"),
-					hx("hx-target", "#"+chiefThreadResultsID),
-					hx("hx-swap", "outerHTML"),
-				),
-				// 🔴 Failed TRAVELS WITH THE ROWS. The list and the reason it might be
-				// empty are one answer, and this is the call site that used to pass only
-				// half of it.
-				//
-				// ⚠ AND IT PASSES BOTH RATHER THAN DISCARDING THE LIST ITSELF, ON PURPOSE.
-				// chiefThreadRows answers the failure state at every row count and drops the
-				// rows there, so the rule lives in the renderer instead of in each caller —
-				// this one got that rule wrong for a truncated read, and the next call site
-				// would have had the same chance to.
-				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
-				// "Continue in a new session" for the side chat the panel is on
-				// (chief_chats.go). Every other chat action — "+", Fresh primary,
-				// Archive, Unarchive, Make primary — is in the Sessions drawer.
-				chiefPanelContinue(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
-			),
-		),
-	}
 }
 
 // chiefPanelScript owns the panel's open/closed state and its width.
@@ -1031,6 +629,15 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   function applyOpen(p, open) {
     p.classList.toggle('translate-x-full', !open);
     p.classList.toggle('translate-x-0', !!open);
+    // 🔴 A SHUT PANEL SHUTS ITS SHEET (chat_index.go), BEFORE IT GOES INERT (an
+    // inert sheet is no longer "current"): left open inside the now-inert
+    // panel, the sheet's keyboard handling still held Tab (the focus stuck on
+    // the page) and took the first Escape. No focus back: the opener is in the
+    // panel being shut.
+    if (!open && window.muIndex) {
+      var s = window.muIndex.current();
+      if (s && p.contains(s)) window.muIndex.close({ focus: false });
+    }
     if (open) { p.removeAttribute('inert'); } else { p.setAttribute('inert', 'inert'); }
     p.setAttribute('` + chiefPanelOpenAttr + `', open ? '1' : '0');
     // Every launcher on the page reports the state. There can be more than one

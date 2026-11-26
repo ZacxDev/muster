@@ -60,8 +60,8 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"chat session drawer", "Plan the 2*3 migration", func() g.Node {
 			return sessionDrawer(AgentDetailView{Name: "a8", Sessions: []SessionView{{ID: 8, Title: "Plan the **2*3** migration"}}})
 		}},
-		{"chief thread list", "Review PR 9 today", func() g.Node {
-			return chiefThreadRows(ChiefThreadsView{Threads: []SessionView{{ID: 9, Title: "Review [PR 9](https://example.com/9) _today_"}}})
+		{"chief message matches", "Review PR 9 today", func() g.Node {
+			return chiefMessageMatches(ChiefMessageMatchesView{AgentName: "a9", Matches: []SessionView{{ID: 9, Title: "Review [PR 9](https://example.com/9) _today_", Snippet: "the words"}}})
 		}},
 		{"notification row", "Agent ten done", func() g.Node {
 			// Its name is the rule's (internal/sessionname), which plains it.
