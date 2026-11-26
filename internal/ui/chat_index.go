@@ -50,7 +50,8 @@ import (
 // panel lives in the home shell only — but a boosted navigation keeps the
 // script, so nothing here assumes there is one sheet: the opener names its sheet
 // (aria-controls), and every part is found inside that sheet by its data mark,
-// never by a document-wide id (TestTwoSheetsOnOneDocumentEachOpenTheirOwn; e2e
+// never by a document-wide id (an invariant guard for a future document, not a
+// served one: TestInvariantTwoSheetsOnOneDocumentEachOpenTheirOwn; e2e
 // chief-sessions-tab.spec.ts builds that document and opens each).
 //
 // On the chief's surfaces "Your messages" lists the user bubbles the page

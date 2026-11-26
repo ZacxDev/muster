@@ -454,16 +454,18 @@ for (const vp of [
   });
 }
 
-// 🔴 TWO SHEETS ON ONE DOCUMENT EACH OPEN THEIR OWN. No page muster serves
-// holds the page's sheet and the panel's together today (the chief page and
-// the mirrored view are their own documents; the panel is the home shell's),
-// so this builds that document on purpose: the chief page, with the panel's
-// body — its sheet and its title bar's icon — fetched and put beside it. Each
-// icon opens its own sheet, the other stays shut, and the page's "Your
-// messages" is still built into the page's sheet.
-test.describe('two sheets', () => {
+// 🔴 AN INVARIANT GUARD, NOT REGRESSION COVERAGE: TWO SHEETS ON ONE DOCUMENT
+// EACH OPEN THEIR OWN. No page muster serves holds the page's sheet and the
+// panel's together today (the chief page and the mirrored view are their own
+// documents; the panel is the home shell's), so no served path has hit this.
+// It pins the opener-scoped (aria-controls) lookup so a future document holding
+// both works, by building that document on purpose: the chief page, with the
+// panel's body — its sheet and its title bar's icon — fetched and put beside
+// it. Each icon opens its own sheet, the other stays shut, and the page's
+// "Your messages" is still built into the page's sheet.
+test.describe('two sheets (invariant guard)', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
-  test('the page\'s sheet and the panel\'s, on one document, each open their own', async ({ page }) => {
+  test('invariant: the page\'s sheet and the panel\'s, on one document, each open their own', async ({ page }) => {
   const c = await makeChief(page);
   await onPage(page, `/agents/${c.name}?session=${c.alpha}`);
   await page.evaluate(async () => {

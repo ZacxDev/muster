@@ -1376,7 +1376,7 @@ another chat has a reply you have not read, and the Sessions tab counts those
 chats.
 
     [ Search sessions…                     ]
-    (All) (Unread) (Archived) (sonnet)
+    (All) (Unread) (Archived) (qwen3-coder)
     [+ New session]
     ★ Primary                              ⋯
     side chats, most recent first…   ●     ⋯
@@ -1387,8 +1387,9 @@ chats.
   since you last opened it.
 - **Search** filters the rows by their title as you type, archived chats
   included. The chips show **All** chats, only the **Unread** ones, only the
-  **Archived** ones (when there are any), or only the chats on one model (a chip
-  per model a chat was opened on). One chip is on at a time; tap it again to go
+  **Archived** ones (when there are any), or only the chats on one OpenRouter
+  model (a chip per OpenRouter model a chat was opened on; a chat on a Claude
+  model such as `sonnet` gets none). One chip is on at a time; tap it again to go
   back to All. Filters apply to every row alike, the chat you are on included
   (it is named over the transcript either way); when they hide every row the
   tab says **No sessions match**. The search and the chips work in the browser,

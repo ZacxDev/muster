@@ -9,6 +9,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/textplain"
 )
 
@@ -25,7 +26,7 @@ import (
 // every chat of the chief's (chiefSessionsTab):
 //
 //	[ Search sessions…                     ]
-//	(All) (Unread) (Archived) (sonnet) …       filter chips, one pressed
+//	(All) (Unread) (Archived) (qwen3-coder) …  filter chips, one pressed
 //	[+ New session]
 //	★ Primary                                 ⋯
 //	side chats, most recent first…  ● sonnet  ⋯
@@ -52,7 +53,8 @@ import (
 // route of their own: every chat is already in the tab). The search matches a
 // row's words — its title, "Primary", its model — by textContent, never by
 // markup, and reaches the archived chats too; the chips are All, Unread,
-// Archived (where there is one) and one per model a chat was opened on.
+// Archived (where there is one) and one per OpenRouter model a chat was opened
+// on (a Claude model gets none).
 // 🔴 THEY APPLY TO EVERY ROW ALIKE, THE CHAT ON SCREEN'S INCLUDED: the bar over
 // the transcript names that chat whatever the filters hide, so a filter that
 // made an exception for it would only make the list disagree with its own
@@ -361,7 +363,10 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 	anyArchived := false
 	for i := range sessions {
 		sess := sessions[i]
-		if sess.Model != "" && !seen[sess.Model] {
+		// 🔴 OPENROUTER MODELS ONLY (the operator's option: "a per-model chip
+		// when you have OpenRouter sessions"): a chat on a Claude model gets no
+		// chip. agents.SessionOnOpenRouter is the one predicate for it.
+		if agents.SessionOnOpenRouter(sess.Model) && !seen[sess.Model] {
 			seen[sess.Model] = true
 			models = append(models, sess.Model)
 		}
@@ -395,8 +400,8 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 		rows = append(rows, archived...)
 	}
 	// The chips: All (pressed as drawn), Unread, Archived where there is an
-	// archived chat, and one per model a chat was opened on, in the order the
-	// chats first name them.
+	// archived chat, and one per OpenRouter model a chat was opened on, in the
+	// order the chats first name them.
 	chip := func(value, label, title string, pressed bool) g.Node {
 		p := "false"
 		if pressed {

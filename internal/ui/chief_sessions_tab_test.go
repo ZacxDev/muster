@@ -124,15 +124,19 @@ func TestTheChiefsSheetHasSessionsFirst(t *testing.T) {
 	}
 }
 
-// TestAModelChipPerModelAChatWasOpenedOn: a chip per DISTINCT model the chats
-// were opened on, in the order the chats first name them, after Archived —
-// named by the model's own name (an OpenRouter id's last part) and filtering by
-// the whole id; none for a chief whose chats are all on its own model, and no
-// Archived chip with no archived chat. RED at main: no chips at all.
+// TestAModelChipPerModelAChatWasOpenedOn: a chip per DISTINCT OpenRouter model
+// the chats were opened on (the operator's option: "a per-model chip when you
+// have OpenRouter sessions"), in the order the chats first name them, after
+// Archived — named by the model's own name (an OpenRouter id's last part) and
+// filtering by the whole id. A chat on a CLAUDE model (sonnet, beside them in
+// the fixture) gets no chip; none for a chief whose chats are all on its own
+// model, and no Archived chip with no archived chat. RED at main: no chips at
+// all; red before the OpenRouter-only fix: a sonnet chip.
 func TestAModelChipPerModelAChatWasOpenedOn(t *testing.T) {
 	sessions := chiefSheetSessions(5)
+	sessions[0].Model = "openrouter/vendor-j/jasper-3b" // 5, the primary
 	sessions[1].Model = "openrouter/vendor-q/quartz-9b" // 6
-	sessions[2].Model = "sonnet"                        // 8
+	sessions[2].Model = "sonnet"                        // 8: a Claude model
 	sessions[3].Model = "openrouter/vendor-q/quartz-9b" // 7, the same again
 	for surface, markup := range chiefSurfaces(t, 5, sessions) {
 		sheet, _ := chiefSheetOf(t, surface, markup)
@@ -140,7 +144,7 @@ func TestAModelChipPerModelAChatWasOpenedOn(t *testing.T) {
 		for _, c := range allAttr(sheet, "data-chief-filter") {
 			chips = append(chips, attrOf(c, "data-chief-filter")+"="+focusNodeText(c))
 		}
-		want := "all=All unread=Unread archived=Archived model:openrouter/vendor-q/quartz-9b=quartz-9b model:sonnet=sonnet"
+		want := "all=All unread=Unread archived=Archived model:openrouter/vendor-j/jasper-3b=jasper-3b model:openrouter/vendor-q/quartz-9b=quartz-9b"
 		if got := strings.Join(chips, " "); got != want {
 			t.Errorf("%s: chips %q, want %q", surface, got, want)
 		}
@@ -359,14 +363,18 @@ func TestThePanelsSheetIsInThePanelsColumn(t *testing.T) {
 	}
 }
 
-// TestTwoSheetsOnOneDocumentEachOpenTheirOwn: the page's sheet and the panel's
-// share NO id — not the sheet's, not a tab's, not a part's — each opener
-// controls its own, and the script finds a sheet's parts INSIDE the sheet its
-// opener names, never by a document-wide id (the old chatIndexScript looked up
-// 'chat-index', 'chat-index-open' and 'chat-index-list' by id, so a second
-// sheet on the document would have opened the first). e2e drives the
-// coexisting case in a browser. RED at main: the panel had no sheet.
-func TestTwoSheetsOnOneDocumentEachOpenTheirOwn(t *testing.T) {
+// TestInvariantTwoSheetsOnOneDocumentEachOpenTheirOwn — 🔴 AN INVARIANT GUARD,
+// NOT REGRESSION COVERAGE: no page muster serves today holds both sheets (the
+// chief page and the mirrored view are their own documents; the panel lives
+// in the home shell only), so no served path has ever hit the hazard. It pins
+// the opener-scoped lookup so a FUTURE document holding both works: the page's
+// sheet and the panel's share NO id — not the sheet's, not a tab's, not a
+// part's — each opener controls its own (aria-controls), and the script finds a
+// sheet's parts INSIDE the sheet its opener names, never by a document-wide id
+// (the old chatIndexScript looked up 'chat-index', 'chat-index-open' and
+// 'chat-index-list' by id). e2e's "two sheets" case is the same guard in a
+// browser. (It fails at main only because the panel had no sheet.)
+func TestInvariantTwoSheetsOnOneDocumentEachOpenTheirOwn(t *testing.T) {
 	ms := chiefSurfaces(t, 5, chiefSheetSessions(5))
 	ids := func(markup, sheetID string) map[string]bool {
 		s := byID(parseFragment(t, markup), sheetID)
