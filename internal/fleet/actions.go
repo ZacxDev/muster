@@ -117,16 +117,6 @@ const (
 	GuardFlagOff = "flag_off"
 )
 
-// Why an expired proposal expired (fleet_actions.expired_why, migration
-// 0192): the page a stale link opens says which (internal/api fleetGone).
-const (
-	// WhyTTL: its ProposalTTL passed with no tap.
-	WhyTTL = "ttl"
-	// WhyMovedOn: its session moved on (its stop ended, a new message, a new
-	// pull-request head) before the tap.
-	WhyMovedOn = "moved_on"
-)
-
 // Suppressed is the state of an action muster did not send because of guard.
 func Suppressed(guard string) string { return "suppressed:" + guard }
 
@@ -282,9 +272,6 @@ type Action struct {
 	// CloseAfter is a wrap's close step: the streak its handoff was sent on.
 	CloseAfter string
 	FinishedAt time.Time
-	// ExpiredWhy is why an expired proposal expired (WhyTTL, WhyMovedOn); ""
-	// for any other state, and for one expired before migration 0192.
-	ExpiredWhy string
 }
 
 // Evidence is an action's references: never transcript text.
@@ -350,9 +337,6 @@ type Move struct {
 	SendQueueID int64
 	RouteID     string
 	CloseAfter  string
-	// Why is an expiry's reason (WhyTTL, WhyMovedOn); set only with
-	// State StateExpired.
-	Why string
 	// Finish ends the action (finished_at = now()).
 	Finish bool
 }
@@ -397,14 +381,19 @@ type Actions interface {
 	// HidePush records that no such notification is showing; showing reports
 	// whether one was (fleet proposals turned off).
 	HidePush(ctx context.Context) (showing bool, err error)
+	// PushShown is the waiting set the notification shows, as recorded; nil
+	// when none is showing (a withdrawal's re-check reads it).
+	PushShown(ctx context.Context) ([]int64, error)
 }
 
 // PushSync is what SyncPush found. Nothing to do unless Withdraw or Replace.
 type PushSync struct {
 	// Withdraw: a notification was showing and no proposal waits now.
 	Withdraw bool
-	// Replace: a notification is showing and the waiting set changed: it is
-	// replaced in place with Count and the newest still waiting (Newest).
+	// Replace: a notification is showing and a proposal it counted no longer
+	// waits: it is replaced in place with Count and the newest still waiting
+	// (Newest). A set that only GREW is not replaced (the swipe rule: a new
+	// proposal waits for ClaimPush's alert, never resurrects the push).
 	Replace bool
 	Count   int
 	Newest  int64
@@ -413,7 +402,7 @@ type PushSync struct {
 const actionCols = `id, owner_id, created_at, class, proposer, subject_kind, subject_key, mirror_host, mirror_session, mirror_window,
 	coalesce(agent_id, 0), coalesce(chat_session_id, 0), episode_id, streak_key, evidence, reason, text, text_sha256,
 	coalesce(task_id, 0), to_subject, state, outcome, coalesce(decided_by, 0), decided_via, coalesce(decided_at, 'epoch'::timestamptz),
-	coalesce(send_queue_id, 0), coalesce(route_id, ''), close_after, coalesce(finished_at, 'epoch'::timestamptz), expired_why`
+	coalesce(send_queue_id, 0), coalesce(route_id, ''), close_after, coalesce(finished_at, 'epoch'::timestamptz)`
 
 func scanAction(row pgx.Row) (Action, error) {
 	var a Action
@@ -421,7 +410,7 @@ func scanAction(row pgx.Row) (Action, error) {
 	err := row.Scan(&a.ID, &a.Owner, &a.CreatedAt, &a.Class, &a.Proposer, &a.SubjectKind, &a.SubjectKey, &a.Host, &a.TmuxSession, &a.Window,
 		&a.AgentID, &a.ChatSessionID, &a.EpisodeID, &a.StreakKey, &ev, &a.Reason, &a.Text, &a.TextSHA256,
 		&a.TaskID, &a.ToSubject, &a.State, &a.Outcome, &a.DecidedBy, &a.DecidedVia, &a.DecidedAt,
-		&a.SendQueueID, &a.RouteID, &a.CloseAfter, &a.FinishedAt, &a.ExpiredWhy)
+		&a.SendQueueID, &a.RouteID, &a.CloseAfter, &a.FinishedAt)
 	if err != nil {
 		return a, err
 	}
@@ -535,10 +524,9 @@ func (p *PG) MoveAction(ctx context.Context, id int64, from []string, m Move) (A
 				send_queue_id = coalesce($7, send_queue_id),
 				route_id = coalesce($8, route_id),
 				close_after = CASE WHEN $9 = '' THEN close_after ELSE left($9, 200) END,
-				finished_at = CASE WHEN $10 THEN greatest(now(), created_at) ELSE finished_at END,
-				expired_why = $11
+				finished_at = CASE WHEN $10 THEN greatest(now(), created_at) ELSE finished_at END
 			WHERE id = $1 AND state = ANY($2) AND finished_at IS NULL RETURNING `+actionCols,
-			id, from, m.State, oneLine(m.Outcome), m.DecidedVia, nullID(m.DecidedBy), nullID(m.SendQueueID), nullText(m.RouteID), m.CloseAfter, m.Finish, m.Why))
+			id, from, m.State, oneLine(m.Outcome), m.DecidedVia, nullID(m.DecidedBy), nullID(m.SendQueueID), nullText(m.RouteID), m.CloseAfter, m.Finish))
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
 		}
@@ -573,16 +561,21 @@ func (p *PG) ClaimPush(ctx context.Context, now time.Time) (int, bool, error) {
 		if last != nil && now.Sub(*last) < PushEvery {
 			return nil
 		}
+		// 🔴 ONE READ: the count the push says and the set it records are the
+		// same rows, so a proposal filed between two reads cannot make them
+		// disagree.
 		var fresh bool
-		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'proposed'),
-				coalesce(bool_or(state = 'proposed' AND ($1::timestamptz IS NULL OR created_at > $1)), false)
-			FROM fleet_actions WHERE finished_at IS NULL`, last).Scan(&count, &fresh); err != nil {
+		var ids []int64
+		if err := tx.QueryRow(ctx, `SELECT coalesce(array_agg(id ORDER BY created_at, id), '{}'),
+				coalesce(bool_or($1::timestamptz IS NULL OR created_at > $1), false)
+			FROM fleet_actions WHERE state = 'proposed' AND finished_at IS NULL`, last).Scan(&ids, &fresh); err != nil {
 			return err
 		}
+		count = len(ids)
 		if !fresh || count == 0 {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, proposals_push_ids = (`+waitingIDs+`), updated_at = now()`, now); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_pushed_at = $1, proposals_push_ids = $2, updated_at = now()`, now, ids); err != nil {
 			return err
 		}
 		due = true
@@ -604,6 +597,12 @@ const waitingIDs = `SELECT coalesce(array_agg(id ORDER BY created_at, id), '{}')
 // the same mark under FOR UPDATE, so a change is acted on once — the second
 // finds the set already recorded. NULL (nothing showing) is left NULL: a
 // notification is only ever replaced or withdrawn, never raised, here.
+//
+// 🔴 ONLY A SHRINK IS ACTED ON (operator decision "respect the swipe"): a
+// proposal the push counted that no longer waits. Growth alone — a new
+// proposal — changes nothing here and leaves the mark as it was: a quiet
+// replacement would resurrect a push the owner swiped away for news they have
+// not been alerted to, and ClaimPush's next alert tells them (out loud).
 func (p *PG) SyncPush(ctx context.Context) (PushSync, error) {
 	var out PushSync
 	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
@@ -621,7 +620,7 @@ func (p *PG) SyncPush(ctx context.Context) (PushSync, error) {
 		if err := tx.QueryRow(ctx, waitingIDs).Scan(&now); err != nil {
 			return err
 		}
-		if sameIDs(shown, now) {
+		if !shrank(shown, now) {
 			return nil
 		}
 		var next any = now
@@ -640,6 +639,16 @@ func (p *PG) SyncPush(ctx context.Context) (PushSync, error) {
 	return out, nil
 }
 
+// PushShown implements Actions.
+func (p *PG) PushShown(ctx context.Context) ([]int64, error) {
+	var ids []int64
+	err := p.pool.QueryRow(ctx, `SELECT proposals_push_ids FROM fleet_owner_marks`).Scan(&ids)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return ids, err
+}
+
 // HidePush implements Actions.
 func (p *PG) HidePush(ctx context.Context) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `UPDATE fleet_owner_marks SET proposals_push_ids = NULL, updated_at = now() WHERE proposals_push_ids IS NOT NULL`)
@@ -649,16 +658,18 @@ func (p *PG) HidePush(ctx context.Context) (bool, error) {
 	return tag.RowsAffected() > 0, nil
 }
 
-func sameIDs(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
+// shrank reports whether an id of shown is not in now.
+func shrank(shown, now []int64) bool {
+	in := make(map[int64]bool, len(now))
+	for _, id := range now {
+		in[id] = true
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+	for _, id := range shown {
+		if !in[id] {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // ActionObject is an action's audit object.

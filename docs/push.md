@@ -156,9 +156,9 @@ opens "that is no longer waiting". Each kind, and what withdraws it:
 | a task ready for review (`task-<id>-done`) | it leaves review |
 | an app's knock (`app-<plugin>-<ref>`) | the app withdraws it, or the app is uninstalled |
 | an officer's cap hold or held restart | the hold ends |
-| a connector request (`connector-<id>`) | it is approved or denied (in the Connectors tab or from a session), approved by another request's shared approval, or its connector is deleted |
+| a connector request (`connector-<id>`) | it is approved or denied (in the Connectors tab or from a session), approved by another request's shared approval or by a standing grant when its agent asks again, revoked, or its connector or its agent is deleted |
 | a plugin pairing request (`pair-<id>`) | it is approved or denied, or it expires undecided (10 minutes): the Attention sweep notices, within 30 seconds, and withdraws it once |
-| "N proposals waiting" (`fleet-proposals`) | no proposal waits any more; with fewer (or more) still waiting it is **replaced quietly** instead ([chief.md](chief.md#fleet-proposals)) |
+| "N proposals waiting" (`fleet-proposals`) | no proposal waits any more; when a proposal it counted stops waiting while others still wait, it is **replaced quietly** instead — never for a new proposal alone, which waits for the next alert ([chief.md](chief.md#fleet-proposals)) |
 
 Every other notification only reports something (a page published, an agent
 finished, the morning report, a routed message, `notify_owner`, a new session
@@ -170,6 +170,21 @@ A quiet replacement is sent with `silent` to browsers (no sound or vibration;
 without alerting. Safari ignores `silent`, so it is not sent one; nor is it
 sent a withdrawal (a push that shows nothing counts against a Safari
 subscription), so on Safari a stale notification can stay.
+
+**A notification you swiped away stays away.** A quiet replacement for it is
+dropped rather than shown: the service worker records each tag you close (the
+browser's `notificationclose`, which fires only for your own dismissal, never
+for muster closing it) and skips a `silent` payload for it; the Android app
+records the dismissal and drops an `update` for that tag (from version 0.4.4).
+A loud alert for the tag — something new — shows again and forgets the
+dismissal, and so does a withdrawal. (A browser shows nothing for a skipped
+quiet update, as for a withdrawal.)
+
+**A withdrawal never overtakes what it withdraws.** The pushes of the fleet,
+connector-request and pairing tags are sent one at a time per tag, in order;
+and each withdrawal (or quiet replacement) is checked again 15 seconds later —
+once whatever was in flight, from any server, has landed — and sent again if
+its thing is still gone.
 
 🔴 **Every notification tag is declared.** `internal/api/push_tags.go` lists
 each tag family muster sends, with how it is withdrawn or why it never is, and
@@ -372,8 +387,9 @@ as **payload v2**:
   replaced in place (a new count, [above](#when-a-notification-is-withdrawn))
   carries it too. The app reads `update` for every type (its parser does,
   since v0.1.5) and draws the replacement without alerting — and silently when
-  nothing is showing under the tag. An older app would alert once; nothing
-  else changes for it.
+  nothing is showing under the tag. From 0.4.4 it drops an `update` for a tag
+  the user dismissed (until a non-update push or a withdrawal for it). An app
+  older than v0.1.5 would alert once; nothing else changes for it.
 - An ask also carries `actions`, the notification's buttons: an `ask_answer`
   per option and per suggestion (naming its chip by index in `ask`, whose
   text is the answer it sends), an inline-reply

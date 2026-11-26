@@ -89,3 +89,28 @@ func TestADecidedOrExpiredPairingRequestWithdrawsItsNotification(t *testing.T) {
 		}
 	}
 }
+
+// TestAPairingWithdrawalIsSentAgainAfterOneFanOut: a denied request's
+// withdrawal is re-checked one fan-out later and sent again (push_order.go;
+// leaving pending is final).
+//
+// Red at the branch's first commit: nothing was scheduled; one withdrawal.
+func TestAPairingWithdrawalIsSentAgainAfterOneFanOut(t *testing.T) {
+	w := newOutboundWorldWith(t, true, outboundFixture{pushes: true})
+	later := &capturedAfter{}
+	w.srv.clearRetry.after = later.after
+	c, _ := w.pair(pairBody)
+	id := w.pairID(c.RequestID)
+	if rec := w.do("POST", "/plugins/pair/"+strconv.FormatInt(id, 10)+"/deny", url.Values{}.Encode(), w.operatorForm); rec.Code != 303 {
+		t.Fatalf("deny: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, gone := w.pairNotes(id); gone != 1 {
+		t.Fatalf("CONTROL: %d withdrawals after the deny, want 1", gone)
+	}
+	if later.runAll() == 0 {
+		t.Fatal("no re-check was scheduled after the withdrawal")
+	}
+	if _, gone := w.pairNotes(id); gone != 2 {
+		t.Fatalf("after the re-check: %d withdrawals, want 2", gone)
+	}
+}

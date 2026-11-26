@@ -297,9 +297,10 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 }
 
 // fleetTTLOutcome is the outcome of a proposal expired by its 12 h
-// (fleet.Expired), recorded with fleet.WhyTTL; fleetMovedOnOutcome one whose
-// session moved on, with fleet.WhyMovedOn. fleetGone reads the reason, never
-// these words.
+// (fleet.Expired); fleetMovedOnOutcome one whose session moved on. 🔴 THE ONE
+// SPELLING OF EACH, written by every expiry and read by fleetGone: the
+// outcome muster wrote itself is the row's reason, so a row expired by an
+// older image (which wrote these same words) is told the same way.
 const (
 	fleetTTLOutcome     = "12 h passed"
 	fleetMovedOnOutcome = "the session moved on (its stop ended, or a new message or pull-request head)"
@@ -310,11 +311,11 @@ const (
 // no longer a proposal. A state that cannot be read keeps it.
 func (s *Server) fleetExpire(ctx context.Context, a fleet.Action) bool {
 	if fleet.Expired(a.CreatedAt, s.now()) {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Why: fleet.WhyTTL, Finish: true})
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Finish: true})
 		return true
 	}
 	if s.fleetStillOn(ctx, a).movedOn() {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetMovedOnOutcome, Why: fleet.WhyMovedOn, Finish: true})
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetMovedOnOutcome, Finish: true})
 		return true
 	}
 	return false
@@ -337,12 +338,12 @@ func fleetExpiresIn(d time.Duration) string {
 // The lines a fleet link's card draws when the proposal it named no longer
 // waits (ui.FleetGroupView.Gone; " at <clock>." follows when it says when).
 const (
-	// FleetGoneTTL: its 12 hours passed with no tap (fleet.WhyTTL).
+	// FleetGoneTTL: its 12 hours passed with no tap (fleetTTLOutcome).
 	FleetGoneTTL = "Expired after 12 hours"
 	// FleetGoneNoLongerNeeded: its session moved on before the tap — the stop
-	// ended, a new message, a new pull-request head (fleet.WhyMovedOn).
+	// ended, a new message, a new pull-request head (fleetMovedOnOutcome).
 	FleetGoneNoLongerNeeded = "No longer needed: the session moved on"
-	// FleetGoneExpired: expired before muster recorded why (migration 0192).
+	// FleetGoneExpired: expired with an outcome neither of those.
 	FleetGoneExpired  = "That proposal expired"
 	FleetGoneApproved = "That proposal was already approved"
 	FleetGoneRejected = "That proposal was already rejected"
@@ -395,10 +396,10 @@ func (s *Server) fleetGone(ctx context.Context, id int64) (string, time.Time) {
 		return FleetGoneUnknown, time.Time{}
 	}
 	switch {
-	case a.State == fleet.StateExpired && a.ExpiredWhy == fleet.WhyTTL:
+	case a.State == fleet.StateExpired && a.Outcome == fleetTTLOutcome:
 		// Its 12 h passed: then, not when a draw next noticed and marked it.
 		return FleetGoneTTL, fleet.ExpiresAt(a.CreatedAt)
-	case a.State == fleet.StateExpired && a.ExpiredWhy == fleet.WhyMovedOn:
+	case a.State == fleet.StateExpired && a.Outcome == fleetMovedOnOutcome:
 		// Its session moved on: noticed (and marked) by a draw or the pass.
 		return FleetGoneNoLongerNeeded, a.FinishedAt
 	case a.State == fleet.StateExpired:

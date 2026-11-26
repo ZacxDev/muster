@@ -192,9 +192,14 @@ type Server struct {
 	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
 	// another, 0 for none.
 	waitingGrace time.Duration
-	// clearRetry is the episode withdrawals deferred until their push's
-	// fan-out has had pushBroadcastTimeout (clearEpisodeLater, session_push.go).
+	// clearRetry is the deferred re-checks (recheckLater): the episode
+	// withdrawals deferred until their push's fan-out has had
+	// pushBroadcastTimeout (clearEpisodeLater, session_push.go), and the
+	// re-sent withdrawals of push_order.go.
 	clearRetry episodeClearRetries
+	// pushOrder sequences the sends of a withdrawn tag per owner
+	// (goNotifyOrdered, push_order.go).
+	pushOrder pushOrder
 	// statusRuns is the status hook's per-owner coalescing and negative reads
 	// (episodeStatusMoved, session_state.go).
 	statusRuns episodeStatusRuns

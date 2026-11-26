@@ -649,7 +649,7 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 		return fleetApproveResult{note: FleetNotEditable}
 	}
 	if fleet.Expired(a.CreatedAt, s.now()) {
-		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Why: fleet.WhyTTL, Finish: true})
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: fleetTTLOutcome, Finish: true})
 		return fleetApproveResult{note: FleetExpiredNote}
 	}
 	switch s.fleetStillOn(ctx, a) {
@@ -1252,7 +1252,8 @@ func (s *Server) fleetPushWaiting(octx context.Context, owner int64) {
 		return
 	}
 	if due {
-		s.goNotify(owner, push.EventAttention, fleetPushNotification(n, s.fleetNewestWaiting(octx)), nil)
+		// In order with its withdrawal and replacements (push_order.go).
+		s.goNotifyOrdered(owner, push.EventAttention, fleetPushNotification(n, s.fleetNewestWaiting(octx)))
 	}
 	s.fleetNoticeSync(octx, due, n)
 }
@@ -1281,23 +1282,52 @@ func (s *Server) fleetPushSync(octx context.Context, owner int64) {
 	}
 	switch {
 	case r.Withdraw:
-		s.fleetPushWithdraw(owner)
+		s.fleetPushWithdraw(octx, owner)
 	case r.Replace:
-		newest, err := s.ext.FleetActions.GetAction(octx, r.Newest)
-		if err != nil || newest.State != fleet.StateProposed {
-			// Its link then names no proposal: the digest highlights the
-			// newest waiting one when it opens (fleetFocus).
-			newest = fleet.Action{}
-		}
-		n := fleetPushNotification(r.Count, newest)
-		n.Update, n.Silent = true, true
-		s.goNotify(owner, push.EventAttention, n, nil)
+		s.fleetPushReplace(octx, owner, r.Count, r.Newest)
+		s.fleetPushRecheck(octx, owner)
 	}
 }
 
-// fleetPushWithdraw withdraws owner's "N proposals waiting" notification.
-func (s *Server) fleetPushWithdraw(owner int64) {
-	s.goNotify(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: fleetPushTag, Tag: fleetPushTag}, nil)
+// fleetPushReplace replaces owner's push in place, quietly: count waiting,
+// linking proposal newest (none when it no longer waits: the digest then
+// highlights the newest waiting one, fleetFocus).
+func (s *Server) fleetPushReplace(octx context.Context, owner int64, count int, newest int64) {
+	a, err := s.ext.FleetActions.GetAction(octx, newest)
+	if err != nil || a.State != fleet.StateProposed {
+		a = fleet.Action{}
+	}
+	n := fleetPushNotification(count, a)
+	n.Update, n.Silent = true, true
+	s.goNotifyOrdered(owner, push.EventAttention, n)
+}
+
+// fleetPushWithdraw withdraws owner's "N proposals waiting" notification, in
+// order with its other sends, and re-checks it (fleetPushRecheck).
+func (s *Server) fleetPushWithdraw(octx context.Context, owner int64) {
+	s.goNotifyOrdered(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: fleetPushTag, Tag: fleetPushTag})
+	s.fleetPushRecheck(octx, owner)
+}
+
+// fleetPushRecheck sends owner's push again, after one fan-out, as the mark
+// says it should be now (push_order.go): nothing showing is the withdrawal
+// again — an alert or replacement still in flight when it was sent (another
+// replica's included) has landed by then, and this closes it — and a set
+// showing is the quiet replacement for it. The mark is the truth whoever
+// wrote it last.
+func (s *Server) fleetPushRecheck(octx context.Context, owner int64) {
+	s.recheckLater(octx, "fleet-push-"+strconv.FormatInt(owner, 10), pushBroadcastTimeout, func(rctx context.Context) {
+		ids, err := s.ext.FleetActions.PushShown(rctx)
+		if err != nil {
+			s.logger.Printf("fleet: owner %d: the proposals push's re-check: %v", owner, err)
+			return
+		}
+		if len(ids) == 0 {
+			s.goNotifyOrdered(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: fleetPushTag, Tag: fleetPushTag})
+			return
+		}
+		s.fleetPushReplace(rctx, owner, len(ids), ids[len(ids)-1])
+	})
 }
 
 // fleetPushHide withdraws owner's "N proposals waiting" notification if one is
@@ -1312,7 +1342,7 @@ func (s *Server) fleetPushHide(octx context.Context, owner int64) {
 		return
 	}
 	if showing {
-		s.fleetPushWithdraw(owner)
+		s.fleetPushWithdraw(octx, owner)
 	}
 }
 

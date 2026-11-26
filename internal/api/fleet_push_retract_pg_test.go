@@ -251,3 +251,68 @@ func TestTheGoneLineSaysWhyAProposalExpired(t *testing.T) {
 		t.Errorf("the 12-hour line: %q (want the time %d)", m, created.Add(12*time.Hour).UnixMilli())
 	}
 }
+
+// TestTheGoneLineReadsTheOutcomeAnOlderImageWrote: a proposal expired by an
+// image before this change carries only the outcome muster wrote ("12 h
+// passed", or the moved-on sentence) — no other record of why. Its fleet
+// link says why all the same: the outcome is the reason (fleetGone).
+//
+// Red at the branch's first commit: it read a separate reason column, empty
+// on such a row, and said "That proposal expired at …" for both.
+func TestTheGoneLineReadsTheOutcomeAnOlderImageWrote(t *testing.T) {
+	f, _ := newRetractFixture(t)
+	s1, _, _ := f.stopped(t, f.owner)
+	s2, _, _ := f.stopped(t, f.owner)
+	moved := f.propose(t, s1, fleet.ClassContinue)
+	aged := f.propose(t, s2, fleet.ClassStopNote)
+	expireAs := func(id int64, outcome string) fleet.Action {
+		t.Helper()
+		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE fleet_actions SET state = 'expired', outcome = $2, finished_at = now() WHERE id = $1`, id, outcome); err != nil {
+			t.Fatal(err)
+		}
+		return f.action(t, id)
+	}
+	m := expireAs(moved, "the session moved on (its stop ended, or a new message or pull-request head)")
+	line := goneLine.FindStringSubmatch(f.fleetCardFor(t, "?fleet=proposed&proposal="+strconv.FormatInt(moved, 10)))
+	if line == nil || line[1] != "No longer needed: the session moved on at " || line[2] != strconv.FormatInt(m.FinishedAt.UnixMilli(), 10) {
+		t.Errorf("the moved-on row's line: %q", line)
+	}
+	a := expireAs(aged, "12 h passed")
+	line = goneLine.FindStringSubmatch(f.fleetCardFor(t, "?fleet=proposed&proposal="+strconv.FormatInt(aged, 10)))
+	if line == nil || line[1] != "Expired after 12 hours at " || line[2] != strconv.FormatInt(a.CreatedAt.Add(12*time.Hour).UnixMilli(), 10) {
+		t.Errorf("the 12-hour row's line: %q", line)
+	}
+}
+
+// TestANewProposalNeverResurrectsThePush: the swipe rule. With the push
+// showing one proposal, a second arrives inside the 30 minutes: the pass sends
+// nothing (a quiet replacement would bring back a push the owner swiped away,
+// for news they were never alerted to). Then the first expires: now the push
+// is replaced quietly, counting the one still waiting and linking it.
+//
+// Red at the branch's first commit: the arrival itself sent a quiet
+// replacement ("2 proposals waiting").
+func TestANewProposalNeverResurrectsThePush(t *testing.T) {
+	f, cp := newRetractFixture(t)
+	s1, key1, _ := f.stopped(t, f.owner)
+	f.propose(t, s1, fleet.ClassContinue)
+	f.pass()
+	if got := f.fleetPushes(cp); len(got) != 1 {
+		t.Fatalf("CONTROL: the alert: %+v", got)
+	}
+	s2, _, _ := f.stopped(t, f.owner)
+	f.at = f.at.Add(time.Minute)
+	second := f.propose(t, s2, fleet.ClassStopNote)
+	f.pass()
+	f.pass()
+	if got := f.fleetPushes(cp); len(got) != 1 {
+		t.Fatalf("a new proposal inside the window sent %d pushes, want none after the alert: %+v", len(got)-1, got[1:])
+	}
+	f.endStop(t, key1)
+	f.pass()
+	got := f.fleetPushes(cp)
+	if len(got) != 2 || !got[1].Silent || !got[1].Update || got[1].Title != "1 proposal waiting" ||
+		got[1].Data["url"] != "/tasks?chief=open&fleet=proposed&proposal="+strconv.FormatInt(second, 10) {
+		t.Fatalf("after the first expired: %+v; want one quiet replacement, 1 waiting, linking %d", got, second)
+	}
+}

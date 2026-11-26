@@ -15,9 +15,14 @@ package api
 // other. TestEveryPushTagFamilyIsDeclaredWithItsClearPath reads every tag
 // from the source and holds it here: a family sent and not declared fails, a
 // family declared and no longer sent fails, a family declared cleared must
-// have a withdrawal of that family in the source, and one declared
-// informational must have none. The key is the family as the test reduces
-// a tag expression: its fixed parts, "*" for each part that varies.
+// have AT LEAST ONE withdrawal of that family somewhere in the source, and one
+// declared informational must have none. The key is the family as the test
+// reduces a tag expression: its fixed parts, "*" for each part that varies.
+//
+// ⚠ WHAT IT DOES NOT CHECK: that EVERY way a family's thing stops waiting
+// sends that withdrawal. Cleared is a sentence a person wrote, listing the
+// ways; each way is held by that family's own behavioural tests (the fleet's,
+// the connectors', pairing's: *_push_retract_pg_test.go), not by this one.
 
 // pushTagFamily is one family's declaration: exactly one of the two is set.
 type pushTagFamily struct {
@@ -36,9 +41,9 @@ var pushTagFamilies = map[string]pushTagFamily{
 	"app-*-*":                {Cleared: "an app's knock withdrawn by the app, or its app uninstalled (plugin_notify.go, plugin_server.go)"},
 	"officer-cap-hold-*-*":   {Cleared: "an officer's cap hold ending (officerCapHoldNotice)"},
 	"officer-restart-held-*": {Cleared: "an officer instance leaving its held error (officerAutoRestartNotice)"},
-	fleetPushTag:             {Cleared: "no fleet proposal waiting any more — expired, moved on, approved, rejected, suppressed or fleet proposals turned off: fleetPushSync (with fewer still waiting it is replaced, silently, in place)"},
-	"connector-*":            {Cleared: "a connector request decided, approved by a shared approval, or its connector deleted: connectorRequestsWithdraw"},
-	"pair-*":                 {Cleared: "a plugin pairing request decided (pairSettled), or expired (withdrawExpiredPairs, from the Attention sweep)"},
+	fleetPushTag:             {Cleared: "no fleet proposal waiting any more — expired, moved on, approved, rejected, suppressed or fleet proposals turned off: fleetPushSync / fleetPushHide (ordered, re-checked); a proposal leaving while others wait replaces it quietly instead"},
+	"connector-*":            {Cleared: "a connector request decided, approved by a shared approval or by a standing grant on a re-ask, revoked, or gone with its connector or its agent: connectorRequestsWithdraw (ordered, re-checked: push_order.go)"},
+	"pair-*":                 {Cleared: "a plugin pairing request decided, or expired (withdrawExpiredPairs, from the Attention sweep): pairSettled (ordered, re-checked: push_order.go)"},
 	// team_withdraw.go re-sends the withdrawal of OTHER families' open items to
 	// a person leaving a team: its tags are theirs, read from the items.
 	"w.tag": {Cleared: "a member leaving a team: withdrawTeamItemsNow re-sends the withdrawal of each team item still open"},

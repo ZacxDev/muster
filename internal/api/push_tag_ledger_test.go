@@ -28,9 +28,12 @@ import (
 //
 //   - a family sent but not declared fails (the set GREW);
 //   - a family declared but no longer sent fails (the set SHRANK);
-//   - a family declared cleared must have a WITHDRAWAL in the source: a
-//     literal of Type push.TypeResolved whose tag is that same family — the
-//     declaration is checked against the code, never taken on its word;
+//   - a family declared cleared must have AT LEAST ONE WITHDRAWAL in the
+//     source: a literal of Type push.TypeResolved whose tag is that same
+//     family, or a withdrawSettled call naming it (push_order.go) — so the
+//     declaration "it is withdrawn" is checked against the code. ⚠ Not that
+//     every way the thing stops waiting reaches that withdrawal: each family's
+//     behavioural tests hold that;
 //   - a family declared informational must have none (else it is cleared,
 //     and its declaration is wrong).
 //
@@ -175,13 +178,23 @@ func scanPushTagSites(t *testing.T, dir string) []pushTagSite {
 						out = append(out, pushTagSite{family: "<no tag>", at: ptlPos(at)})
 						return true
 					}
-					// The sink forwards each notification's own tag: not a family.
-					if fn != nil && fn.Name.Name == "goNotify" && ptlRender(tag) == "m.Tag" {
+					// The sinks forward their caller's tag: not a family of
+					// their own (their callers' sites are read instead).
+					if fn != nil && ((fn.Name.Name == "goNotify" && ptlRender(tag) == "m.Tag") ||
+						(fn.Name.Name == "withdrawSettled" && ptlRender(tag) == "tag")) {
 						return true
 					}
 					resolved := typ != nil && ptlRender(typ) == "push.TypeResolved"
 					for _, fam := range r.families(tag, 0) {
 						out = append(out, pushTagSite{family: fam, resolved: resolved, at: ptlPos(at)})
+					}
+				case *ast.CallExpr:
+					// withdrawSettled(ctx, owner, id, TAG, gone) sends a
+					// withdrawal of TAG (push_order.go): a resolved site.
+					if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "withdrawSettled" && len(n.Args) == 5 {
+						for _, fam := range r.families(n.Args[3], 0) {
+							out = append(out, pushTagSite{family: fam, resolved: true, at: ptlPos(fset.Position(n.Pos()).String())})
+						}
 					}
 				case *ast.AssignStmt:
 					for i, l := range n.Lhs {
