@@ -1391,7 +1391,9 @@ chats.
   messages**, each with the words around the match (best match first; a tap
   opens that chat). A chat whose title matches is already among the rows, so it
   is listed there only when its messages match too. Only your own chief's
-  chats, and only the text of messages (not tool output), are searched. The chips show **All** chats, only the **Unread** ones, only the
+  chats, and only the text of messages (not tool output), are searched; on
+  a chief that is not your own (a team's chief), the box filters the rows by
+  title only. The chips show **All** chats, only the **Unread** ones, only the
   **Archived** ones (when there are any), or only the chats on one OpenRouter
   model (a chip per OpenRouter model a chat was opened on; a chat on a Claude
   model such as `sonnet` gets none). One chip is on at a time; tap it again to go

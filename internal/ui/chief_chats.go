@@ -57,7 +57,9 @@ import (
 // words — its title, "Primary", its model — by textContent, never by markup,
 // archived chats too. The words in the chats' MESSAGES are the server's
 // (GET /ui/chief/threads/search, agents.PGStore.SearchSessions: text messages
-// only, the chief's own chats, a signed-in session only), asked 300ms after the
+// only, the chief's own chats, a signed-in session only) — on the viewer's
+// OWN chief only (ChiefChatBar.MessageSearch: the route searches that one; a
+// team's chief's tab filters titles only) — asked 300ms after the
 // typing stops and drawn under the rows as "Matches in messages": each chat
 // whose messages hold the words, with the words around the match
 // (RenderChiefMessageMatches). A chat whose TITLE matches is already among the
@@ -136,6 +138,13 @@ type ChiefChatBar struct {
 	// resolveSessions' error), so the Sessions tab's rows may be INCOMPLETE.
 	// The tab says so above them, in the warning colour (chiefSessionsTab).
 	SessionsFailed bool
+	// MessageSearch: the chief is the VIEWER'S OWN chief (internal/api
+	// chiefChatBarFor: the one GET /ui/chief/threads/search resolves, chiefAgent),
+	// so the Sessions tab's box also searches the chats' messages there. Off —
+	// a member in a team's shared room, an admin on another owner's chief — the
+	// box filters the rows by title only: that route would answer the VIEWER's
+	// chief's messages, not this one's.
+	MessageSearch bool
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -501,20 +510,23 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 				Name("q"),
 				g.Attr(chiefSessionsSearchAttr, ""),
 				g.Attr("autocomplete", "off"),
-				g.Attr("aria-controls", listID+" "+matchesID),
-				Placeholder("Search sessions and messages…"),
-				// The words in the chats' messages: the server's search, after the
-				// typing stops (htmx's own delay:), into
-				// the matches below; `search` so the box's own clear (×) asks again
-				// (a blank query answers nothing). The chat on screen and the
-				// surface ride the url: the answer marks nothing current, and
-				// links the way this surface switches (a page link, or the panel's
-				// body).
-				hx("hx-get", ChiefThreadSearchPath+"?session="+strconv.FormatInt(b.SessionID, 10)+"&"+ChatSurfaceQueryParam+"="+chiefSearchSurface(surface)),
-				hx("hx-trigger", "input changed delay:300ms, search"),
-				hx("hx-target", "#"+matchesID),
-				hx("hx-swap", "innerHTML"),
-				hx("hx-sync", "this:replace"),
+				g.If(!b.MessageSearch, g.Group{g.Attr("aria-controls", listID), Placeholder("Search sessions…")}),
+				// The words in the chats' messages, on the viewer's own chief only
+				// (ChiefChatBar.MessageSearch): the server's search, after the typing
+				// stops (htmx's own delay:), into the matches below; `search` so the
+				// box's own clear (×) asks again (a blank query answers nothing). The
+				// chat on screen and the surface ride the url: the answer marks
+				// nothing current, and links the way this surface switches (a page
+				// link, or the panel's body).
+				g.If(b.MessageSearch, g.Group{
+					g.Attr("aria-controls", listID+" "+matchesID),
+					Placeholder("Search sessions and messages…"),
+					hx("hx-get", ChiefThreadSearchPath+"?session="+strconv.FormatInt(b.SessionID, 10)+"&"+ChatSurfaceQueryParam+"="+chiefSearchSurface(surface)),
+					hx("hx-trigger", "input changed delay:300ms, search"),
+					hx("hx-target", "#"+matchesID),
+					hx("hx-swap", "innerHTML"),
+					hx("hx-sync", "this:replace"),
+				}),
 				Class("min-h-[40px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			),
 			Div(
@@ -546,7 +558,7 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 			),
 			// The message search's answer (RenderChiefMessageMatches): empty
 			// until a search finds words in a chat's messages.
-			Div(ID(matchesID), g.Attr(chiefMessageMatchesAttr, ""), g.Attr("aria-live", "polite")),
+			g.If(b.MessageSearch, Div(ID(matchesID), g.Attr(chiefMessageMatchesAttr, ""), g.Attr("aria-live", "polite"))),
 			P(
 				g.Attr(chiefSessionsNoneAttr, ""),
 				g.Attr("hidden", ""),

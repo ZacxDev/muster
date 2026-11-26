@@ -519,6 +519,14 @@ func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agent
 	b.OpenRouter = slices.Contains(rts, agents.SessionRuntimeOpencode)
 	// "Continue in a new session"'s runtimes: the same gate, labelled.
 	b.Runtimes = s.pickerRuntimes(ctx, a)
+	// 🔴 THE MESSAGE SEARCH ONLY ON THE VIEWER'S OWN CHIEF: its route
+	// (handleChiefThreadSearch) searches the chief chiefAgent resolves for the
+	// VIEWER, so on a team's chief (a member's shared room) or another owner's
+	// (an admin viewing it) it would list another agent's chats. The same
+	// resolution, compared: this chief is the one the route would search.
+	if own, err := s.chiefAgent(ctx); err == nil && own.ID == a.ID {
+		b.MessageSearch = true
+	}
 	return b
 }
 

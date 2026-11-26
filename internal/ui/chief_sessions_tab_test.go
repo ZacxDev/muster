@@ -20,10 +20,10 @@ import (
 
 // chiefSurfaces renders a chief on chat on, with sessions, on each surface:
 // the page (a gateway chief's two-row header and a claude-code chief's folded
-// one) and the panel body.
+// one) and the panel body — the viewer's own chief (MessageSearch).
 func chiefSurfaces(t *testing.T, on int64, sessions []SessionView) map[string]string {
 	t.Helper()
-	bar := ChiefChatBar{SessionID: on, Primary: on == 5, Archived: on == 7}
+	bar := ChiefChatBar{SessionID: on, Primary: on == 5, Archived: on == 7, MessageSearch: true}
 	out := map[string]string{}
 	for _, kind := range []string{"gateway", "claude-code"} {
 		v := chiefChatView(ChatSurfacePage, bar, sessions)
