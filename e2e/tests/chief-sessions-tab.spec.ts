@@ -538,6 +538,61 @@ for (const vp of [
 // panel's body — its sheet and its title bar's icon — fetched and put beside
 // it. Each icon opens its own sheet, the other stays shut, and the page's
 // "Your messages" is still built into the page's sheet.
+// ONLY THE ANSWER TO THE WORDS IN THE BOX COUNTS. While the message search is
+// asked (the debounce, the round trip — held here by the test), the previous
+// query's matches are hidden and "No sessions match" waits; and a failed
+// search's own sentence is never joined by "No sessions match". The route is
+// fulfilled by the test for the held and the failed queries, so the timing is
+// the test's, not the network's.
+test.describe('the message search\'s answers', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+  test('a stale answer counts for nothing, and a failure is not "No sessions match"', async ({ page }) => {
+    for (const n of made.splice(0)) mkchat(n, null);
+    const name = `e2e-msgstale-chief-${Date.now().toString(36)}-${++seq}`;
+    mkchat(name, null);
+    mkchat(name, [
+      { title: 'the primary', hoursAgo: 5, messages: [{ role: 'user', content: 'hello' }] },
+      { title: 'unrelated', hoursAgo: 1, messages: [{ role: 'user', content: 'the kestrel came back at dawn' }] },
+    ], { MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_THREADS: '1' });
+    made.push(name);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    await page.route('**/ui/chief/threads/search**', async (route) => {
+      const q = new URL(route.request().url()).searchParams.get('q') || '';
+      if (q === 'zqxj held') {
+        await held;
+        return route.fulfill({ status: 200, contentType: 'text/html', body: '' });
+      }
+      if (q === 'zqxj broken') {
+        return route.fulfill({ status: 200, contentType: 'text/html',
+          body: '<p data-chief-message-matches-state="error" role="status">Could not search the messages just now — this is not an empty result. Try again.</p>' });
+      }
+      return route.continue();
+    });
+    await onPage(page, `/agents/${name}`);
+    const tab = sessionsTab(page, 'page');
+    await openSessions(tab);
+    const search = tab.getByRole('searchbox', { name: 'Search sessions' });
+    const matches = tab.locator('[data-chief-message-match]');
+    const none = tab.getByText('No sessions match');
+    await search.fill('came back');
+    await expect(matches).toHaveCount(1, { timeout: 10_000 });
+    await expect(matches).toBeVisible();
+    // A new query, its answer held: the old match is not shown or counted,
+    // and the line waits.
+    await search.fill('zqxj held');
+    await page.waitForTimeout(800);
+    await expect(matches, 'the previous query\'s match is not shown').toBeHidden();
+    await expect(none, '"No sessions match" waits for the answer').toBeHidden();
+    release();
+    await expect(none, 'answered with nothing: the line').toBeVisible({ timeout: 10_000 });
+    // A failed search says so, and only that.
+    await search.fill('zqxj broken');
+    await expect(tab.locator('[data-chief-message-matches-state="error"]')).toBeVisible({ timeout: 10_000 });
+    await expect(none, 'no "No sessions match" beside the failure').toBeHidden();
+  });
+});
+
 // 🔴 SHUTTING THE PANEL SHUTS ITS SHEET. The panel's sheet left open inside a
 // panel shut by its toggle (or ✕) was still "open" to the sheet's keyboard
 // handling: Tab was trapped into the now-inert panel (focus stuck) and the

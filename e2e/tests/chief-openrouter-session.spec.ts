@@ -152,7 +152,17 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
   await field2.pressSequentially('qwen3');
   await expect(again.locator('button[data-openrouter-model-pick="openrouter/qwen/qwen3-coder"]')).toBeVisible({ timeout: 10_000 });
   await expect(again.locator('[data-openrouter-model-recent]')).toHaveCount(0);
+  // The menu SHUTTING asks nothing (its toggle is filtered to the opening).
+  // The field is emptied first, so a close that did ask would ask for the
+  // recent models: a request this would count.
+  await field2.fill('');
+  await page.waitForTimeout(600);
+  let asked = 0;
+  page.on('request', (r) => { if (r.url().includes('/api/chief/openrouter-models/options')) asked++; });
   await page.keyboard.press('Escape');
+  await expect(page.locator('#chief-panel-new-chat-menu')).toBeHidden();
+  await page.waitForTimeout(600);
+  expect(asked, 'the menu shutting asked for the models').toBe(0);
 
   // Stored, not only drawn.
   await page.reload();

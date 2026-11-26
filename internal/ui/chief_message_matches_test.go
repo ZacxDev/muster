@@ -60,7 +60,8 @@ func TestTheMessageMatchesListOnlyBodyMatchesLinkedPerSurface(t *testing.T) {
 func TestTheSessionsScriptCountsMessageMatches(t *testing.T) {
 	js := renderString(t, chiefSessionsScript())
 	for _, want := range []string{
-		"n += tab.querySelectorAll('[' + MATCH + ']').length;",
+		"if (fresh) n += mc.querySelectorAll('[' + MATCH + ']').length;",
+		"var fresh = !!mc && !!q && mc.getAttribute('data-answered') === q;",
 		"document.addEventListener('htmx:afterSwap'",
 		"t.closest('[' + ROW + '], [' + MATCH + ']')",
 	} {
@@ -68,8 +69,8 @@ func TestTheSessionsScriptCountsMessageMatches(t *testing.T) {
 			t.Errorf("the Sessions script lacks %s", want)
 		}
 	}
-	count := strings.Index(js, "n += tab.querySelectorAll('[' + MATCH + ']').length;")
-	none := strings.Index(js, "if (none) none.hidden = n > 0;")
+	count := strings.Index(js, "if (fresh) n += mc.querySelectorAll('[' + MATCH + ']').length;")
+	none := strings.Index(js, "if (none) none.hidden = n > 0 || pending || failed;")
 	if count < 0 || none < 0 || count > none {
 		t.Error("the message matches are not counted before the none line is decided")
 	}

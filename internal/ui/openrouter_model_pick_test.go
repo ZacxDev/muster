@@ -127,8 +127,9 @@ func TestTheBudgetCardSaysWhatAndWhenAndOffersContinue(t *testing.T) {
 }
 
 // TestTheEmptyFieldAsksForTheRecentModels: the model field asks the options
-// route when it is focused and when the "+" menu it sits in opens (a toggle of
-// its closest popover), not only as it is typed in — so an empty field shows
+// route when it is focused and when the "+" menu it sits in OPENS (a toggle of
+// its closest popover whose newState is open — never its closing), not only
+// as it is typed in — so an empty field shows
 // the recent models before anything is typed — on every picker that draws it
 // (Continue on either surface, the "+" menu). The recent list is the search's own
 // buttons under "Recent", and nothing when there are none. RED at main: the
@@ -144,7 +145,7 @@ func TestTheEmptyFieldAsksForTheRecentModels(t *testing.T) {
 		if field == "" {
 			t.Fatalf("%s: no model field", name)
 		}
-		if !strings.Contains(field, `hx-trigger="focus, input changed delay:250ms, toggle from:closest [popover]"`) {
+		if !strings.Contains(field, `hx-trigger="focus, input changed delay:250ms, toggle[newState==&#39;open&#39;] from:closest [popover]"`) {
 			t.Errorf("%s: the field does not ask when focused or when its menu opens: %s", name, field)
 		}
 	}

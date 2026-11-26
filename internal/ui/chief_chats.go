@@ -998,7 +998,11 @@ const chiefSessionsReopenKey = "muster.chief.v1.sessions-reopen"
 //     pressed one (other than All) goes back to All.
 //   - The message search's answer (htmx, into the matches) re-applies the
 //     filters, so "No sessions match" shows only when neither the rows nor
-//     the messages hold the words.
+//     the messages hold the words — counting only the answer to the words in
+//     the box (each request records what it asked, data-asked; its answer,
+//     data-answered): a previous query's matches are hidden and count for
+//     nothing while the new one is asked, and the line is never drawn beside a
+//     failed search's own sentence.
 //   - A TAP ON A ROW (or a message match) SHUTS THE SHEET as the switch starts (the answer replaces
 //     the page or the panel body anyway; shutting at once is what makes the
 //     pick feel immediate).
@@ -1017,7 +1021,7 @@ func chiefSessionsScript() g.Node {
   var ARCH = '` + chiefArchivedAttr + `', ARCH_ROW = '` + chiefArchivedChipAttr + `', ARCH_LI = '` + chiefArchivedToggleRowAttr + `';
   var SEARCH = '` + chiefSessionsSearchAttr + `', FILTER = '` + chiefSessionsFilterAttr + `', NONE = '` + chiefSessionsNoneAttr + `';
   var SESSIONS_TAB = '` + chiefSessionsTabID + `', KEY = '` + chiefSessionsReopenKey + `';
-  var MATCH = '` + chiefMessageMatchAttr + `', MATCHES = '` + chiefMessageMatchesAttr + `';
+  var MATCH = '` + chiefMessageMatchAttr + `', MATCHES = '` + chiefMessageMatchesAttr + `', STATE = '` + chiefMessageMatchesStateAttr + `';
   if (window.__musterChiefSessions) return;
   window.__musterChiefSessions = true;
   function ss() { try { return window.sessionStorage; } catch (e) { return null; } }
@@ -1060,11 +1064,22 @@ func chiefSessionsScript() g.Node {
     var li = tab.querySelector('[' + ARCH_LI + ']');
     if (li) li.hidden = !plain;
     // A message match is an answer too: "No sessions match" only when neither
-    // the rows nor the messages hold the words.
-    n += tab.querySelectorAll('[' + MATCH + ']').length;
+    // the rows nor the messages hold the words. 🔴 ONLY THE ANSWER TO THE WORDS
+    // IN THE BOX COUNTS: until the message search answers them (the debounce,
+    // the round trip) the last answer is another query's, so it is hidden and
+    // counts for nothing, and the line waits for the answer rather than
+    // flashing. Nor is the line drawn beside a failed search's own sentence.
+    var mc = tab.querySelector('[' + MATCHES + ']');
+    var fresh = !!mc && !!q && mc.getAttribute('data-answered') === q;
+    var pending = !!mc && !!q && !fresh;
+    if (mc) mc.hidden = pending;
+    var failed = fresh && !!mc.querySelector('[' + STATE + '="error"]');
+    if (fresh) n += mc.querySelectorAll('[' + MATCH + ']').length;
     var none = tab.querySelector('[' + NONE + ']');
-    if (none) none.hidden = n > 0;
+    if (none) none.hidden = n > 0 || pending || failed;
   }
+  // norm is a query as apply compares it.
+  function norm(v) { return (v || '').trim().toLowerCase(); }
   function onSearch(e) {
     var t = e.target;
     if (!t || !t.matches || !t.matches('[' + SEARCH + ']')) return;
@@ -1096,13 +1111,35 @@ func chiefSessionsScript() g.Node {
     }
     if (t.closest('[' + ROW + '], [' + MATCH + ']') && window.muIndex) window.muIndex.close({ focus: false });
   });
-  // The message search's answer landed: the none line follows it.
+  // The message search: the words each request asks for, and — when its answer
+  // lands — that the answer is theirs; the none line follows it.
+  function matchesOf(el) { var tab = el && el.closest && el.closest(TAB); return tab ? tab.querySelector('[' + MATCHES + ']') : null; }
+  document.addEventListener('htmx:beforeRequest', function (e) {
+    var el = e.target;
+    if (!el || !el.matches || !el.matches('[' + SEARCH + ']')) return;
+    var mc = matchesOf(el);
+    if (mc) mc.setAttribute('data-asked', norm(el.value));
+  });
+  function answered(mc, clear) {
+    if (clear) mc.textContent = '';
+    mc.setAttribute('data-answered', mc.getAttribute('data-asked') || '');
+    var tab = mc.closest(TAB);
+    if (tab) apply(tab);
+  }
   document.addEventListener('htmx:afterSwap', function (e) {
     var t = e.target;
     if (!t || !t.matches || !t.matches('[' + MATCHES + ']')) return;
-    var tab = t.closest(TAB);
-    if (tab) apply(tab);
+    answered(t, false);
   });
+  // A request that got no answer at all (the network): nothing to show for it.
+  function noAnswer(e) {
+    var el = e.target;
+    if (!el || !el.matches || !el.matches('[' + SEARCH + ']')) return;
+    var mc = matchesOf(el);
+    if (mc) answered(mc, true);
+  }
+  document.addEventListener('htmx:sendError', noAnswer);
+  document.addEventListener('htmx:responseError', noAnswer);
   // reopen: a ⋯ action's answer has landed; its sheet opens again on Sessions.
   // evt: the settle that brought it, when one did — only a settle whose target
   // holds the sheet is the answer (a transcript refresh settling meanwhile is

@@ -65,9 +65,11 @@ func openRouterModelField(id string) g.Node {
 			g.Attr("placeholder", "Search OpenRouter models"),
 			g.Attr("aria-label", "OpenRouter model"),
 			hx("hx-get", OpenRouterModelsOptionsPath),
-			// focus and the menu's toggle ask with the field as it is: empty, the
-			// recent models; a value, its matches again.
-			hx("hx-trigger", "focus, input changed delay:250ms, toggle from:closest [popover]"),
+			// focus and the menu OPENING ask with the field as it is: empty, the
+			// recent models; a value, its matches again. The popover's toggle
+			// fires on close too, so the filter keeps it to the opening
+			// (ToggleEvent.newState): a menu shutting asks nothing.
+			hx("hx-trigger", "focus, input changed delay:250ms, toggle[newState=='open'] from:closest [popover]"),
 			hx("hx-target", "#"+results),
 			hx("hx-swap", "innerHTML"),
 			hx("hx-sync", "this:replace"),
