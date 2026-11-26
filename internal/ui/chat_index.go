@@ -338,8 +338,11 @@ func chatIndexScript() g.Node {
 
   // open shows sheet s (shutting another first). The focus goes to the row of
   // the chat on screen when the tab open is the chief's Sessions and the row is
-  // not filtered away, else to ✕.
+  // not filtered away, else to ✕. Called with no sheet (window.muIndex.open(),
+  // the one-sheet contract this script had before the chief's panel got a
+  // sheet of its own): the document's first sheet.
   function open(s) {
+    if (!s) s = document.querySelector('[' + SHEET + ']');
     if (!s) return;
     if (cur && cur !== s) close({ focus: false });
     var b = opener(s);
@@ -429,6 +432,11 @@ func chatIndexScript() g.Node {
       return;
     }
     if (e.key !== 'Tab') return;
+    // 🔴 A POPOVER ABOVE THE SHEET OWNS TAB, AS IT OWNS ESCAPE: the switcher's
+    // search palette opened over the sheet (it is the top layer, and keeps Tab
+    // in itself), a row's ⋯ menu. Trapped here, Tab was pulled back into the
+    // sheet underneath (e2e switcher-search.spec.ts).
+    try { if (document.querySelector(':popover-open')) return; } catch (err) {}
     var f = focusables(cur);
     if (!f.length) return;
     var first = f[0], last = f[f.length - 1], at = document.activeElement;

@@ -434,6 +434,14 @@ func TestTheSheetsEscapeIsCapturedAndStepsAsideForAPopover(t *testing.T) {
 	if !strings.Contains(renderString(t, chiefPanelScript()), `if (e.key !== 'Escape' || e.defaultPrevented) return;`) {
 		t.Error("the panel's Escape does not skip a prevented one")
 	}
+	// Tab too: a popover above the sheet (the switcher's search palette, a ⋯
+	// menu) keeps it; the trap steps aside before it moves any focus.
+	tab := strings.Index(body, `if (e.key !== 'Tab') return;`)
+	tabGuard := strings.Index(body[max(tab, 0):], `try { if (document.querySelector(':popover-open')) return; } catch (err) {}`)
+	trap := strings.Index(body[max(tab, 0):], `var f = focusables(cur);`)
+	if tab < 0 || tabGuard < 0 || trap < 0 || tabGuard > trap {
+		t.Errorf("Tab: want the popover guard before the trap (%d %d %d)", tab, tabGuard, trap)
+	}
 }
 
 // TestOnlyAChiefsChatKeepsItsScroll: a chief's #chat-log carries the scroll
