@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // SHARED APPROVALS (standing grants, migration 0043; connector_standing.go),
@@ -85,11 +86,27 @@ func (f *decideFixture) standingCount(t *testing.T) int {
 
 // prompts is how many push notifications the operator (user 1) was sent for
 // connector request id — the prompt a request the owner must decide raises.
+// A withdrawal of it (type resolved, sent once the request no longer waits:
+// connectorRequestsWithdraw) shows nothing and is not a prompt; it is counted
+// by withdrawals.
 func (f *decideFixture) prompts(id int64) int {
 	f.srv.WaitForPushes()
 	n := 0
 	for _, p := range f.pusher.to(ep("attn-operator")) {
-		if p.Tag == "connector-"+strconv.FormatInt(id, 10) {
+		if p.Tag == "connector-"+strconv.FormatInt(id, 10) && p.Type != push.TypeResolved {
+			n++
+		}
+	}
+	return n
+}
+
+// withdrawals is how many withdrawals (type resolved) of request id's push
+// the operator was sent.
+func (f *decideFixture) withdrawals(id int64) int {
+	f.srv.WaitForPushes()
+	n := 0
+	for _, p := range f.pusher.to(ep("attn-operator")) {
+		if p.Tag == "connector-"+strconv.FormatInt(id, 10) && p.Type == push.TypeResolved {
 			n++
 		}
 	}
@@ -169,8 +186,14 @@ func TestApprovingOnceApprovesEveryOtherAgentAutomatically(t *testing.T) {
 				if n := f.prompts(second); n != 0 {
 					t.Fatalf("the automatically approved request prompted the owner %d time(s)", n)
 				}
+				if n := f.withdrawals(second); n != 0 {
+					t.Fatalf("the automatically approved request, never prompted, was sent %d withdrawal(s)", n)
+				}
 				if n := f.prompts(first); n != 1 {
 					t.Fatalf("control: the first request prompted the owner %d time(s), want 1", n)
+				}
+				if n := f.withdrawals(first); n != 1 {
+					t.Fatalf("the approved first request's prompt was withdrawn %d time(s), want 1", n)
 				}
 				if st2, _, _ := f.tool(t, f.op2Tok, "connector_status", map[string]any{"name": "svc"}); !strings.Contains(st2, "/connect/svc/api.example.com/") {
 					t.Fatalf("the second agent's status has no usage: %s", st2)

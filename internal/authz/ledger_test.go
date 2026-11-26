@@ -285,6 +285,14 @@ var (
 		// no detail), each card then withdrawn — and its chief told — as THAT
 		// owner (internal/api withdrawLapsedHoldCards).
 		"internal/plugins.(*PGStore).LapsedCardHolds",
+		// …and its expired-pairing half (migration 0192): every owner's PENDING
+		// pairing requests past their expiry whose push is still out, claimed
+		// once each (push_withdrawn_at; ids and owners only) — a sweep across
+		// owners with no request principal, as PendingDrafts is; each push is
+		// then withdrawn to THAT owner (internal/api withdrawExpiredPairs). An
+		// owner scope cannot work: the sweep does not know the owners until it
+		// reads them, and a pairing expiry is never stored as a state change.
+		"internal/plugins.(*PGStore).TakeExpiredPairs",
 		// Task claims (migration 0111): the claim sweep's read of every owner's
 		// live session claims (owner, task, session, host — no text); each is
 		// then judged against THAT owner's hosts and released as that owner

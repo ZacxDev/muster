@@ -62,6 +62,10 @@ func newRetractFixture(t *testing.T) (*proposeFixture, *morningPush) {
 	f := newProposeFixture(t)
 	cp := &morningPush{}
 	f.srv.ext.Push = cp
+	// No real 15 s re-check timers (push_order.go): one firing after a test
+	// moved the fixture's clock would read it from a goroutine of its own. A
+	// test that exercises the re-check captures it (capturedAfter).
+	f.srv.clearRetry.after = func(time.Duration, func()) {}
 	return f, cp
 }
 
@@ -244,6 +248,10 @@ func TestTheGoneLineSaysWhyAProposalExpired(t *testing.T) {
 		t.Errorf("the moved-on line: %q", m)
 	}
 	created := f.action(t, aged).CreatedAt
+	// 🔴 The fixture's clock is a plain field the server's now() reads: let
+	// the pass's push (on its own goroutine) finish before moving it, or the
+	// race detector rightly reports the test's write against that read.
+	f.srv.WaitForPushes()
 	f.at = f.at.Add(13 * time.Hour)
 	f.pass()
 	m = goneLine.FindStringSubmatch(f.fleetCardFor(t, "?fleet=proposed&proposal="+strconv.FormatInt(aged, 10)))
