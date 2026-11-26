@@ -30,7 +30,7 @@ func TestThePlusOpensAModelMenuWhereAModelMayBePicked(t *testing.T) {
 	} {
 		t.Run(c.menuID, func(t *testing.T) {
 			bar := &ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true, NewChatModels: []string{"sonnet", "claude-test-model-9", "haiku"}}
-			html := renderString(t, chiefChatStrip(bar, "chiefy", chiefSheetSessions(5), c.surface))
+			html := renderString(t, sessionsPanel(bar, "chiefy", chiefSheetSessions(5), c.surface))
 			plus := regexp.MustCompile(`<button type="button" data-chief-side-chat="" popovertarget="` + c.menuID + `" aria-haspopup="menu"[^>]*title="New session"[^>]*><span aria-hidden="true"[^>]*>\+</span><span>New session</span></button>`)
 			if !plus.MatchString(html) {
 				t.Errorf("the \"+\" is not the menu's trigger:\n%s", html)
@@ -62,7 +62,7 @@ func TestThePlusOpensAModelMenuWhereAModelMayBePicked(t *testing.T) {
 // TestThePlusOpensAChatAtOnceWithoutModels: no NewChatModels (the runtimes
 // gate off) is today's "+": a submit, no menu, no entries.
 func TestThePlusOpensAChatAtOnceWithoutModels(t *testing.T) {
-	html := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", chiefSheetSessions(5), ChatSurfacePage))
+	html := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", chiefSheetSessions(5), ChatSurfacePage))
 	if !strings.Contains(html, `<form hx-post="/agents/42/sessions/side" hx-swap="none" class="contents"><button type="submit" data-chief-side-chat=""`) {
 		t.Errorf("the \"+\" is not today's one-tap form:\n%s", html)
 	}
@@ -82,7 +82,7 @@ func TestAChipTagsItsChatsModel(t *testing.T) {
 			sessions[i].Model = "sonnet"
 		}
 	}
-	html := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", sessions, ChatSurfacePage))
+	html := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", sessions, ChatSurfacePage))
 	chip := func(id string) string {
 		i := strings.Index(html, `<li data-chief-chip="`+id+`"`)
 		if i < 0 {

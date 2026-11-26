@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	focusstore "github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -16,7 +17,7 @@ import (
 // so the panel's #chat-log is fed by the same GET /ui/agents/{name}/chat-log on
 // the same `sse:chat.reply`, and its #chat-form opens the same WebSocket. A
 // second chat surface would mean a second transcript, a second unread ledger and
-// a second place for a streaming bug to live — and the session drawer, the
+// a second place for a streaming bug to live — and the chats' Sessions tab, the
 // markdown pass and the kickoff-stream reveal would all have to be re-derived.
 //
 // 🔴 EVERY FAILURE HERE RENDERS AS PROSE, NOT AS AN HTTP ERROR. This partial is
@@ -145,6 +146,9 @@ func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWri
 		Surface: ui.ChatSurfaceChiefPanel,
 		// The panel's message box has the microphone too (transcribe.go).
 		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
+		// The chief's focus history, the panel's sheet's "What it worked on"
+		// tab (ui chiefIndexSheet), as the page's; "" without a store.
+		FocusHistory: s.focusHistoryPath(focusstore.AgentSubject(a.ID)),
 	}
 	// 🔴 "working…" IS DRAWN FROM THE SERVER'S COUNT: the panel opened (or the page
 	// reloaded) while the chief's turn runs shows it, and the chat.reply refetch

@@ -228,7 +228,7 @@
       "tests/brand-mark.spec.ts",
       "tests/branding.spec.ts",
       "tests/chief-in-view.spec.ts",
-      "tests/chief-sessions-drawer.spec.ts",
+      "tests/chief-sessions-tab.spec.ts",
       "tests/chief-toggle.spec.ts",
       "tests/cls-long-transcript.spec.ts",
       "tests/composer-autosize.spec.ts",

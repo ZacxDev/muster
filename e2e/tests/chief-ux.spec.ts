@@ -6,6 +6,7 @@ import { signIn } from '../lib/signin';
 import { chiefUxConnectPort, chiefUxFakePort, chiefUxPort, dsn, hookToken, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { bar, openSessions, sessionsTab } from '../lib/chief-sessions';
 import path from 'node:path';
 
 // THE CHIEF'S CHAT, AS AN OPERATOR REPORTED IT (the four complaints, one each):
@@ -591,12 +592,14 @@ test.describe('a dispatched agent', () => {
 
 const pageLog = (page: Page) => page.locator('#chat-log');
 const pageWorking = (page: Page) => page.locator('#chat-working');
-// The chief page's chats: the bar under its header (internal/ui
-// chief_chats.go) — its Sessions button and the drawer of rows it opens —
-// which names the chat the page is on (data-chief-chat-kind). In the panel the
-// same bar is over the panel's transcript.
-const chats = (page: Page) => page.locator('body > [data-chief-strip-row] [data-chief-chat-strip]');
-const panelChats = (page: Page) => page.locator('#chief-panel [data-chief-chat-strip]');
+// The chief page's chats: the Sessions tab of the sheet the header's list icon
+// opens (internal/ui chief_chats.go chiefSessionsTab) — every chat's row, New
+// session, the search and the chips — which names the chat the page is on
+// (data-chief-chat-kind). In the panel the same tab is in the panel's own sheet,
+// opened from its title bar. The chat on screen is named, as plain text, in the
+// bar over the transcript (lib/chief-sessions bar).
+const chats = (page: Page) => sessionsTab(page, 'page');
+const panelChats = (page: Page) => sessionsTab(page, 'panel');
 const sessionOf = (u: string) => new URL(u).searchParams.get('session');
 
 // shot saves a screenshot when MUSTER_E2E_CHIEF_SHOTS names a directory (the
@@ -606,58 +609,43 @@ async function shot(page: Page, name: string) {
   if (dir) await page.screenshot({ path: path.join(dir, name) });
 }
 
-// stripIds is the chat ids of a strip's chips, in order (hidden ones too).
+// stripIds is the chat ids of a tab's rows, in order (hidden ones too).
 const stripIds = (strip: ReturnType<Page['locator']>) =>
   strip.locator('[data-chief-chip]').evaluateAll((els) => els.map((e) => e.getAttribute('data-chief-chip') ?? ''));
-// currentId is the chat id of a strip's current chip.
+// currentId is the chat id of a tab's current row.
 const currentId = async (strip: ReturnType<Page['locator']>) => {
   await expect(strip.locator('[aria-current="true"]')).toHaveCount(1);
   return (await strip.locator('[aria-current="true"]').getAttribute('data-chief-chat-row'))!;
 };
 
-// noSheet: nothing modal is involved but the Sessions drawer — no open
+// noSheet: nothing modal is involved but the chief's sheet — no open
 // <dialog>, no other visible role="dialog", no open popover.
 async function noSheet(page: Page, scope = 'page') {
   await expect(page.locator('dialog[open]'), `${scope}: no open dialog`).toHaveCount(0);
-  if (scope === 'page') await expect(page.locator('[role="dialog"]:visible:not([data-chief-sessions-drawer])'), `${scope}: no visible role=dialog`).toHaveCount(0);
+  if (scope === 'page') await expect(page.locator('[role="dialog"]:visible:not([data-chat-index-sheet])'), `${scope}: no visible role=dialog`).toHaveCount(0);
   expect(await page.evaluate(() => document.querySelectorAll(':popover-open').length), `${scope}: no open popover`).toBe(0);
 }
 
-// openSessions opens a bar's Sessions drawer (its rows are in it), unless it
-// is open already — after a row's ⋯ action the answer opens it again.
-async function openSessions(strip: ReturnType<Page['locator']>, hasTouch?: boolean) {
-  const button = strip.locator('button[data-chief-sessions-open]');
-  if ((await button.getAttribute('aria-expanded')) !== 'true') await (hasTouch ? button.tap() : button.click());
-  await expect(button).toHaveAttribute('aria-expanded', 'true');
-  const drawer = strip.locator('[data-chief-sessions-drawer]');
-  await expect(drawer).toHaveAttribute('data-open', '1');
-  // The slide done: a box measured mid-slide is off the screen's edge.
-  await drawer.evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
-}
-
-// stripLayout: the bar is ONE row under the header (no overlap with the header
-// or its context chip) holding its Sessions button, a 44px target; with the
-// drawer open, every row's targets are 44px, inside the screen; and the page
-// does not scroll sideways.
+// stripLayout: the bar naming the chat on screen is ONE row under the header
+// (no overlap with the header or its context chip); with the sheet open on
+// Sessions, every row's targets are 44px, inside the screen; and the page does
+// not scroll sideways.
 async function stripLayout(page: Page, strip: ReturnType<Page['locator']>, label: string, under?: ReturnType<Page['locator']>) {
-  const sb = (await strip.boundingBox())!;
-  expect.soft(sb.height, `${label}: the bar is one 52px row`).toBeLessThanOrEqual(52.5);
+  const surface = (await strip.evaluate((el) => el.closest('[data-chat-index-sheet]')?.id)) === 'chief-panel-index' ? 'panel' : 'page';
+  const sb = (await bar(page, surface).boundingBox())!;
+  expect.soft(sb.height, `${label}: the bar is one 40px row`).toBeLessThanOrEqual(40.5);
   if (under) {
     const hb = (await under.boundingBox())!;
     expect.soft(sb.y, `${label}: the bar starts below the header`).toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
     const ctx = await under.locator('#chief-context').boundingBox();
     if (ctx) expect.soft(ctx.y + ctx.height, `${label}: the context chip is in the header, above the bar`).toBeLessThanOrEqual(sb.y + 0.5);
   }
-  const bb = (await strip.locator('button[data-chief-sessions-open]').boundingBox())!;
-  expect.soft(bb.height, `${label}: the Sessions button is a 44px target`).toBeGreaterThanOrEqual(44);
-  if ((await strip.locator('[data-chief-sessions-drawer]').getAttribute('data-open')) === '1') {
-    // The slide done (a drawer opened again by an action's answer slides in).
-    await strip.locator('[data-chief-sessions-drawer]').evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+  if (await strip.isVisible()) {
     const vw = page.viewportSize()!.width;
     const boxes = await strip
-      .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat], button[data-chief-archived]')
+      .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat], button[data-chief-archived]:visible')
       .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, h: r.height, w: r.width, what: e.outerHTML.slice(0, 60) }; }));
-    expect(boxes.length, `${label}: the drawer has targets`).toBeGreaterThan(2);
+    expect(boxes.length, `${label}: the Sessions tab has targets`).toBeGreaterThan(2);
     for (const b of boxes) {
       expect.soft(b.h, `${label}: ${b.what} is a 44px target`).toBeGreaterThanOrEqual(44);
       expect.soft(b.w, `${label}: ${b.what} is a 44px target`).toBeGreaterThanOrEqual(44);
@@ -763,19 +751,20 @@ for (const vp of [
     // + LANDS WHERE YOU CAN TYPE (the operator: "the chief new side chat button
     // doesn't work" — the server opened the chat and the page moved to it, but
     // nothing on screen said so). Red before the strip: no current chip, and
-    // the composer was not focused. Driven through the Sessions drawer that
-    // replaced the strip (chief-sessions-drawer.spec.ts drives the drawer
-    // itself).
-    test('the Sessions drawer: + lands in the message box, an empty chat is reused, a used one is not, a row switches', async ({ page }) => {
+    // the composer was not focused. Driven through the Sessions tab that
+    // replaced the strip and then the drawer (chief-sessions-tab.spec.ts
+    // drives the tab itself).
+    test('the Sessions tab: + lands in the message box, an empty chat is reused, a used one is not, a row switches', async ({ page }) => {
       test.setTimeout(150_000);
       const tap = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
       await page.addInitScript(clsInit);
       await openChiefPage(page);
       await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
       const primary = await currentId(chats(page));
-      // The header keeps the one list icon, whose sheet holds no chats now.
+      // The header keeps the one list icon, whose sheet's FIRST tab is the
+      // chats.
       await expect(page.locator('header #chat-index-open')).toBeVisible();
-      await expect(page.locator('#chat-index [role="tab"][data-tab="chats"], #chat-index [data-chief-chats]')).toHaveCount(0);
+      await expect(page.locator('#chat-index [role="tab"]').first()).toHaveAttribute('data-tab', 'sessions');
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       await expect(chats(page).locator(`[data-chief-chip="${primary}"]`)).toHaveAttribute('data-chief-chip-kind', 'primary');
       await expect(chats(page).locator(`[data-chief-chat-row="${primary}"]`)).toContainText('★Primary');
@@ -869,8 +858,8 @@ for (const vp of [
       await expect(pageLog(page)).toContainText(`side question SIDE-USAGE (${vp.name})`);
       await expect(chats(page).locator(`[data-chief-chat-row="${s1}"]`)).toHaveAttribute('aria-current', 'true');
       await expect(chats(page).locator('[data-chief-chat-row][aria-current="true"]')).toHaveCount(1);
-      await expect(chats(page).locator('button[data-chief-sessions-open]'), 'the drawer shut on the pick').toHaveAttribute('aria-expanded', 'false');
-      // The drawer open on the third chat: every row a 44px target on screen.
+      await expect(page.locator('header #chat-index-open'), 'the sheet shut on the pick').toHaveAttribute('aria-expanded', 'false');
+      // The sheet open on the third chat: every row a 44px target on screen.
       await openSessions(chats(page), vp.use.hasTouch);
       await stripLayout(page, chats(page), `${vp.name} on the third chat`, page.locator('header'));
       await shot(page, `after-page-switched-${vp.name}.png`);
@@ -897,8 +886,8 @@ for (const vp of [
         .toBe(1);
       await expect(chats(page).locator('[data-chief-unread]'), 'one more dot: that chip\'s').toHaveCount(dotsBefore + 1);
       await expect(chats(page).locator(`[data-chief-chip="${primary}"] [data-chief-unread]`), 'none on the chat you are on').toHaveCount(0);
-      // The drawer is shut, so the button says another chat has a reply.
-      await expect(chats(page).locator('button[data-chief-sessions-open] [data-chief-sessions-unread]')).toHaveCount(1);
+      // The list icon says another chat has a reply.
+      await expect(page.locator('header #chat-index-open [data-chief-sessions-unread]')).toHaveCount(1);
 
       // The instrument: a shift nobody asked for (a block above the strip,
       // no input) reads above the bar, so the zero above is a measurement.
@@ -924,7 +913,7 @@ for (const vp of [
       expect(side).toBeTruthy();
       const menuOf = (sid: string) => chats(page).locator(`[data-chief-chip="${sid}"] button[aria-haspopup="menu"]`);
       const menu = (sid: string) => page.locator(`#chief-chat-menu-${sid}`);
-      // openByKeyboard: the drawer open, focus the row's ⋯, Enter, and the
+      // openByKeyboard: the sheet open on Sessions, focus the row's ⋯, Enter, and the
       // menu is open.
       const openByKeyboard = async (sid: string) => {
         await openSessions(chats(page));
@@ -1020,14 +1009,14 @@ for (const vp of [
       await expect(chats(page).locator(`[data-chief-chip="${side}"]`)).toHaveAttribute('data-chief-chip-kind', 'archived');
     });
 
-    // The chief PANEL: the same Sessions drawer, every answer into the panel
-    // body, the URL the grid's.
-    test('the panel draws the same Sessions drawer: +, a row and archive stay in the grid', async ({ page }) => {
+    // The chief PANEL: the same Sessions tab, in the panel's own sheet, every
+    // answer into the panel body, the URL the grid's.
+    test('the panel draws the same Sessions tab: +, a row and archive stay in the grid', async ({ page }) => {
       test.setTimeout(90_000);
       const tap = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
       await openChief(page);
       const strip = panelChats(page);
-      await expect(strip).toBeVisible();
+      await expect(bar(page, 'panel')).toBeVisible();
       await expect(panel(page).locator('[data-chief-chat-bar]')).toHaveCount(0);
       const grid = page.url();
       const start = await currentId(strip);
@@ -1049,7 +1038,7 @@ for (const vp of [
       await stripLayout(page, strip, `${vp.name} panel`);
       await shot(page, `after-panel-plus-${vp.name}.png`);
 
-      // Escape on a row's ⋯ closes the MENU only: the drawer and the panel
+      // Escape on a row's ⋯ closes the MENU only: the sheet and the panel
       // stay open, on the same chat (the panel's Escape used to shut the whole
       // panel).
       await openSessions(strip, vp.use.hasTouch);
@@ -1063,7 +1052,7 @@ for (const vp of [
       await expect(page.locator(`#chief-panel-chat-menu-${p1}`)).toBeHidden();
       await page.waitForTimeout(300);
       await expect(panel(page), 'Escape on the menu leaves the panel open').toHaveAttribute('data-chief-panel-open', '1');
-      await expect(strip.locator('[data-chief-sessions-drawer]'), 'and the drawer').toHaveAttribute('data-open', '1');
+      await expect(page.locator('#chief-panel-index'), 'and the sheet').toBeVisible();
       await expect(active).toHaveAttribute('data-chief-active-session', p1);
       await expect(panel(page).locator('#chat-form')).toBeVisible();
 
@@ -1074,7 +1063,7 @@ for (const vp of [
       expect(page.url()).toBe(grid);
 
       // Archive p1 from its row's ⋯: the panel stays on the primary, the
-      // drawer open again on the answer, p1 behind Archived (n), which expands
+      // sheet open again on the answer, p1 behind Archived (n), which expands
       // inline.
       await openSessions(strip, vp.use.hasTouch);
       await tap(strip.locator(`[data-chief-chip="${p1}"] button[aria-haspopup="menu"]`));
@@ -1083,7 +1072,7 @@ for (const vp of [
       await m.getByRole('menuitem', { name: 'Archive' }).click();
       await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toHaveAttribute('data-chief-chip-kind', 'archived');
       await expect(active).toHaveAttribute('data-chief-active-session', primary);
-      await expect(strip.locator('[data-chief-sessions-drawer]'), 'the drawer is open again').toHaveAttribute('data-open', '1');
+      await expect(page.locator('#chief-panel-index'), 'the sheet is open again').toBeVisible();
       await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toBeHidden();
       await tap(strip.locator('button[data-chief-archived]'));
       await expect(strip.locator(`[data-chief-chip="${p1}"]`)).toBeVisible();

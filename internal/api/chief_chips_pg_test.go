@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,11 +12,12 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	focusstore "github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // TestTheChiefPagesStripIsTheSwitcherOrder: the chief page's strip of chips
-// (ui chiefChatStrip) places the chats in agents.SwitcherOrder — the primary
+// (ui chiefSessionsTab) places the chats in agents.SwitcherOrder — the primary
 // first, then the side chats by last activity, newest first, then the archived
 // ones, newest first — as the server reads them (chiefChatViews), the seam
 // between the store's order and the renderer.
@@ -156,4 +158,40 @@ func mustID(t *testing.T, s string) int64 {
 		t.Fatalf("not a session id: %q", s)
 	}
 	return id
+}
+
+// TestThePanelsSheetLoadsTheChiefsFocusHistory: the chief PANEL's body carries
+// its own sheet (#chief-panel-index: Sessions, Your messages, What it worked on)
+// and, with a focus store, its "What it worked on" tab loads the chief's own
+// history (subject agent:<id>), as the chief page's does; with none, the tab is
+// the empty state and loads nothing. RED at main: the panel had no sheet, and
+// its view carried no focus history.
+func TestThePanelsSheetLoadsTheChiefsFocusHistory(t *testing.T) {
+	f := newChatsFixture(t, "")
+	want := `data-href="` + html.EscapeString(ui.FocusHistoryPath(focusstore.AgentSubject(f.chief.ID).String(), "")) + `"`
+	body := func() string {
+		r := f.call(t, http.MethodGet, "/ui/chief/panel", nil, f.operator())
+		if r.Code != http.StatusOK {
+			t.Fatalf("GET the chief panel: %d", r.Code)
+		}
+		b := r.Body.String()
+		i := strings.Index(b, `id="chief-panel-index-tabs-panel-focus"`)
+		if i < 0 {
+			t.Fatalf("the panel body has no sheet with a focus tab:\n%s", b)
+		}
+		// The tab's own list, not the scripts after it (which name its marks).
+		b = b[i:]
+		if j := strings.Index(b, "</ol>"); j >= 0 {
+			b = b[:j]
+		}
+		return b
+	}
+	f.srv.ext.Focus = nil
+	if tab := body(); strings.Contains(tab, "data-focus-history-more") || !strings.Contains(tab, "data-focus-history-empty") {
+		t.Error("with no focus store the panel's focus tab should be the empty state, loading nothing")
+	}
+	f.srv.ext.Focus = focusstore.NewPG(f.pool)
+	if tab := body(); !strings.Contains(tab, want) {
+		t.Errorf("the panel's focus tab does not load the chief's history (%s)", want)
+	}
 }

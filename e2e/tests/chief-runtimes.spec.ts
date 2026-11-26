@@ -4,6 +4,7 @@ import { signIn } from '../lib/signin';
 import { chiefRuntimesPort, versionTerm } from '../lib/env';
 import { mkchat } from '../lib/mirrorhost';
 import { startServer, Running } from '../lib/server';
+import { bar, openSessions, sessionsTab } from '../lib/chief-sessions';
 
 // THE CHIEF'S SESSIONS ON MORE THAN ONE RUNTIME (internal/api/session_runtime.go),
 // in a real browser, against a real muster-server: the chief panel's thread list
@@ -181,22 +182,22 @@ test('a side chat offers Continue in a new session, posting to its own continue 
 });
 
 // THE SIDE CHAT "+" MODEL MENU (internal/ui chiefNewChatChip): with the
-// runtimes gate on, "+ New session" in the chief page's Sessions drawer opens
-// a small menu
+// runtimes gate on, "+ New session" in the chief page's Sessions tab opens a
+// small menu
 // (Default, Opus, Sonnet, Haiku), not a modal. Sonnet opens a new side chat on
-// sonnet: its row is current and tagged "sonnet" (so is the Sessions button),
-// the cursor is in its message
+// sonnet: its row is current and tagged "sonnet" (so is the bar naming the chat
+// on screen), the cursor is in its message
 // box, and the tag is the STORED model (a reload draws it again). The gate-off
 // "+" (a chat at once) is chief-ux.spec.ts's.
 test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonnet tag that survives a reload', async ({ page }) => {
-  const strip = () => page.locator('body > [data-chief-strip-row] [data-chief-chat-strip]');
+  const strip = () => sessionsTab(page, 'page');
   const chipIds = () => strip().locator('[data-chief-chip]').evaluateAll((els) => els.map((e) => e.getAttribute('data-chief-chip') ?? ''));
   const menu = page.locator('#chief-new-chat-menu');
   // pick taps "+", then the entry named name, and returns the chat it landed on.
   const pick = async (name: string) => {
     const url0 = page.url();
     const plus = strip().locator('button[data-chief-side-chat]');
-    await strip().locator('button[data-chief-sessions-open]').tap();
+    await openSessions(strip(), true);
     await expect(plus).toHaveAccessibleName('New session');
     await plus.tap();
     await expect(menu).toBeVisible();
@@ -209,7 +210,7 @@ test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonne
   };
   await signIn(page, origin);
   await page.goto(origin + '/agents/' + chief);
-  await expect(strip()).toBeVisible();
+  await expect(bar(page, 'page')).toBeVisible();
 
   // Default first: the specs above leave an EMPTY sonnet chat as the newest
   // side chat, which "+" reuses on the same model (internal/api openSideChat).
@@ -226,7 +227,7 @@ test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonne
   expect(before, 'Sonnet opened a NEW chat').not.toContain(sid);
   await expect(strip().locator(`[data-chief-chat-row="${sid}"]`)).toHaveAttribute('aria-current', 'true');
   await expect(strip().locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`)).toHaveText('sonnet');
-  await expect(strip().locator('button[data-chief-sessions-open] [data-chief-chip-model]'), 'the button names the chat on screen, with its model').toHaveText('sonnet');
+  await expect(bar(page, 'page').locator('[data-chief-chip-model]'), 'the bar names the chat on screen, with its model').toHaveText('sonnet');
   await expect(page.locator('#chat-input'), "the cursor is in the new chat's message box").toBeFocused();
   // The Default chat, on the chief's own model, is still untagged beside it.
   await expect(strip().locator(`[data-chief-chip="${def}"] [data-chief-chip-model]`)).toHaveCount(0);

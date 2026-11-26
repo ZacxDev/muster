@@ -343,8 +343,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
-				// A chief's chats, as a "Sessions" button under the header
-				// (chief_chats.go) and its drawer: switch, New session, each row's ⋯.
+				// A chief's chat on screen, named under the header (chief_chats.go);
+				// its chats are the Sessions tab of the header's list icon's sheet.
 				chiefPageStrip(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
@@ -394,12 +394,11 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
 				// focusHistoryButton opens. The chief's page has the mirrored
-				// session's sheet instead (chat_index.go): Your messages and Focus
-				// history. Its chats are the Sessions drawer under the header, not a tab.
+				// session's sheet instead (chat_index.go), with its chats as the
+				// FIRST tab: Sessions, Your messages and Focus history.
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
-				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
-				g.If(v.ChiefChat != nil, chatIndexScript()),
+				chiefIndexSheet(v),
 				// The Open button's panel, closed (plugin_chip.go): the agent's
 				// pages.
 				previewPanel(v.Open),
@@ -547,16 +546,17 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	}
 	phone := headerPhoneTools
 	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
-	// header has (chatIndexButton), opening the same sheet — Your messages and
-	// Focus history. No ＋, no clock, no target: the operator asked for the same
-	// icons a mirrored session has. The chief's chats are switched, made and
-	// archived in the Sessions drawer under the header (chief_chats.go), never in
-	// a sheet. Every other agent is unchanged.
+	// header has (chiefIndexButton), opening the same sheet with the chief's
+	// Sessions as its first tab — then Your messages and Focus history. No ＋, no
+	// clock, no target: the operator asked for the same icons a mirrored session
+	// has, and for the chats in that sheet ("just make it another tab"). The
+	// icon carries the dot that says another chat has an unread reply. Every
+	// other agent is unchanged.
 	if v.ChiefChat != nil {
 		return Div(
 			g.Attr("data-header-tools", ""),
 			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
-			chatIndexButton("chat-log"),
+			chiefIndexButton(chatIndexPageID, chiefUnreadElsewhere(v.Sessions) > 0),
 		)
 	}
 	n := 2
@@ -1052,8 +1052,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		//
-		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
-		// header (chiefPageStrip), and nothing there opens a drawer.
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the Sessions tab of the sheet the
+		// header's list icon opens (chiefIndexSheet), and nothing there opens a
+		// drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
 		// The header's asks badge's live refresh, which must sit INSIDE this
 		// SSE section (askerAsksRefresh). No asks block: the asks are the
@@ -1063,9 +1064,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the Sessions drawer
-		// under the page's header (chiefPageStrip) or over the panel's pane
-		// (chiefPanelBody), and its context chip is in the header (chief_chats.go).
+		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the Sessions tab of
+		// the list icon's sheet (chiefIndexSheet) — the page's header's, the
+		// panel's title bar's — the chat on screen is named in the bar over the
+		// pane (chiefCurrentChat), and its memory line is in the header's ⋯ menu
+		// (chief_chats.go).
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the

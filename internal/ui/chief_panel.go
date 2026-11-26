@@ -407,9 +407,9 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// peer-checked:* utilities on the two later siblings select off the checkbox.
 			// The chat pane below carries no peer-checked class, so it is untouched.
 			chiefThreadList(v),
-			// The chief's chats: the "Sessions" button and its drawer over the
-			// transcript — the page's, answered into this body (chief_chats.go).
-			chiefChatStrip(v.Chat.ChiefChat, v.Chat.Name, v.Chat.Sessions, ChatSurfaceChiefPanel),
+			// The chat on screen, named over the transcript, where the page names
+			// it (chief_chats.go chiefCurrentChat).
+			chiefCurrentChat(v.Chat.ChiefChat, v.Chat.Sessions, ChatSurfaceChiefPanel),
 			// The EXISTING chat pane, unmodified: #chat-log fed by
 			// /ui/agents/{name}/chat-log on sse:chat.reply, plus #chat-form's WebSocket.
 			agentChatPane(v.Chat),
@@ -436,6 +436,14 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			agentChatScript(v.Chat.Name),
 			DispatchCardGuard(),
 			chiefPrefill(v.Prefill),
+			// 🔴 THE PANEL'S OWN SHEET, IN THIS COLUMN (chiefIndexSheet): Sessions,
+			// Your messages and What it worked on, opened by the list icon in the
+			// title bar (chiefPanelActions). `absolute` here, never `fixed` — the
+			// panel's transform would place a fixed one by the panel — so this
+			// relative, overflow-hidden column is its containing block, as it is the
+			// thread list's; and its ids are its own (#chief-panel-index), so it is
+			// never the page's #chat-index.
+			chiefIndexSheet(v.Chat),
 		),
 	}
 }
@@ -454,10 +462,12 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
 		// No context chip (removed in #871: the page says it in its ⋯ menu,
-		// and only when it is high). Its new chat is the "New session" in the Sessions drawer
-		// over the transcript (chiefChatStrip); the title bar keeps the thread
-		// list.
+		// and only when it is high). Its new chat is the "New session" in the
+		// Sessions tab of the sheet the list icon here opens (chiefIndexButton,
+		// with the dot when another chat has an unread reply); the title bar
+		// keeps the thread list beside it.
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
+		g.If(v.Configured && v.Chat.ChiefChat != nil, chiefIndexButton(chiefPanelIndexID, chiefUnreadElsewhere(v.Chat.Sessions) > 0)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
 }
@@ -854,7 +864,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
 				// "Continue in a new session" for the side chat the panel is on
 				// (chief_chats.go). Every other chat action — "+", Fresh primary,
-				// Archive, Unarchive, Make primary — is in the Sessions drawer.
+				// Archive, Unarchive, Make primary — is in the Sessions tab.
 				chiefPanelContinue(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
 			),
 		),
