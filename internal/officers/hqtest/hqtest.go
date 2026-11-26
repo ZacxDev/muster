@@ -83,7 +83,7 @@ var costFromRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
 // release-ticket kind's `tickets`).
 var DefaultCompleteFields = []string{
 	"instance", "outcome", "summary", "links", "investigation", "cost_usd", "cost_from", "handoff",
-	"authors", "attributed_prs", "attribution", "tickets", "ask",
+	"authors", "attributed_prs", "attribution", "tickets", "ask", "choices",
 }
 
 // CompleteFieldsWithout is DefaultCompleteFields less drop, as a set for

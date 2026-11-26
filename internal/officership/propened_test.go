@@ -83,7 +83,7 @@ func TestACleanDraftCreateTellsHQOnce(t *testing.T) {
 	r := newPROpenedRig()
 	login := BotLogin(r.infra.slug)
 	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, login))
-	want := []officers.PROpened{{Repo: dInfra, PR: dPR, HeadSHA: prOpenedHead, HeadRef: dBranch, Base: "trunk", Author: login}}
+	want := []officers.PROpened{{Repo: dInfra, PR: dPR, HeadSHA: prOpenedHead, HeadRef: dBranch, Base: "trunk", Author: login, FromItem: 17}}
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("pr-opened calls %+v, want exactly %+v", r.calls, want)
 	}

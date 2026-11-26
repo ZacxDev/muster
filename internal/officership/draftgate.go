@@ -760,22 +760,36 @@ func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 // officer_shadow.
 func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr PR, backoff []time.Duration) error {
 	p := officers.PROpened{Repo: sr.Repo, PR: pr.Number, HeadSHA: pr.HeadSHA, HeadRef: pr.HeadRef, Base: baseOf(sr, pr), Author: pr.Author}
-	var (
-		ans officers.PROpenedAnswer
-		err error
-	)
-	for i := 0; ; i++ {
-		ans, err = g.PROpened(ctx, p)
-		if err == nil || !transientHQ(err) || i >= len(backoff) {
-			break
+	// from_item: the item the pull request's branch is for — the officer's
+	// own, which the create checked it held. A branch that names none (or a
+	// record that cannot be read) sends no from_item: the announcement is
+	// never held back for it.
+	if item, ok, err := g.branchItem(ctx, sr, pr.HeadRef); err == nil && ok && item > 0 {
+		p.FromItem = item
+	}
+	send := func() (ans officers.PROpenedAnswer, err error) {
+		for i := 0; ; i++ {
+			ans, err = g.PROpened(ctx, p)
+			if err == nil || !transientHQ(err) || i >= len(backoff) {
+				return ans, err
+			}
+			select {
+			case <-ctx.Done():
+				return ans, fmt.Errorf("%w (then: %v)", err, ctx.Err())
+			case <-time.After(backoff[i]):
+			}
 		}
-		select {
-		case <-ctx.Done():
-			err = fmt.Errorf("%w (then: %v)", err, ctx.Err())
-		case <-time.After(backoff[i]):
-			continue
-		}
-		break
+	}
+	ans, err := send()
+	// An HQ API that predates from_item refuses the unknown key with a 400:
+	// the announcement is sent ONCE more without it (logged), so the link
+	// never costs the review loop. A 400 naming another field is HQ's
+	// decision, and so is the second answer (officers.PROpenedRefusalMayBeFromItem).
+	if p.FromItem > 0 && officers.PROpenedRefusalMayBeFromItem(err) {
+		g.logf("officers: %s: HQ refused pr-opened for #%d in %s carrying from_item %d (%v): sending it again without from_item",
+			g.OfficerID, pr.Number, sr.Repo, p.FromItem, err)
+		p.FromItem = 0
+		ans, err = send()
 	}
 	settle := func(state string) { g.settleLoop(ctx, sr.Repo, pr.Number, state) }
 	var hqErr *officers.HQError
