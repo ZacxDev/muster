@@ -12,7 +12,8 @@ import (
 // THE OPENROUTER MODEL PICK: any OpenRouter model, found by a fuzzy search of
 // OpenRouter's catalogue (the operator's decision), in every place a chief
 // session's model is picked on the opencode runtime — New session, Continue in
-// a new session (runtimeModelForms) and the strip's "+" menu (chiefNewChatChip).
+// a new session (runtimeModelForms) and the Sessions tab's "+" menu
+// (chiefNewChatChip).
 //
 // The field is a text input named `model`: what it holds is what is posted,
 // and the server accepts it only as an exact catalogue id, or a case or name
@@ -20,6 +21,12 @@ import (
 // typed id works without script. Typing asks the server for the top matches
 // (OpenRouterModelsOptionsPath, htmx), drawn as buttons under the field; a tap
 // on one puts its id in the field (openRouterPickScript).
+//
+// 🔴 BEFORE ANYTHING IS TYPED, THE RECENT MODELS (an operator ask): the field
+// asks with its empty value when it is focused, when it is emptied, and when
+// the "+" menu it sits in opens, and the server answers the models the chief's
+// sessions were opened on, most recently used first, under "Recent"
+// (OpenRouterRecentModels) — or nothing, when there are none.
 
 // OpenRouterModelsOptionsPath is the search's HTML answer (internal/api
 // handleChiefSessionModelOptions): the same ranking as GET
@@ -58,7 +65,9 @@ func openRouterModelField(id string) g.Node {
 			g.Attr("placeholder", "Search OpenRouter models"),
 			g.Attr("aria-label", "OpenRouter model"),
 			hx("hx-get", OpenRouterModelsOptionsPath),
-			hx("hx-trigger", "input changed delay:250ms"),
+			// focus and the menu's toggle ask with the field as it is: empty, the
+			// recent models; a value, its matches again.
+			hx("hx-trigger", "focus, input changed delay:250ms, toggle from:closest [popover]"),
 			hx("hx-target", "#"+results),
 			hx("hx-swap", "innerHTML"),
 			hx("hx-sync", "this:replace"),
@@ -88,6 +97,32 @@ func OpenRouterModelOptions(hits []OpenRouterModelHit, q string) g.Node {
 		}
 		return P(Class("px-2 py-1 text-xs text-muted"), g.Text("No OpenRouter model matches “"+q+"”."))
 	}
+	return openRouterModelButtons(hits)
+}
+
+// OpenRouterRecentModelsLabel is the recent list's heading.
+const OpenRouterRecentModelsLabel = "Recent"
+
+// OpenRouterRecentModels is the empty field's answer: hits — the chief's
+// recent models, most recently used first — under OpenRouterRecentModelsLabel,
+// the same buttons a search draws; nothing when there are none.
+func OpenRouterRecentModels(hits []OpenRouterModelHit) g.Node {
+	if len(hits) == 0 {
+		return g.Group{}
+	}
+	return Div(
+		g.Attr("role", "group"),
+		g.Attr("aria-label", "Recent models"),
+		g.Attr("data-openrouter-model-recent", ""),
+		Class("flex flex-col gap-0.5"),
+		Span(g.Attr("aria-hidden", "true"), Class("px-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(OpenRouterRecentModelsLabel)),
+		openRouterModelButtons(hits),
+	)
+}
+
+// openRouterModelButtons is one button per hit: its name (its id without the
+// route prefix when it has none) over its id, list price and context.
+func openRouterModelButtons(hits []OpenRouterModelHit) g.Node {
 	var out g.Group
 	for _, h := range hits {
 		id := strings.TrimPrefix(h.ID, OpenRouterModelPrefix)

@@ -10,7 +10,7 @@ import { startServer, Running } from '../lib/server';
 // A CHIEF SIDE CHAT ON ANY OPENROUTER MODEL (the opencode runtime,
 // docs/chief.md "OpenRouter sessions on opencode"), in a real browser, against
 // a real muster-server with the spend door on: the New session picker and the
-// Sessions drawer's New session menu offer OpenRouter with a search of the catalogue; a model is
+// Sessions tab's New session menu offer OpenRouter with a search of the catalogue; a model is
 // found by part of its name, picked with a tap, and the session it starts is
 // on that model — the thread list and its Sessions row say so — and stored as
 // it (a reload draws the same). A near miss starts nothing.
@@ -136,6 +136,27 @@ test('New session: search OpenRouter, pick a model, and the session is on it —
   await expect(line).toHaveCount(1);
   await expect(line).toHaveText('OpenRouter · deepseek/deepseek-v4.1-flash');
 
+  // The next New session lists it under "Recent" BEFORE anything is typed (an
+  // operator ask: "when I start a new session, it should show most recently
+  // used models in the model list"); a tap on it puts it in the field.
+  const again = page.locator('[data-session-picker] form[data-new-session="opencode"]');
+  const field2 = again.locator('[data-openrouter-model-search]');
+  await expect(field2).toHaveValue('');
+  await field2.click();
+  const recent = again.locator('[data-openrouter-model-recent]');
+  await expect(recent, 'the empty field shows the recent models').toBeVisible({ timeout: 10_000 });
+  await expect(recent).toContainText('Recent');
+  const first = recent.locator('button[data-openrouter-model-pick]').first();
+  await expect(first).toHaveAttribute('data-openrouter-model-pick', 'openrouter/deepseek/deepseek-v4.1-flash');
+  await expect(first).toContainText('DeepSeek: DeepSeek V4.1 Flash');
+  await first.click();
+  await expect(field2).toHaveValue('openrouter/deepseek/deepseek-v4.1-flash');
+  // Typing still searches the catalogue: the recent list gives way to matches.
+  await field2.fill('');
+  await field2.pressSequentially('qwen3');
+  await expect(again.locator('button[data-openrouter-model-pick="openrouter/qwen/qwen3-coder"]')).toBeVisible({ timeout: 10_000 });
+  await expect(again.locator('[data-openrouter-model-recent]')).toHaveCount(0);
+
   // Stored, not only drawn.
   await page.reload();
   await openThreads(page);
@@ -154,6 +175,10 @@ test('"+": an OpenRouter model picked in the Sessions tab\'s New session menu op
   await expect(menu).toBeVisible();
   const form = menu.locator('form[data-chief-new-chat-openrouter]');
   const field = form.locator('[data-openrouter-model-search]');
+  // The menu opening lists the recent models (the test above started a
+  // session on DeepSeek V4.1 Flash) before anything is typed.
+  await expect(form.locator('[data-openrouter-model-recent] button[data-openrouter-model-pick="openrouter/deepseek/deepseek-v4.1-flash"]'),
+    'the "+" menu shows the recent models on opening').toBeVisible({ timeout: 10_000 });
   await field.click();
   await field.pressSequentially('qwen3');
   const pick = form.locator('button[data-openrouter-model-pick="openrouter/qwen/qwen3-coder"]');

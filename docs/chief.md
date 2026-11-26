@@ -1274,6 +1274,16 @@ search. The model is stored as `openrouter/<id>` and checked against the
 catalogue as the [spend door](#openrouter-sessions-budget) describes. The Sessions row
 and the thread list show the model's name.
 
+**Recent models.** Before you type, the field lists the models your chief's
+sessions were opened on under **Recent**: when you tap into it, when you empty
+it, and when the **+** menu opens. The most recently used comes first, by the
+last message in any of its sessions (archived chats included); each model is
+listed once, at most six. A model that is no longer in OpenRouter's catalogue
+is left out, because the session routes would refuse it. With no OpenRouter
+session yet, the field shows nothing until you type, as before. The list is
+your own chief's: the route answers only the owner the spend door serves, the
+same as the search.
+
 **What runs the session.** `ccd` starts an `opencode serve` of its own for the
 session, on loopback, and drives it over opencode's HTTP API:
 

@@ -40,7 +40,7 @@ func TestTheOpenRouterRuntimeIsPickedBySearch(t *testing.T) {
 	}
 }
 
-// TestThePlusMenuOffersOpenRouterWhereOffered: the strip's "+" menu carries
+// TestThePlusMenuOffersOpenRouterWhereOffered: the Sessions tab's "+" menu carries
 // an OpenRouter form (runtime=opencode, the search field, Start) posting to
 // the side chat route only when the bar says OpenRouter is offered.
 func TestThePlusMenuOffersOpenRouterWhereOffered(t *testing.T) {
@@ -127,5 +127,40 @@ func TestTheBudgetCardSaysWhatAndWhenAndOffersContinue(t *testing.T) {
 	}
 	if html := renderString(t, spendCapCard(content, nil, nil)); strings.Contains(html, chiefContinueAttr) || !strings.Contains(html, "daily cap") {
 		t.Errorf("off a chief chat: %s", html)
+	}
+}
+
+// TestTheEmptyFieldAsksForTheRecentModels: the model field asks the options
+// route when it is focused and when the "+" menu it sits in opens (a toggle of
+// its closest popover), not only as it is typed in — so an empty field shows
+// the recent models before anything is typed — on every picker that draws it
+// (New session, Continue, the "+" menu). The recent list is the search's own
+// buttons under "Recent", and nothing when there are none. RED at main: the
+// field asked only on input.
+func TestTheEmptyFieldAsksForTheRecentModels(t *testing.T) {
+	both := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}
+	for name, html := range map[string]string{
+		"new session": renderString(t, chiefNewSessionPicker(7, both, []string{"opus"})),
+		"continue":    renderString(t, chiefContinuePicker(7, 9, both, []string{"opus"})),
+		"plus menu":   renderString(t, chiefNewChatChip(&ChiefChatBar{AgentID: 7, SessionID: 9, OpenRouter: true}, ChatSurfacePage)),
+	} {
+		field := regexp.MustCompile(`<input [^>]*` + openRouterSearchAttr + `[^>]*>`).FindString(html)
+		if field == "" {
+			t.Fatalf("%s: no model field", name)
+		}
+		if !strings.Contains(field, `hx-trigger="focus, input changed delay:250ms, toggle from:closest [popover]"`) {
+			t.Errorf("%s: the field does not ask when focused or when its menu opens: %s", name, field)
+		}
+	}
+	hits := []OpenRouterModelHit{{ID: "openrouter/vendor-n/model-n6", Name: "Vendor N: Six", ContextLength: 48000, PromptUSD: "0.0000004", CompletionUSD: "0.0000009"}}
+	recent := renderString(t, OpenRouterRecentModels(hits))
+	if !strings.Contains(recent, `role="group" aria-label="Recent models"`) || !strings.Contains(recent, `>Recent</span>`) {
+		t.Errorf("the recent list has no heading of its own:\n%s", recent)
+	}
+	if !strings.Contains(recent, renderString(t, OpenRouterModelOptions(hits, "six"))) {
+		t.Errorf("a recent model is not drawn as a search hit is:\n%s", recent)
+	}
+	if got := renderString(t, OpenRouterRecentModels(nil)); got != "" {
+		t.Errorf("no recent model drew %q", got)
 	}
 }

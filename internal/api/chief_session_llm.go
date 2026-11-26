@@ -692,7 +692,15 @@ func (s *Server) chiefSessionModelSearch(ctx context.Context, q string) ([]chief
 // chiefSessionModelSearch as the picker's buttons (ui.OpenRouterModelOptions),
 // for the text the model field holds (its own `model` value, as htmx sends
 // it; `q` too). The same door as the JSON search: the admin signed in, the
-// spend door on. An empty query answers nothing.
+// spend door on.
+//
+// 🔴 AN EMPTY QUERY ANSWERS THE RECENT MODELS (an operator ask: "when I start a
+// new session, it should show most recently used models in the model list"):
+// the models this owner's chief's sessions were opened on, most recently used
+// first (chiefRecentModels), under a "Recent" heading — what the field shows
+// when it is focused or emptied, or the "+" menu it sits in opens. None: the
+// answer is empty, as before. The route serves the chief's pickers only (no
+// other surface draws the field), and the list is the chief's own.
 func (s *Server) handleChiefSessionModelOptions(w http.ResponseWriter, r *http.Request) {
 	if s.chiefSessions == nil {
 		http.NotFound(w, r)
@@ -709,6 +717,12 @@ func (s *Server) handleChiefSessionModelOptions(w http.ResponseWriter, r *http.R
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if strings.TrimSpace(q) == "" {
+		recent, err := s.chiefRecentModels(r.Context())
+		if err != nil {
+			_ = ui.OpenRouterModelUnavailable(ChiefSessionCatalogUnreadable).Render(w)
+			return
+		}
+		_ = ui.OpenRouterRecentModels(modelHits(recent)).Render(w)
 		return
 	}
 	out, err := s.chiefSessionModelSearch(r.Context(), q)
@@ -716,10 +730,72 @@ func (s *Server) handleChiefSessionModelOptions(w http.ResponseWriter, r *http.R
 		_ = ui.OpenRouterModelUnavailable(ChiefSessionCatalogUnreadable).Render(w)
 		return
 	}
-	hits := make([]ui.OpenRouterModelHit, 0, len(out))
-	for _, h := range out {
-		hits = append(hits, ui.OpenRouterModelHit{ID: h.ID, Name: h.Name, ContextLength: h.ContextLength,
+	_ = ui.OpenRouterModelOptions(modelHits(out), q).Render(w)
+}
+
+// modelHits is hits as the picker draws them.
+func modelHits(hits []chiefSessionModelHit) []ui.OpenRouterModelHit {
+	out := make([]ui.OpenRouterModelHit, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, ui.OpenRouterModelHit{ID: h.ID, Name: h.Name, ContextLength: h.ContextLength,
 			PromptUSD: h.Pricing.Prompt, CompletionUSD: h.Pricing.Completion})
 	}
-	_ = ui.OpenRouterModelOptions(hits, q).Render(w)
+	return out
+}
+
+// chiefRecentModelsMax bounds the recent list.
+const chiefRecentModelsMax = 6
+
+// chiefRecentModels is the signed-in owner's chief's recent OpenRouter models
+// (agents.RecentModelStore: most recently used first, archived sessions
+// included, each once), as catalogue hits — at most chiefRecentModelsMax.
+//
+// 🔴 A MODEL NO LONGER IN THE CATALOGUE IS DROPPED, NOT SHOWN BY ITS ID: a
+// pick is posted, and the session routes accept a model only from the
+// catalogue (ResolveChiefSessionModel), so it would be a button that can only
+// be refused. The next one moves up in its place: the store is read past the
+// cap for that. No chief, no store, no OpenRouter session: none, and no error.
+// A catalogue that cannot be read when there IS a recent model is the error the
+// search answers too.
+func (s *Server) chiefRecentModels(ctx context.Context) ([]chiefSessionModelHit, error) {
+	st, ok := s.ext.Agents.(agents.RecentModelStore)
+	if !ok {
+		return nil, nil
+	}
+	a, err := s.chiefAgent(ctx)
+	if err != nil {
+		if !errors.Is(err, ErrNoChief) {
+			s.logger.Printf("chief sessions: recent models: resolve the chief: %v", err)
+		}
+		return nil, nil
+	}
+	ids, err := st.RecentOpenRouterModels(ctx, a.ID, 4*chiefRecentModelsMax)
+	if err != nil {
+		s.logger.Printf("chief sessions: recent models of %d: %v", a.ID, err)
+		return nil, nil
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cat, err := s.chiefSessionCatalog(ctx)
+	if err != nil {
+		s.logger.Printf("chief sessions: recent models: %v", err)
+		return nil, err
+	}
+	byID := make(map[string]CatalogModel, len(cat))
+	for _, m := range cat {
+		byID[catalogSlug(m.ID)] = m
+	}
+	out := make([]chiefSessionModelHit, 0, chiefRecentModelsMax)
+	for _, id := range ids {
+		m, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, chiefSessionModelHit{ID: id, Name: m.Name, ContextLength: m.ContextLength, Pricing: m.Pricing})
+		if len(out) == chiefRecentModelsMax {
+			break
+		}
+	}
+	return out, nil
 }
