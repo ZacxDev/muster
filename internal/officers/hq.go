@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -950,6 +951,35 @@ type PROpened struct {
 	// (the item its branch names), which the HQ API links the review loop's
 	// merge request back to. 0, when muster cannot tell, sends no key.
 	FromItem int `json:"from_item,omitempty"`
+}
+
+// prOpenedOtherFieldRe matches, in a refusal's body, any pr-opened field other
+// than from_item, as a whole name (so "pr-opened" is not the field "pr"). The
+// names are PROpened's own json tags, read once.
+var prOpenedOtherFieldRe = func() *regexp.Regexp {
+	var names []string
+	t := reflect.TypeOf(PROpened{})
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" && name != "from_item" {
+			names = append(names, regexp.QuoteMeta(name))
+		}
+	}
+	return regexp.MustCompile(`(^|[^a-z0-9_-])(` + strings.Join(names, "|") + `)([^a-z0-9_-]|$)`)
+}()
+
+// PROpenedRefusalMayBeFromItem is THE rule for whether HQ's refusal err of a
+// pr-opened that carried from_item may be over from_item alone, so the
+// announcement is sent once more without it: a 400 whose body names no other
+// pr-opened field. An HQ API that predates from_item refuses the unknown key
+// with a generic 400 that names no field at all; a 400 that names another
+// field (head_sha, base, …) is about that field, and is HQ's decision.
+func PROpenedRefusalMayBeFromItem(err error) bool {
+	var hqErr *HQError
+	if !errors.As(err, &hqErr) || hqErr.Status != http.StatusBadRequest {
+		return false
+	}
+	return !prOpenedOtherFieldRe.Match(bytes.ToLower(hqErr.Body))
 }
 
 // PROpenedAnswer is HQ's 200 to pr-opened: the loop items it created, and

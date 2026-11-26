@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -18,8 +19,8 @@ import (
 // again): at most MaxEscalationChoices {value, label} objects, only on
 // outcome escalated; each value matches choiceValueRe (a stable id), is not
 // one of the HQ API's own buttons (ReservedChoiceValues) and is not repeated;
-// each label is 1 to MaxChoiceLabel characters once its whitespace is
-// collapsed; no other keys. muster forwards the argument AS SENT.
+// each label is 1 to MaxChoiceLabel characters once cleaned as the HQ API
+// cleans it (cleanChoiceLabel); no other keys. muster forwards the argument AS SENT.
 // ---------------------------------------------------------------------------
 
 // ChoicesInstruction is THE sentence an HQ officer's instance is given about
@@ -75,7 +76,7 @@ func CheckChoices(raw json.RawMessage, outcome string) string {
 			return fmt.Sprintf("choices[%d] needs both value and label", i)
 		}
 		v := strings.TrimSpace(*c.Value)
-		l := strings.Join(strings.Fields(*c.Label), " ")
+		l := cleanChoiceLabel(*c.Label)
 		switch {
 		case !choiceValueRe.MatchString(v):
 			return fmt.Sprintf("choices[%d].value %q must match %s (a short stable id, e.g. \"rollback\")", i, v, choiceValueRe)
@@ -89,6 +90,22 @@ func CheckChoices(raw json.RawMessage, outcome string) string {
 		seen[v] = true
 	}
 	return ""
+}
+
+// cleanChoiceLabel is a label as the HQ API counts it (its release-text
+// cleaning): invalid UTF-8, control, format (zero-width, bidi) and line or
+// paragraph separator characters become spaces, whitespace runs collapse to
+// one space, the ends are trimmed. So a label of only invisible characters is
+// empty here, as it is there.
+func cleanChoiceLabel(s string) string {
+	s = strings.ToValidUTF8(s, " ")
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func isReservedChoice(v string) bool {

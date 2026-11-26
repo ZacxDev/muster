@@ -1761,9 +1761,16 @@ dispatch both ask them.
   instance gets a refusal naming what to fix and nothing is sent: at most 4;
   each `value` matches `^[a-z0-9][a-z0-9_-]{0,31}$`, is not `resolve` or
   `other` (HQ's own buttons) and is not repeated; each `label` is 1 to 80
-  characters once its whitespace is collapsed; no other keys; any outcome
-  but `escalated` refused. Absent, `null` and `[]` are no choices. What
-  passes is forwarded as sent (HQ checks it again and stays the authority).
+  characters once cleaned as HQ cleans it (control, zero-width, bidi and
+  line/paragraph-separator characters become spaces, whitespace collapses,
+  so a label of only invisible characters is empty); no other keys; any
+  outcome but `escalated` refused. Absent, `null` and `[]` are no choices.
+  What passes is forwarded as sent (HQ checks it again and stays the
+  authority). 🔴 **`choices` needs an HQ API that accepts it**: HQ refuses
+  unknown keys, so an older one answers a complete carrying it with a
+  generic 400. muster does NOT retry without it: the refused complete
+  leaves the item held, and the instance can complete again without
+  `choices`. Deploy order: see `pr-opened` under [the review loop](#the-review-loop-through-hq).
   Every HQ officer instance is told, in its kickoff's step 3 and its system
   prompt, to send an escalation's options this way rather than as prose
   (`officers.ChoicesInstruction`). A builtin officer is not offered it, and
@@ -2843,8 +2850,19 @@ officers API:
   the officer App's `<slug>[bot]`; `from_item` is the officer's own item the
   pull request was opened for — the item its branch names, which the create
   checked the instance held — read from the branch on every send, the
-  sweep's re-send included, and left out when the branch names none; HQ
-  links the review loop's merge request back to it). 🔴 muster calls it itself, server-side, only on the clean
+  sweep's re-send included (in a repository marked public, from muster's
+  record of the officer's public branches, since the name carries no item),
+  and left out when the branch names none or that record cannot be read; HQ
+  links the review loop's merge request back to it). 🔴 **`from_item` needs
+  an HQ API that accepts it**: HQ refuses unknown keys, so an older one
+  answers 400. muster then sends the announcement **once more without
+  `from_item`** (logged) when the 400's body names no other pr-opened field
+  (`officers.PROpenedRefusalMayBeFromItem`), so the link never costs the
+  review loop; a 400 naming another field, and a 400 to that second send,
+  stay permanent (`failed`). **Deploy order, for `from_item` and
+  officer_complete's `choices` alike: the HQ API must accept `choices` and
+  `from_item`; when rolling back, roll muster back before the HQ API.**
+  🔴 muster calls it itself, server-side, only on the clean
   branch of a draft create's re-check (above); it is **no instance's tool**.
   HQ answers which loop items it created and which officers it skipped. It
   runs on its own context, detached from the create, and never fails it. A
