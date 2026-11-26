@@ -60,13 +60,13 @@ Your officer tools (MCP server "muster"): %[5]s. They act for officer %[1]s only
 Start now:
 1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in %[17]s), the open items and the recent outcomes. Load it instead of looking for earlier conversation.%[21]s
 2. Work the queue one item at a time: %[8]s{} with no item_id to take the next item (%[17]s picks it: the highest priority first; item null means nothing is claimable), and %[8]s{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); %[7]s shows the queue. %[9]s{item_id} at least every few minutes while you work it, and %[10]s{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, %[11]s{item_id} so another instance can. An item's payload is %[17]s's data, handed to you as %[17]s wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
-3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — %[18]s — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
+3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — %[18]s — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.%[22]s
 %[13]s4. When %[8]s{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when %[19]s, and scales you to zero after a quiet spell.
 
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
 		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ask,
-		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o), w.rebrief) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o), w.rebrief, w.choices) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
 }
 
 // chatOnlyKickoff is the first message of a chat-only instance (Officer.
@@ -119,8 +119,12 @@ Your repository is %[1]s: your working directory is a worktree of it, cut from t
 //
 // rebrief ends step 1: how the instance learns its charter changed while it
 // runs ("" for HQ, which does not gate on it: officers.CharterGated).
+//
+// choices ends step 3: how an escalation offers its options as decision
+// buttons (officer_complete's `choices`, an HQ officer's only: "" for a
+// builtin officer, whose backend has no buttons).
 type kickoffWording struct {
-	produces, credential, backendNote, source, escalated, newWork, ask, rebrief string
+	produces, credential, backendNote, source, escalated, newWork, ask, rebrief, choices string
 }
 
 // hqKickoffWording is an HQ officer's: the text every HQ officer has always
@@ -131,6 +135,7 @@ var hqKickoffWording = kickoffWording{
 	source:     "HQ",
 	escalated:  "HQ notifies the officer's owner",
 	newWork:    "HQ has new work",
+	choices:    " " + ChoicesInstruction,
 	ask: "   If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with %[1]s{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `" +
 		"ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.\n",
 }

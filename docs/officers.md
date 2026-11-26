@@ -1547,7 +1547,7 @@ listing and again at dispatch):
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
-| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?, authors?, attributed_prs?, attribution?, tickets?, ask?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `authors`, `attributed_prs`, `attribution`, `tickets` and `ask` are forwarded as sent, and never sent when absent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?, authors?, attributed_prs?, attribution?, tickets?, ask?, choices?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `authors`, `attributed_prs`, `attribution`, `tickets` and `ask` are forwarded as sent, and never sent when absent; `choices` (outcome `escalated` only) is checked against HQ's limits, then forwarded as sent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
@@ -1752,6 +1752,22 @@ dispatch both ask them.
   comes back with the item still held. A builtin officer is not offered it,
   and muster refuses one it sends anyway. (Before this, the tool's schema did
   not offer it and closes its properties, so no officer could send one.)
+- **`choices`** (every instance of an HQ officer; outcome `escalated`): at
+  most 4 `{"value", "label"}`, the options the escalation offers its reader.
+  HQ makes each one a button on the escalation's DM (it adds its own
+  Other…), and a tap comes back to the SAME officer as a directive item; the
+  escalation resolves when that directive completes `done`. Unlike the
+  fields above, muster **checks** it first, under HQ's own rules, so the
+  instance gets a refusal naming what to fix and nothing is sent: at most 4;
+  each `value` matches `^[a-z0-9][a-z0-9_-]{0,31}$`, is not `resolve` or
+  `other` (HQ's own buttons) and is not repeated; each `label` is 1 to 80
+  characters once its whitespace is collapsed; no other keys; any outcome
+  but `escalated` refused. Absent, `null` and `[]` are no choices. What
+  passes is forwarded as sent (HQ checks it again and stays the authority).
+  Every HQ officer instance is told, in its kickoff's step 3 and its system
+  prompt, to send an escalation's options this way rather than as prose
+  (`officers.ChoicesInstruction`). A builtin officer is not offered it, and
+  muster refuses one it sends anyway.
 
 ### Observability queries
 
@@ -2029,7 +2045,10 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
 3. Anything that needs a human: follow your charter. By default, finish the
    item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
    notifies the officer's owner — rather than attention_ask … Use attention_ask
-   only if your charter explicitly says to.
+   only if your charter explicitly says to. (HQ officers also:) When your
+   escalation offers the person options, send them in the same call as
+   choices (at most 4 {value, label} …), never as prose. Each becomes a
+   button; a tap comes back to you as a directive item …
    If what you need is one named HQ member's decision on the item …, you may
    instead ask them with officer_ask_person{…}. Asking ENDS your lease on the
    item … HQ re-opens it with the answer, and muster wakes an instance to take
@@ -2819,9 +2838,13 @@ officers API:
 
 - **`pr-opened`** — `POST {hq_url}/officers/{id}/pr-opened` with the
   **authoring** officer's own token, body exactly
-  `{"repo", "pr", "head_sha", "head_ref", "base", "author"}` (`author` is the
-  pull request's author as GitHub reports it at the create, the officer App's
-  `<slug>[bot]`). 🔴 muster calls it itself, server-side, only on the clean
+  `{"repo", "pr", "head_sha", "head_ref", "base", "author", "from_item"?}`
+  (`author` is the pull request's author as GitHub reports it at the create,
+  the officer App's `<slug>[bot]`; `from_item` is the officer's own item the
+  pull request was opened for — the item its branch names, which the create
+  checked the instance held — read from the branch on every send, the
+  sweep's re-send included, and left out when the branch names none; HQ
+  links the review loop's merge request back to it). 🔴 muster calls it itself, server-side, only on the clean
   branch of a draft create's re-check (above); it is **no instance's tool**.
   HQ answers which loop items it created and which officers it skipped. It
   runs on its own context, detached from the create, and never fails it. A

@@ -470,6 +470,10 @@ type Completion struct {
 	// an escalation asks a person to do), sent to HQ AS SENT under the same
 	// rules: HQ owns the kinds and validates both, and empty sends no key.
 	AskJSON json.RawMessage `json:"-"`
+	// ChoicesJSON is an instance's `choices` argument (1-4 {value, label}: the
+	// decision buttons of an escalation's DM), sent to HQ AS SENT under the
+	// same rules once CheckChoices has passed it.
+	ChoicesJSON json.RawMessage `json:"-"`
 	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
@@ -609,6 +613,7 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 		"attribution":    done.AttributionJSON,
 		"tickets":        done.TicketsJSON,
 		"ask":            done.AskJSON,
+		"choices":        done.ChoicesJSON,
 	} {
 		if raw = bytes.TrimSpace(raw); len(raw) > 0 {
 			body[key] = raw
@@ -941,6 +946,10 @@ type PROpened struct {
 	HeadRef string `json:"head_ref"`
 	Base    string `json:"base"`
 	Author  string `json:"author"`
+	// FromItem is the officer's OWN item the pull request was opened for
+	// (the item its branch names), which the HQ API links the review loop's
+	// merge request back to. 0, when muster cannot tell, sends no key.
+	FromItem int `json:"from_item,omitempty"`
 }
 
 // PROpenedAnswer is HQ's 200 to pr-opened: the loop items it created, and

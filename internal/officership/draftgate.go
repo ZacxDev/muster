@@ -760,6 +760,13 @@ func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 // officer_shadow.
 func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr PR, backoff []time.Duration) error {
 	p := officers.PROpened{Repo: sr.Repo, PR: pr.Number, HeadSHA: pr.HeadSHA, HeadRef: pr.HeadRef, Base: baseOf(sr, pr), Author: pr.Author}
+	// from_item: the item the pull request's branch is for — the officer's
+	// own, which the create checked it held. A branch that names none (or a
+	// record that cannot be read) sends no from_item: the announcement is
+	// never held back for it.
+	if item, ok, err := g.branchItem(ctx, sr, pr.HeadRef); err == nil && ok && item > 0 {
+		p.FromItem = item
+	}
 	var (
 		ans officers.PROpenedAnswer
 		err error

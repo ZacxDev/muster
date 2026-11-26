@@ -115,7 +115,9 @@ const askMediaInstruction = "Give context{one short line: why you are asking now
 // default it finishes the item with outcome "escalated" and HQ notifies the
 // officer's owner. An officers muster usually runs headless, so an attention
 // ask there reaches nobody. The attention tools stay offered, for a charter
-// that names them. officers.KickoffText's step 3 says the same.
+// that names them. officers.KickoffText's step 3 says the same, and, as it
+// does, an HQ officer's instance is also told officers.ChoicesInstruction
+// (attentionInstructionFor).
 const officerAttentionInstruction = "For anything that needs a human, follow your officer charter. By default, finish the item with " +
 	officers.ToolComplete + "{item_id, outcome: \"escalated\", summary} saying who must act and why — HQ notifies the officer's owner — " +
 	"rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to."
@@ -126,8 +128,11 @@ const officerAttentionInstruction = "For anything that needs a human, follow you
 // uploads are on (askUploadsOff), how to show a file: `ccd ask-attach` for a
 // kind whose pod ships ccd (shipsCcd), "not available" for any other.
 func (s *Server) attentionInstructionFor(a agents.Agent) string {
-	if _, _, ok := s.officerOf(a); ok {
-		return officerAttentionInstruction
+	if o, _, ok := s.officerOf(a); ok {
+		if o.IsBuiltin() {
+			return officerAttentionInstruction
+		}
+		return officerAttentionInstruction + " " + officers.ChoicesInstruction
 	}
 	switch {
 	case s.askUploadsOff() != "":

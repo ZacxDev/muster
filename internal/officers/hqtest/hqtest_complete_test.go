@@ -37,7 +37,7 @@ func TestTheFakeCompleteRefusesAFieldItsHQDoesNotKnow(t *testing.T) {
 		}
 		return resp.StatusCode
 	}
-	for _, extra := range []string{`"authors":{"a":"t"}`, `"attributed_prs":[7]`, `"attribution":"likely"`, `"tickets":[]`, `"ask":{"kind":"k","ref":"r"}`} {
+	for _, extra := range []string{`"authors":{"a":"t"}`, `"attributed_prs":[7]`, `"attribution":"likely"`, `"tickets":[]`, `"ask":{"kind":"k","ref":"r"}`, `"choices":[{"value":"a","label":"A"}]`} {
 		if got := complete(extra); got != http.StatusOK {
 			t.Errorf("the default fake answered %d to %s, want 200", got, extra)
 		}

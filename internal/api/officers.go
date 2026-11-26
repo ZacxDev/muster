@@ -1883,6 +1883,19 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 			"required": []string{"kind", "ref"},
 			"description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. " +
 				"muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held)."}
+		// `choices` is checked here against HQ's own limits
+		// (officers.CheckChoices), so the instance learns what to fix before
+		// anything is sent, and forwarded as sent.
+		desc += " When your escalation offers the person options, send them as `choices` (each a button on the escalation's DM; a tap comes back to you as a directive item), never as prose."
+		props["choices"] = map[string]any{"type": "array", "maxItems": officers.MaxEscalationChoices,
+			"items": map[string]any{"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"value": strProp("A short stable id for the option: lower-case letters, digits, _ and -, at most 32, starting with a letter or digit (not \"resolve\" or \"other\")."),
+					"label": strProp("The button's text, at most 80 characters."),
+				},
+				"required": []string{"value", "label"}},
+			"description": "Optional, outcome escalated only: at most 4 {value, label}, the options your escalation offers, each a button " +
+				"(HQ adds Other… itself). Values distinct. muster checks HQ's limits before sending and passes them to HQ as you send them."}
 	}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
@@ -1901,8 +1914,8 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 }
 
 // completeTakesHQFields is THE rule for whether officer o's instances are
-// offered officer_complete's authors, attributed_prs, attribution, tickets
-// and ask (the features only HQ serves), and may send them: an HQ officer's only. The
+// offered officer_complete's authors, attributed_prs, attribution, tickets,
+// ask and choices (the features only HQ serves), and may send them: an HQ officer's only. The
 // builtin backend has none of those features, and would complete the item
 // while dropping them.
 func completeTakesHQFields(o officers.Officer) bool { return !o.IsBuiltin() }
@@ -2140,6 +2153,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// officer_complete's ask, kept as sent and forwarded unchanged
 		// (officers.Completion.AskJSON): HQ owns its kinds.
 		Ask json.RawMessage `json:"ask"`
+		// officer_complete's choices, checked by officers.CheckChoices and
+		// forwarded unchanged (officers.Completion.ChoicesJSON).
+		Choices json.RawMessage `json:"choices"`
 		// officer_complete's hand-off, checked by completeHandoff.
 		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
@@ -2294,11 +2310,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// 🔴 REFUSED, NEVER DROPPED, on a builtin officer: it is not offered
 		// them, and its backend would complete the item without them.
 		if !completeTakesHQFields(o) {
-			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets, "ask": in.Ask} {
+			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets, "ask": in.Ask, "choices": in.Choices} {
 				if len(bytes.TrimSpace(raw)) > 0 {
-					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution, tickets or asks): complete without it", f, o.ID), true
+					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution, tickets, asks or decision buttons): complete without it", f, o.ID), true
 				}
 			}
+		}
+		if bad := officers.CheckChoices(in.Choices, in.Outcome); bad != "" {
+			return toolErr("%s", bad), true
 		}
 		if strings.TrimSpace(in.Summary) == "" || utf8.RuneCountInString(in.Summary) > officers.MaxSummaryChars {
 			return toolErr("summary is required and at most %d characters", officers.MaxSummaryChars), true
@@ -2330,7 +2349,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// HQ's bound, never the instance's own text.
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
 		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff,
-			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets, AskJSON: in.Ask}
+			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets, AskJSON: in.Ask, ChoicesJSON: in.Choices}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {
