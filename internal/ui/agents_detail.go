@@ -92,8 +92,9 @@ type ChatRelay struct {
 // `transition-transform`, so a transform on it makes the PANEL that ancestor.
 // Inside the panel the drawer therefore sits at the panel's own right edge, and
 // when the panel is shut it is translated off-screen and `inert` along with it:
-// unreachable, with nothing on screen saying so. The panel gets a sub-view of its
-// own column instead (chiefThreadList), which is what this field selects.
+// unreachable, with nothing on screen saying so. The panel draws no drawer: its
+// chats are the Sessions tab of its own sheet, absolute in its own column
+// (chiefIndexSheet), which is what this field selects.
 //
 // ⚠ THE ZERO VALUE IS THE PAGE, DELIBERATELY. AgentDetailPage and OperatorPage
 // construct this view in several places and none of them may change behaviour;
@@ -253,15 +254,14 @@ type SessionView struct {
 	DefaultPath string
 	// Title is the session's name, derived by the store from its first user message.
 	//
-	// 🔴 AN EMPTY TITLE RENDERS DIFFERENTLY ON THE TWO SURFACES THAT DRAW THESE ROWS,
-	// AND THAT IS DELIBERATE RATHER THAN DRIFT: sessionDrawer (the agent-detail and
-	// operator pages) renders "New chat"; chiefThreadRows (the chief slide-out)
-	// renders "New thread". Each matches the noun its own surface uses everywhere else
-	// — the page's control is "New chat", the panel's is "New thread" and its list is
-	// headed "Threads" — so making them agree would leave one of the two surfaces
-	// naming a thing its own buttons do not. This comment is the only written answer
-	// to "what does an untitled session show", so it names both; the pair is pinned
-	// two-way by ui.TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered.
+	// 🔴 AN EMPTY TITLE RENDERS AS "New chat" WHEREVER THESE ROWS ARE DRAWN:
+	// sessionDrawer (the agent-detail and operator pages), and the chief's Sessions
+	// tab on its page and in its panel (chiefChip, chiefCurrentChat,
+	// chiefMessageMatches: ChiefNewChatLabel). The chief panel's thread list, which
+	// rendered "New thread" to match its own "Threads" heading, was folded into the
+	// Sessions tab, so no surface names an untitled chat differently any more. This
+	// comment is the only written answer to "what does an untitled session show";
+	// the renderers are pinned by ui.TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered.
 	//
 	// 🔴 THAT GUARD DERIVES THE RENDERER SET FROM THE PACKAGE'S OWN AST rather than
 	// enumerating the two it knows about — but its reach is ONE SYNTACTIC SHAPE, and
@@ -889,9 +889,9 @@ func agentSessionsPath(agentID int64) string {
 }
 
 // chatHistoryButton is the header control that opens the session drawer. It is a
-// <label for=...> driving the pure-CSS checkbox-hack toggle (sessionDrawer on the
-// page surfaces, chiefThreadList in the panel) — the TOGGLE needs no JS and is
-// boost-safe. ≥44px tap target.
+// <label for=...> driving the pure-CSS checkbox-hack toggle (sessionDrawer, on
+// the page surfaces) — the TOGGLE needs no JS and is boost-safe. ≥44px tap
+// target.
 //
 // ⚠ forID IS A PARAMETER RATHER THAN THE CONSTANT IT USED TO BE, so the panel
 // reuses this control instead of growing a second launcher with its own styling,
@@ -1048,9 +1048,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// `translate-x-full` makes the panel the containing block for every fixed
 		// descendant — so inside the panel the drawer renders at the PANEL's right
 		// edge and, when the panel is shut, is translated off-screen and inert with
-		// it. The panel renders chiefThreadList instead: an absolutely-positioned
-		// sub-view of the panel's OWN column, which needs no viewport-relative
-		// positioning at all. See ChatSurface.
+		// it. The panel's chats are the Sessions tab of its own sheet instead
+		// (chiefIndexSheet), absolute in the panel's OWN column, which needs no
+		// viewport-relative positioning at all. See ChatSurface.
 		//
 		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the Sessions tab of the sheet the
 		// header's list icon opens (chiefIndexSheet), and nothing there opens a

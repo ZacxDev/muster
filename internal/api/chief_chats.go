@@ -506,7 +506,7 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 // refuses them (teamAgentRoutes).
 //
 // NewChatModels is the "+" menu's models (agents.ClaudeCodeModels, the one list
-// the New session picker offers too) where a side chat's model may be picked,
+// Continue in a new session offers too) where a side chat's model may be picked,
 // i.e. the runtimes gate offers claude-code to this chief (sideChatModel's own
 // test), and none elsewhere: "+" then opens a chat at once, as before.
 func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
@@ -517,6 +517,8 @@ func (s *Server) chiefChatBarFor(ctx context.Context, a agents.Agent, sess agent
 		b.NewChatModels = agents.ClaudeCodeModels
 	}
 	b.OpenRouter = slices.Contains(rts, agents.SessionRuntimeOpencode)
+	// "Continue in a new session"'s runtimes: the same gate, labelled.
+	b.Runtimes = s.pickerRuntimes(ctx, a)
 	return b
 }
 

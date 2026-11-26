@@ -1576,11 +1576,13 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	idx := s.instanceIndex(op.begin("status"))
 	status := liveStatusIndexed(a, idx)
 	sessionParam := r.URL.Query().Get("session")
-	// ⚠ THE LIST-READ FAILURE IS DISCARDED HERE, AND THAT IS THE PAGE'S EXISTING
-	// BEHAVIOUR RATHER THAN AN OVERSIGHT: sessionDrawer renders no failure state, so
-	// there is nothing to hand it. resolveSessions logs the read for every caller.
+	// ⚠ THE LIST-READ FAILURE IS DROPPED FOR A WORKER'S PAGE, AND THAT IS ITS
+	// EXISTING BEHAVIOUR RATHER THAN AN OVERSIGHT: sessionDrawer renders no failure
+	// state, so there is nothing to hand it. A CHIEF's page hands it to its
+	// Sessions tab (ChiefChatBar.SessionsFailed, below), which says the list may be
+	// incomplete. resolveSessions logs the read for every caller.
 	ctx = op.begin("sessions")
-	active, sessions, _ := s.resolveSessions(ctx, a, sessionParam)
+	active, sessions, listErr := s.resolveSessions(ctx, a, sessionParam)
 	// On a bare open (no ?session=) put the resolved session in the URL so the
 	// page deep-links + the WS/mark-read paths agree on the session. Only redirect
 	// when the param is absent (no redirect loop once it's present).
@@ -1669,6 +1671,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// actions (chief_chats.go).
 	if s.isChiefAgent(ctx, a) {
 		view.ChiefChat = s.chiefChatBarFor(ctx, a, active)
+		view.ChiefChat.SessionsFailed = listErr != nil
 		// The side chat route's answer lands here asking for the cursor in
 		// the message box (answerSideChatOpened).
 		view.FocusComposer = r.URL.Query().Get(ui.ComposerFocusParam) == "1"

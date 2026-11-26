@@ -5,8 +5,9 @@ import (
 )
 
 // RECENT MODELS: the OpenRouter models an agent's chat sessions were opened
-// on, most recently used first — what the chief's New session pickers list
-// before anything is typed (internal/api chiefRecentModels).
+// on, most recently used first — what the chief's OpenRouter model fields
+// (New session, Continue) list before anything is typed (internal/api
+// chiefRecentModels).
 //
 // 🔴 "USED" IS A SESSION'S LAST ACTIVITY, chat_sessions.updated_at, which only
 // a stored message moves (AddChatMessage; archiving, Make primary, a read or a

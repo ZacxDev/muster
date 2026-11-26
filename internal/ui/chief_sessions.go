@@ -2,52 +2,31 @@ package ui
 
 import (
 	"strconv"
-	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
 
 // THE CHIEF'S SESSIONS ON MORE THAN ONE RUNTIME (internal/api/session_runtime.go):
-// the panel's thread list gains a "New session" picker — a runtime and a model,
-// fixed for the session's life — each thread row names its runtime and model,
-// and one thread is marked the DEFAULT (where plugin messages and `chief ask`
-// go), with a control on every other row to make it so.
+// a session is started on a runtime and a model, fixed for its life — from the
+// Sessions tab's "+ New session" menu (chiefNewChatChip), or by "Continue in a
+// new session" (chiefContinuePicker, runtimeModelForms below) — its row's model
+// tag names the model, and one chat is the PRIMARY (where plugin messages and
+// `chief ask` go), made so from another row's ⋯ menu (Make primary).
+//
+// The panel's own thread list, which held a "New session" runtime picker, a
+// runtime line on each row and a "Make default" button beside it, is gone: the
+// Sessions tab is the one list of the chief's chats (an operator decision), and
+// its "+" menu offers the same runtimes and models (ChiefChatBar.NewChatModels
+// and .OpenRouter come from the same gate, internal/api chiefChatBarFor).
 
-const (
-	// sessionPickerAttr marks the picker; newSessionAttr each of its forms,
-	// valued with the runtime it starts.
-	sessionPickerAttr = "data-session-picker"
-	newSessionAttr    = "data-new-session"
-	// sessionRuntimeAttr marks a row's runtime line, valued with the runtime.
-	sessionRuntimeAttr = "data-session-runtime"
-	// sessionDefaultAttr marks the default thread's badge; makeDefaultAttr the
-	// control that makes a thread the default.
-	sessionDefaultAttr = "data-session-default"
-	makeDefaultAttr    = "data-make-default"
-)
+// sessionDefaultAttr marks the primary chat's ★ (and the switcher's badge).
+const sessionDefaultAttr = "data-session-default"
 
 // SessionRuntimeView names a runtime the picker offers.
 type SessionRuntimeView struct {
 	Runtime string // "claude-code"
 	Label   string
-}
-
-// sessionRuntimeLine is a thread row's runtime and model, for an explicit
-// session; nothing for a session on the chief's own runtime.
-func sessionRuntimeLine(sess SessionView) g.Node {
-	if sess.Runtime == "" {
-		return nil
-	}
-	text := sess.RuntimeLabel
-	if sess.Model != "" {
-		text += " · " + strings.TrimPrefix(sess.Model, OpenRouterModelPrefix)
-	}
-	return Span(
-		g.Attr(sessionRuntimeAttr, sess.Runtime),
-		Class("text-[11px] leading-snug text-muted"),
-		g.Text(text),
-	)
 }
 
 // sessionDefaultBadge marks the default thread.
@@ -63,60 +42,18 @@ func sessionDefaultBadge(sess SessionView) g.Node {
 	)
 }
 
-// makeDefaultControl makes a thread the default, re-rendering the panel on the
-// thread it is on (current, ChiefCurrentParam; 0 = not known: on the thread
-// made default). Nothing for the default thread itself, or where defaults are
-// not offered.
-func makeDefaultControl(sess SessionView, current int64) g.Node {
-	if sess.IsDefault || sess.DefaultPath == "" {
-		return nil
-	}
-	path := sess.DefaultPath + "?" + ChatSurfaceQueryParam + "=" + string(ChatSurfaceChiefPanel)
-	if current > 0 {
-		path = withCurrent(path, current)
-	}
-	return Form(
-		hx("hx-post", path),
-		hx("hx-target", "#"+chiefPanelBodyID),
-		hx("hx-swap", "innerHTML"),
-		Class("contents"),
-		Button(
-			Type("submit"),
-			g.Attr(makeDefaultAttr, ""),
-			g.Attr("title", "Make this the primary chat: every delivery to the chief goes here"),
-			Class("press shrink-0 rounded-lg px-2 text-[11px] text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg"),
-			g.Text("Make primary"),
-		),
-	)
-}
-
-// chiefNewSessionPicker opens a session on a runtime and a model: one compact
-// form per offered runtime, each posting runtime + model to the session-create
-// route, whose panel answer re-renders the panel on the new session.
-func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
-	forms := runtimeModelForms(runtimes, claudeModels, agentSessionsPath(agentID), newSessionAttr, "Start")
-	if len(forms) == 0 {
-		return nil
-	}
-	return Div(
-		g.Attr(sessionPickerAttr, ""),
-		Class("flex flex-none flex-col gap-2 rounded-lg bg-s1 p-2 ring-1 ring-inset ring-line"),
-		P(Class("text-xs font-semibold text-fg"), g.Text("New session")),
-		g.Group(forms),
-	)
-}
-
-// runtimeModelForms is THE runtime + model form, one per offered runtime, for
-// both pickers that start a session on a runtime and a model: New session
-// (chiefNewSessionPicker) and Continue in a new session (chiefContinuePicker).
-// Each form posts runtime + model to path, answered into the panel body
-// (ChatSurfaceChiefPanel); formAttr (valued with the runtime) marks it, button
-// labels its submit, and extra adds attributes to the form (a confirm, say).
-// The form's controls are disabled while its request runs (hx-disabled-elt).
+// runtimeModelForms is THE runtime + model form, one per offered runtime:
+// Continue in a new session's (chiefContinuePicker). Each form posts runtime +
+// model to path on surface (chiefChatPost: HX-Redirect on the page, the panel
+// body re-rendered in the panel); formAttr (valued with the runtime) marks it,
+// button labels its submit, and extra adds attributes to the form (a confirm,
+// say). The form's controls are disabled while its request runs
+// (hx-disabled-elt).
 //
-// 🔴 ONE BUILDER, so the two pickers cannot offer different runtimes or models:
-// a session is continued on exactly what New session would start.
-func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, path, formAttr, button string, extra ...g.Node) []g.Node {
+// The runtimes and models are the ones the "+ New session" menu offers
+// (internal/api chiefChatBarFor fills both from one gate), so a session is
+// continued on exactly what New session would start.
+func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, surface ChatSurface, path, formAttr, button string, extra ...g.Node) []g.Node {
 	var forms []g.Node
 	for _, rt := range runtimes {
 		// claude-code's model is one of the Claude aliases; opencode's is any
@@ -145,9 +82,7 @@ func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, pat
 		}
 		forms = append(forms, Form(
 			g.Attr(formAttr, rt.Runtime),
-			hx("hx-post", path+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
-			hx("hx-target", "#"+chiefPanelBodyID),
-			hx("hx-swap", "innerHTML"),
+			chiefChatPost(surface, onSurface(surface, path)),
 			g.Group(extra),
 			hx("hx-disabled-elt", "find button, find select"),
 			Class("flex "+align+" gap-2"),

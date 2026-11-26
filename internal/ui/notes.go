@@ -2274,8 +2274,8 @@ func directoryCombobox(seed []string, current string, failed bool) g.Node {
 // and nobody read it — logs are where a UI defect goes to be invisible.
 //
 // So the state travels with the field and says which one it is. This is the same
-// discipline chiefThreadRows already applies to the thread list ("Could not
-// search threads just now — this is not an empty result"), and it deliberately
+// discipline the chief's message search applies (chiefMessageMatches: "Could not
+// search the messages just now — this is not an empty result"), and it deliberately
 // does NOT block anything: the input above stays editable and the form still
 // submits, because a missing suggestion list must never stop someone filing a
 // task.

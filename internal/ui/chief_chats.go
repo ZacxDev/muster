@@ -28,9 +28,12 @@ import (
 //	[ Search sessions…                     ]
 //	(All) (Unread) (Archived) (qwen3-coder) …  filter chips, one pressed
 //	[+ New session]
+//	[Continue in a new session ›]   (on a side chat, where runtimes are offered)
 //	★ Primary                                 ⋯
 //	side chats, most recent first…  ● sonnet  ⋯
 //	Archived (n) ›   (expands inline)
+//	MATCHES IN MESSAGES   (while a search finds words in a chat's messages)
+//	  a chat's title / "…the words around the match…"
 //	No sessions match     (only while the filters hide every row)
 //
 // Over the transcript, where the Sessions button was, is the chat on screen
@@ -49,12 +52,26 @@ import (
 // is one tap away. A member in a team's shared room (ChiefChatBar.SharedRoom)
 // gets the rows to switch with, and nothing else.
 //
-// 🔴 THE SEARCH AND THE CHIPS ARE THE BROWSER'S, ON THE ROWS THE PAGE DREW (no
-// route of their own: every chat is already in the tab). The search matches a
-// row's words — its title, "Primary", its model — by textContent, never by
-// markup, and reaches the archived chats too; the chips are All, Unread,
-// Archived (where there is one) and one per OpenRouter model a chat was opened
-// on (a Claude model gets none).
+// 🔴 THE SEARCH IS TWO SEARCHES, AND THE CHIPS ARE THE BROWSER'S. The rows
+// are filtered INSTANTLY in the browser, on the rows the page drew: a row's
+// words — its title, "Primary", its model — by textContent, never by markup,
+// archived chats too. The words in the chats' MESSAGES are the server's
+// (GET /ui/chief/threads/search, agents.PGStore.SearchSessions: text messages
+// only, the chief's own chats, a signed-in session only), asked 300ms after the
+// typing stops and drawn under the rows as "Matches in messages": each chat
+// whose messages hold the words, with the words around the match
+// (RenderChiefMessageMatches). A chat whose TITLE matches is already among the
+// rows above, so it is listed there only when its messages match too. The
+// chips are All, Unread, Archived (where there is one) and one per OpenRouter
+// model a chat was opened on (a Claude model gets none); they narrow the rows,
+// not the message matches (a search through every chat's messages).
+//
+// 🔴 ONE LIST OF THE CHIEF'S CHATS, ON BOTH SURFACES (an operator decision:
+// the chief panel's own thread list, a second list with its own search, "New
+// session" picker and "Continue", was folded into this tab). Its message search
+// is the one above; "+ New session" offers the runtimes and models its picker
+// did; "Continue in a new session" is here for the side chat on screen; "Make
+// primary" is each row's ⋯; and a list read that failed says so here.
 // 🔴 THEY APPLY TO EVERY ROW ALIKE, THE CHAT ON SCREEN'S INCLUDED: the bar over
 // the transcript names that chat whatever the filters hide, so a filter that
 // made an exception for it would only make the list disagree with its own
@@ -102,7 +119,7 @@ type ChiefChatBar struct {
 	SharedRoom bool
 	// NewChatModels are the models the "+" menu offers a new side chat on,
 	// after its Default (the chief's own model): agents.ClaudeCodeModels, the
-	// list the New session picker offers too, where the deployment offers the
+	// list Continue in a new session offers too, where the deployment offers the
 	// claude-code session runtime to this chief (MUSTER_CHIEF_SESSION_RUNTIMES,
 	// internal/api chiefChatBarFor). None: no menu, "+" opens a chat at once.
 	NewChatModels []string
@@ -110,6 +127,15 @@ type ChiefChatBar struct {
 	// (the opencode runtime, found by search: openRouterModelField), where the
 	// deployment offers it to this chief (internal/api opencodeOffered).
 	OpenRouter bool
+	// Runtimes are the runtimes a session may be started on (internal/api
+	// pickerRuntimes, the gate NewChatModels and OpenRouter come from too):
+	// "Continue in a new session"'s forms (chiefContinuePicker), one per
+	// runtime, the Claude Code one offering NewChatModels. None: no Continue.
+	Runtimes []SessionRuntimeView
+	// SessionsFailed: the read of the chief's chats broke (internal/api
+	// resolveSessions' error), so the Sessions tab's rows may be INCOMPLETE.
+	// The tab says so above them, in the warning colour (chiefSessionsTab).
+	SessionsFailed bool
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -264,7 +290,40 @@ const (
 	// chiefArchivedToggleRowAttr marks the "Archived (n)" toggle's row (hidden
 	// while a search or a chip lists the archived chats among the others).
 	chiefArchivedToggleRowAttr = "data-chief-archived-row"
+	// chiefMessageMatchesAttr marks the container the message search answers
+	// into; chiefMessageMatchesStateAttr on its answer names which answer it is
+	// ("rows", "error": a STATE, so neither test tier asserts the words);
+	// chiefMessageMatchAttr each match's link, valued with its chat's id.
+	chiefMessageMatchesAttr      = "data-chief-message-matches"
+	chiefMessageMatchesStateAttr = "data-chief-message-matches-state"
+	chiefMessageMatchAttr        = "data-chief-message-match"
+	// chiefSessionsFailedAttr marks the tab's "may be incomplete" line.
+	chiefSessionsFailedAttr = "data-chief-sessions-failed"
 )
+
+// chiefSearchSurface is the message search's ?surface= for surface: the
+// panel's, or the page's (any other).
+func chiefSearchSurface(surface ChatSurface) string {
+	if surface == ChatSurfaceChiefPanel {
+		return string(ChatSurfaceChiefPanel)
+	}
+	return "page"
+}
+
+// ChiefThreadSearchPath is the message search's route (internal/api
+// handleChiefThreadSearch): ?q= the words, ?session= the chat on screen,
+// ?surface= the surface the matches link on.
+const ChiefThreadSearchPath = "/ui/chief/threads/search"
+
+// ChiefMessageMatchesLabel is the message matches' heading.
+const ChiefMessageMatchesLabel = "Matches in messages"
+
+// ChiefSessionsFailedText is the tab's line when the read of its chats broke.
+const ChiefSessionsFailedText = "Could not read every session just now: this list may be incomplete. Reopen to try again."
+
+// ChiefMessageSearchFailedText is the message search's answer when its read
+// broke: not an empty result.
+const ChiefMessageSearchFailedText = "Could not search the messages just now — this is not an empty result. Try again."
 
 // ChiefSessionsLabel is the Sessions tab's label.
 const ChiefSessionsLabel = "Sessions"
@@ -425,6 +484,7 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 	}
 	searchID := sheetID + "-search"
 	listID := sheetID + "-sessions"
+	matchesID := sheetID + "-messages"
 	panel := Div(
 		g.Attr(chiefChatsAttr, ""),
 		g.Attr(chiefChatKindAttr, kind),
@@ -438,10 +498,23 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 			Input(
 				ID(searchID),
 				Type("search"),
+				Name("q"),
 				g.Attr(chiefSessionsSearchAttr, ""),
 				g.Attr("autocomplete", "off"),
-				g.Attr("aria-controls", listID),
-				Placeholder("Search sessions…"),
+				g.Attr("aria-controls", listID+" "+matchesID),
+				Placeholder("Search sessions and messages…"),
+				// The words in the chats' messages: the server's search, after the
+				// typing stops (htmx's own delay:), into
+				// the matches below; `search` so the box's own clear (×) asks again
+				// (a blank query answers nothing). The chat on screen and the
+				// surface ride the url: the answer marks nothing current, and
+				// links the way this surface switches (a page link, or the panel's
+				// body).
+				hx("hx-get", ChiefThreadSearchPath+"?session="+strconv.FormatInt(b.SessionID, 10)+"&"+ChatSurfaceQueryParam+"="+chiefSearchSurface(surface)),
+				hx("hx-trigger", "input changed delay:300ms, search"),
+				hx("hx-target", "#"+matchesID),
+				hx("hx-swap", "innerHTML"),
+				hx("hx-sync", "this:replace"),
 				Class("min-h-[40px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			),
 			Div(
@@ -453,7 +526,15 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 		),
 		Div(
 			Class("flex flex-col gap-2 p-2"),
+			g.If(b.SessionsFailed, P(
+				g.Attr(chiefSessionsFailedAttr, ""),
+				g.Attr("role", "status"),
+				Class("px-3 py-2 text-xs text-st-warning-fg"),
+				g.Text(ChiefSessionsFailedText),
+			)),
 			g.If(!b.SharedRoom, chiefNewChatChip(b, surface)),
+			// "Continue in a new session", for the side chat on screen.
+			g.If(!b.SharedRoom && kind == ChiefChatKindSide, chiefContinuePicker(b, surface)),
 			Nav(
 				g.Attr("aria-label", "Chief sessions"),
 				Ul(
@@ -463,6 +544,9 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 					g.Group(rows),
 				),
 			),
+			// The message search's answer (RenderChiefMessageMatches): empty
+			// until a search finds words in a chat's messages.
+			Div(ID(matchesID), g.Attr(chiefMessageMatchesAttr, ""), g.Attr("aria-live", "polite")),
 			P(
 				g.Attr(chiefSessionsNoneAttr, ""),
 				g.Attr("hidden", ""),
@@ -488,6 +572,85 @@ func chiefSessionsTab(b *ChiefChatBar, name string, sessions []SessionView, surf
 		)
 	}
 	return Tab{ID: chiefSessionsTabID, Label: ChiefSessionsLabel, Count: count, Panel: panel}
+}
+
+// ChiefMessageMatchesView is the message search's answer (internal/api
+// handleChiefThreadSearch): the chats whose MESSAGES hold the words, for the
+// Sessions tab on Surface.
+type ChiefMessageMatchesView struct {
+	// Surface is where the matches link: the panel's body (ChatSurfaceChiefPanel)
+	// or the chief's page (any other), whose agent is AgentName.
+	Surface   ChatSurface
+	AgentName string
+	// Matches are the matching chats, best first (agents.PGStore.SearchSessions'
+	// rank). Only a chat with a Snippet — its MESSAGES matched — is drawn: a
+	// chat matched by its title alone is already a row of the tab above.
+	Matches []SessionView
+	// Failed: the search's read broke, which is not an empty answer; Reason
+	// replaces the sentence when a retry cannot help (no database).
+	Failed bool
+	Reason string
+}
+
+// RenderChiefMessageMatches writes the message search's answer: nothing (a
+// blank query, or no chat whose messages hold the words), the matches under
+// ChiefMessageMatchesLabel, or — a failed read — a sentence saying so.
+func RenderChiefMessageMatches(w io.Writer, v ChiefMessageMatchesView) error {
+	return chiefMessageMatches(v).Render(w)
+}
+
+// chiefMessageMatches is RenderChiefMessageMatches' node.
+//
+// 🔴 A FAILED READ IS SAID TO BE ONE, IN THE WARNING COLOUR, AND IS NOT AN EMPTY
+// ANSWER (the thread list's rule, kept when it was folded in here): a Postgres
+// error drawn as "nothing matched" would tell the operator their words are in
+// no chat. The STATE is on the element (chiefMessageMatchesStateAttr), so
+// neither test tier asserts the words.
+func chiefMessageMatches(v ChiefMessageMatchesView) g.Node {
+	if v.Failed {
+		msg := ChiefMessageSearchFailedText
+		if v.Reason != "" {
+			msg = v.Reason
+		}
+		return P(g.Attr(chiefMessageMatchesStateAttr, "error"), g.Attr("role", "status"),
+			Class("px-3 py-2 text-xs text-st-warning-fg"), g.Text(msg))
+	}
+	var rows []g.Node
+	for _, sess := range v.Matches {
+		if sess.Snippet == "" {
+			continue
+		}
+		title := textplain.Title(sess.Title)
+		if title == "" {
+			title = ChiefNewChatLabel
+		}
+		id := strconv.FormatInt(sess.ID, 10)
+		inner := g.Group{
+			Span(Class("min-w-0 truncate text-sm font-medium text-fg"), g.Text(title)),
+			Span(g.Attr("data-chief-message-snippet", ""), Class("line-clamp-2 w-full text-xs leading-snug text-muted [overflow-wrap:anywhere]"), g.Text(sess.Snippet)),
+		}
+		cls := Class("press flex min-h-[44px] w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus")
+		var link g.Node
+		if v.Surface == ChatSurfaceChiefPanel {
+			link = Button(Type("button"), g.Attr(chiefMessageMatchAttr, id), cls,
+				hx("hx-get", "/ui/chief/panel?session="+id),
+				hx("hx-target", "#"+chiefPanelBodyID),
+				hx("hx-swap", "innerHTML"),
+				inner)
+		} else {
+			link = A(Href(AgentSessionHref(v.AgentName, sess.ID)), g.Attr(chiefMessageMatchAttr, id), cls, inner)
+		}
+		rows = append(rows, Li(link))
+	}
+	if len(rows) == 0 {
+		return g.Group{}
+	}
+	return Div(
+		g.Attr(chiefMessageMatchesStateAttr, "rows"),
+		Class("flex flex-col gap-1 border-t border-line pt-2"),
+		H3(Class("px-3 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(ChiefMessageMatchesLabel)),
+		Ul(g.Attr("aria-label", ChiefMessageMatchesLabel), Class("flex flex-col gap-1"), g.Group(rows)),
+	)
 }
 
 // chiefIndexSheet is the chief's sheet on v's surface (chat_index.go): its
@@ -563,7 +726,7 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 	var link g.Node
 	if surface == ChatSurfaceChiefPanel {
 		// A row of the panel's: an hx-get into the panel body, never a
-		// navigation (chiefThreadRows says why).
+		// navigation: a navigation would leave the grid the panel is over.
 		link = Button(Type("button"), common,
 			hx("hx-get", "/ui/chief/panel?session="+id),
 			hx("hx-target", "#"+chiefPanelBodyID),
@@ -821,7 +984,10 @@ const chiefSessionsReopenKey = "muster.chief.v1.sessions-reopen"
 //     is hidden. When nothing is left, "No sessions match".
 //   - A chip is a toggle (aria-pressed), one pressed at a time: pressing the
 //     pressed one (other than All) goes back to All.
-//   - A TAP ON A ROW SHUTS THE SHEET as the switch starts (the answer replaces
+//   - The message search's answer (htmx, into the matches) re-applies the
+//     filters, so "No sessions match" shows only when neither the rows nor
+//     the messages hold the words.
+//   - A TAP ON A ROW (or a message match) SHUTS THE SHEET as the switch starts (the answer replaces
 //     the page or the panel body anyway; shutting at once is what makes the
 //     pick feel immediate).
 //   - "Archived (n)" toggles its chats' rows inline (aria-expanded).
@@ -839,6 +1005,7 @@ func chiefSessionsScript() g.Node {
   var ARCH = '` + chiefArchivedAttr + `', ARCH_ROW = '` + chiefArchivedChipAttr + `', ARCH_LI = '` + chiefArchivedToggleRowAttr + `';
   var SEARCH = '` + chiefSessionsSearchAttr + `', FILTER = '` + chiefSessionsFilterAttr + `', NONE = '` + chiefSessionsNoneAttr + `';
   var SESSIONS_TAB = '` + chiefSessionsTabID + `', KEY = '` + chiefSessionsReopenKey + `';
+  var MATCH = '` + chiefMessageMatchAttr + `', MATCHES = '` + chiefMessageMatchesAttr + `';
   if (window.__musterChiefSessions) return;
   window.__musterChiefSessions = true;
   function ss() { try { return window.sessionStorage; } catch (e) { return null; } }
@@ -880,6 +1047,9 @@ func chiefSessionsScript() g.Node {
     }
     var li = tab.querySelector('[' + ARCH_LI + ']');
     if (li) li.hidden = !plain;
+    // A message match is an answer too: "No sessions match" only when neither
+    // the rows nor the messages hold the words.
+    n += tab.querySelectorAll('[' + MATCH + ']').length;
     var none = tab.querySelector('[' + NONE + ']');
     if (none) none.hidden = n > 0;
   }
@@ -912,7 +1082,14 @@ func chiefSessionsScript() g.Node {
       apply(tab);
       return;
     }
-    if (t.closest('[' + ROW + ']') && window.muIndex) window.muIndex.close({ focus: false });
+    if (t.closest('[' + ROW + '], [' + MATCH + ']') && window.muIndex) window.muIndex.close({ focus: false });
+  });
+  // The message search's answer landed: the none line follows it.
+  document.addEventListener('htmx:afterSwap', function (e) {
+    var t = e.target;
+    if (!t || !t.matches || !t.matches('[' + MATCHES + ']')) return;
+    var tab = t.closest(TAB);
+    if (tab) apply(tab);
   });
   // reopen: a ⋯ action's answer has landed; its sheet opens again on Sessions.
   // evt: the settle that brought it, when one did — only a settle whose target
@@ -970,23 +1147,6 @@ func chiefPageStrip(v AgentDetailView) g.Node {
 	)
 }
 
-// chiefPanelContinue is the chief PANEL's "Continue in a new session", under
-// its thread list (chiefThreadList), for the side chat the panel is on
-// (chiefContinuePicker, where the New session picker is offered: runtimes,
-// claudeModels). Every other chat action is on the Sessions tab's rows.
-func chiefPanelContinue(b *ChiefChatBar, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
-	if b == nil {
-		return nil
-	}
-	if kind, _ := chiefChatKind(*b); kind != ChiefChatKindSide {
-		return nil
-	}
-	return Div(
-		Class("flex flex-none flex-wrap items-center gap-2 border-t border-line pt-2"),
-		chiefContinuePicker(b.AgentID, b.SessionID, runtimes, claudeModels),
-	)
-}
-
 // ChiefContinuePath is the continue route of side chat sid: POST runtime +
 // model continues it in a new session (internal/api chief_continue.go).
 func ChiefContinuePath(agentID, sid int64) string {
@@ -1004,21 +1164,29 @@ const (
 const ContinueConfirm = "Continue this chat in a new session? This chat writes a handover for it, the new session " +
 	"starts from that handover, and this chat is then archived (Unarchive brings it back)."
 
-// chiefContinuePicker is "Continue in a new session" on a side chat: a
-// collapsed group (a native <details>, so it opens without script) holding the
-// same runtime + model forms as the New session picker (chiefNewSessionPicker),
-// each posting to the continue route. Nothing where no runtime is offered.
+// chiefContinuePicker is "Continue in a new session" for the side chat b is
+// on, in the Sessions tab on surface: a collapsed group (a native <details>,
+// so it opens without script) holding a runtime + model form per runtime the
+// deployment offers (b.Runtimes; the Claude Code one offering b.NewChatModels,
+// the "+" menu's), each posting to the chat's continue route. Nothing where no
+// runtime is offered. (It was under the chief panel's thread list, the panel
+// only; the list was folded into the Sessions tab, so the page has it too.)
 //
 // PENDING AND FAILED ARE VISIBLE: the form's controls are disabled while its
-// request is in flight (hx-disabled-elt); the answer is the panel on the NEW
-// chat, drawn "working…" while the old chat writes its handover; a refusal
-// (409 while one is already running, 400 for a model the server refuses) is
-// toasted by the shell's htmx:responseError handler; and a handover that
-// failed says so in the new chat's first turn.
-func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
-	// The New session picker's forms (runtimeModelForms), posting to this chat's
-	// continue route, with a confirm.
-	forms := runtimeModelForms(runtimes, claudeModels, ChiefContinuePath(agentID, sid), chiefContinueFormAttr, "Continue",
+// request is in flight (hx-disabled-elt); the answer is the NEW chat — the page
+// moved to it (HX-Redirect), or the panel body on it — drawn "working…" while
+// the old chat writes its handover; a refusal (409 while one is already
+// running, 400 for a model the server refuses) is toasted by the
+// htmx:responseError handler; and a handover that failed says so in the new
+// chat's first turn.
+func chiefContinuePicker(b *ChiefChatBar, surface ChatSurface) g.Node {
+	return chiefContinueGroup(b, b.Runtimes, b.NewChatModels, surface)
+}
+
+// chiefContinueGroup is chiefContinuePicker on runtimes and claudeModels (the
+// budget card's: Claude Code alone, spendCapCard).
+func chiefContinueGroup(b *ChiefChatBar, runtimes []SessionRuntimeView, claudeModels []string, surface ChatSurface) g.Node {
+	forms := runtimeModelForms(runtimes, claudeModels, surface, ChiefContinuePath(b.AgentID, b.SessionID), chiefContinueFormAttr, "Continue",
 		hx("hx-confirm", ContinueConfirm))
 	if len(forms) == 0 {
 		return nil
@@ -1027,7 +1195,7 @@ func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, clau
 		g.Attr(chiefContinueAttr, ""),
 		Class("group w-full"),
 		g.El("summary",
-			Class("press inline-flex min-h-[36px] cursor-pointer list-none items-center gap-1 whitespace-nowrap rounded-lg bg-s1 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			Class("press inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 whitespace-nowrap rounded-lg bg-s1 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
 			g.Text("Continue in a new session"),
 		),
 		Div(

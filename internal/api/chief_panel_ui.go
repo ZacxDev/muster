@@ -110,8 +110,9 @@ func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWri
 	// 🔴 AND A FAILED SESSION-LIST READ IS CARRIED TO THE VIEW, NOT DROPPED. This is
 	// the FREQUENT path — #chief-panel-body refetches on every open — and it rendered
 	// "No threads yet." whenever ListSessions failed, which tells the operator their
-	// entire thread history is gone because one read broke. The search route already
-	// answered honestly; this one is where the operator lands first.
+	// entire thread history is gone because one read broke. The Sessions tab says
+	// the list may be incomplete (ui.ChiefChatBar.SessionsFailed), here and on the
+	// page.
 	// The chief's DEFAULT session is elected here if it has none yet, so the list
 	// below can mark it: the panel's first paint already writes (the session it
 	// opens on), and the election is the store's one rule (agents.DefaultSession)
@@ -140,9 +141,10 @@ func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWri
 		// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
 		// transform makes the panel its containing block — so inside the panel it
 		// would render at the panel's own right edge and go off-screen and inert
-		// with it. This field is what makes the panel render chiefThreadList (an
-		// absolutely-positioned sub-view of its own column) instead, and it is
-		// also what puts the zero-message intro on screen. See ui.ChatSurface.
+		// with it. This field is what keeps the drawer out of the panel (its chats
+		// are the Sessions tab of the panel's own sheet, absolute in its column),
+		// and it is also what puts the zero-message intro on screen. See
+		// ui.ChatSurface.
 		Surface: ui.ChatSurfaceChiefPanel,
 		// The panel's message box has the microphone too (transcribe.go).
 		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
@@ -156,13 +158,11 @@ func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWri
 	s.withChatLogLive(ctx, &chat, active)
 	// The chat bar (chief_chats.go): the panel is the chief's by construction.
 	chat.ChiefChat = s.chiefChatBarFor(ctx, a, active)
+	chat.ChiefChat.SessionsFailed = listErr != nil
 	chat.FocusComposer = focus
 	write(ui.ChiefPanelView{
-		Configured:      true,
-		ThreadsFailed:   listErr != nil,
-		SessionRuntimes: s.pickerRuntimes(ctx, a),
-		ClaudeModels:    agents.ClaudeCodeModels,
-		Chat:            chat,
-		Prefill:         prefill,
+		Configured: true,
+		Chat:       chat,
+		Prefill:    prefill,
 	})
 }

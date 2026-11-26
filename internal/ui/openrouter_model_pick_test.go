@@ -8,18 +8,21 @@ import (
 )
 
 // TestTheOpenRouterRuntimeIsPickedBySearch: where the opencode runtime is
-// offered, New session and Continue draw a form posting runtime=opencode with
+// offered, Continue in a new session draws a form posting runtime=opencode with
 // a model search field (it asks OpenRouterModelsOptionsPath as you type) —
 // beside the Claude Code form and its <select>; where it is not, no such form.
+// (New session's OpenRouter search is the "+" menu's:
+// TestThePlusMenuOffersOpenRouterWhereOffered.)
 func TestTheOpenRouterRuntimeIsPickedBySearch(t *testing.T) {
 	both := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}
-	html := renderString(t, chiefNewSessionPicker(7, both, []string{"opus", "sonnet"}))
-	oc := regexp.MustCompile(`(?s)<form [^>]*` + newSessionAttr + `="opencode".*?</form>`).FindString(html)
+	bar := &ChiefChatBar{AgentID: 7, SessionID: 9, Runtimes: both, NewChatModels: []string{"opus", "sonnet"}}
+	html := renderString(t, chiefContinuePicker(bar, ChatSurfaceChiefPanel))
+	oc := regexp.MustCompile(`(?s)<form [^>]*` + chiefContinueFormAttr + `="opencode".*?</form>`).FindString(html)
 	if oc == "" {
 		t.Fatalf("no opencode form:\n%s", html)
 	}
 	for _, want := range []string{`name="runtime" value="opencode"`, `name="model"`, openRouterSearchAttr,
-		`hx-get="` + OpenRouterModelsOptionsPath + `"`, `hx-post="/agents/7/sessions?`} {
+		`hx-get="` + OpenRouterModelsOptionsPath + `"`, `hx-post="` + ChiefContinuePath(7, 9) + `?`} {
 		if !strings.Contains(oc, want) {
 			t.Errorf("the opencode form lacks %s", want)
 		}
@@ -30,11 +33,8 @@ func TestTheOpenRouterRuntimeIsPickedBySearch(t *testing.T) {
 	if !strings.Contains(html, `value="claude-code"`) || !strings.Contains(html, `<option value="sonnet">`) {
 		t.Error("the Claude Code form is gone")
 	}
-	cont := renderString(t, chiefContinuePicker(7, 9, both, []string{"opus"}))
-	if !strings.Contains(cont, chiefContinueFormAttr+`="opencode"`) || !strings.Contains(cont, ChiefContinuePath(7, 9)) {
-		t.Errorf("Continue does not offer OpenRouter:\n%s", cont)
-	}
-	only := renderString(t, chiefNewSessionPicker(7, both[:1], []string{"opus"}))
+	bar.Runtimes = both[:1]
+	only := renderString(t, chiefContinuePicker(bar, ChatSurfaceChiefPanel))
 	if strings.Contains(only, `value="opencode"`) || strings.Contains(only, openRouterSearchAttr) {
 		t.Error("an OpenRouter form is drawn where the runtime is not offered")
 	}
@@ -86,18 +86,14 @@ func TestTheSearchDrawsTapTargets(t *testing.T) {
 	}
 }
 
-// TestAnOpenRouterChipNamesItsModel: the strip chip's model tag is the
-// model's own name (the catalogue id's last part), its title the catalogue
-// id, and the thread list line "OpenRouter · <catalogue id>"; a Claude
+// TestAnOpenRouterChipNamesItsModel: a row's model tag is the model's own
+// name (the catalogue id's last part), its title the catalogue id; a Claude
 // model's tag is unchanged.
 func TestAnOpenRouterChipNamesItsModel(t *testing.T) {
 	sess := SessionView{ID: 3, Runtime: "opencode", RuntimeLabel: "OpenRouter", Model: "openrouter/deepseek/deepseek-v4.1-flash"}
 	tag := renderString(t, chiefChipModelTag(sess))
 	if !strings.Contains(tag, ">deepseek-v4.1-flash<") || !strings.Contains(tag, `title="Model: deepseek/deepseek-v4.1-flash"`) {
 		t.Errorf("the chip tag: %s", tag)
-	}
-	if line := renderString(t, sessionRuntimeLine(sess)); !strings.Contains(line, "OpenRouter · deepseek/deepseek-v4.1-flash") {
-		t.Errorf("the thread line: %s", line)
 	}
 	if tag := renderString(t, chiefChipModelTag(SessionView{Model: "sonnet"})); !strings.Contains(tag, ">sonnet<") {
 		t.Errorf("a Claude tag: %s", tag)
@@ -134,15 +130,15 @@ func TestTheBudgetCardSaysWhatAndWhenAndOffersContinue(t *testing.T) {
 // route when it is focused and when the "+" menu it sits in opens (a toggle of
 // its closest popover), not only as it is typed in — so an empty field shows
 // the recent models before anything is typed — on every picker that draws it
-// (New session, Continue, the "+" menu). The recent list is the search's own
+// (Continue on either surface, the "+" menu). The recent list is the search's own
 // buttons under "Recent", and nothing when there are none. RED at main: the
 // field asked only on input.
 func TestTheEmptyFieldAsksForTheRecentModels(t *testing.T) {
 	both := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}
 	for name, html := range map[string]string{
-		"new session": renderString(t, chiefNewSessionPicker(7, both, []string{"opus"})),
-		"continue":    renderString(t, chiefContinuePicker(7, 9, both, []string{"opus"})),
-		"plus menu":   renderString(t, chiefNewChatChip(&ChiefChatBar{AgentID: 7, SessionID: 9, OpenRouter: true}, ChatSurfacePage)),
+		"continue page":  renderString(t, chiefContinuePicker(&ChiefChatBar{AgentID: 7, SessionID: 9, Runtimes: both, NewChatModels: []string{"opus"}}, ChatSurfacePage)),
+		"continue panel": renderString(t, chiefContinuePicker(&ChiefChatBar{AgentID: 7, SessionID: 9, Runtimes: both, NewChatModels: []string{"opus"}}, ChatSurfaceChiefPanel)),
+		"plus menu":      renderString(t, chiefNewChatChip(&ChiefChatBar{AgentID: 7, SessionID: 9, OpenRouter: true}, ChatSurfacePage)),
 	} {
 		field := regexp.MustCompile(`<input [^>]*` + openRouterSearchAttr + `[^>]*>`).FindString(html)
 		if field == "" {

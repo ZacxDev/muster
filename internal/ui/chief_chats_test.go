@@ -124,11 +124,11 @@ func TestThePanelsSessionsTabIsAnsweredIntoItsBody(t *testing.T) {
 		if !strings.Contains(strip, "__musterFloatingMenu") {
 			t.Errorf("%s: the panel's Sessions tab does not bring floatingMenuScript", c.kind)
 		}
-		// The thread list: no chat action but Continue.
-		list := renderString(t, chiefThreadList(p))
-		for _, banned := range []string{chiefSideChatAttr, chiefFreshPrimaryAttr, chiefArchiveAttr + `=""`, chiefUnarchiveAttr, chiefChatsAttr} {
-			if strings.Contains(list, banned) {
-				t.Errorf("%s: the thread list still carries %s", c.kind, banned)
+		// One list of the chats: the panel's thread list is gone (folded into
+		// the Sessions tab).
+		for _, banned := range []string{`for="chief-threads"`, `id="chief-thread-search"`, "data-chief-thread=", "data-session-picker"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s: the panel still draws its thread list (%s)", c.kind, banned)
 			}
 		}
 		// No token chip in the panel's title bar (operator decision,
@@ -431,10 +431,10 @@ func TestTheChiefHeaderHasNoTokenChipButItsMenuHasTheMemorySlot(t *testing.T) {
 	}
 }
 
-// TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots: both lists (the
-// strip and the panel's thread list) draw the chats in the order given — the
-// server's agents.SwitcherOrder — with the primary marked on the primary, an
-// unread dot only on an unread chat, and the archived ones last.
+// TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots: the Sessions tab, on
+// both surfaces, draws the chats in the order given — the server's
+// agents.SwitcherOrder — with the primary marked on the primary, an unread dot
+// only on an unread chat, and the archived ones last.
 func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 	now := time.Now()
 	sessions := []SessionView{
@@ -464,13 +464,10 @@ func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 			t.Errorf("%s: the primary mark is not on the primary", name)
 		}
 	}
-	strip := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 9, Primary: true}, "chiefy", sessions, ChatSurfacePage))
-	check("page strip", strip, "★", []string{"Primary", "Newest side", "Older side", "Archived (1)", "Put away"})
-	var b bytes.Buffer
-	if err := chiefThreadRows(ChiefThreadsView{Threads: sessions}).Render(&b); err != nil {
-		t.Fatal(err)
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		tab := renderString(t, sessionsPanel(&ChiefChatBar{AgentID: 42, SessionID: 9, Primary: true}, "chiefy", sessions, surface))
+		check(string(surface)+" tab", tab, "★", []string{"Primary", "Newest side", "Older side", "Archived (1)", "Put away"})
 	}
-	check("panel list", b.String(), ">Primary<", []string{"Main line", "Newest side", "Older side", chiefArchivedLabel, "Put away"})
 }
 
 // TestTheComposerIsFocusedOnlyWhenTheServerAsks: #chat-input carries
@@ -532,75 +529,96 @@ func TestTheMemoryLineShowsOnlyAboveTheThreshold(t *testing.T) {
 	}
 }
 
-// TestTheContinuePickerIsOnASideChatOnly: "Continue in a new session" is under
-// the panel's list on a SIDE chat, with the New session picker's runtime and
-// models, posting runtime + model to that chat's continue route with a confirm
-// and its controls disabled while the request runs — and on no other chat, nor
-// anywhere when no runtime is offered.
+// TestTheContinuePickerIsOnASideChatOnly: "Continue in a new session" is in the
+// Sessions tab, on BOTH surfaces, when the chat on screen is a SIDE chat — one
+// form per runtime the bar offers (ChiefChatBar.Runtimes), the Claude Code one
+// with the "+" menu's models (NewChatModels), each posting runtime + model to
+// that chat's continue route the way its surface answers (HX-Redirect on the
+// page; the panel body in the panel), with a confirm and its controls disabled
+// while the request runs — and on no other chat, nor anywhere when no runtime
+// is offered, nor in a team's shared room. RED before the fold: Continue was
+// under the panel's thread list, never in the tab, never on the page.
 func TestTheContinuePickerIsOnASideChatOnly(t *testing.T) {
-	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}
+	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}
 	models := []string{"opus", "sonnet", "haiku"}
-	for _, c := range chiefKinds {
-		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, []SessionView{{ID: c.bar.SessionID, Active: true}})
-		html := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, SessionRuntimes: runtimes, ClaudeModels: models}))
-		has := strings.Contains(html, chiefContinueAttr+`=""`)
-		if has != (c.kind == ChiefChatKindSide) {
-			t.Errorf("%s: Continue shown=%v, want only on a side chat", c.kind, has)
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		post := `hx-post="/agents/42/sessions/6/continue" hx-swap="none"`
+		if surface == ChatSurfaceChiefPanel {
+			post = `hx-post="/agents/42/sessions/6/continue\?surface=chief-panel" hx-target="#chief-panel-body" hx-swap="innerHTML"`
 		}
-		if !has {
-			continue
-		}
-		form := regexp.MustCompile(`<form ` + chiefContinueFormAttr + `="claude-code" hx-post="/agents/42/sessions/6/continue\?surface=chief-panel" ` +
-			`hx-target="#chief-panel-body" hx-swap="innerHTML" hx-confirm="[^"]+" hx-disabled-elt="find button, find select"[^>]*>` +
-			`<input type="hidden" name="runtime" value="claude-code">`)
-		if !form.MatchString(html) {
-			t.Errorf("side: no continue form posting to the chat's continue route:\n%s", html)
-		}
-		for _, m := range models {
-			if !strings.Contains(html, `<option value="`+m+`">`+m+`</option>`) {
-				t.Errorf("side: the continue picker lacks model %s", m)
+		for _, c := range chiefKinds {
+			bar := c.bar
+			bar.AgentID, bar.Runtimes, bar.NewChatModels = 42, runtimes, models
+			html := renderString(t, sessionsPanel(&bar, "chiefy", chiefSheetSessions(bar.SessionID), surface))
+			has := strings.Contains(html, chiefContinueAttr+`=""`)
+			if has != (c.kind == ChiefChatKindSide) {
+				t.Errorf("%s %s: Continue shown=%v, want only on a side chat", surface, c.kind, has)
 			}
-		}
-		if !strings.Contains(html, ">Continue in a new session</summary>") {
-			t.Error("side: the continue group is not labelled")
-		}
-		// No runtime offered: no picker.
-		bare := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, ClaudeModels: models}))
-		if strings.Contains(bare, chiefContinueAttr) {
-			t.Error("side: Continue offered with no runtime offered")
+			if !has {
+				continue
+			}
+			for _, rt := range []string{"claude-code", "opencode"} {
+				form := regexp.MustCompile(`<form ` + chiefContinueFormAttr + `="` + rt + `" ` + post + ` hx-confirm="[^"]+" hx-disabled-elt="find button, find select"[^>]*>` +
+					`<input type="hidden" name="runtime" value="` + rt + `">`)
+				if !form.MatchString(html) {
+					t.Errorf("%s side: no %s continue form posting to the chat's continue route:\n%s", surface, rt, html)
+				}
+			}
+			for _, m := range models {
+				if !strings.Contains(html, `<option value="`+m+`">`+m+`</option>`) {
+					t.Errorf("%s side: the continue picker lacks model %s", surface, m)
+				}
+			}
+			if !strings.Contains(html, ">Continue in a new session</summary>") {
+				t.Errorf("%s side: the continue group is not labelled", surface)
+			}
+			bare := bar
+			bare.Runtimes = nil
+			if strings.Contains(renderString(t, sessionsPanel(&bare, "chiefy", chiefSheetSessions(6), surface)), chiefContinueAttr) {
+				t.Errorf("%s side: Continue offered with no runtime offered", surface)
+			}
+			shared := bar
+			shared.SharedRoom = true
+			if strings.Contains(renderString(t, sessionsPanel(&shared, "chiefy", chiefSheetSessions(6), surface)), chiefContinueAttr) {
+				t.Errorf("%s side: Continue offered in a shared room", surface)
+			}
 		}
 	}
 }
 
-// TestContinueOffersExactlyTheNewSessionChoices: on a side chat, where both
-// pickers are drawn, the Continue forms offer exactly the runtimes and models
-// the New session forms do — runtime by runtime, model by model, in order.
+// TestContinueOffersExactlyTheNewSessionChoices: on a side chat the Continue
+// forms offer exactly what the "+ New session" menu does — the Claude Code
+// models in order (NewChatModels), and OpenRouter when the menu offers it.
 func TestContinueOffersExactlyTheNewSessionChoices(t *testing.T) {
-	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}
 	models := []string{"opus", "sonnet", "haiku", "claude-opus-4-1[1m]"}
-	chat := chiefChatView(ChatSurfaceChiefPanel, ChiefChatBar{SessionID: 6}, []SessionView{{ID: 6, Active: true}})
-	html := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, SessionRuntimes: runtimes, ClaudeModels: models}))
-	choices := func(attr string) []string {
-		forms := regexp.MustCompile(`<form `+attr+`="[^"]*"[\s\S]*?</form>`).FindAllString(html, -1)
-		var out []string
-		for _, f := range forms {
-			rt := regexp.MustCompile(`name="runtime" value="([^"]*)"`).FindStringSubmatch(f)
-			if rt == nil {
-				out = append(out, "<no runtime>")
-				continue
-			}
-			for _, o := range regexp.MustCompile(`<option value="([^"]*)">`).FindAllStringSubmatch(f, -1) {
-				out = append(out, rt[1]+" · "+o[1])
-			}
+	bar := &ChiefChatBar{AgentID: 42, SessionID: 6, NewChatModels: models, OpenRouter: true,
+		Runtimes: []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}, {Runtime: "opencode", Label: "OpenRouter"}}}
+	html := renderString(t, sessionsPanel(bar, "chiefy", chiefSheetSessions(6), ChatSurfacePage))
+	var cont []string
+	for _, f := range regexp.MustCompile(`<form `+chiefContinueFormAttr+`="[^"]*"[\s\S]*?</form>`).FindAllString(html, -1) {
+		rt := regexp.MustCompile(`name="runtime" value="([^"]*)"`).FindStringSubmatch(f)[1]
+		if rt == "opencode" {
+			cont = append(cont, "opencode · search")
+			continue
 		}
-		return out
+		for _, o := range regexp.MustCompile(`<option value="([^"]*)">`).FindAllStringSubmatch(f, -1) {
+			cont = append(cont, rt+" · "+o[1])
+		}
 	}
-	start, cont := choices(newSessionAttr), choices(chiefContinueFormAttr)
-	if len(start) != len(models) {
-		t.Fatalf("control: the New session forms offer %v, want each of %v", start, models)
+	var plus []string
+	for _, m := range newChatEntryRE.FindAllStringSubmatch(html, -1) {
+		if m[4] != "" {
+			plus = append(plus, "claude-code · "+m[4])
+		}
 	}
-	if strings.Join(cont, "\n") != strings.Join(start, "\n") {
-		t.Errorf("Continue offers %v, New session offers %v: they must be the same choices", cont, start)
+	if strings.Contains(html, chiefNewChatOpenRouterAttr) {
+		plus = append(plus, "opencode · search")
+	}
+	if len(plus) != len(models)+1 {
+		t.Fatalf("control: the + menu offers %v", plus)
+	}
+	if strings.Join(cont, "\n") != strings.Join(plus, "\n") {
+		t.Errorf("Continue offers %v, + New session offers %v: they must be the same choices", cont, plus)
 	}
 }
 

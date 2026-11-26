@@ -335,7 +335,7 @@ func TestTheListIconCarriesTheUnreadDotAndTheTabCountsThem(t *testing.T) {
 // be placed by the panel — and the column it lands in is the relative,
 // overflow-hidden one carrying the active-session mark; the page's sheet is
 // fixed over the screen. Both a fixed height. The panel's title bar holds the
-// icon (out of band) and the thread list's. RED at main: the panel had no
+// icon (out of band) and no thread-list launcher. RED at main: the panel had no
 // sheet.
 func TestThePanelsSheetIsInThePanelsColumn(t *testing.T) {
 	ms := chiefSurfaces(t, 5, chiefSheetSessions(5))
@@ -358,8 +358,8 @@ func TestThePanelsSheetIsInThePanelsColumn(t *testing.T) {
 		}
 	}
 	slot := byID(parseFragment(t, ms["panel"]), "chief-panel-actions")
-	if slot == nil || attrOf(slot, "hx-swap-oob") != "true" || byID(slot, "chief-panel-index-open") == nil || findAttr(slot, "for") == nil {
-		t.Errorf("the panel's title bar does not carry the list icon beside the thread list: %v", slot)
+	if slot == nil || attrOf(slot, "hx-swap-oob") != "true" || byID(slot, "chief-panel-index-open") == nil || findAttr(slot, "for") != nil {
+		t.Errorf("the panel's title bar does not carry the list icon alone (no thread-list launcher): %v", slot)
 	}
 }
 

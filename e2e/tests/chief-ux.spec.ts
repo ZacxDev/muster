@@ -1034,7 +1034,6 @@ for (const vp of [
       await expect(panel(page).locator('#chat-input'), 'the cursor is in the panel\'s message box').toBeFocused();
       expect(page.url(), 'the grid stays').toBe(grid);
       await noSheet(page, 'panel');
-      await expect(panel(page).locator('#chief-threads')).not.toBeChecked();
       await stripLayout(page, strip, `${vp.name} panel`);
       await shot(page, `after-panel-plus-${vp.name}.png`);
 

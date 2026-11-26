@@ -11,7 +11,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THREAD SEARCH FOR THE CHIEF PANEL
+// THE CHIEF'S MESSAGE SEARCH (the Sessions tab's "Matches in messages", ui
+// chiefSessionsTab), on the chief page and in the chief panel. It was the chief
+// panel's thread-list search; the list was folded into the Sessions tab (an
+// operator decision), which filters its rows by title in the browser and asks
+// this route only for the words in the chats' MESSAGES.
 //
 // 🔴 OPERATOR-ONLY, AND THAT IS THE WHOLE SECURITY STATEMENT OF THIS FILE. The
 // response carries MESSAGE CONTENT — a snippet cut out of a chat_messages body —
@@ -26,119 +30,73 @@ import (
 // command output, so including them would make every query match noise AND would
 // paste raw file bytes on screen as a snippet.
 //
-// ⚠ IT IS SCOPED TO THE CHIEF'S OWN THREADS. The panel talks to one agent, so the
-// search takes that agent's id and no caller can widen it — a route keyed on an
-// arbitrary agent is what got GET /api/agents/{name}/messages narrowed.
+// ⚠ IT IS SCOPED TO THE CHIEF'S OWN THREADS. The tab lists one agent's chats, so
+// the search takes that agent's id and no caller can widen it — a route keyed on
+// an arbitrary agent is what got GET /api/agents/{name}/messages narrowed.
 // ---------------------------------------------------------------------------
 
-// handleChiefThreadSearch serves GET /ui/chief/threads/search: the thread ROWS
-// matching ?q=, or the plain recent list when q is blank.
-//
-// 🔴 A BLANK QUERY RENDERS THE RECENT LIST RATHER THAN AN EMPTY RESULT SET. The
-// search input swaps this partial OVER the list, so "cleared the box" and "typed
-// something that matches nothing" are the same request shape from the client's
-// point of view — and answering the first with "No thread matches that." would
-// leave the operator unable to get their list back without closing the panel.
+// handleChiefThreadSearch serves GET /ui/chief/threads/search: the chief's chats
+// whose MESSAGES hold ?q= (ui.RenderChiefMessageMatches), linked the way
+// ?surface= switches (chief-panel: the panel's body; anything else: the chief's
+// page). A blank query answers nothing: the tab's rows are the list.
 func (s *Server) handleChiefThreadSearch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	write := func(v ui.ChiefThreadsView) {
-		if err := ui.RenderChiefThreadRows(w, v); err != nil {
-			s.logger.Printf("chief: render thread rows: %v", err)
+	surface := ui.ChatSurfacePage
+	if r.URL.Query().Get(ui.ChatSurfaceQueryParam) == string(ui.ChatSurfaceChiefPanel) {
+		surface = ui.ChatSurfaceChiefPanel
+	}
+	write := func(v ui.ChiefMessageMatchesView) {
+		v.Surface = surface
+		if err := ui.RenderChiefMessageMatches(w, v); err != nil {
+			s.logger.Printf("chief: render message matches: %v", err)
 		}
 	}
 
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		return
+	}
 
-	// 🔴 EVERY FAILURE RENDERS AS ROWS, NEVER AS AN HTTP ERROR — the same rule the
-	// panel body obeys, and for the same reason: this partial is swapped into a
-	// view the operator is looking at, and htmx does not swap a non-2xx body, so a
-	// 500 leaves the previous matches on screen as though they were the answer.
-	//
-	// 🔴 BUT A FAILURE IS SAID TO BE A FAILURE, AND IT DID NOT USED TO BE. Every path
-	// below rendered "No thread matches that." — a Postgres error (a NUL byte in `q`
-	// is enough), a chief that has gone missing, and a genuinely empty result set were
-	// ONE SENTENCE, distinguishable only in a server log the operator never reads. The
-	// 200 is the right call and it is kept; what changes is that the honest answer to
-	// "did my query miss?" is now on screen. ui.ChiefThreadsView.Failed carries it and
-	// the rendered container names the state in an attribute, so the guard asserts the
+	// 🔴 EVERY FAILURE RENDERS AS A SENTENCE, NEVER AS AN HTTP ERROR — htmx does not
+	// swap a non-2xx body, so a 500 would leave the previous matches on screen as
+	// though they were the answer — AND THE SENTENCE SAYS IT IS A FAILURE: a
+	// Postgres error (a NUL byte in `q` is enough) or a chief gone missing drawn as
+	// "no message matched" would be a verdict on a search nothing performed. The
+	// rendered answer names its state in an attribute, so the guard asserts the
 	// STATE rather than the words.
-	failed := func() { write(ui.ChiefThreadsView{Query: q, Failed: true}) }
+	failed := func() { write(ui.ChiefMessageMatchesView{Failed: true}) }
 
 	// 🔴 A NO-DATABASE BOOT IS NOT A READ THAT MIGHT WORK NEXT TIME, AND THE DEFAULT
-	// FAILURE SENTENCE ENDS "Try again." There is no store to ask, so a retry cannot
-	// succeed — now or ever — and the instruction can only waste the operator's time.
-	// The STATE stays `error` (it is still the absence of an answer, which is what
-	// distinguishes it from `empty`); only the sentence is replaced. It matches
-	// writeChiefPanelBody's own no-database reason, because it is the same fact about
-	// the same deployment.
-	//
-	// ⚠ REACHABLE ONLY BY HITTING THIS ROUTE DIRECTLY. A no-database panel renders the
-	// configuration statement and no search box at all, so nothing on screen asks this
-	// question — which is exactly why the wrong sentence sat here unnoticed.
+	// FAILURE SENTENCE ENDS "Try again." There is no store to ask, so the sentence
+	// says so instead. ⚠ Reachable only by hitting this route directly: a
+	// no-database chief page or panel draws no Sessions tab to search from.
 	if s.ext.Agents == nil {
-		write(ui.ChiefThreadsView{
-			Query:  q,
-			Failed: true,
-			Reason: "This muster is running without a database, so it has no threads to search.",
-		})
+		write(ui.ChiefMessageMatchesView{Failed: true,
+			Reason: "This muster is running without a database, so it has no messages to search."})
 		return
 	}
 	a, err := s.chiefAgent(ctx)
 	if err != nil {
 		if !errors.Is(err, ErrNoChief) {
-			s.logger.Printf("chief: thread search resolve agent: %v", err)
+			s.logger.Printf("chief: message search resolve agent: %v", err)
 		}
-		// ⚠ ErrNoChief IS A FAILURE *HERE*, THOUGH IT IS A CONFIGURATION STATEMENT IN
-		// writeChiefPanelBody, AND THE DIFFERENCE IS THE CALLER. That renderer answers a
-		// panel OPEN, where naming the missing display name is an instruction a reader
-		// can act on. This route answers a keystroke inside a panel that has ALREADY
-		// resolved a chief and drawn a search box; "no thread matches that" would be a
-		// verdict on a search nothing performed. The configuration statement stays where
-		// it can be read — the next panel open renders it.
+		// ⚠ ErrNoChief IS A FAILURE *HERE*: this route answers a keystroke in a tab
+		// that has ALREADY resolved a chief and drawn its chats.
 		failed()
 		return
 	}
 
-	// 🔴 THE ACTIVE THREAD IS READ FROM THE QUERY STRING AND resolveSession IS NOT
+	// 🔴 THE CHAT ON SCREEN IS READ FROM THE QUERY STRING AND resolveSession IS NOT
 	// CALLED, DELIBERATELY. resolveSession ends in LatestOrCreateSession, which
 	// CREATES a chat_sessions row when the agent has none — so wiring it in here
-	// would make a keystroke in a search box a write, and every debounced
-	// keystroke another one. The panel renders its own active id into this route's
-	// url (see chiefThreadList), so a plain comparison is all that is needed, and a
-	// request without it simply highlights nothing.
+	// would make a keystroke in a search box a write.
 	activeID, _ := strconv.ParseInt(r.URL.Query().Get("session"), 10, 64)
-
-	if q == "" {
-		// The blank query IS the panel's list again, so it is the switcher's
-		// order (chiefChatViews: the primary first, then the side chats, the
-		// archived last) — not a second order a cleared box would show.
-		if views, ok, err := s.chiefChatViews(ctx, a, activeID); ok {
-			if err != nil {
-				s.logger.Printf("chief: thread search list chats: %v", err)
-				failed()
-				return
-			}
-			write(ui.ChiefThreadsView{Threads: views})
-			return
-		}
-		list, err := s.ext.Agents.ListSessions(ctx, a.ID)
-		if err != nil {
-			s.logger.Printf("chief: thread search list sessions: %v", err)
-			// 🔴 THE WORST OF THE THREE, AND THE REASON Failed IS NOT COSMETIC. This path
-			// used to render "No threads yet." — telling the operator their entire thread
-			// history was gone because ONE read failed.
-			failed()
-			return
-		}
-		write(ui.ChiefThreadsView{Threads: s.sessionViews(ctx, a, list, activeID)})
-		return
-	}
 
 	matches, err := s.ext.Agents.SearchSessions(ctx, a.ID, q, agents.SearchSessionsMaxLimit)
 	if err != nil {
-		s.logger.Printf("chief: thread search %q: %v", q, err)
+		s.logger.Printf("chief: message search %q: %v", q, err)
 		failed()
 		return
 	}
@@ -150,5 +108,5 @@ func (s *Server) handleChiefThreadSearch(w http.ResponseWriter, r *http.Request)
 	for i, m := range matches {
 		views[i].Snippet = m.Snippet
 	}
-	write(ui.ChiefThreadsView{Threads: views, Query: q, Searched: true})
+	write(ui.ChiefMessageMatchesView{AgentName: a.Name, Matches: views})
 }

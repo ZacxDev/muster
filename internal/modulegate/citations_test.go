@@ -142,9 +142,6 @@ var unportedCitations = map[string][]string{
 		"TestTheShellPlusAnOpenChiefPanelHasNoDuplicateIDs",
 	},
 	"internal/ui/chief_panel.go": {
-		"TestAFailedReadIsAThirdStateAndNamesItself",
-		"TestAFailedSearchIsNotRenderedAsAnANSWER",
-		"TestAFailedThreadListReadIsNEVERRenderedAsAnEmptyHistory",
 		"TestHeaderAndContentShareOneWidth",
 		"TestRouteHeaderMatchesItsOwnContentColumn",
 		"TestTheChiefPanelObservesClicksWithoutSwallowingThem",

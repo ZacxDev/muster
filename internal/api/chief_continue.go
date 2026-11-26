@@ -22,7 +22,7 @@ import (
 // that starts from a structured handover instead of the whole conversation.
 //
 //  1. the new side chat is opened on (runtime, model) — validated exactly as the
-//     New session picker's are (createRuntimeSession);
+//     the session-create route's are (createRuntimeSession);
 //  2. ONE FINAL TURN IN THE OLD CHAT (ContinueHandoverPrompt) asks for the
 //     handover as one JSON object in the schema the prompt spells out;
 //  3. muster cuts it at handoverMaxBytes and renders it FENCED

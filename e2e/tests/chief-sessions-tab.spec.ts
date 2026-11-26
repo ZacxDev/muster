@@ -2,7 +2,7 @@ import path from 'node:path';
 import { Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { mkchat } from '../lib/mirrorhost';
-import { bar, icon, sessionsTab, sheet } from '../lib/chief-sessions';
+import { bar, icon, openSessions, sessionsTab, sheet } from '../lib/chief-sessions';
 
 // THE CHIEF'S SESSIONS, AS THE OPERATOR ASKED FOR THEM (docs/chief.md
 // "Primary and side chats"), in a real browser on the shared server:
@@ -27,13 +27,14 @@ import { bar, icon, sessionsTab, sheet } from '../lib/chief-sessions';
 //      panel; a chat left at its end opens at its end.
 //
 // 🔴 REGRESSION: tests 1 and 3 move between chats only by ways that exist on
-// main too (a URL, the sidebar row, home, the panel's thread list, closing and
-// reopening the panel), so each fails there for its own reason: main opened
+// main too (a URL, the sidebar row, home, a row of the panel's list of chats,
+// closing and reopening the panel), so each fails there for its own reason: main opened
 // the sidebar row and home on the chat touched last, the bare page and the
 // panel on the primary, and every chat at its end. The Sessions tab tests fail
 // on main because there is no Sessions tab (the sheet was Your messages and
 // What it worked on; the chats were a drawer), and the two-sheets test because
-// the panel had no sheet.
+// the panel had no sheet. The message-search tests fail before the fold of the
+// panel's thread list into the tab: the tab's search filtered titles only.
 //
 // The chief is an agent of this spec's own (display name "chief", e2e/mkchat's
 // threads mode, the primary elected as the oldest), removed afterwards. Each
@@ -78,16 +79,15 @@ async function makeChief(page: Page): Promise<Chief> {
     { MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_THREADS: '1' },
   );
   made.push(name);
-  // The ids, from the panel's thread list (on main and here alike): its rows
-  // are the chats, by title.
-  const html = await (await page.request.get('/ui/chief/threads/search?q=')).text();
-  const rows = html.split('data-chief-thread="').slice(1);
+  // The ids, from the chief page's Sessions tab: each row links its chat and
+  // carries its title. (The bare page opens — and so views — the primary, which
+  // is what a never-opened chief opens on anyway.)
+  const html = await (await page.request.get('/agents/' + name)).text();
+  const rows = Array.from(html.matchAll(/data-chief-chat-row="(\d+)" title="([^"]*)"/g));
   const idOf = (title: string) => {
-    // The title as an element's whole text ("Make this the primary chat" is a
-    // side chat's control's title).
-    const row = rows.find((r) => r.includes('>' + title + '<'));
-    expect(row, `the thread list names "${title}"`).toBeTruthy();
-    return /^\d+/.exec(row!)![0];
+    const row = rows.find((r) => r[2] === title);
+    expect(row, `the Sessions tab names "${title}"`).toBeTruthy();
+    return row![1];
   };
   return { name, primary: idOf('the primary'), alpha: idOf('side alpha'), beta: idOf('side beta') };
 }
@@ -180,9 +180,9 @@ test.describe('reopening the chief', () => {
     await page.goto('/tasks');
     await openPanel(page);
     await expect(panelOn(page), 'the panel opens on the chat viewed on the page').toHaveAttribute('data-chief-active-session', c.alpha);
-    // Picked in the panel (its thread list: on main too): beta.
-    await panel(page).locator('label[for="chief-threads"]').first().click();
-    await panel(page).locator(`[data-chief-thread="${c.beta}"]`).click();
+    // Picked in the panel (its Sessions tab): beta.
+    await openSessions(sessionsTab(page, 'panel'));
+    await sessionsTab(page, 'panel').locator(`[data-chief-chat-row="${c.beta}"]`).click();
     await expect(panelOn(page)).toHaveAttribute('data-chief-active-session', c.beta);
     // Shut and reopened: beta.
     await closePanel(page);
@@ -450,6 +450,81 @@ for (const vp of [
       await expect(panel(page)).toHaveAttribute('data-chief-panel-open', '1');
       await page.keyboard.press('Escape');
       await expect(panel(page)).toHaveAttribute('data-chief-panel-open', '0');
+    });
+
+    // THE MESSAGE SEARCH, folded in from the chief panel's thread list (an
+    // operator decision: one list of the chief's chats). The tab's box filters
+    // the rows by title at once, and the words in the chats' MESSAGES come from
+    // the server under "Matches in messages" — a chat whose title matches is a
+    // row already, so it is listed there only when its messages match too.
+    test('the Sessions tab searches the chats\' messages too, on the page and in the panel; a match switches', async ({ page }) => {
+      test.setTimeout(90_000);
+      const tap = (l: Locator) => (vp.use.hasTouch ? l.tap() : l.click());
+      for (const n of made.splice(0)) mkchat(n, null);
+      const name = `e2e-msgsearch-chief-${Date.now().toString(36)}-${++seq}`;
+      mkchat(name, null);
+      mkchat(
+        name,
+        [
+          { title: 'Kestrel notes', hoursAgo: 50, messages: [{ role: 'user', content: 'first words here' }] },
+          { title: 'about the kestrel', hoursAgo: 30, messages: [{ role: 'user', content: 'third' }] },
+          { title: 'unrelated', hoursAgo: 10, messages: [{ role: 'user', content: 'the kestrel came back at dawn' }] },
+          { title: 'nothing here', hoursAgo: 1, messages: [{ role: 'user', content: 'nope' }] },
+        ],
+        { MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_THREADS: '1' },
+      );
+      made.push(name);
+
+      // The page.
+      await onPage(page, `/agents/${name}`);
+      const tab = sessionsTab(page, 'page');
+      await openSessions(tab, vp.use.hasTouch);
+      const search = tab.getByRole('searchbox', { name: 'Search sessions' });
+      const titles = () => tab.locator('[data-chief-chip]:visible [data-chief-chat-row]').evaluateAll((els) => els.map((e) => e.getAttribute('title')));
+      const matches = tab.locator('[data-chief-message-match]');
+      const none = tab.getByText('No sessions match');
+      await search.fill('kestrel');
+      await expect.poll(titles, { message: 'the rows whose title holds the words, at once' }).toEqual(['Kestrel notes', 'about the kestrel']);
+      await expect(matches, 'the one chat whose MESSAGES hold them').toHaveCount(1, { timeout: 10_000 });
+      await expect(matches).toContainText('unrelated');
+      await expect(matches).toContainText('kestrel came back');
+      await expect(tab.getByRole('heading', { name: 'Matches in messages' })).toBeVisible();
+      // Words only a message holds: no row, a match, and "No sessions match" stays away.
+      await search.fill('came back');
+      await expect.poll(titles).toEqual([]);
+      await expect(matches).toHaveCount(1, { timeout: 10_000 });
+      await expect(none).toBeHidden();
+      await shot(page, `message-search-page-${vp.name}.png`);
+      // Words nowhere: no row, no match, the line.
+      await search.fill('zqxj-nowhere');
+      await expect(matches).toHaveCount(0, { timeout: 10_000 });
+      await expect(none).toBeVisible();
+      // A match switches through its link, and shuts the sheet.
+      await search.fill('came back');
+      await expect(matches).toHaveCount(1, { timeout: 10_000 });
+      const unrelated = (await matches.getAttribute('data-chief-message-match'))!;
+      await tap(matches);
+      await page.waitForURL((u) => sessionOf(u.toString()) === unrelated);
+      await expect(sheet(page, 'page')).toBeHidden();
+      await expect(bar(page, 'page')).toHaveText('Session: unrelated');
+
+      // The panel: the same search, and a match switches the panel's chat, in the grid.
+      await page.goto('/tasks');
+      await openPanel(page);
+      const grid = page.url();
+      const ptab = sessionsTab(page, 'panel');
+      await openSessions(ptab, vp.use.hasTouch);
+      const psearch = ptab.getByRole('searchbox', { name: 'Search sessions' });
+      await psearch.fill('first words');
+      const pmatch = ptab.locator('[data-chief-message-match]');
+      await expect(pmatch).toHaveCount(1, { timeout: 10_000 });
+      await expect(pmatch).toContainText('Kestrel notes');
+      const kestrel = (await pmatch.getAttribute('data-chief-message-match'))!;
+      await shot(page, `message-search-panel-${vp.name}.png`);
+      await tap(pmatch);
+      await expect(panelOn(page)).toHaveAttribute('data-chief-active-session', kestrel);
+      await expect(sheet(page, 'panel')).toBeHidden();
+      expect(page.url(), 'the grid stays').toBe(grid);
     });
   });
 }
