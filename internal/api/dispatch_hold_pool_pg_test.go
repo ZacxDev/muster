@@ -373,10 +373,12 @@ func TestAgentsListIsTheOwnersAgentsOnly(t *testing.T) {
 	if got := listedNames(all); !slices.Equal(got, want) || all.Count != len(want) {
 		t.Fatalf("agents_list names %v (count %d); want exactly the owner's %v", got, all.Count, want)
 	}
+	// The status is the LIVE one: w1 is stored running with a namespace, and the
+	// fixture's provisioner reports no instance for it, so it reads stopped.
 	for _, a := range all.Agents {
 		if a.Name == w1.Name && (a.ID != w1.ID || a.Kind != agents.KindClaudeCode || a.WorkerPool != "render-pool" ||
-			a.CCAccount != "acct-pinned" || a.Status != agents.StatusRunning || a.CreatedAt.IsZero()) {
-			t.Errorf("w1 listed as %+v; want its id, kind, pool, account, status and created time", a)
+			a.CCAccount != "acct-pinned" || a.Status != agents.StatusStopped || a.CreatedAt.IsZero()) {
+			t.Errorf("w1 listed as %+v; want its id, kind, pool, account, live status (stopped) and created time", a)
 		}
 	}
 	pool := h.agentsList(t, h.ws, focusSID, map[string]any{"worker_pool": "render-pool"})
