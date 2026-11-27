@@ -159,8 +159,12 @@ func (r *itemCostRig) llm(t *testing.T, a agents.Agent, cost float64) {
 	}
 }
 
+// tool calls tool name as agent a, then waits for the hold-cost reports it
+// handed to the background (llmHoldsEnded) to be sent, so what HQ recorded
+// and the log are read after them.
 func (r *itemCostRig) tool(t *testing.T, a agents.Agent, name, args string) string {
 	t.Helper()
+	defer r.s.flushHoldCosts()
 	return r.s.dispatchAgentTool(context.Background(), a, name, args)
 }
 
@@ -237,7 +241,10 @@ func TestARoutineCompleteCarriesTheItemsProxyCost(t *testing.T) {
 
 // TestAnUnknownItemCostIsOmittedNotZero: a hold the meter did not see whole —
 // HQ's second claim of the item, or one that booked no request — completes
-// with NEITHER cost field (not 0, not null), and HQ stores no cost.
+// with NEITHER cost field (not 0, not null). The one that booked no request
+// leaves HQ with no cost; HQ's second claim's item does get one, but from
+// its two holds' own reports (0.0173 + 0.0259, officer_hold_cost_test.go),
+// never from the complete.
 func TestAnUnknownItemCostIsOmittedNotZero(t *testing.T) {
 	r := newItemCostRig(t)
 	r1, r2 := r.agent(t, costRoutine+"1"), r.agent(t, costRoutine+"2")
@@ -263,11 +270,10 @@ func TestAnUnknownItemCostIsOmittedNotZero(t *testing.T) {
 		t.Errorf("no request booked: complete bodies\n got %q\nwant [%s]", got, want)
 	}
 	r.omitted(t, r1.Name, none, "done", "no_requests")
-	for _, item := range []string{second, none} {
-		if it := r.hq.Item(item); it.CostUSD != nil || it.CostFrom != nil {
-			t.Errorf("item %s: HQ stored cost %v from %v, want none", item, it.CostUSD, it.CostFrom)
-		}
+	if it := r.hq.Item(none); it.CostUSD != nil || it.CostFrom != nil {
+		t.Errorf("item %s: HQ stored cost %v from %v, want none", none, it.CostUSD, it.CostFrom)
 	}
+	wantCost(t, r.hq, second, 0.0432)
 }
 
 // TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost: r1 claims an item

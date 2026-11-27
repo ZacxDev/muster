@@ -115,6 +115,9 @@ type Server struct {
 	// askAttemptWrites is the answer-attempt rows being written after their
 	// door answered (ask_attempts.go).
 	askAttemptWrites askAttemptWriters
+	// holdCostSends is the per-hold cost reports being sent to HQ in the
+	// background (officer_llm.go, llmHoldsEnded).
+	holdCostSends holdCostSenders
 	// askScan is the open-question scan's reads (mirror_ask_scan.go).
 	askScan askScans
 	// ocAnswered is the opencode asks lately answered from a card

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -320,6 +321,14 @@ type Server struct {
 	// RerunCalls is every rerun request that reached the route, in order.
 	RerunAbsent bool
 	RerunCalls  []RerunCall
+	// Per-hold cost (POST …/items/{item}/hold-cost, civ-hq docs/OFFICERS.md
+	// "Per-hold cost"): HoldCostAbsent answers as an HQ without the route
+	// does (404 not_found "no such route"). holdCosts is every hold whose
+	// cost was recorded, by item and attempt (HoldCosts); holdCostCalls
+	// counts every request that reached the route, recorded or not.
+	HoldCostAbsent bool
+	holdCosts      map[string]map[int]HoldCostCall
+	holdCostCalls  int
 	// gapTasks: every accepted gap-tasks request (civ-hq §5o), in order.
 	gapTasks []GapTask
 	// rolloutEvidence: every accepted rollout-evidence request (civ-hq
@@ -1683,6 +1692,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.write(w, http.StatusCreated, map[string]any{"merge": map[string]any{"id": 77}, "ask": map[string]any{"id": 88}, "item": map[string]any{"id": id}})
 		return
 	}
+	if verb == "hold-cost" && s.HoldCostAbsent {
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	}
 	if verb == "rerun" && s.RerunAbsent {
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
 		return
@@ -1694,6 +1707,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	}
 	if verb == "rerun" {
 		s.rerun(w, officer, it, body, now)
+		return
+	}
+	if verb == "hold-cost" {
+		s.holdCost(w, id, it, body, now)
 		return
 	}
 	instance, _ := body["instance"].(string)
@@ -1866,6 +1883,100 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such verb"})
 	}
+}
+
+// HoldCostCall is one hold's cost as the hold-cost route recorded it.
+type HoldCostCall struct {
+	Item     string
+	Attempt  int
+	Instance string
+	USD      float64
+	From     string
+}
+
+// HoldCosts returns every recorded hold's cost, by item then attempt, and
+// how many requests reached the route (a repeat and a refusal included).
+func (s *Server) HoldCosts() ([]HoldCostCall, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []HoldCostCall
+	for _, byAttempt := range s.holdCosts {
+		for _, c := range byAttempt {
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b HoldCostCall) int {
+		if c := strings.Compare(a.Item, b.Item); c != 0 {
+			return c
+		}
+		return a.Attempt - b.Attempt
+	})
+	return out, s.holdCostCalls
+}
+
+// holdCost serves POST …/items/{item}/hold-cost as civ-hq's route does
+// (store/officer_cost.go RecordOfficerHoldCost): {instance, attempt,
+// cost_usd, cost_from}, all required (400, unknown fields refused); an
+// attempt outside 1..attempts is 400; the item's latest attempt while its
+// lease is live is 409 hold_live; a hold already recorded answers recorded:
+// false (the first stands). Once the item is finished and every attempt
+// has reported, its cost is the sum (cost_from the one source, or hq:holds).
+func (s *Server) holdCost(w http.ResponseWriter, id string, it *Item, body map[string]any, now time.Time) {
+	s.holdCostCalls++
+	for k := range body {
+		switch k {
+		case "instance", "attempt", "cost_usd", "cost_from":
+		default:
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "invalid"})
+			return
+		}
+	}
+	instance, _ := body["instance"].(string)
+	rawAttempt, hasAttempt := body["attempt"].(float64)
+	usd, from, sent, refusal := costOf(body)
+	switch {
+	case refusal != "":
+		s.write(w, http.StatusBadRequest, map[string]any{"error": refusal, "code": "invalid"})
+		return
+	case !sent || !hasAttempt || instance == "":
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "instance, attempt, cost_usd and cost_from are required", "code": "invalid"})
+		return
+	}
+	attempt := int(rawAttempt)
+	if attempt < 1 || attempt > it.Attempts || float64(attempt) != rawAttempt {
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "attempt must be 1..attempts", "code": "invalid"})
+		return
+	}
+	if attempt == it.Attempts && it.Status == "claimed" && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now) {
+		s.write(w, http.StatusConflict, map[string]any{"error": "that hold is live", "code": "hold_live"})
+		return
+	}
+	if s.holdCosts == nil {
+		s.holdCosts = map[string]map[int]HoldCostCall{}
+	}
+	if s.holdCosts[id] == nil {
+		s.holdCosts[id] = map[int]HoldCostCall{}
+	}
+	if _, dup := s.holdCosts[id][attempt]; dup {
+		s.write(w, http.StatusOK, map[string]any{"recorded": false})
+		return
+	}
+	s.holdCosts[id][attempt] = HoldCostCall{Item: id, Attempt: attempt, Instance: instance, USD: usd, From: from}
+	if finished := it.Status == "done" || it.Status == "escalated"; finished && len(s.holdCosts[id]) == it.Attempts {
+		sum, froms := 0.0, map[string]bool{}
+		for _, c := range s.holdCosts[id] {
+			sum += c.USD
+			froms[c.From] = true
+		}
+		src := "hq:holds"
+		if len(froms) == 1 {
+			src = from // the one source: this report's
+		}
+		if sum <= 10000 {
+			it.CostUSD, it.CostFrom = &sum, &src
+		}
+	}
+	s.write(w, http.StatusOK, map[string]any{"recorded": true})
 }
 
 // RerunCall is one rerun request the route took: the item and the body.

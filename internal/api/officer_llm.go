@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -204,7 +206,7 @@ func (s *Server) llmClaimed(o officers.Officer, instance string, item officers.I
 		return
 	}
 	if p, n, ok := s.llmProxyInstance(o, instance); ok {
-		s.officerRT.llm.ClaimedAttempt(o.ID, p, n, string(item), claimAttempts(claimBody))
+		s.llmHoldsEnded(o, s.officerRT.llm.ClaimedAttempt(o.ID, p, n, string(item), claimAttempts(claimBody)))
 	}
 }
 
@@ -238,7 +240,9 @@ const (
 // item's whole cost — then NOTHING is sent, never a 0 — with why (a short
 // id, for the log line). Only a complete that finishes the item carries one:
 // needs_judgement hands it on to a judgement session, whose cost is not
-// this hold's, so the item's total is not known. An instance of a pool on
+// this hold's, so the item's total is not known here. The hold's own cost
+// still reaches HQ, as every hold's does when it ends (llmHoldsEnded), and
+// HQ adds the holds up. An instance of a pool on
 // the proxy — routine beside `llm`, or judgement with tiers.judgement.llm —
 // has the proxy as its cost source; any other instance's Claude Code session
 // has none muster reads: nil.
@@ -257,8 +261,14 @@ func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.
 	if why != "" {
 		return nil, why
 	}
-	// HQ stores 0-10000 USD (above is a reporting error it refuses); muster
-	// books to the micro-dollar (officer_llm_usage's NUMERIC(14,6)).
+	return proxyCost(usd)
+}
+
+// proxyCost is usd, booked by the LLM proxy, as the cost HQ takes (an item's
+// or a hold's): rounded to the micro-dollar muster books to
+// (officer_llm_usage's NUMERIC(14,6)), or nil and costOverBound outside HQ's
+// 0-10000 USD (above is a reporting error HQ refuses).
+func proxyCost(usd float64) (*officers.ItemCost, string) {
 	usd = math.Round(usd*1e6) / 1e6
 	if math.IsNaN(usd) || usd < 0 || usd > officers.MaxItemCostUSD {
 		return nil, costOverBound
@@ -266,12 +276,91 @@ func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.
 	return &officers.ItemCost{USD: usd, From: officers.CostFromLLMProxy}, ""
 }
 
+// holdCostTimeout bounds one hold-cost report to HQ (sent in the
+// background: llmHoldsEnded).
+const holdCostTimeout = 10 * time.Second
+
+// holdCostMaxSends bounds the hold-cost reports running at once: one past it
+// is dropped with a log line, never queued or retried.
+const holdCostMaxSends = 64
+
+// holdCostSenders is the hold-cost reports being sent (llmHoldsEnded).
+type holdCostSenders struct {
+	wg sync.WaitGroup
+	n  atomic.Int32
+}
+
+// flushHoldCosts waits until every hold-cost report handed to a send so far
+// is sent (or failed): the tests' hook.
+func (s *Server) flushHoldCosts() { s.holdCostSends.wg.Wait() }
+
+// llmHoldsEnded reports each ended hold of o's proxied instances to HQ
+// (civ-hq docs/OFFICERS.md "Per-hold cost"): the hold's cost, by HQ's claim
+// number, with o's own backend, which adds every hold of an item up. Every
+// hold that ended — complete (any outcome: needs_judgement's hand-on
+// included), release, ask, HQ's new claim of the same item, or a lapsed
+// lease the wake loop saw — is handed here once by the meter. A claim of
+// another item ends none: the meter parks the held one until one of those.
+//
+// 🔴 A HOLD WHOSE COST IS NOT KNOWN WHOLE SENDS NOTHING, never a 0
+// (llmproxy holdWhy): HQ then never has every hold, and the item carries no
+// per-hold total. 🔴 A REPORT NEVER FAILS OR BLOCKS ANYTHING: each is sent
+// in the background (at most holdCostMaxSends at once, each bounded by
+// holdCostTimeout), because the wake loop's read (llmSync, under
+// officers.Config.Observed) must not block and the complete, release or
+// claim it follows has already succeeded. A report not sent — a backend
+// without the verb (the builtin one), an HQ without the route (404), any
+// other failure, or one past the bound — is one log line, never retried.
+// HQ adds the holds up in any order, so the sends need none.
+func (s *Server) llmHoldsEnded(o officers.Officer, ended []llmproxy.HoldCost) {
+	if len(ended) == 0 || s.officerRT == nil || s.officerRT.hq == nil {
+		return
+	}
+	for _, h := range ended {
+		instance := o.Pool(h.Pool).InstanceName(h.Instance)
+		cost, why := (*officers.ItemCost)(nil), h.Why
+		if why == "" {
+			cost, why = proxyCost(h.USD)
+		}
+		if cost == nil {
+			// One line per hold ended without a known cost, with why: the
+			// known-vs-unknown ratio is measured from these. No item content.
+			s.logger.Printf("officers: hold cost omitted officer=%s instance=%s item=%s attempt=%d reason=%s",
+				o.ID, instance, h.Item, h.Attempt, why)
+			continue
+		}
+		hb, err := officers.Serves[officers.HoldCostBackend](s.officerRT.hq.Backend(o), officers.CapHoldCost)
+		if err != nil {
+			s.logger.Printf("officers: hold cost not sent officer=%s instance=%s item=%s attempt=%d: %v", o.ID, instance, h.Item, h.Attempt, err)
+			continue
+		}
+		w := &s.holdCostSends
+		if w.n.Add(1) > holdCostMaxSends {
+			w.n.Add(-1)
+			s.logger.Printf("officers: hold cost not sent officer=%s instance=%s item=%s attempt=%d: %d reports already running",
+				o.ID, instance, h.Item, h.Attempt, holdCostMaxSends)
+			continue
+		}
+		w.wg.Add(1)
+		officer, item, attempt, c := o.ID, h.Item, h.Attempt, *cost
+		safeGoDone(s.logger, "officers: send a hold cost", &w.wg, func() {
+			defer w.n.Add(-1)
+			ctx, cancel := context.WithTimeout(context.Background(), holdCostTimeout)
+			defer cancel()
+			if _, err := hb.HoldCost(ctx, officers.ItemID(item), instance, attempt, c); err != nil {
+				s.logger.Printf("officers: hold cost not recorded officer=%s instance=%s item=%s attempt=%d cost_usd=%.6f: %v",
+					officer, instance, item, attempt, c.USD, err)
+			}
+		})
+	}
+}
+
 func (s *Server) llmEnded(o officers.Officer, instance string, item officers.ItemID) {
 	if s.officerRT == nil || s.officerRT.llm == nil || !o.UsesLLMProxy() {
 		return
 	}
 	if p, n, ok := s.llmProxyInstance(o, instance); ok {
-		s.officerRT.llm.Ended(o.ID, p, n, string(item))
+		s.llmHoldsEnded(o, s.officerRT.llm.Ended(o.ID, p, n, string(item)))
 	}
 }
 
@@ -288,8 +377,9 @@ func (s *Server) llmProxyInstance(o officers.Officer, name string) (string, int,
 }
 
 // llmSync is the wake loop's view of o's claimed items, for the per-item
-// meter (officers.Config.Observed).
-func llmSync(px *llmproxy.Proxy, reg *officers.Registry) func(o officers.Officer, claimed []officers.Item, at time.Time) {
+// meter (officers.Config.Observed). Every hold it ends (one HQ no longer
+// shows: a lapsed lease) goes to ended (Server.llmHoldsEnded).
+func llmSync(px *llmproxy.Proxy, reg *officers.Registry, ended func(officers.Officer, []llmproxy.HoldCost)) func(o officers.Officer, claimed []officers.Item, at time.Time) {
 	return func(o officers.Officer, claimed []officers.Item, at time.Time) {
 		if !o.UsesLLMProxy() {
 			return
@@ -308,7 +398,7 @@ func llmSync(px *llmproxy.Proxy, reg *officers.Registry) func(o officers.Officer
 			}
 		}
 		for pool, h := range holding {
-			px.Sync(o.ID, pool, h, at)
+			ended(o, px.Sync(o.ID, pool, h, at))
 		}
 	}
 }

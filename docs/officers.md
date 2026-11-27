@@ -4250,7 +4250,9 @@ request leaves flight as soon as its cost is charged to the meter (before the
 usage row is written and the stream's tail is relayed), so a complete Claude
 Code sends while a handler is still finishing still reads the cost. A second or later
 claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
-send none. The meter is in memory (`internal/llmproxy/items.go`).
+send none in the complete: each of those holds reports its own cost instead
+([Each hold's cost](#each-holds-cost)). The meter is in memory
+(`internal/llmproxy/items.go`).
 
 An instance of a pool NOT on the proxy (a Claude judgement or routine pool,
 an untiered officer) has **no cost source muster reads**, so its complete
@@ -4271,13 +4273,82 @@ the proxy).
 
 ⚠ **HQ keeps a cost a later complete does not replace** (its complete
 coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
-complete and that is worked again keeps the FIRST hold's cost: the later hold
-is not HQ's first claim, so it sends none, and the item's cost understates
-what working it cost overall.
+complete and that is worked again keeps the FIRST hold's cost from the
+complete: the later hold is not HQ's first claim, so it sends none there.
+Its own hold report still goes to HQ, which replaces the item's cost with
+the sum of every hold once each has reported ([below](#each-holds-cost)).
 
 The cost never fails a complete: when HQ refuses the complete that carries it
 with a 400 (an HQ from before item cost refuses the unknown fields), muster
 sends it again without the cost, and logs `completed item … without its cost`.
+
+#### Each hold's cost
+
+Every HQ claim of an item is one **hold**, numbered by HQ's `attempts` in
+the claim answer (1 = HQ's first claim). The complete's `cost_usd` is one
+hold's spend, so it is the item's cost only when that hold was the item's
+only one. To give HQ the whole of an item claimed more than once, muster
+reports **each hold's own cost when the hold ends**, with
+`POST …/items/{item}/hold-cost {instance, attempt, cost_usd, cost_from}`.
+HQ adds the holds of an item up: once the item is finished and every
+attempt has reported, its cost is their sum (HQ's officer guide,
+"Per-hold cost").
+
+A hold ends, and is reported once (the meter replaces it as it ends), on:
+
+- **a complete** of any outcome, `needs_judgement` included: the routine
+  hold that hands an item on reports its cost, and the judgement hold
+  reports its own when it completes;
+- **a release**, and **an ask** to a person (which ends the lease);
+- **HQ's new claim of the same item** (its lease lapsed and it claimed the
+  item again, with a new `attempts`). The token count for
+  `max_tokens_per_item` carries on into the new hold; the cost does not;
+- **a lapsed lease** another instance took over. The wake loop's next read of
+  HQ's claimed items no longer shows the old holder, and that read ends its
+  hold.
+
+**A claim of another item ends nothing.** HQ keeps the instance's claim of
+the item it held (its lease runs on), and HQ refuses a report for a hold
+whose lease is live (409 `hold_live`), so a report then would be lost. The
+meter sets that hold aside instead: a request admitted under it and booked
+later is still charged to it, and the new item's requests are the new
+hold's. The set-aside hold ends, and is reported once, by its own item's
+complete, release or ask, by HQ's new claim of it, or by the wake loop's
+read that no longer shows the instance holding it (its lease lapsed). An
+instance that claims the set-aside item back with no new HQ claim resumes
+the same hold.
+
+🔴 **A hold whose cost is not known whole sends nothing, never a 0**, by the
+same rule as above but for the hold alone: claimed through muster with a
+known `attempts`, at least one request booked, none from the estimate, none
+still in flight. HQ then never has every hold of the item, so the item shows
+no per-hold total. This applies to a hold adopted after a restart and to a
+claim answered without `attempts`. It also applies to a lapsed hold whose
+meter was lost: the meter is in memory, so a restart between the lapse and
+the next read forgets it. Each such hold writes one line:
+
+```
+officers: hold cost omitted officer=<id> instance=<agent> item=<item id> attempt=<n> reason=<reason>
+```
+
+`reason` is `adopted`, `attempts_unknown`, `no_requests`, `estimated`,
+`inflight` or `over_bound`.
+
+A pool with no cost source (an instance outside the LLM proxy: a Claude
+Code session) is not metered at all, so its holds report nothing and write
+**no** line; the item's complete writes its own `item cost omitted …
+reason=no_source` line (above).
+
+The report never fails or delays anything: it is sent in the background
+after the complete, release or claim has succeeded, or after the wake
+loop's read (which must not block), at most 64 at once, each bounded by
+10 s. A report that cannot be sent is logged, never retried: an HQ without
+the route (404) or any other failure is one `hold cost not recorded` line,
+a backend without the verb (the builtin one) one `hold cost not sent` line,
+and a report dropped because 64 are already running one `hold cost not
+sent … 64 reports already running` line. Reports may reach HQ in any order;
+HQ keeps one cost per hold, the first it is sent, so a repeat is never
+counted twice, and adds them up whichever arrives last.
 
 **Rolling out the per-pool budget (migration 0110):** while the new pod has
 applied 0110 and an old pod is still serving, the old pod's LLM usage cannot

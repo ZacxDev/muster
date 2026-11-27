@@ -358,16 +358,20 @@ func (noStore) SpentToday(context.Context, string, string, time.Time) (float64, 
 func (noStore) Book(context.Context, Usage) error { return errNoStore }
 
 // Claimed tells the per-item meter that instance of officer now holds item,
-// by a claim whose HQ attempts are not known (its cost is then unknown).
-func (p *Proxy) Claimed(officer, pool string, instance int, item string) {
-	p.ClaimedAttempt(officer, pool, instance, item, 0)
+// by a claim whose HQ attempts are not known (its cost is then unknown), and
+// answers the hold that claim ended (ClaimedAttempt).
+func (p *Proxy) Claimed(officer, pool string, instance int, item string) []HoldCost {
+	return p.ClaimedAttempt(officer, pool, instance, item, 0)
 }
 
 // ClaimedAttempt is Claimed by the claim HQ answered with attempts (its
 // item's `attempts`; 0 when not known): HQ's first claim (1) is the one whose
-// hold can know the item's cost (ItemCost).
-func (p *Proxy) ClaimedAttempt(officer, pool string, instance int, item string, attempts int) {
-	p.items.claimed(instanceKey{officer, pool, instance}, item, p.now(), attempts)
+// hold can know the item's cost (ItemCost), and every claim with a number
+// can know its own hold's (HoldCost). It answers the hold the claim ENDED —
+// another item's, or the same item's earlier hold when HQ claimed it anew —
+// for HQ's per-hold record; none when it ended none.
+func (p *Proxy) ClaimedAttempt(officer, pool string, instance int, item string, attempts int) []HoldCost {
+	return p.items.claimed(instanceKey{officer, pool, instance}, item, p.now(), attempts)
 }
 
 // ItemCost is the USD instance of officer's hold on item has booked through
@@ -375,7 +379,8 @@ func (p *Proxy) ClaimedAttempt(officer, pool string, instance int, item string, 
 // books it), and whether that is KNOWN to be the item's whole proxy spend:
 // the hold is HQ's first claim of the item, claimed through muster, has
 // booked at least one request, none from the proxy's estimate, and none
-// still unbooked (items). Read it while the hold lasts: Ended clears it.
+// still unbooked (items). Read it while the hold lasts: Ended clears it (and
+// answers the hold's own cost, HoldCost, whatever claim began it).
 func (p *Proxy) ItemCost(officer, pool string, instance int, item string) (float64, bool) {
 	usd, why := p.ItemCostWhy(officer, pool, instance, item)
 	return usd, why == ""
@@ -387,16 +392,17 @@ func (p *Proxy) ItemCostWhy(officer, pool string, instance int, item string) (fl
 	return p.items.cost(instanceKey{officer, pool, instance}, item)
 }
 
-// Ended tells the per-item meter that instance of officer no longer holds item.
-func (p *Proxy) Ended(officer, pool string, instance int, item string) {
-	p.items.ended(instanceKey{officer, pool, instance}, item, p.now())
+// Ended tells the per-item meter that instance of officer no longer holds
+// item, and answers that hold (none when it did not hold item).
+func (p *Proxy) Ended(officer, pool string, instance int, item string) []HoldCost {
+	return p.items.ended(instanceKey{officer, pool, instance}, item, p.now())
 }
 
 // Sync is a wake-loop pass's view of officer pool's claims, read at at:
 // holding maps an instance number of that pool to the items HQ shows it
-// claiming.
-func (p *Proxy) Sync(officer, pool string, holding map[int][]string, at time.Time) {
-	p.items.sync(officer, pool, holding, at)
+// claiming. It answers every hold HQ no longer shows (each has ended).
+func (p *Proxy) Sync(officer, pool string, holding map[int][]string, at time.Time) []HoldCost {
+	return p.items.sync(officer, pool, holding, at)
 }
 
 // Day is the UTC day t falls on, as the store keys it.
