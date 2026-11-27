@@ -472,13 +472,16 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 // takes it without moving another), and only if that is still refused moves a
 // worker itself.
 func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
-	j, created, blocked, err := s.createPoolJobOnce(ctx, n)
+	// One live read for the whole submission, however many times it chooses
+	// (poolReadiness).
+	ready := &poolReadiness{}
+	j, created, blocked, err := s.createPoolJobOnce(ctx, n, ready)
 	var refused *jobRefusal
 	if !errors.As(err, &refused) || len(blocked) == 0 || s.ext.AccountFailover == nil {
 		return j, created, err
 	}
 	unlock := s.poolFailovers.lock(strconv.FormatInt(callerID(ctx), 10) + "/" + n.WorkerPool)
-	j, created, blocked, err = s.createPoolJobOnce(ctx, n)
+	j, created, blocked, err = s.createPoolJobOnce(ctx, n, ready)
 	if !errors.As(err, &refused) || len(blocked) == 0 {
 		unlock()
 		return j, created, err
@@ -488,7 +491,7 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 	if !moved {
 		return j, created, err
 	}
-	j, created, _, err = s.createPoolJobOnce(ctx, n)
+	j, created, _, err = s.createPoolJobOnce(ctx, n, ready)
 	return j, created, err
 }
 
@@ -588,7 +591,7 @@ func (s *Server) holdIdleAgent(ctx context.Context, a agents.Agent) (func(), boo
 // createPoolJobOnce is one choice and record of createPoolJob. blocked is, when
 // it refused, the members skipped only for their Claude account (idle or not:
 // failoverBlockedWorker checks that when it moves one).
-func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, []blockedWorker, error) {
+func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob, ready *poolReadiness) (jobs.Job, bool, []blockedWorker, error) {
 	pool, repo := n.WorkerPool, n.Repo
 	refuse := func(status int, msg string) (jobs.Job, bool, []blockedWorker, error) {
 		return jobs.Job{}, false, nil, &jobRefusal{status: status, msg: msg}
@@ -607,7 +610,10 @@ func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job
 	if len(members) == 0 {
 		return refuse(http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool))
 	}
-	notReady := s.poolMembersNotReady(ctx, members)
+	if !ready.read {
+		ready.notReady, ready.read = s.poolMembersNotReady(ctx, members, repo), true
+	}
+	notReady := ready.notReady
 	// peers is every claude-code agent on a member's Claude account, in this
 	// pool or not: the per-account cap counts the account's jobs wherever they
 	// run, so their queues are read (and locked) with the members'.
@@ -662,6 +668,18 @@ func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job
 	return j, created, blocked, err
 }
 
+// poolReadiness is one submission's poolMembersNotReady answer, read on its
+// first choice and reused by the others (createPoolJob chooses up to three
+// times, the second under the pool's failover lock): the read costs several
+// apiserver requests per member, and a second read under the lock would hold
+// every other submission to the pool behind it. A worker the submission fails
+// over between choices was read before its move, so the reused answer does
+// not skip it for the restart the move began.
+type poolReadiness struct {
+	read     bool
+	notReady map[int64]string
+}
+
 // poolLiveReadWithin bounds poolMembersNotReady's instance read. A read still
 // running then is "not observed": every member keeps its stored status.
 const poolLiveReadWithin = 10 * time.Second
@@ -686,20 +704,23 @@ const poolLiveReadWithin = 10 * time.Second
 // status decides, as before. Refusing every job on a provisioner blip would
 // turn a brief blindness into an outage of the whole pool.
 //
-// ⚠ A WORKER THIS PROCESS IS MOVING TO ANOTHER ACCOUNT IS NOT MARKED. Its pod
-// is restarting BECAUSE createPoolJob failed it over so the job could run on
-// it, and runJob waits for its replacement pod (AwaitRebound); skipping it
-// here would refuse the very job the move was made for.
-func (s *Server) poolMembersNotReady(ctx context.Context, members []agents.Agent) map[int64]string {
+// ⚠ A WORKER THIS PROCESS MOVED TO ANOTHER ACCOUNT WHOSE POD IS COMING UP IS
+// NOT MARKED. Its pod restarts BECAUSE a failover moved it (for this pool's
+// submissions, so a job could run on it), and runJob waits for the replacement
+// pod (AwaitRebound); skipping it would refuse the jobs the move was made for.
+// Only while its instance reads provisioning: a moved worker whose deployment
+// is then scaled to zero, or gone, is skipped like any other — the move's
+// record (ccfailover.Service.Rebinding) outlives the restart by minutes.
+//
+// Only members a cheaper check has not already ruled out are read (claude-code,
+// stored running, on repo when the job names one): each costs the instance
+// read's apiserver requests.
+func (s *Server) poolMembersNotReady(ctx context.Context, members []agents.Agent, repo string) map[int64]string {
 	var running []agents.Agent
 	for _, m := range members {
-		if m.Status != agents.StatusRunning {
+		if m.Status != agents.StatusRunning || agents.ResolveKind(m.Kind) != agents.KindClaudeCode ||
+			(repo != "" && !strings.EqualFold(repo, strings.TrimSpace(m.Repo))) {
 			continue
-		}
-		if s.ext.AccountFailover != nil {
-			if r, ok := s.ext.AccountFailover.Rebinding(m.ID); ok && r.To == m.CCAccount {
-				continue
-			}
 		}
 		running = append(running, m)
 	}
@@ -717,11 +738,26 @@ func (s *Server) poolMembersNotReady(ctx context.Context, members []agents.Agent
 		// no group, and a worker with no instance has no pod whatever its row.
 		if idx[m.Name] == nil {
 			out[m.ID] = "it has no instance"
-		} else if live := liveStatusIndexed(m, idx); live != agents.StatusRunning {
-			out[m.ID] = "its instance reads " + live
+			continue
 		}
+		live := liveStatusIndexed(m, idx)
+		if live == agents.StatusRunning || (live == agents.StatusProvisioning && s.movedTo(m)) {
+			continue
+		}
+		out[m.ID] = "its instance reads " + live
 	}
 	return out
+}
+
+// movedTo reports whether this process recently moved a to its current Claude
+// account (ccfailover.Service.Rebinding) — runJob's test for a job that must
+// wait for the replacement pod.
+func (s *Server) movedTo(a agents.Agent) bool {
+	if s.ext.AccountFailover == nil {
+		return false
+	}
+	r, ok := s.ext.AccountFailover.Rebinding(a.ID)
+	return ok && r.To == a.CCAccount
 }
 
 // maxWorkerSkipsNamed bounds how many skipped workers a refusal names.

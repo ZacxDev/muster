@@ -513,8 +513,8 @@ A job naming a pool runs on the member chosen when it is submitted. A member is
 whose instance has a ready pod when the job is submitted (one whose deployment
 was scaled to zero, or whose pod is not ready, is skipped, so a pool with no
 ready member answers 503; a failed instance read skips no one, and a worker
-this server is moving to another Claude account is not skipped while its pod
-restarts), works on the job's `repo` (when it names one), holds no approved grant reaching github.com,
+this server recently moved to another Claude account is not skipped while its
+pod is coming up), works on the job's `repo` (when it names one), holds no approved grant reaching github.com,
 runs on a Claude account that is configured, whose current token is not
 marked `auth_failed` and that is not cooling down after a `rate_limited`, has
 fewer than 4 jobs queued or running, and — when

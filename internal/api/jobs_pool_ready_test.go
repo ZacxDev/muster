@@ -142,29 +142,63 @@ func TestAPoolMemberIsChosenOnItsStoredStatusWhenTheLiveReadFails(t *testing.T) 
 	}
 }
 
-// TestAWorkerFailedOverForTheJobIsTakenWhileItsPodRestarts: both workers sit
-// on the rate-limited devin with ready pods, so the submission fails keen-fox
-// over to sara — which restarts its pod, so its instance now reads not ready.
-// The job must still go to keen-fox (runJob waits for the replacement pod), not
-// be refused because the move it was made for is in flight.
-func TestAWorkerFailedOverForTheJobIsTakenWhileItsPodRestarts(t *testing.T) {
+// movedWorkerRig is the incident rig with both workers on the rate-limited
+// devin and ready pods: a first submission fails keen-fox over to sara (its
+// pod then restarting, so afterwards its instance reads as after). The
+// first job's read precedes the move, so it is the SECOND submission whose
+// read sees keen-fox moved.
+func movedWorkerRig(t *testing.T, after provision.Instance) *incidentRig {
+	t.Helper()
 	r := newIncidentRig(t)
 	r.markLimited(t, "devin")
 	r.s.ext.Provisioner = &liveInstances{state: func(n string) (provision.Instance, bool) {
 		if n == "keen-fox" {
-			if _, moving := r.svc.Rebinding(keenFoxID); moving {
-				return notReadyInstance, true
+			if _, moved := r.svc.Rebinding(keenFoxID); moved {
+				return after, true
 			}
 		}
 		return readyInstance, true
 	}}
-	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "review"}, true)
+	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "first"}, true)
 	if code != http.StatusAccepted {
-		t.Fatalf("POST /api/jobs to the pool = %d %v, want 202 on the worker failed over for it", code, out)
+		t.Fatalf("first submission = %d %v, want 202 after failing keen-fox over", code, out)
 	}
-	done := r.await(t, int64(out["job_id"].(float64)))
-	if done["agent"] != "keen-fox" || done["cc_account"] != "sara" {
-		t.Fatalf("job ran on %v/%v (%v), want keen-fox/sara", done["agent"], done["cc_account"], done["error"])
+	if done := r.await(t, int64(out["job_id"].(float64))); done["agent"] != "keen-fox" || done["cc_account"] != "sara" {
+		t.Fatalf("first job ran on %v/%v (%v), want keen-fox/sara", done["agent"], done["cc_account"], done["error"])
+	}
+	return r
+}
+
+// TestAWorkerFailedOverIsTakenWhileItsPodRestarts: keen-fox, moved to sara,
+// reads provisioning while its pod restarts. A job submitted then goes to it
+// (runJob waits for the replacement pod) — not refused, and not by failing
+// over mellow-claw too, which skipping keen-fox would do.
+func TestAWorkerFailedOverIsTakenWhileItsPodRestarts(t *testing.T) {
+	r := movedWorkerRig(t, notReadyInstance)
+	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "second"}, true)
+	if code != http.StatusAccepted {
+		t.Fatalf("second submission = %d %v, want 202 on keen-fox", code, out)
+	}
+	if done := r.await(t, int64(out["job_id"].(float64))); done["agent"] != "keen-fox" {
+		t.Fatalf("second job ran on %v (%v), want keen-fox", done["agent"], done["error"])
+	}
+	if got := r.ags.account("mellow-claw"); got != "devin" {
+		t.Fatalf("mellow-claw is on %q, want devin: it was moved although keen-fox could take the job", got)
+	}
+}
+
+// TestAWorkerFailedOverThenScaledToZeroIsSkipped: keen-fox, moved to sara,
+// then has its deployment scaled to zero while the move is still recent. It
+// is skipped like any pod-less worker; the job runs on mellow-claw, failed
+// over to sara for it.
+func TestAWorkerFailedOverThenScaledToZeroIsSkipped(t *testing.T) {
+	r := movedWorkerRig(t, scaledToZeroInstance)
+	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "second"}, true)
+	if code != http.StatusAccepted {
+		t.Fatalf("second submission = %d %v, want 202 on mellow-claw", code, out)
+	}
+	if done := r.await(t, int64(out["job_id"].(float64))); done["agent"] != "mellow-claw" {
+		t.Fatalf("second job ran on %v (%v), want mellow-claw: keen-fox has no pod", done["agent"], done["error"])
 	}
 }
 
