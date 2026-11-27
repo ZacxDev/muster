@@ -613,7 +613,7 @@ var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p
  QSA=Document.prototype.querySelectorAll,SA=Element.prototype.setAttribute,RA=Element.prototype.removeAttribute,GA=Element.prototype.getAttribute,ML=HTMLMediaElement.prototype.load,
  gTag=gd(Element.prototype,"tagName"),gPar=gd(Node.prototype,"parentNode"),
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
- gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
+ gTarget=gd(Event.prototype,"target"),gFocus=gd(Document.prototype,"activeElement"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
  BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,PH=` + jsString(assetPlaceholder) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 // onBack is what the shell's "back" closes (a gallery's open viewer), null
@@ -782,9 +782,39 @@ function next(sec){
    'input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),button:not([disabled])');
   if(!c)continue;
   try{s.scrollIntoView({block:"center"});}catch(e){}
+  landEl=c;landAt=Date.now();
   c.focus({preventScroll:true});return;
  }
 }
+// THE LANDING WINDOW (audit round 1, 🟡-1): for landMs after next() moved
+// focus to a control, THAT control is not pressed and sends nothing — a
+// second press of the key (or tap) that sent the last ask must not answer
+// this one too (an approval's Approve takes focus). A trusted keydown or
+// press on it inside the window starts it again, as the shell's bar does.
+// Tab still moves, and typing in it (a text box) ends the window: only Enter
+// or Space on it, or an Enter that would send from it, is held back; a click
+// on it, and a submit it makes (its press, an implicit submission, a
+// Ctrl+Enter while it has focus), is cancelled. Every other control is as it
+// always is.
+var landEl=null,landAt=0;
+function landing(t){
+ if(!landEl||!t||t!==landEl)return false;
+ if(Date.now()-landAt>=` + landMs + `){landEl=null;return false;}
+ return true;
+}
+function texty(t){var n=t.tagName;return n==="TEXTAREA"||(n==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image)$/.test(t.type));}
+R(AEL,W,["keydown",function(ev){
+ var t=R(gTarget,ev,[]);if(ev.isTrusted!==true||!landing(t))return;
+ // Typing in a text box (a new line in a multi-line one included) is the
+ // reader at work: the window ends. An Enter that would send from it does not.
+ if(texty(t)&&(ev.key!=="Enter"||(t.tagName==="TEXTAREA"&&!(ev.ctrlKey||ev.metaKey)))){landEl=null;return;}
+ landAt=Date.now();
+ if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();R(SIP,ev,[]);}
+},true]);
+R(AEL,W,["keyup",function(ev){var t=R(gTarget,ev,[]);if(ev.key===" "&&landing(t)&&!texty(t)){ev.preventDefault();R(SIP,ev,[]);}},true]);
+R(AEL,W,["pointerdown",function(ev){if(ev.isTrusted===true&&landing(R(gTarget,ev,[])))landAt=Date.now();},true]);
+R(AEL,W,["click",function(ev){if(landing(R(gTarget,ev,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
+R(AEL,W,["submit",function(ev){if(landing(ev.submitter)||landing(R(gFocus,D,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
 ` + galleryJS(v) + `
 })();`
 }
@@ -887,6 +917,9 @@ const (
 	// confirmGuardMs is the owner's confirm's quiet window: a press of the bar
 	// inside it does nothing and starts it again (ShellScript).
 	confirmGuardMs = "500"
+	// landMs is the content frame's landing window: how long after a send
+	// moved focus to the next component nothing in it is pressed (sdkScript).
+	landMs = "500"
 	// confirmWaitMs is how long the owner's confirm waits before it answers
 	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
 	// answer — longer, so the page is never told "No answer came back"
@@ -1303,11 +1336,13 @@ func Shell(v ShellView) string {
 // once, by the same route, with the same session, checks, normalisation and
 // size cap, and no bar. The server decides it when it renders the shell; the
 // frame cannot. A version with an html block keeps the bar and every
-// guarantee above, and its keyboard: while it is open and the keyboard is in
-// the shell, Enter sends — only a trusted, non-repeating keydown after the
-// quiet window; one inside it (or a repeat) starts the window again, so a
-// held Enter or the burst that opened the bar never sends — and Escape
-// cancels. An Enter on Cancel is Cancel's own.
+// guarantee above, and its keyboard: while it is open and the keyboard is IN
+// THE BAR, a plain Enter (no modifier) sends — only a trusted, non-repeating
+// keydown after the quiet window; any other keydown in the bar (a letter, a
+// modified Enter, a repeat) starts the window again, so a held Enter or the
+// burst that opened the bar never sends, and an Enter elsewhere in the shell
+// (Feedback, the chip) never confirms — and Escape cancels. An Enter on
+// Cancel is Cancel's own.
 func ShellScript(base string, owner, confirm bool, keeps ...string) string {
 	creds, refpol, gate, ask := `"omit"`, `"no-referrer"`, "false", "false"
 	if owner {
@@ -1402,15 +1437,24 @@ if(box){
  box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
 }
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
-// Enter sends: a trusted keydown, not a repeat, after the quiet window; one
-// inside it, or a repeat, starts the window again. An Enter on Cancel is
-// Cancel's own (its click).
+// The bar's keyboard (audit round 1, 🔴-1). ONLY A KEY WHOSE TARGET IS IN
+// THE BAR counts (the bar takes focus on opening): an Enter in the Feedback
+// box, on the version chip or anywhere else in the shell never confirms.
+// In the bar, a plain Enter (no Shift, Ctrl, Meta or Alt), trusted, not a
+// repeat, after the quiet window confirms; EVERY other keydown that reaches
+// the bar starts the window again — so typing that lands in it, a modified
+// Enter or a held one never confirms — except a plain Enter or Space on
+// Cancel (Cancel's own click) and a plain Space on Send after the window (Send's
+// own press, armed by its listener below).
 document.addEventListener("keydown",function(e){
- if(!asking||e.key!=="Enter"||!e.isTrusted)return;
- var t=e.target;if(t&&t.closest&&t.closest("[data-send-cancel]"))return;
- e.preventDefault();
- if(e.repeat||!settled()){guard();return;}
- decide(true);
+ if(!asking||!e.isTrusted||e.key==="Escape")return;
+ var t=e.target;if(!t||!box.contains(t))return;
+ var plain=!(e.shiftKey||e.ctrlKey||e.metaKey||e.altKey);
+ if(plain&&!e.repeat&&(e.key==="Enter"||e.key===" ")&&t.closest&&t.closest("[data-send-cancel]"))return;
+ if(plain&&!e.repeat&&e.key===" "&&t===go&&settled())return;
+ if(plain&&!e.repeat&&e.key==="Enter"&&settled()){e.preventDefault();decide(true);return;}
+ if(e.key==="Enter"||e.key===" ")e.preventDefault();
+ guard();
 },true);
 // THE VIEWER'S HISTORY ENTRY (gallery.go): a gallery's full-size viewer is
 // in the frame, Back is this window's. When the frame says it opened, the

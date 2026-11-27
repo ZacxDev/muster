@@ -1549,6 +1549,9 @@ for (const vp of ROUND_VIEWPORTS) {
       await expect(frame.locator('[data-muster-component="q1"] [data-muster-status]')).toHaveText('Sent. Thank you.');
       // On to the approval's Approve; Space on it is that decision, sent.
       await expect(frame.locator('[data-muster-component="a1"]').getByRole('button', { name: 'Approve' })).toBeFocused();
+      // (Past the landing window, in which a press of the ask focus moved to
+      // does nothing: "a second press" below.)
+      await page.waitForTimeout(700);
       await page.keyboard.press('Space');
       await expect(frame.locator('[data-muster-component="a1"] [data-muster-status]')).toHaveText('Sent. Thank you.');
       await expect(confirmBar(page)).toHaveCount(0);
@@ -1630,6 +1633,124 @@ for (const vp of ROUND_VIEWPORTS) {
       expect(fenced).toContain('"component":"q1","data":{"answer":"first"}');
       expect(fenced).not.toContain('"second"');
       expect(fenced).not.toContain('"script"');
+    });
+  });
+}
+
+// Audit round 1 on the faster asks. 🔴-1: the bar's Enter counts only when
+// the key's target is IN the bar, only a plain Enter, and any other keydown
+// in the bar restarts its window — measured before the fix, each case below
+// recorded the script's payload. 🟡-1: after a send moves focus to the next
+// ask, a second press inside the landing window answers nothing.
+const AUDIT_TWO = [
+  { type: 'approval', id: 'a1', label: 'First?' },
+  { type: 'approval', id: 'a2', label: 'Second?' },
+];
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, only a plain Enter in the bar confirms: Enter in Feedback, on the chip, modified or after typing records nothing (audit 🔴-1)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Bar focus ' + vp.name + ' ' + stamp, blocks: BAR_BLOCKS });
+      const id = pg.body.page_id as number;
+      const posts: string[] = [];
+      page.on('request', (r) => { if (r.method() === 'POST' && /\/versions\/\d+\/submit$/.test(new URL(r.url()).pathname)) posts.push(r.url()); });
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(frame.locator('#b-out')).toHaveText('-');
+      const bar = confirmBar(page);
+      // Each case on an open bar past its quiet window (a fresh one if an
+      // earlier case closed it); each is checked on its own (soft), so every
+      // case that confirms is named.
+      const open = async () => {
+        if (!(await bar.isVisible())) {
+          await frame.locator('body').evaluate(() => (window as unknown as { sendIt: () => void }).sendIt());
+          await expect(bar).toBeVisible();
+        }
+        await page.waitForTimeout(700);
+      };
+      const cases: [string, () => Promise<void>][] = [
+        ['Enter on the version chip', async () => {
+          await page.locator('[data-version-chip]').focus();
+          await page.keyboard.press('Enter');
+        }],
+        ['Shift+Enter in Feedback', async () => {
+          await page.locator('[data-feedback-text]').focus();
+          await page.keyboard.press('Shift+Enter');
+        }],
+        ['Ctrl+Enter in Feedback', async () => {
+          await page.locator('[data-feedback-text]').focus();
+          await page.keyboard.press('Control+Enter');
+        }],
+        ['letters then Enter in Feedback', async () => {
+          await page.locator('[data-feedback-text]').focus();
+          await page.keyboard.type('abc');
+          await page.keyboard.press('Enter');
+        }],
+        ['Shift+Enter in the bar', async () => { await bar.focus(); await page.keyboard.press('Shift+Enter'); }],
+        ['Ctrl+Enter in the bar', async () => { await bar.focus(); await page.keyboard.press('Control+Enter'); }],
+        ['letters then Enter in the bar', async () => { await bar.focus(); await page.keyboard.type('abc'); await page.keyboard.press('Enter'); }],
+        // A modifier held from before the window: only the plain-Enter rule
+        // stops these (the modifier's own keydown restarted the window).
+        ...(['Shift', 'Control', 'Alt'] as const).map((m): [string, () => Promise<void>] => [`${m} held, then Enter after the window, in the bar`, async () => {
+          await bar.focus();
+          await page.keyboard.down(m);
+          await page.waitForTimeout(700);
+          await page.keyboard.press('Enter');
+          await page.keyboard.up(m);
+        }]),
+      ];
+      for (const [what, act] of cases) {
+        if (what.includes('Feedback') && !(await page.locator('[data-feedback-text]').isVisible())) {
+          if (await page.locator('#page-versions').isVisible()) await page.locator('[data-versions-scrim]').click({ position: { x: 5, y: 300 } });
+          await page.locator('[data-feedback-pill]').click();
+        }
+        await open();
+        const before = posts.length;
+        await act();
+        await page.waitForTimeout(300);
+        expect.soft(posts.length - before, what + ' confirmed the bar').toBe(0);
+      }
+      if (await page.locator('#page-versions').isVisible()) await page.locator('[data-versions-scrim]').click({ position: { x: 5, y: 300 } });
+      await open();
+      expect(posts.length, 'a case above confirmed the bar').toBe(0);
+      expect(await rowsOf(id)).toBe(0);
+      // The control: the bar focused, a plain Enter after the window: ONE post.
+      await bar.focus();
+      await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
+      await expect(bar).toBeHidden();
+      await expect(frame.locator('#b-out')).toHaveText(/^saved:\d+$/);
+      expect(posts.length, 'the bar-focused Enter').toBe(1);
+      expect(await rowsOf(id)).toBe(1);
+    });
+  });
+
+  test(`at ${vp.name}, a second press right after a send does not answer the ask focus moved to (audit 🟡-1)`, async ({ browser }) => {
+    test.skip(vp.touch, 'a keyboard flow');
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Double ' + vp.name + ' ' + stamp, blocks: AUDIT_TWO });
+      const id = pg.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      const a1 = frame.locator('[data-muster-component="a1"]');
+      const a2 = frame.locator('[data-muster-component="a2"]');
+      await a1.getByRole('button', { name: 'Approve' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(a1.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      await expect(a2.getByRole('button', { name: 'Approve' })).toBeFocused();
+      // A second, separate Enter within 200 ms of the first send's landing.
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(400);
+      expect(await rowsOf(id), 'the second press approved the next ask').toBe(1);
+      await expect(a2.locator('[data-muster-status]')).toHaveText('');
+      // And a click there inside the window does not either.
+      await a2.getByRole('button', { name: 'Approve' }).click();
+      await page.waitForTimeout(300);
+      expect(await rowsOf(id), 'a click inside the window approved').toBe(1);
+      // The control: a press after the window answers it.
+      await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
+      await expect(a2.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      expect(await rowsOf(id)).toBe(2);
     });
   });
 }

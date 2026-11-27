@@ -547,10 +547,13 @@ nothing was sent.*). The data is shown after muster has turned it into JSON
 records exactly what you read. **Cancel** records nothing, and the page is
 told *Not sent*; so does **Escape** while the keyboard is in muster's part
 of the screen (if it is in the page, muster cannot see the key: tap Cancel).
-**Enter** sends (the bar takes the keyboard when it opens): only a fresh
-press after the bar's first half second — an Enter inside it starts the half
-second again, and a held, repeating Enter never sends, so the press that
-opened the bar cannot also confirm it.
+**Enter** sends while the keyboard is in the bar (it takes the keyboard when
+it opens): only a plain, fresh press after the bar's first half second. Any
+other key in the bar — a letter, Shift, Ctrl, a held Enter — starts the half
+second again, and an Enter anywhere else on the screen (the Feedback box,
+the version button) never sends, so the press that opened the bar, or typing
+meant for something else, cannot also confirm it. Mind the flip side: once
+the bar has been open for half a second, one Enter confirms it.
 Left alone for 10 minutes, the bar cancels itself. The bar is muster's,
 outside the page: the page's script cannot reach it, press it or change
 what it shows. Send is never focused when the bar opens, and a press of the
@@ -578,7 +581,9 @@ muster's own components can be answered without the mouse, on any page:
   keyboard (anywhere else in it, it asks you to choose). A held key sends
   once. **Shift+Enter** in a multi-line answer is a new line.
 - After a send, the keyboard moves on to the next component below that you
-  have not sent from this view, scrolled into sight. On a page without an
+  have not sent from this view, scrolled into sight. For half a second its
+  first control ignores a press (a double press or double tap never answers
+  two asks); typing in it starts at once. On a page without an
   `html` block that is the whole loop: Space, Ctrl+Enter, the next ask. On a
   page with one, Ctrl+Enter opens **Send as you?**, and a fresh **Enter**
   after its half second sends.

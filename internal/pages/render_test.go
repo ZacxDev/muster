@@ -382,11 +382,15 @@ func TestTheOwnersBarIsKeptUnlessTheServerSaysTheVersionIsScriptFree(t *testing.
 	// window (one inside it, or a repeat, restarts it); Enter on Cancel is Cancel's.
 	_, script = shell(&OwnerChrome{Version: 2})
 	for _, want := range []string{
-		` if(!asking||e.key!=="Enter"||!e.isTrusted)return;
- var t=e.target;if(t&&t.closest&&t.closest("[data-send-cancel]"))return;
- e.preventDefault();
- if(e.repeat||!settled()){guard();return;}
- decide(true);`,
+		// Audit round 1 🔴-1: only a key whose target is IN the bar; only a
+		// plain Enter confirms; every other keydown in the bar restarts it.
+		` if(!asking||!e.isTrusted||e.key==="Escape")return;
+ var t=e.target;if(!t||!box.contains(t))return;
+ var plain=!(e.shiftKey||e.ctrlKey||e.metaKey||e.altKey);`,
+		` if(plain&&!e.repeat&&e.key==="Enter"&&settled()){e.preventDefault();decide(true);return;}
+ if(e.key==="Enter"||e.key===" ")e.preventDefault();
+ guard();
+},true);`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the bar's keyboard lacks %q", want)
