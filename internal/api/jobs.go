@@ -607,6 +607,7 @@ func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job
 	if len(members) == 0 {
 		return refuse(http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool))
 	}
+	notReady := s.poolMembersNotReady(ctx, members)
 	// peers is every claude-code agent on a member's Claude account, in this
 	// pool or not: the per-account cap counts the account's jobs wherever they
 	// run, so their queues are read (and locked) with the members'.
@@ -643,7 +644,7 @@ func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job
 	}
 	var blocked []blockedWorker
 	j, created, err := s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
-		c := chooseWorkerDetail(pool, members, peers, repo, states, active, github)
+		c := chooseWorkerDetail(pool, members, peers, repo, states, active, github, notReady)
 		if c.why != "" {
 			blocked = c.accountBlocked
 			status := http.StatusServiceUnavailable
@@ -661,12 +662,75 @@ func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job
 	return j, created, blocked, err
 }
 
+// poolLiveReadWithin bounds poolMembersNotReady's instance read. A read still
+// running then is "not observed": every member keeps its stored status.
+const poolLiveReadWithin = 10 * time.Second
+
+// poolMembersNotReady is, of members stored as running, those whose live
+// instance has no ready pod — worker id → why: it has no instance, or the
+// status its instance computes to (liveStatusIndexed: stopped for a deployment
+// scaled to zero, provisioning for a pod not yet ready, error for a failing
+// one). chooseWorkerDetail skips them.
+//
+// 🔴 THE STORED STATUS DOES NOT SEE A WORKER SCALED DOWN UNDER IT. Nothing
+// demotes a stored `running` (internal/agentstatus only promotes
+// provisioning → running), so a worker whose deployment something other than
+// muster scaled to zero (a node migration) kept reading running, kept being
+// chosen, and every job on it failed at exec with "has no running pod to exec
+// into" — while the pool answered 202 instead of the 503 a caller treats as
+// "no worker can take it, retry". Measured: two of three members of a review
+// pool pod-less for hours, and hundreds of jobs failing that way on them.
+//
+// ⚠ IT FAILS OPEN, AS liveStatusIndexed DOES. With no provisioner, or a read
+// that fails or outlasts poolLiveReadWithin, nothing is marked: the stored
+// status decides, as before. Refusing every job on a provisioner blip would
+// turn a brief blindness into an outage of the whole pool.
+//
+// ⚠ A WORKER THIS PROCESS IS MOVING TO ANOTHER ACCOUNT IS NOT MARKED. Its pod
+// is restarting BECAUSE createPoolJob failed it over so the job could run on
+// it, and runJob waits for its replacement pod (AwaitRebound); skipping it
+// here would refuse the very job the move was made for.
+func (s *Server) poolMembersNotReady(ctx context.Context, members []agents.Agent) map[int64]string {
+	var running []agents.Agent
+	for _, m := range members {
+		if m.Status != agents.StatusRunning {
+			continue
+		}
+		if s.ext.AccountFailover != nil {
+			if r, ok := s.ext.AccountFailover.Rebinding(m.ID); ok && r.To == m.CCAccount {
+				continue
+			}
+		}
+		running = append(running, m)
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	idx := s.instancesOfWithin(ctx, running, poolLiveReadWithin)
+	if idx == nil {
+		return nil
+	}
+	out := map[int64]string{}
+	for _, m := range running {
+		// No instance at all is checked first: liveStatusIndexed answers a
+		// row's stored status for it when the row was never kicked off and has
+		// no group, and a worker with no instance has no pod whatever its row.
+		if idx[m.Name] == nil {
+			out[m.ID] = "it has no instance"
+		} else if live := liveStatusIndexed(m, idx); live != agents.StatusRunning {
+			out[m.ID] = "its instance reads " + live
+		}
+	}
+	return out
+}
+
 // maxWorkerSkipsNamed bounds how many skipped workers a refusal names.
 const maxWorkerSkipsNamed = 10
 
 // chooseWorker is the worker-pool selection, pure. Of pool's members, a worker
-// is ELIGIBLE when it is a claude-code agent whose stored status is running,
-// works on repo (when the job names one), holds no approved grant reaching GitHub
+// is ELIGIBLE when it is a claude-code agent whose stored status is running
+// (and, in createPoolJob, whose live instance has a ready pod:
+// poolMembersNotReady), works on repo (when the job names one), holds no approved grant reaching GitHub
 // (github: worker id → that grant's connector; jobs_grants.go), runs on a
 // Claude account that is configured, whose current token is not marked
 // auth_failed and which is not cooling down after a rate limit
@@ -698,7 +762,7 @@ const maxWorkerSkipsNamed = 10
 // worker is a 503).
 func chooseWorker(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
 	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
-	c := chooseWorkerDetail(pool, members, peers, repo, accounts, active, github)
+	c := chooseWorkerDetail(pool, members, peers, repo, accounts, active, github, nil)
 	return c.chosen, c.why, c.full
 }
 
@@ -724,9 +788,12 @@ type workerChoice struct {
 	accountBlocked []blockedWorker
 }
 
-// chooseWorkerDetail is chooseWorker with the account-blocked members.
+// chooseWorkerDetail is chooseWorker with the account-blocked members, and
+// notReady (poolMembersNotReady: worker id → why it has no ready pod): a member stored
+// as running whose instance has no ready pod is skipped like a stopped one —
+// not for capacity, so a pool with no ready member is a 503.
 func chooseWorkerDetail(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
-	active map[int64]jobs.ActiveCount, github map[int64]string) (out workerChoice) {
+	active map[int64]jobs.ActiveCount, github map[int64]string, notReady map[int64]string) (out workerChoice) {
 	type cand struct {
 		a  agents.Agent
 		c  jobs.ActiveCount
@@ -755,6 +822,8 @@ func chooseWorkerDetail(pool string, members, peers []agents.Agent, repo string,
 			skip = "kind " + agents.ResolveKind(m.Kind)
 		case m.Status != agents.StatusRunning:
 			skip = "status " + m.Status
+		case notReady[m.ID] != "":
+			skip = "no ready pod: " + notReady[m.ID]
 		case repo != "" && !strings.EqualFold(repo, strings.TrimSpace(m.Repo)):
 			skip = fmt.Sprintf("works on repository %q", m.Repo)
 		case github[m.ID] != "":

@@ -37,6 +37,9 @@ const agentsListTool = "agents_list"
 // mirrored sessions.
 const agentsListMirrorOnly = "agents_list is available only to your owner's own mirrored Claude Code sessions"
 
+// agentsListLiveWithin bounds agents_list's live instance read.
+const agentsListLiveWithin = 10 * time.Second
+
 // agentsListArgs is the arguments refusal.
 const agentsListArgs = "arguments are {worker_pool?}"
 
@@ -44,7 +47,7 @@ func agentsListToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: agentsListTool,
 		Description: "List your owner's agents (only theirs), newest first, as `muster agent ls` shows them: each one's name (its slug, " +
 			"what agent_destroy takes), id, display name, kind (claude-code or gateway), worker pool (a machine-job worker's pool, " +
-			"\"\" for none), Claude account (a claude-code agent's, \"\" otherwise), status (provisioning, running, stopped, error, …), " +
+			"\"\" for none), Claude account (a claude-code agent's, \"\" otherwise), status (its live instance's: provisioning, running, stopped, error, …), " +
 			"task id and when it was created. worker_pool filters to that pool's workers. Read-only.",
 		Parameters: objSchema(map[string]any{
 			"worker_pool": strProp("Only the agents in this worker pool. Omit it for all of your owner's agents."),
@@ -95,15 +98,26 @@ func (s *Server) toolAgentsList(ctx context.Context, c toolCaller, arguments str
 	// A host officer instance's row is never provisioned and is seen as its
 	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
 	list = agents.ProvisionedOnly(list)
-	out := make([]agentsListItem, 0, len(list))
+	var listed []agents.Agent
 	for _, a := range list {
 		// Row-level security already hides another owner's agents; the owner
 		// comparison is the same rule stated again (agent_destroy's).
 		if a.OwnerID != p.UserID || (pool != "" && a.WorkerPool != pool) {
 			continue
 		}
+		listed = append(listed, a)
+	}
+	// 🔴 THE STATUS IS THE LIVE ONE (liveStatusIndexed), NOT THE STORED ROW'S.
+	// Nothing demotes a stored `running`, so a worker whose deployment was
+	// scaled to zero under it read running here for hours while every job sent
+	// to it failed for want of a pod. One bounded read of the listed agents'
+	// instances only; a read that fails or outlasts agentsListLiveWithin answers
+	// the stored status, as every live-status surface does.
+	idx := s.instancesOfWithin(ctx, listed, agentsListLiveWithin)
+	out := make([]agentsListItem, 0, len(listed))
+	for _, a := range listed {
 		it := agentsListItem{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Kind: agents.ResolveKind(a.Kind),
-			WorkerPool: a.WorkerPool, CCAccount: a.CCAccount, Status: a.Status, CreatedAt: a.CreatedAt.UTC()}
+			WorkerPool: a.WorkerPool, CCAccount: a.CCAccount, Status: liveStatusIndexed(a, idx), CreatedAt: a.CreatedAt.UTC()}
 		if a.NoteID != nil {
 			id := *a.NoteID
 			it.TaskID = &id
