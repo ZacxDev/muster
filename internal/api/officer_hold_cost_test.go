@@ -2,6 +2,7 @@ package api
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,6 +108,7 @@ func TestEveryHoldOfAnItemReportsItsCost(t *testing.T) {
 	}
 	// the wake loop's read: HQ shows no routine instance holding anything
 	llmSync(r.s.officerRT.llm, r.s.officerRT.reg, r.s.llmHoldsEnded)(o, nil, time.Now())
+	r.s.flushHoldCosts()
 	if got := holdCostsOf(r.hq, lapsed); len(got) != 2 || got[0] != (hqtest.HoldCostCall{Item: lapsed, Attempt: 1, Instance: r1.Name, USD: 0.0311, From: officers.CostFromLLMProxy}) {
 		t.Errorf("lapsed, after the wake loop's read: HQ recorded holds %+v, want r1's 0.0311 as attempt 1", got)
 	}
@@ -169,5 +171,54 @@ func TestAHoldCostAgainstAnHQWithoutTheRoute(t *testing.T) {
 	}
 	if want := "officers: hold cost not recorded officer=" + costOff + " instance=" + r1.Name + " item=" + item + " attempt=1 cost_usd=0.031100: "; !strings.Contains(r.logs.String(), want) {
 		t.Errorf("the log does not say the hold's cost was not recorded (%q):\n%s", want, r.logs)
+	}
+}
+
+// TestAHoldCostReportNeverBlocksTheWakeLoopsRead: the wake loop's read
+// (llmSync, under officers.Config.Observed, which must not block) that ends
+// a lapsed hold hands its report to the background: with HQ's route stalled,
+// the read still returns at once, and the report lands once HQ answers.
+// Red when the report is sent on the read's own goroutine: the read waits
+// for HQ (up to the 10 s report timeout).
+func TestAHoldCostReportNeverBlocksTheWakeLoopsRead(t *testing.T) {
+	r := newItemCostRig(t)
+	stall := make(chan struct{})
+	var once sync.Once
+	unstall := func() { once.Do(func() { close(stall) }) }
+	t.Cleanup(unstall)
+	r.hq.Before = func(_, path string) {
+		if strings.HasSuffix(path, "/hold-cost") {
+			<-stall
+		}
+	}
+	r1 := r.agent(t, costRoutine+"1")
+	item := r.hq.AddTieredItem(costOff, "web.check", "node-stalled", officers.TierRoutine)
+	r.claim(t, r1, item)
+	r.llm(t, r1, 0.0293)
+	r.hq.SetClaim(item, r1.Name, time.Now().Add(-time.Minute)) // r1's lease lapses
+	o, err := r.s.officerRT.reg.Get(costOff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		llmSync(r.s.officerRT.llm, r.s.officerRT.reg, r.s.llmHoldsEnded)(o, nil, time.Now())
+	}()
+	select {
+	case <-read:
+	case <-time.After(3 * time.Second):
+		unstall()
+		<-read
+		t.Fatal("the wake loop's read waited on HQ's hold-cost route: a report must be sent in the background")
+	}
+	if got := holdCostsOf(r.hq, item); len(got) != 0 {
+		t.Fatalf("with HQ stalled, HQ recorded %+v already, want nothing yet", got)
+	}
+	unstall()
+	r.s.flushHoldCosts()
+	if got := holdCostsOf(r.hq, item); len(got) != 1 ||
+		got[0] != (hqtest.HoldCostCall{Item: item, Attempt: 1, Instance: r1.Name, USD: 0.0293, From: officers.CostFromLLMProxy}) {
+		t.Errorf("after HQ answered: HQ recorded %+v, want r1's 0.0293 as attempt 1", got)
 	}
 }

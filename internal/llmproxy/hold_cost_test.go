@@ -11,10 +11,12 @@ import (
 // ---------------------------------------------------------------------------
 // A HOLD'S COST (civ-hq docs/OFFICERS.md "Per-hold cost"): every claim of an
 // item is one hold, and whatever ends a hold — Ended (complete, release, an
-// ask), a claim of another item, HQ's new claim of the same item (its lease
-// lapsed), or a wake-loop Sync that no longer shows it — hands that hold's
-// cost back ONCE, with HQ's claim number, for HQ to add up. Unlike the
-// item's cost (ItemCost), a later claim's hold has a known cost of its own.
+// ask), HQ's new claim of the same item (its lease lapsed), or a wake-loop
+// Sync that no longer shows it — hands that hold's cost back ONCE, with
+// HQ's claim number, for HQ to add up. A claim of ANOTHER item ends nothing
+// (HQ keeps the earlier claim): that hold is parked until one of those ends
+// it. Unlike the item's cost (ItemCost), a later claim's hold has a known
+// cost of its own.
 // ---------------------------------------------------------------------------
 
 // oneHold is the single HoldCost of ended, or a failure naming what.
@@ -47,16 +49,23 @@ func wantHold(t *testing.T, what string, got, want HoldCost) {
 //     alone — Ended answers 0.0419 for attempt 3, not 0.0942 — and that
 //     hold is not the item's whole cost (not_first_claim).
 //   - instance 3, item-c, claim 2 (the judgement claim after a hand-on): one
-//     request (0.0613); claiming item-d answers item-c's hold, 0.0613 for
-//     attempt 2.
+//     request (0.0613); claiming item-d ends NOTHING (HQ keeps the claim of
+//     item-c: a report now would be refused hold_live); item-d's request
+//     (0.0389) is item-d's alone; Ended of item-c, its own complete,
+//     answers 0.0613 for attempt 2, once; Ended of item-d answers 0.0389.
 //   - instance 4, item-e, claim 1: one request (0.0271); a Sync showing it
-//     holding nothing (and instance 3 still holding item-d) answers 0.0271
-//     for attempt 1 alone; a second Sync, nothing.
+//     holding nothing (and instance 3 holding nothing) answers 0.0271 for
+//     attempt 1 alone; a second Sync, nothing.
+//   - instance 5, item-f, claim 1: one request (0.0179); claiming item-g
+//     ends nothing; a Sync still showing it holding both ends nothing; a
+//     Sync showing only item-g (item-f's lease lapsed) answers item-f's
+//     0.0179 for attempt 1, and never adopts or ends item-g; a second Sync,
+//     nothing.
 //   - muster's already-yours answer (attempts 0) for the item instance 1
 //     holds ends nothing; nor does Ended of an item not held.
 func TestEachHoldsCostIsHandedBackWhenItEnds(t *testing.T) {
 	const officer = "items:hold-cost"
-	r := newRig(t, officer, costsInOrder(0.0137, 0.0291, 0.0523, 0.0419, 0.0613, 0.0271, 0.0389))
+	r := newRig(t, officer, costsInOrder(0.0137, 0.0291, 0.0523, 0.0419, 0.0613, 0.0389, 0.0271, 0.0179))
 	post := func(n int) {
 		t.Helper()
 		r.set(func(c *Caller) { c.Instance, c.InstanceLabel = n, "r"+string(rune('0'+n)) })
@@ -96,15 +105,41 @@ func TestEachHoldsCostIsHandedBackWhenItEnds(t *testing.T) {
 
 	r.p.ClaimedAttempt(officer, pool, 3, "item-c", 2)
 	post(3) // 0.0613
-	wantHold(t, "item-c ended by claiming item-d", oneHold(t, "item-d claimed", r.p.ClaimedAttempt(officer, pool, 3, "item-d", 1)),
+	if got := r.p.ClaimedAttempt(officer, pool, 3, "item-d", 1); len(got) != 0 {
+		t.Fatalf("claiming item-d while holding item-c ended %+v, want none (HQ keeps the claim of item-c)", got)
+	}
+	post(3) // 0.0389, item-d's
+	wantHold(t, "item-c's own end, after claiming item-d", oneHold(t, "item-c ended", r.p.Ended(officer, pool, 3, "item-c")),
 		HoldCost{Pool: pool, Instance: 3, Item: "item-c", Attempt: 2, USD: 0.0613})
+	if got := r.p.Ended(officer, pool, 3, "item-c"); len(got) != 0 {
+		t.Fatalf("item-c ended twice: the second handed back %+v, want none", got)
+	}
+	wantHold(t, "item-d ended", oneHold(t, "item-d ended", r.p.Ended(officer, pool, 3, "item-d")),
+		HoldCost{Pool: pool, Instance: 3, Item: "item-d", Attempt: 1, USD: 0.0389})
 
 	r.p.ClaimedAttempt(officer, pool, 4, "item-e", 1)
 	post(4) // 0.0271
-	wantHold(t, "item-e gone from HQ's claimed list", oneHold(t, "Sync", r.p.Sync(officer, pool, map[int][]string{3: {"item-d"}, 4: nil}, time.Now())),
+	wantHold(t, "item-e gone from HQ's claimed list", oneHold(t, "Sync", r.p.Sync(officer, pool, map[int][]string{3: nil, 4: nil}, time.Now())),
 		HoldCost{Pool: pool, Instance: 4, Item: "item-e", Attempt: 1, USD: 0.0271})
-	if got := r.p.Sync(officer, pool, map[int][]string{3: {"item-d"}, 4: nil}, time.Now()); len(got) != 0 {
+	if got := r.p.Sync(officer, pool, map[int][]string{3: nil, 4: nil}, time.Now()); len(got) != 0 {
 		t.Fatalf("a second Sync handed back %+v, want none (each hold once)", got)
+	}
+
+	r.p.ClaimedAttempt(officer, pool, 5, "item-f", 1)
+	post(5) // 0.0179
+	if got := r.p.ClaimedAttempt(officer, pool, 5, "item-g", 1); len(got) != 0 {
+		t.Fatalf("claiming item-g while holding item-f ended %+v, want none", got)
+	}
+	if got := r.p.Sync(officer, pool, map[int][]string{5: {"item-f", "item-g"}}, time.Now()); len(got) != 0 {
+		t.Fatalf("a Sync showing instance 5 holding both handed back %+v, want none", got)
+	}
+	wantHold(t, "item-f's lease lapsed (parked)", oneHold(t, "Sync", r.p.Sync(officer, pool, map[int][]string{5: {"item-g"}}, time.Now())),
+		HoldCost{Pool: pool, Instance: 5, Item: "item-f", Attempt: 1, USD: 0.0179})
+	if got := r.p.Sync(officer, pool, map[int][]string{5: {"item-g"}}, time.Now()); len(got) != 0 {
+		t.Fatalf("a second Sync handed back %+v, want none (each hold once)", got)
+	}
+	if _, item := r.p.items.used(instanceKey{officer, pool, 5}); item != "item-g" {
+		t.Errorf("after the Syncs instance 5 holds %q, want item-g (never adopted or ended)", item)
 	}
 }
 

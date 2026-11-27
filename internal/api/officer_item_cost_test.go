@@ -159,8 +159,12 @@ func (r *itemCostRig) llm(t *testing.T, a agents.Agent, cost float64) {
 	}
 }
 
+// tool calls tool name as agent a, then waits for the hold-cost reports it
+// handed to the background (llmHoldsEnded) to be sent, so what HQ recorded
+// and the log are read after them.
 func (r *itemCostRig) tool(t *testing.T, a agents.Agent, name, args string) string {
 	t.Helper()
+	defer r.s.flushHoldCosts()
 	return r.s.dispatchAgentTool(context.Background(), a, name, args)
 }
 

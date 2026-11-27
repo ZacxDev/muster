@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -274,23 +276,42 @@ func proxyCost(usd float64) (*officers.ItemCost, string) {
 	return &officers.ItemCost{USD: usd, From: officers.CostFromLLMProxy}, ""
 }
 
-// holdCostTimeout bounds one hold-cost report to HQ: it runs on the
-// officer tool's call (complete, release, claim) and on the wake loop.
+// holdCostTimeout bounds one hold-cost report to HQ (sent in the
+// background: llmHoldsEnded).
 const holdCostTimeout = 10 * time.Second
+
+// holdCostMaxSends bounds the hold-cost reports running at once: one past it
+// is dropped with a log line, never queued or retried.
+const holdCostMaxSends = 64
+
+// holdCostSenders is the hold-cost reports being sent (llmHoldsEnded).
+type holdCostSenders struct {
+	wg sync.WaitGroup
+	n  atomic.Int32
+}
+
+// flushHoldCosts waits until every hold-cost report handed to a send so far
+// is sent (or failed): the tests' hook.
+func (s *Server) flushHoldCosts() { s.holdCostSends.wg.Wait() }
 
 // llmHoldsEnded reports each ended hold of o's proxied instances to HQ
 // (civ-hq docs/OFFICERS.md "Per-hold cost"): the hold's cost, by HQ's claim
 // number, with o's own backend, which adds every hold of an item up. Every
 // hold that ended — complete (any outcome: needs_judgement's hand-on
-// included), release, ask, a claim of another item, HQ's new claim of the
-// same one, or a lapsed lease the wake loop saw — is handed here once by
-// the meter.
+// included), release, ask, HQ's new claim of the same item, or a lapsed
+// lease the wake loop saw — is handed here once by the meter. A claim of
+// another item ends none: the meter parks the held one until one of those.
 //
 // 🔴 A HOLD WHOSE COST IS NOT KNOWN WHOLE SENDS NOTHING, never a 0
 // (llmproxy holdWhy): HQ then never has every hold, and the item carries no
-// per-hold total. 🔴 A REPORT NEVER FAILS ANYTHING: a backend without the
-// verb (the builtin one) or an HQ without the route (404) is one log line;
-// the complete, release or claim it follows has already succeeded.
+// per-hold total. 🔴 A REPORT NEVER FAILS OR BLOCKS ANYTHING: each is sent
+// in the background (at most holdCostMaxSends at once, each bounded by
+// holdCostTimeout), because the wake loop's read (llmSync, under
+// officers.Config.Observed) must not block and the complete, release or
+// claim it follows has already succeeded. A report not sent — a backend
+// without the verb (the builtin one), an HQ without the route (404), any
+// other failure, or one past the bound — is one log line, never retried.
+// HQ adds the holds up in any order, so the sends need none.
 func (s *Server) llmHoldsEnded(o officers.Officer, ended []llmproxy.HoldCost) {
 	if len(ended) == 0 || s.officerRT == nil || s.officerRT.hq == nil {
 		return
@@ -313,13 +334,24 @@ func (s *Server) llmHoldsEnded(o officers.Officer, ended []llmproxy.HoldCost) {
 			s.logger.Printf("officers: hold cost not sent officer=%s instance=%s item=%s attempt=%d: %v", o.ID, instance, h.Item, h.Attempt, err)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), holdCostTimeout)
-		_, err = hb.HoldCost(ctx, officers.ItemID(h.Item), instance, h.Attempt, *cost)
-		cancel()
-		if err != nil {
-			s.logger.Printf("officers: hold cost not recorded officer=%s instance=%s item=%s attempt=%d cost_usd=%.6f: %v",
-				o.ID, instance, h.Item, h.Attempt, cost.USD, err)
+		w := &s.holdCostSends
+		if w.n.Add(1) > holdCostMaxSends {
+			w.n.Add(-1)
+			s.logger.Printf("officers: hold cost not sent officer=%s instance=%s item=%s attempt=%d: %d reports already running",
+				o.ID, instance, h.Item, h.Attempt, holdCostMaxSends)
+			continue
 		}
+		w.wg.Add(1)
+		officer, item, attempt, c := o.ID, h.Item, h.Attempt, *cost
+		safeGoDone(s.logger, "officers: send a hold cost", &w.wg, func() {
+			defer w.n.Add(-1)
+			ctx, cancel := context.WithTimeout(context.Background(), holdCostTimeout)
+			defer cancel()
+			if _, err := hb.HoldCost(ctx, officers.ItemID(item), instance, attempt, c); err != nil {
+				s.logger.Printf("officers: hold cost not recorded officer=%s instance=%s item=%s attempt=%d cost_usd=%.6f: %v",
+					officer, instance, item, attempt, c.USD, err)
+			}
+		})
 	}
 }
 

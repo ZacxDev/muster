@@ -4300,23 +4300,32 @@ A hold ends, and is reported once (the meter replaces it as it ends), on:
   hold that hands an item on reports its cost, and the judgement hold
   reports its own when it completes;
 - **a release**, and **an ask** to a person (which ends the lease);
-- **a claim of another item**, or **HQ's new claim of the same item** (its
-  lease lapsed and it claimed the item again, with a new `attempts`). The
-  token count for `max_tokens_per_item` carries on into the new hold; the
-  cost does not;
+- **HQ's new claim of the same item** (its lease lapsed and it claimed the
+  item again, with a new `attempts`). The token count for
+  `max_tokens_per_item` carries on into the new hold; the cost does not;
 - **a lapsed lease** another instance took over. The wake loop's next read of
   HQ's claimed items no longer shows the old holder, and that read ends its
   hold.
+
+**A claim of another item ends nothing.** HQ keeps the instance's claim of
+the item it held (its lease runs on), and HQ refuses a report for a hold
+whose lease is live (409 `hold_live`), so a report then would be lost. The
+meter sets that hold aside instead: a request admitted under it and booked
+later is still charged to it, and the new item's requests are the new
+hold's. The set-aside hold ends, and is reported once, by its own item's
+complete, release or ask, by HQ's new claim of it, or by the wake loop's
+read that no longer shows the instance holding it (its lease lapsed). An
+instance that claims the set-aside item back with no new HQ claim resumes
+the same hold.
 
 🔴 **A hold whose cost is not known whole sends nothing, never a 0**, by the
 same rule as above but for the hold alone: claimed through muster with a
 known `attempts`, at least one request booked, none from the estimate, none
 still in flight. HQ then never has every hold of the item, so the item shows
-no per-hold total. This applies to a hold adopted after a restart, a claim
-answered without `attempts`, and a pool with no cost source (a Claude Code
-session). It also applies to a lapsed hold whose meter was lost: the meter
-is in memory, so a restart between the lapse and the next read forgets it.
-Each such hold writes one line:
+no per-hold total. This applies to a hold adopted after a restart and to a
+claim answered without `attempts`. It also applies to a lapsed hold whose
+meter was lost: the meter is in memory, so a restart between the lapse and
+the next read forgets it. Each such hold writes one line:
 
 ```
 officers: hold cost omitted officer=<id> instance=<agent> item=<item id> attempt=<n> reason=<reason>
@@ -4325,11 +4334,21 @@ officers: hold cost omitted officer=<id> instance=<agent> item=<item id> attempt
 `reason` is `adopted`, `attempts_unknown`, `no_requests`, `estimated`,
 `inflight` or `over_bound`.
 
-The report never fails anything: it runs after the complete, release or
-claim has succeeded, and an HQ without the route (404) or a backend without
-the verb (the builtin one) is one `hold cost not recorded` / `not sent` log
-line. HQ keeps one cost per hold, the first it is sent, so a repeat is never
-counted twice.
+A pool with no cost source (an instance outside the LLM proxy: a Claude
+Code session) is not metered at all, so its holds report nothing and write
+**no** line; the item's complete writes its own `item cost omitted …
+reason=no_source` line (above).
+
+The report never fails or delays anything: it is sent in the background
+after the complete, release or claim has succeeded, or after the wake
+loop's read (which must not block), at most 64 at once, each bounded by
+10 s. A report that cannot be sent is logged, never retried: an HQ without
+the route (404) or any other failure is one `hold cost not recorded` line,
+a backend without the verb (the builtin one) one `hold cost not sent` line,
+and a report dropped because 64 are already running one `hold cost not
+sent … 64 reports already running` line. Reports may reach HQ in any order;
+HQ keeps one cost per hold, the first it is sent, so a repeat is never
+counted twice, and adds them up whichever arrives last.
 
 **Rolling out the per-pool budget (migration 0110):** while the new pod has
 applied 0110 and an old pod is still serving, the old pod's LLM usage cannot
