@@ -1740,9 +1740,12 @@ dispatch both ask them.
   backend has no author mail, attribution or tickets), and muster refuses one
   it sends anyway, naming the field, before the backend. (Before this, muster
   dropped all four silently, so no officer-attributed author was ever told.)
-- **`ask`** (every instance of an HQ officer; outcome `escalated`):
+- **`ask`** (every instance of an HQ officer; outcome `escalated`, or
+  `done` for one kind):
   `{"kind": "<kind>", "ref": "<ref>"}`, the single thing the escalation asks
-  a person to do, as the officer's charter says. HQ folds repeated
+  a person to do, as the officer's charter says. On `done` HQ accepts only
+  `{"kind": "rule_fix", "ref": "<ref>"}`, naming the open held rule fix the
+  done repeats (HQ links it as a repeat). HQ folds repeated
   escalations carrying the same ask into one notification, and lets a
   low-rated escalation that carries one escalate, so the same thing must
   carry the same `ref` every time. muster forwards it **as sent**, under the

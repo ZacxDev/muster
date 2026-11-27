@@ -123,7 +123,7 @@ officer_gap_task
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -557,7 +557,7 @@ officer_gap_task
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -984,7 +984,7 @@ officer_obs_raw
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -1374,7 +1374,7 @@ officer_obs_raw
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -1761,7 +1761,7 @@ officer_obs_query
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -2178,7 +2178,7 @@ officer_obs_raw
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -2569,7 +2569,7 @@ officer_rollout_evidence_attach
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -3023,7 +3023,7 @@ officer_task_ask
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -3442,7 +3442,7 @@ officer_obs_query
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -3787,7 +3787,7 @@ officer_pr_context
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -4239,7 +4239,7 @@ officer_obs_raw
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
@@ -4632,7 +4632,7 @@ officer_rollout_status
     "properties": {
       "ask": {
         "additionalProperties": true,
-        "description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
+        "description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held).",
         "properties": {
           "kind": {
             "description": "What the person is asked to do, one of the kinds your charter names (e.g. \"connector_grant\", \"open_pr\").",
