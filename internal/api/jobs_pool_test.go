@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -232,6 +233,16 @@ type grantStore struct {
 	// before every later one fails.
 	getsBeforeFailing int
 	gets              int
+	// mu guards gets and decided: the connector-request recheck reads grants
+	// from its own goroutine (recheckLater) while the test's requests do.
+	mu sync.Mutex
+}
+
+// decidedIDs is decided, read under mu.
+func (g *grantStore) decidedIDs() []int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.decided)
 }
 
 func (g *grantStore) ListGrants(context.Context) ([]connectors.Grant, error) { return g.grants, nil }
@@ -239,8 +250,11 @@ func (g *grantStore) ListConnectors(context.Context) ([]connectors.Connector, er
 	return g.conns, nil
 }
 func (g *grantStore) GetGrant(_ context.Context, id int64) (connectors.Grant, error) {
+	g.mu.Lock()
 	g.gets++
-	if g.getsBeforeFailing > 0 && g.gets > g.getsBeforeFailing {
+	failing := g.getsBeforeFailing > 0 && g.gets > g.getsBeforeFailing
+	g.mu.Unlock()
+	if failing {
 		return connectors.Grant{}, errors.New("grantStore: the database is unreachable")
 	}
 	for _, gr := range g.grants {
@@ -259,7 +273,9 @@ func (g *grantStore) GetConnector(_ context.Context, name string) (connectors.Co
 	return connectors.Connector{}, connectors.ErrNotFound
 }
 func (g *grantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, _, _, _ string, _ connectors.DecisionSource) (connectors.Grant, error) {
+	g.mu.Lock()
 	g.decided = append(g.decided, id)
+	g.mu.Unlock()
 	gr, err := g.GetGrant(context.Background(), id)
 	if approve {
 		gr.Status = connectors.StatusApproved
@@ -349,8 +365,8 @@ func TestAGitHubGrantIsNeverApprovedForAPoolWorker(t *testing.T) {
 			t.Errorf("approving grant %d of pool worker rev-a = %v, want errPoolWorkerGitHubGrant", id, err)
 		}
 	}
-	if len(st.decided) != 0 {
-		t.Fatalf("refused approvals reached the store: %v", st.decided)
+	if got := st.decidedIDs(); len(got) != 0 {
+		t.Fatalf("refused approvals reached the store: %v", got)
 	}
 	for _, c := range []struct {
 		id      int64
@@ -360,7 +376,7 @@ func TestAGitHubGrantIsNeverApprovedForAPoolWorker(t *testing.T) {
 			t.Errorf("grant %d approve=%v: %v", c.id, c.approve, err)
 		}
 	}
-	if got := st.decided; len(got) != 3 {
+	if got := st.decidedIDs(); len(got) != 3 {
 		t.Fatalf("decided %v, want grants 1 (denied), 3 and 4", got)
 	}
 	if !grantReachesGitHub("vanished", map[string][]string{"chat": {"chat.example.com"}}) {
@@ -384,14 +400,16 @@ func TestEnteringACredentialDoesNotApproveAPoolWorkersGitHubGrant(t *testing.T) 
 		id      string
 		decided bool
 	}{{"5", false}, {"6", true}} {
+		st.mu.Lock()
 		st.decided = nil
+		st.mu.Unlock()
 		form := url.Values{"request_id": {tc.id}, "preset": {"custom"}, "hosts": {"github.com"}, "scheme": {"bearer"},
 			"secret": {"not-a-real-token"}}
 		req := httptest.NewRequest(http.MethodPost, "/connectors", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w := httptest.NewRecorder()
 		f.s.handleConnectorCreate(w, req)
-		if got := len(st.decided) == 1; got != tc.decided {
+		if got := len(st.decidedIDs()) == 1; got != tc.decided {
 			t.Errorf("request %s: approved=%v, want %v (body %q)", tc.id, got, tc.decided, w.Body.String())
 		}
 		if !tc.decided && !strings.Contains(w.Body.String(), "a member of worker pool reviewers") {
@@ -416,8 +434,8 @@ func TestEnteringACredentialApprovesNothingItCannotRead(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	f.s.handleConnectorCreate(w, req)
-	if len(st.decided) != 0 {
-		t.Fatalf("an unreadable request was approved: %v", st.decided)
+	if got := st.decidedIDs(); len(got) != 0 {
+		t.Fatalf("an unreadable request was approved: %v", got)
 	}
 	if !strings.Contains(w.Body.String(), "could not be read") {
 		t.Fatalf("the page does not say the request could not be read: %q", w.Body.String())
