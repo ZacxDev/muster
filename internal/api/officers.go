@@ -1881,7 +1881,8 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 				"ref":  strProp("What it is about, as your charter says to name it (e.g. the request id or the pull request). Use the SAME ref every time you escalate the same thing: HQ folds repeats of one ask together."),
 			},
 			"required": []string{"kind", "ref"},
-			"description": "Optional, outcome escalated only: {kind, ref}, the single thing your escalation asks a person to do, as your charter says. " +
+			"description": "Optional. On outcome escalated: {kind, ref}, the single thing your escalation asks a person to do. " +
+				"On outcome done: only {kind: \"rule_fix\", ref} naming the open held rule fix this done repeats. Both as your charter says. " +
 				"muster passes it to HQ as you send it; HQ validates kind and ref and may refuse with 400 (a refused complete leaves the item held)."}
 		// `choices` is checked here against HQ's own limits
 		// (officers.CheckChoices), so the instance learns what to fix before
