@@ -806,6 +806,19 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	if serr != nil {
 		s.logger.Printf("pages: list: share links: %v", serr)
 	}
+	// The search and the filters (pages_search.go), and which pages wait on
+	// the reader (one query for the whole list).
+	flt := parsePagesFilter(r.URL.Query())
+	var unanswered map[int64]int
+	if len(list) > 0 {
+		var uerr error
+		if unanswered, uerr = s.ext.Pages.Unanswered(r.Context()); uerr != nil {
+			s.logger.Printf("pages: list: unanswered: %v", uerr)
+			if flt.waiting && problem == "" {
+				problem = "Which pages are waiting on you could not be read."
+			}
+		}
+	}
 	// The screen's one explanation, behind the ⓘ beside its heading: who can
 	// see a page, and the Account setting that lets agents share at once.
 	acct := `<a href="` + accountPath + "#" + pagesAgentShareID + `" class="text-accent underline">Account</a>`
@@ -830,31 +843,62 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 <div class="flex items-center gap-1"><h1 class="text-lg font-semibold text-fg">Pages</h1>` +
 		ui.InfoSheetHTML(ui.InfoSheet{ID: "pages-about", Label: "About pages", Heading: "Pages",
 			Lead:  "Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. Share gives you the page's link to send." + teamPagesLead(len(teamIDs) > 0),
-			Extra: g.Raw(`<p class="text-sm text-fg2">` + how + `</p>`)}) + `</div>
+			Extra: g.Raw(`<p class="text-sm text-fg2">` + how + `</p><p class="text-sm text-fg2" data-pages-waiting-about>` + pagesWaitingAbout + `</p>`)}) + `</div>
 `)
+	// The list region: the rows the filter keeps, and — while a filter is on
+	// — how many, or that none matches, with the way back to the whole list.
+	var rows strings.Builder
+	kept, waiting := 0, 0
+	for _, p := range list {
+		maker := pageMakerName(p.Creator.Label, p.Creator.MirrorHost)
+		if unanswered[p.ID] > 0 {
+			waiting++
+		}
+		if !flt.keep(p, maker, unanswered[p.ID]) {
+			continue
+		}
+		kept++
+		v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: maker, Updated: p.UpdatedAt, Now: s.now(),
+			Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable(),
+			NoRevoke: !pageRevocable(ctx, p.Page)}
+		if memberOnTeamPage(ctx, p.Page) {
+			v.TeamID, v.Team = p.OwnerID, teamPageLabel(teams[p.OwnerID])
+		}
+		if l := shared[p.ID]; l.Token != "" {
+			v.ShareURL = s.pageLinkURL(l)
+		}
+		_ = ui.PageRow(v).Render(&rows)
+		rows.WriteString("\n")
+	}
+	region := ""
+	if flt.on() && len(list) > 0 {
+		region = ui.PagesFilterStatusHTML(kept, pagesPath) + "\n"
+	}
+	if kept > 0 {
+		region += `<ul class="flex flex-col divide-y divide-line" data-testid="pages">
+` + rows.String() + `</ul>
+`
+	}
+	if pagesListLive(r) {
+		// The form's live request: the region alone, and the address the
+		// page now shows (htmx replaces the history entry: no new one).
+		h := w.Header()
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		// The rows' Share carries each page's live link.
+		h.Set("Cache-Control", "no-store")
+		h.Set("HX-Replace-Url", flt.href())
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, problemNode(problem)+region)
+		return
+	}
 	b.WriteString(problemNode(problem))
 	if len(list) == 0 && problem == "" {
 		b.WriteString(`<p class="text-sm text-fg2" data-pages-empty>No pages yet.</p>
 `)
 	}
 	if len(list) > 0 {
-		b.WriteString(`<ul class="flex flex-col divide-y divide-line" data-testid="pages">
-`)
-		for _, p := range list {
-			v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: pageMakerName(p.Creator.Label, p.Creator.MirrorHost), Updated: p.UpdatedAt, Now: s.now(),
-				Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable(),
-				NoRevoke: !pageRevocable(ctx, p.Page)}
-			if memberOnTeamPage(ctx, p.Page) {
-				v.TeamID, v.Team = p.OwnerID, teamPageLabel(teams[p.OwnerID])
-			}
-			if l := shared[p.ID]; l.Token != "" {
-				v.ShareURL = s.pageLinkURL(l)
-			}
-			_ = ui.PageRow(v).Render(&b)
-			b.WriteString("\n")
-		}
-		b.WriteString(`</ul>
-`)
+		b.WriteString(ui.PagesFilterFormHTML(pagesPath, ui.PagesFilterView{Q: flt.q, Waiting: flt.waiting, WaitingCount: waiting, By: flt.by, Makers: pageMakers(list)}) + "\n" +
+			ui.PagesListRegionHTML(region) + "\n" + ui.PagesSearchScriptHTML())
 	}
 	b.WriteString(`</section>` + ui.FloatingMenuScriptHTML())
 	// secret: each row's Share carries its page's live link, a bearer

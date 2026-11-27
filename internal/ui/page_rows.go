@@ -12,8 +12,8 @@ import (
 // THE PAGES SCREENS' PARTS (internal/api pages.go draws the screens): a row of
 // the Pages list, a ⋯ menu, a time.
 //
-// The top layer is plain (the operator rule): a row is the page's title, who
-// made it and when (PlainWhen's words: "today at 9:14"), and a badge for each
+// The top layer is plain (the operator rule): a row is the page's title, its
+// number ("#12", what the list's search takes), who made it and when (PlainWhen's words: "today at 9:14"), and a badge for each
 // thing worth a look — only when there is one. No "0 …", no "(s)": a count that is zero is not drawn at all, and one
 // that is drawn is said in words that agree with it ("1 reply", "3 replies").
 
@@ -83,7 +83,16 @@ func PageRow(v PageRowView) g.Node {
 		badges = append(badges, pageBadge(b))
 	}
 	var meta []g.Node
+	// The page's number (operator decision: "see the page ID on the page
+	// card … and search by ID"), "#12", the way the search box takes it. The
+	// one id the plain top layer draws (TestThePagesScreensArePlain).
+	if v.ID > 0 {
+		meta = append(meta, Span(g.Attr("data-page-number", ""), Class(PagesNumberClass), g.Text("#"+strconv.FormatInt(v.ID, 10))))
+	}
 	if v.Maker != "" {
+		if len(meta) > 0 {
+			meta = append(meta, g.Text(" · "))
+		}
 		meta = append(meta, g.Text("by "+v.Maker))
 	}
 	if !v.Updated.IsZero() {

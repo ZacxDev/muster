@@ -80,7 +80,15 @@ func (q askQuery) ByID() bool { return q.AskID > 0 || q.DraftID > 0 }
 
 // askQueryID is an id-shaped query: an optional "ask" or "draft", an optional
 // "#", then the number, spaces allowed between.
-var askQueryID = regexp.MustCompile(`^(?i)(ask|draft)?\s*#?\s*([0-9]{1,18})$`)
+var askQueryID = idQueryPattern("ask|draft")
+
+// idQueryPattern is THE SHAPE OF AN ID-SHAPED SEARCH, for every search box that
+// takes an id (the Asks page's, the Pages list's: pages_search.go): an optional
+// word naming the kind (one of words, case-folded), an optional "#", then the
+// number, spaces allowed between. Group 1 is the word, group 2 the number.
+func idQueryPattern(words string) *regexp.Regexp {
+	return regexp.MustCompile(`^(?i)(` + words + `)?\s*#?\s*([0-9]{1,18})$`)
+}
 
 // parseAskQuery is what the box was given, as a query.
 func parseAskQuery(raw string) askQuery {
@@ -316,8 +324,13 @@ func draftSearchCardHTML(c plugins.DraftCard, now time.Time) string {
 // will swap in HX-Target, and only the box targets the results region. A
 // boosted navigation (HX-Request too, but no such target) is a navigation, and
 // keeps the id redirect.
-func asksSearchLive(r *http.Request) bool {
-	return r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-Target") == ui.AsksSearchRegionID
+func asksSearchLive(r *http.Request) bool { return hxTargets(r, ui.AsksSearchRegionID) }
+
+// hxTargets reports whether r is an htmx request that will swap the element
+// with id: a search box's own live request (the Asks page's, the Pages
+// list's), told from a boosted navigation, which targets no such element.
+func hxTargets(r *http.Request, id string) bool {
+	return r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-Target") == id
 }
 
 // writeAsksSearchLive answers the live request: the results region's contents

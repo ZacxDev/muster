@@ -49,6 +49,13 @@ type Store interface {
 	// TitleSearch is the caller's pages (those Pages lists) whose title holds
 	// text, newest activity first, at most limit.
 	TitleSearch(ctx context.Context, text string, limit int) ([]Page, error)
+	// Unanswered is, by page id, how many built-in components of the CURRENT
+	// version of each of the caller's pages (those Pages lists) nobody has
+	// answered AT THAT VERSION — not its owner, a member, nor anyone through a
+	// link. A page with none is absent. A page whose only interactive content
+	// is an html block is never in it: its script's sends cannot be matched to
+	// a question it asked.
+	Unanswered(ctx context.Context) (map[int64]int, error)
 	// SessionPages is the caller's pages that session s CREATED, newest
 	// first (by when each was made). Nothing, and no query, for an s that
 	// names no session (SessionRef.Valid).
@@ -489,6 +496,37 @@ func (s *PGStore) TitleSearch(ctx context.Context, text string, limit int) ([]Pa
 		out = append(out, p)
 	}
 	return out, wrap("title search", rows.Err())
+}
+
+// Unanswered counts, in ONE query over every page the caller reads (row-level
+// security: their own and their teams'), the answerable components of each
+// page's current version (answerableTypes, and a gallery with a pick) that
+// have no submit or upload response at that version. 🔴 THE CURRENT VERSION
+// ONLY: an answer sent to an older version answered a question the page no
+// longer shows as it was, so it does not answer this one.
+func (s *PGStore) Unanswered(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT p.id, count(*)
+		FROM pages p
+		JOIN page_versions v ON v.page_id = p.id AND v.owner_id = p.owner_id AND v.version = p.current_version
+		CROSS JOIN LATERAL jsonb_array_elements(v.blocks) AS b(block)
+		WHERE (b.block->>'type' = ANY($1::text[]) OR (b.block->>'type' = $2 AND jsonb_typeof(b.block->'pick') = 'object'))
+		  AND NOT EXISTS (SELECT 1 FROM page_responses r
+		      WHERE r.page_id = p.id AND r.version = v.version AND r.component = b.block->>'id' AND r.kind IN ($3, $4))
+		GROUP BY p.id`, answerableTypes, BlockGallery, string(KindSubmit), string(KindUpload))
+	if err != nil {
+		return nil, wrap("unanswered", err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, wrap("unanswered", err)
+		}
+		out[id] = n
+	}
+	return out, wrap("unanswered", rows.Err())
 }
 
 // SessionPages lists the pages session x made, newest made first. Row-level

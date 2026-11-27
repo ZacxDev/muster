@@ -626,7 +626,9 @@ Which session made a page:
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest
-activity first. Each row is the page's title, who made it and when it last
+activity first. Each row is the page's title, its number (**#12**, small and
+muted: what an agent's tools call its `page_id`, and what the search box
+takes), who made it and when it last
 changed (*today at 9:14*, in your own time zone), and a badge only for what
 is there: the version (**v3**, when there is more than
 one), **Live** (it has a live link), **2 waiting** (links waiting for your
@@ -634,6 +636,34 @@ approval) and **3 replies** (responses). Tapping a row opens [your own
 view](#the-owners-view) of the page; its **⋯** holds **Share**, **Details**
 (the page's screen) and, when the page has its Share link, **Revoke link** and
 **New link**. What the screen is for is behind the **ⓘ** beside its heading.
+
+### Finding a page
+
+Over the list, once there is a page, are a search box and two filters. All
+three narrow the list together, and each is in the address, so a filtered list
+is a link you can bookmark, a reload keeps it, and it works with no script:
+
+- **Search pages** (`?q=`). A number — `12`, `#12` or `page 12` — finds the page
+  with that number and nothing else: a page whose title happens to hold the
+  digits is not listed beside it. Anything else finds the pages whose title,
+  or whose maker's name as the row shows it, holds the words (any case).
+- **Waiting on you** (`?waiting=1`; the chip shows how many). The pages whose
+  current version has a question, choice, form, upload, approval or gallery
+  pick that nobody has answered at that version — not you, not a teammate, not
+  anyone through a link. An answer sent to an older version does not count: a
+  new version asks again. A page that asks only through its own script (an
+  `html` block) cannot be judged, so it is never listed here; the list's ⓘ
+  says so.
+- **Made by** (`?by=`), drawn only when the list holds pages by more than one
+  maker: only the pages one of them made, named as the rows name them.
+
+With a script the list follows each keystroke and change at once, without a
+reload, and the address follows it (no new history entry per keystroke); Enter
+does the same as a plain form submit. Without a script, Enter searches and
+**Apply** applies the filters. When nothing matches, the list says **No pages
+match.** with **Clear filters** beside it. **/** puts the cursor in the search
+box whenever you are not already typing in a field — on this screen it does
+that instead of opening the search palette.
 
 A page's screen (`/pages/{id}`) has, under the title, who made it and the
 version shown:
