@@ -29,17 +29,29 @@ import (
 // In memory only: a restart forgets the counts (the daily budget is the
 // persisted wall); an adopted item starts at zero.
 //
-// It also keeps the hold's COST (Proxy.ItemCost): the USD every request it
-// charged booked, as the provider reported it. 🔴 A COST IS KNOWN ONLY WHEN
-// THIS HOLD IS THE ITEM'S WHOLE PROXY SPEND: HQ's first claim of it (attempts
-// 1, so no earlier hold spent on it), told to the meter by that claim (not
-// adopted by Sync, which follows a restart that forgot the requests before
-// it), at least one request charged (no request is no evidence, never a 0),
-// and every one at the provider's reported cost (one booked from the proxy's
-// pessimistic estimate is not a measured cost), and no request admitted under
-// the hold still in flight, i.e. not yet charged to it (its cost would be
-// missing from the sum). A request leaves flight the moment book charges it. A later HQ claim of the held item (attempts 2+: its lease lapsed and it
-// was claimed again) makes it unknown.
+// It also keeps the hold's COST: the USD every request it charged booked, as
+// the provider reported it. 🔴 A HOLD'S COST IS KNOWN ONLY WHEN IT IS THE
+// HOLD'S WHOLE PROXY SPEND (holdWhy): told to the meter by HQ's claim with
+// the claim's number (attempts: not adopted by Sync, which follows a
+// restart that forgot the requests before it, nor a claim whose number is
+// unknown), at least one request charged (no request is no evidence, never
+// a 0), every one at the provider's reported cost (one booked from the
+// proxy's pessimistic estimate is not a measured cost), and no request
+// admitted under the hold still in flight, i.e. not yet charged to it (its
+// cost would be missing from the sum). A request leaves flight the moment
+// book charges it.
+//
+// Two readings of it:
+//   - THE HOLD'S cost (HoldCost), handed back by whatever ENDS the hold —
+//     Ended (complete, release, ask), a claim of another item or a new HQ
+//     claim of the same one (its lease lapsed: attempts moved), or a Sync
+//     that no longer shows it — for HQ's per-hold record (civ-hq
+//     docs/OFFICERS.md "Per-hold cost"), which adds every hold of the item
+//     up. Each hold is handed back once: it is replaced as it ends.
+//   - THE ITEM'S cost (Proxy.ItemCost), read while the hold lasts: the
+//     hold's cost when it is also HQ's FIRST claim of the item (attempts 1,
+//     so no earlier hold spent on it). A later claim's hold is not the
+//     item's whole cost, so it has none (its HoldCost still does).
 type items struct {
 	mu sync.Mutex
 	m  map[instanceKey]*held
@@ -58,13 +70,16 @@ type held struct {
 	since  time.Time
 	tokens int64
 	// usd and requests are what the hold's charged requests booked
-	// (estimated: one of them from the proxy's estimate). partial is why they
-	// are NOT the item's whole proxy spend (see the type), "" while they are:
-	// CostAdopted, CostNotFirstClaim or CostAttemptsUnknown.
+	// (estimated: one of them from the proxy's estimate).
 	usd       float64
 	requests  int
 	estimated bool
-	partial   string
+	// attempt is HQ's number of the claim that began the hold (its item's
+	// `attempts` in the claim answer: 1 = HQ's first claim of it); 0 when not
+	// known (an HQ without the field). adopted: the meter took the hold from
+	// HQ's claimed list (Sync), so requests before it are not in it.
+	attempt int
+	adopted bool
 	// inflight is the requests admitted under this hold that are not yet
 	// booked into it (admit, then done: as soon as book has charged them, or
 	// when the handler returns for a request never booked). A hold is
@@ -78,22 +93,51 @@ type held struct {
 const (
 	CostNotHeld         = "not_held"         // the instance does not hold the item (in the meter)
 	CostAdopted         = "adopted"          // adopted from HQ's claimed list (a restart): requests before it are not in it
-	CostNotFirstClaim   = "not_first_claim"  // HQ's second or later claim: an earlier hold may have spent on it
+	CostNotFirstClaim   = "not_first_claim"  // HQ's second or later claim: an earlier hold may have spent on it (the item's cost only)
 	CostAttemptsUnknown = "attempts_unknown" // the claim carried no attempts (already-yours, or an HQ without the field)
 	CostNoRequests      = "no_requests"      // no request booked: no evidence, never a 0
 	CostEstimated       = "estimated"        // a request was booked from the proxy's estimate
 	CostInFlight        = "inflight"         // a request admitted under the hold is not booked yet
 )
 
-// partialOf is a new hold's partial for a claim HQ answered with attempts.
-func partialOf(attempts int) string {
+// HoldCost is one ENDED hold's cost, for HQ's per-hold record (civ-hq
+// docs/OFFICERS.md "Per-hold cost"): which instance (its pool and number)
+// held which item, by HQ's claim number Attempt, and the USD it booked. Why
+// is "" when USD is the hold's whole proxy spend (holdWhy), else why it is
+// not — then there is nothing to report, and the item's total stays unknown.
+type HoldCost struct {
+	Pool     string
+	Instance int
+	Item     string
+	Attempt  int
+	USD      float64
+	Why      string
+}
+
+// holdWhy is why h's booked USD is NOT the hold's whole proxy spend, ""
+// when it is (see the type).
+func (h *held) holdWhy() string {
 	switch {
-	case attempts == 1:
-		return ""
-	case attempts == 0:
+	case h.adopted:
+		return CostAdopted
+	case h.attempt < 1:
 		return CostAttemptsUnknown
+	case h.requests == 0:
+		return CostNoRequests
+	case h.estimated:
+		return CostEstimated
+	case h.inflight > 0:
+		return CostInFlight
 	}
-	return CostNotFirstClaim
+	return ""
+}
+
+// end is h's HoldCost as the hold ends (nil when k held no item).
+func (h *held) end(k instanceKey) []HoldCost {
+	if h.item == "" {
+		return nil
+	}
+	return []HoldCost{{Pool: k.pool, Instance: k.instance, Item: h.item, Attempt: h.attempt, USD: h.usd, Why: h.holdWhy()}}
 }
 
 // flight is one admitted request's count on its hold: released once (done),
@@ -116,32 +160,39 @@ func (t *items) get(k instanceKey) *held {
 
 // claimed records that the instance now holds item (a successful
 // officer_claim) by the claim HQ answered with attempts (0: not known, e.g.
-// muster's already-yours answer, which is no new HQ claim). Re-claiming the
-// item it already holds keeps its count, and a claim HQ counts as a second
-// or later one (attempts > 1) makes its cost unknown.
-func (t *items) claimed(k instanceKey, item string, at time.Time, attempts int) {
+// muster's already-yours answer, which is no new HQ claim), and answers the
+// hold that claim ended. Re-claiming the item it already holds with no new
+// HQ claim (attempts 0, or the hold's own) changes nothing. A NEW HQ claim
+// of it (other attempts: its lease lapsed and it claimed the item again)
+// ends that hold and begins the next one, keeping its token count (the cap
+// is per item, not per hold). A claim of another item ends the one held.
+func (t *items) claimed(k instanceKey, item string, at time.Time, attempts int) []HoldCost {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	h := t.get(k)
 	if h.item == item {
-		if attempts > 1 {
-			h.partial = CostNotFirstClaim
+		if attempts == 0 || attempts == h.attempt {
+			return nil
 		}
-		return
+		t.m[k] = &held{item: item, since: at, tokens: h.tokens, attempt: attempts}
+		return h.end(k)
 	}
-	t.m[k] = &held{item: item, since: at, partial: partialOf(attempts)}
+	t.m[k] = &held{item: item, since: at, attempt: attempts}
+	return h.end(k)
 }
 
-// ended records that the instance no longer holds item (complete or
-// release). An end for an item it does not hold changes nothing.
-func (t *items) ended(k instanceKey, item string, at time.Time) {
+// ended records that the instance no longer holds item (complete, release
+// or an ask), and answers that hold. An end for an item it does not hold
+// changes nothing.
+func (t *items) ended(k instanceKey, item string, at time.Time) []HoldCost {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	h := t.get(k)
 	if h.item != item {
-		return
+		return nil
 	}
 	t.m[k] = &held{since: at}
+	return h.end(k)
 }
 
 // sync is a wake-loop pass's view of officer's claims, read at at: holding
@@ -149,10 +200,13 @@ func (t *items) ended(k instanceKey, item string, at time.Time) {
 // whose meter last changed before at is touched (a read never undoes a later
 // claim or end). If HQ shows it holding the meter's item, its count is kept.
 // Otherwise, if HQ shows it holding exactly one item, the meter adopts that
-// item from zero; if HQ shows none or several, it holds nothing.
-func (t *items) sync(officer, pool string, holding map[int][]string, at time.Time) {
+// item from zero; if HQ shows none or several, it holds nothing. Each hold
+// it replaces has ended (HQ no longer shows it: its lease lapsed and the
+// item moved on), and is answered.
+func (t *items) sync(officer, pool string, holding map[int][]string, at time.Time) []HoldCost {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var ended []HoldCost
 	for n := range holding {
 		t.get(instanceKey{officer, pool, n}) // an instance the meter has not seen (a restart) can be adopted too
 	}
@@ -164,11 +218,14 @@ func (t *items) sync(officer, pool string, holding map[int][]string, at time.Tim
 		switch {
 		case h.item != "" && slices.Contains(its, h.item):
 		case len(its) == 1:
-			t.m[k] = &held{item: its[0], since: at, partial: CostAdopted}
+			t.m[k] = &held{item: its[0], since: at, adopted: true}
+			ended = append(ended, h.end(k)...)
 		case h.item != "":
 			t.m[k] = &held{since: at}
+			ended = append(ended, h.end(k)...)
 		}
 	}
+	return ended
 }
 
 // used is the tokens the instance has used on its held item, and the item.
@@ -229,10 +286,9 @@ func (t *items) add(k instanceKey, item string, n int64, usd float64, estimated 
 }
 
 // cost is the USD the instance's hold on item booked, and why that is NOT
-// known to be the item's whole proxy spend ("" when it is; see the type):
-// the instance does not hold item, the hold is partial, it charged no
-// request, one was booked from the proxy's estimate, or a request admitted
-// under it is not booked yet.
+// known to be the ITEM's whole proxy spend ("" when it is; see the type):
+// the instance does not hold item, the hold is not HQ's first claim of it
+// (or its number is unknown), or the hold's own cost is not known (holdWhy).
 func (t *items) cost(k instanceKey, item string) (float64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -240,14 +296,11 @@ func (t *items) cost(k instanceKey, item string) (float64, string) {
 	switch {
 	case !ok || item == "" || h.item != item:
 		return 0, CostNotHeld
-	case h.partial != "":
-		return 0, h.partial
-	case h.requests == 0:
-		return 0, CostNoRequests
-	case h.estimated:
-		return 0, CostEstimated
-	case h.inflight > 0:
-		return 0, CostInFlight
+	case !h.adopted && h.attempt > 1:
+		return 0, CostNotFirstClaim
+	}
+	if why := h.holdWhy(); why != "" {
+		return 0, why
 	}
 	return h.usd, ""
 }

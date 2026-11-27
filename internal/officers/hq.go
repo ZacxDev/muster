@@ -623,6 +623,27 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
 }
 
+// HoldCostBackend reports what ONE hold of an item cost, once the hold has
+// ended (civ-hq docs/OFFICERS.md "Item cost" → "Per-hold cost"): attempt is
+// the hold's claim number (the claim answer's `attempts`, 1 = HQ's first
+// claim of the item) and instance who held it. HQ keeps one cost per
+// (item, attempt), the first it is sent, and once the item is finished and
+// every hold has reported, the item's cost is their sum: a hold reported
+// twice is never counted twice, and an item with a hold that never reports
+// carries no per-hold total. An HQ from before the route answers 404.
+type HoldCostBackend interface {
+	HoldCost(ctx context.Context, item ItemID, instance string, attempt int, cost ItemCost) ([]byte, error)
+}
+
+// HoldCost is POST …/items/{item}/hold-cost {instance, attempt, cost_usd,
+// cost_from}: 200 {recorded} (false: that hold's cost was already
+// recorded) · 400 · 404 (also an HQ without the route) · 409 hold_live (the
+// hold is still running: muster sends it only once the hold ended).
+func (c *Client) HoldCost(ctx context.Context, item ItemID, instance string, attempt int, cost ItemCost) ([]byte, error) {
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "hold-cost"), map[string]any{"instance": instance, "attempt": attempt,
+		"cost_usd": cost.USD, "cost_from": cost.From})
+}
+
 // Release is POST …/items/{item}/release.
 func (c *Client) Release(ctx context.Context, item ItemID, instance string) ([]byte, error) {
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "release"), map[string]any{"instance": instance})

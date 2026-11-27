@@ -605,7 +605,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	switch {
 	case fwd != nil && px != nil:
-		sync := llmSync(px, reg)
+		sync := llmSync(px, reg, s.llmHoldsEnded)
 		rcfg.Observed = func(o officers.Officer, claimed []officers.Item, at time.Time) {
 			fwd.Sync(o, claimed, at)
 			sync(o, claimed, at)
@@ -613,7 +613,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	case fwd != nil:
 		rcfg.Observed = fwd.Sync
 	case px != nil:
-		rcfg.Observed = llmSync(px, reg)
+		rcfg.Observed = llmSync(px, reg, s.llmHoldsEnded)
 	}
 	rec, err := officers.NewReconciler(rcfg)
 	if err != nil {
