@@ -87,8 +87,8 @@ for (const size of sizes) {
         await expect(page.locator(sel), `${sel} is drawn for a member who is not the creator`).toHaveCount(0);
       }
 
-      // 3. Its view: the member answers its question; muster's own bar
-      // confirms the send; it is recorded as theirs.
+      // 3. Its view: the member answers its question; it is recorded as
+      // theirs.
       await Promise.all([page.waitForURL(origin + `/pages/${f.page}/view`), page.locator('[data-page-view]').click()]);
       const frame = page.frameLocator('iframe#page');
       // 3a. Its header: "Pages › <team> ›" before the title, Pages a link;
@@ -107,11 +107,11 @@ for (const size of sizes) {
       const pick = frame.locator('[data-muster-component="pick"]');
       await pick.locator('input[name="answer"]').fill('Thursday, from ' + size.name);
       await pick.getByRole('button', { name: 'Send pick' }).click();
-      const bar = confirmBar(page);
-      await expect(bar).toBeVisible();
-      await page.waitForTimeout(600);
-      await bar.locator('[data-send-go]').click();
+      // The page has no html block, so no script but muster's own: the
+      // member's own press records at once, with no "Send as you?" bar (the
+      // operator's decision; pages.spec.ts covers a page that keeps it).
       await expect(pick.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      await expect(confirmBar(page), 'a script-free page drew the bar').toHaveCount(0);
       expect(mkteampage('responses', String(f.page)).split('\n'), 'the response is recorded as the member (user 1)').toEqual(['1']);
 
       // 3b. Its file field says files can't be sent from a team page yet, and

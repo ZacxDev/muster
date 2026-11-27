@@ -109,8 +109,8 @@ Many images to compare and pick from, on a phone:
 - With `pick`, each image has a **Pick** button, under it and in the viewer:
   a tap toggles it at once and sends nothing. The bar under the gallery says
   how many are picked, and its **Save** sends them in one submit — in your own
-  view after muster's *Send as you?*, recorded as yours (`by_owner`), like
-  every other component. `multiple: false` keeps one pick (a new pick replaces
+  view recorded as yours (`by_owner`) — after muster's *Send as you?* on a
+  page with an `html` block — like every other component. `multiple: false` keeps one pick (a new pick replaces
   it); `required` refuses an empty Save. Unsaved picks survive a reload (per
   browser tab and page version, for up to 16 picking galleries a page); after a Save the bar says *Saved*, and a
   change can be saved again (each Save is its own response).
@@ -131,8 +131,10 @@ muster.page                        // {title, version}
 
 `custom` is accepted only from a version with an `html` block, and takes any
 JSON up to 32 KiB (stored as `{"value": …}`). The built-in components use the
-same two calls. In [your own view](#the-owners-view) muster first asks you
-(*Send as you?*): the call resolves once you tap **Send**, and rejects with
+same two calls. In [your own view](#the-owners-view) of a version with an
+`html` block (the only kind whose own script can call them) muster first asks
+you (*Send as you?*): the call resolves once you tap **Send** (or press a
+fresh **Enter**), and rejects with
 `Not sent` if you cancel, or `Another send is waiting for your answer.` if
 one already is. Data must be plain JSON (objects, arrays, strings, finite
 numbers, booleans, null), at most 32 levels deep; `muster.upload` takes a
@@ -518,10 +520,21 @@ link's, and show on the page's screen and in `page_responses` as yours
 that version: it is checked against version N's components and recorded with
 its number. Your own responses do not notify you.
 
-🔴 **Nothing is sent as you until you confirm it.** Every send from your
-view — a form, an answer, a file, or something the page's own script sends,
-the moment it opens or later — first shows muster's own **Send as you?** bar
-at the bottom of the screen (a sheet on a phone, a box on a wider screen).
+**A page with no `html` block sends at once.** When the version you are
+looking at has no `html` block, nothing but muster's own script runs in it,
+so every send from it is your own press of one of muster's components:
+**Approve**, an answer's **Send**, a Save — and it is recorded at once, with
+no bar (the operator's decision, to make approving asks quick). It goes
+through the same route, checks and size cap as below. The flip side: on such
+a page one click records, so a mis-click records too (send again, or tell the
+agent). muster decides this when it draws your view, from that version's
+blocks; nothing in the page can turn the bar off.
+
+🔴 **On a page with an `html` block, nothing is sent as you until you confirm
+it.** Every send from your view of such a version — a form, an answer, a
+file, or something the page's own script sends, the moment it opens or
+later — first shows muster's own **Send as you?** bar at the bottom of the
+screen (a sheet on a phone, a box at the bottom centre on a wider screen).
 It says which component it is for and shows what will be sent: **every
 field**, one per line, each name and value written as JSON (`"email":
 "me@example.com"`), so a line break, a control or an invisible or
@@ -534,6 +547,10 @@ nothing was sent.*). The data is shown after muster has turned it into JSON
 records exactly what you read. **Cancel** records nothing, and the page is
 told *Not sent*; so does **Escape** while the keyboard is in muster's part
 of the screen (if it is in the page, muster cannot see the key: tap Cancel).
+**Enter** sends (the bar takes the keyboard when it opens): only a fresh
+press after the bar's first half second — an Enter inside it starts the half
+second again, and a held, repeating Enter never sends, so the press that
+opened the bar cannot also confirm it.
 Left alone for 10 minutes, the bar cancels itself. The bar is muster's,
 outside the page: the page's script cannot reach it, press it or change
 what it shows. Send is never focused when the bar opens, and a press of the
@@ -543,6 +560,28 @@ then takes a press that begins on it. One send waits at a time — another,
 while the bar is open, is refused (*Another send is waiting for your
 answer.*). A viewer through a link sees no bar: what they send is recorded
 as before, turned into JSON the same way.
+
+### Answering by keyboard
+
+muster's own components can be answered without the mouse, on any page:
+
+- **Tab** walks every control in page order: each option of a choice (a
+  single choice is one stop; the arrow keys move between its options), the
+  fields, **Approve** and **Decline**, a gallery's **Pick** buttons, then the
+  component's submit. The control with the keyboard has a visible ring.
+- **Space** picks the option or presses the button that has the keyboard.
+  **Approve** and **Decline** send that decision at once (one press, one
+  decision, as a click).
+- **Ctrl+Enter** (**⌘+Enter** on a Mac) anywhere in a component — in a text
+  box too — sends that component, as its submit button would; the hint beside
+  each submit says so. In an approval it sends the decision that has the
+  keyboard (anywhere else in it, it asks you to choose). A held key sends
+  once. **Shift+Enter** in a multi-line answer is a new line.
+- After a send, the keyboard moves on to the next component below that you
+  have not sent from this view, scrolled into sight. On a page without an
+  `html` block that is the whole loop: Space, Ctrl+Enter, the next ask. On a
+  page with one, Ctrl+Enter opens **Send as you?**, and a fresh **Enter**
+  after its half second sends.
 
 Your header starts with **breadcrumbs** where the instance's name would be:
 **Pages ›**, a tap back to the Pages screen, and on a team's page the team's

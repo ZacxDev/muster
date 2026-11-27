@@ -231,7 +231,7 @@ func TestAGalleryIsDrawnEscapedWithNamedButtons(t *testing.T) {
 		`aria-label="Pick image 2"`,
 		// The group changed: a second list under its heading.
 		`</ul><h3 class="mp-gallery-group">Two</h3><ul class="mp-gallery-grid" role="list"><li class="mp-gallery-item" data-muster-item="2"`,
-		`<button type="button" data-muster-save>S ` + esc + `</button>`,
+		`<button type="button" data-muster-save aria-keyshortcuts="Control+Enter Meta+Enter">S ` + esc + `</button>` + keysHint,
 		`<section class="mp-block mp-gallery" data-muster-component="g2" data-muster-kind="gallery" data-muster-layout="rows" data-muster-items="1" aria-label="Gallery">`,
 	} {
 		if !strings.Contains(blocks, want) {
@@ -332,7 +332,7 @@ func TestAGallerysScriptIsTheSDKsOwn(t *testing.T) {
 // named (KEEPS), under this page's path, in this window's sessionStorage,
 // bounded per key and per path.
 func TestTheShellOwnsTheViewersHistoryEntry(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false, "v3:logo", "v3:pick2")
+	js := ShellScript("/s/TOKEN", false, false, "v3:logo", "v3:pick2")
 	for _, want := range []string{
 		`if(m.op==="scroll")onY(m.y);else if(m.op==="viewer")viewer(m.open===true);else relay(m);`,
 		`function vMine(){var s=vState();return !!s&&s.musterViewer===1&&s.t===vTok&&vTok!=="";}`,
@@ -358,7 +358,7 @@ func TestTheShellOwnsTheViewersHistoryEntry(t *testing.T) {
 		}
 	}
 	// No keeps named: none is taken (KEEPS is empty, never null).
-	if !strings.Contains(ShellScript("/s/TOKEN", false), `,KEEPS=[];`) {
+	if !strings.Contains(ShellScript("/s/TOKEN", false, false), `,KEEPS=[];`) {
 		t.Error("a shell with no keeps does not refuse every key")
 	}
 	// The viewer's entry is decided by history.state alone: the old timer

@@ -120,7 +120,7 @@ function galOne(sec){
   for(var j=0;j<mine.length;j++){var it=items[mine[j]],p={index:mine[j],asset:"asset:"+it.a};if(it.c)p.caption=it.c;data.push(p);}
   send("submit",id,{picks:data},function(ok,x){
    busy=false;if(saveBtn)saveBtn.disabled=false;
-   if(ok){saved=mine;keep();paint();}else{paint();say(x||"It could not be sent.",true);}
+   if(ok){saved=mine;keep();paint();next(sec);}else{paint();say(x||"It could not be sent.",true);}
   });
  }
  function el(tag,cls,parent){var e=D.createElement(tag);if(cls)e.className=cls;if(parent)parent.appendChild(e);return e;}
