@@ -18,9 +18,14 @@ import (
 // carries three parameters, so a filtered list is a link and works with no
 // script:
 //
-//   - ?q= — AN ID ("12", "#12", "page 12") is looked up by id ONLY, never as
-//     text (the Asks search's rule, idQueryPattern): a title that happens to
-//     hold the digits is not listed beside the page that has that number.
+//   - ?q= — A NUMBER ("12", "#12", "page 12": idQueryPattern's shape) lists
+//     the page with that id FIRST, when there is one, then every page whose
+//     title or maker's name holds the digits ("12"), in the list's own order
+//     (operator decision: "ID first, then titles"). So a number that is no
+//     page's id still finds the pages that spell it. 🔴 THIS IS NOT THE ASKS
+//     SEARCH'S RULE: there an id is looked up by id only (parseAskQuery). The
+//     two share the SHAPE of a number query (idQueryPattern) and nothing else;
+//     what a number matches is each caller's own.
 //     ANYTHING ELSE is a case-insensitive substring of the page's title or
 //     of its maker's name as its row shows it (pageMakerName).
 //   - ?waiting=1 — only the pages waiting on the reader: their current
@@ -51,11 +56,14 @@ var pageQueryID = idQueryPattern("page")
 
 // pagesFilter is the list's filter as a request names it.
 type pagesFilter struct {
-	// q is the box's text as typed (trimmed); id the page it names when it is
-	// id-shaped (0: text), text its folded words otherwise.
-	q    string
-	id   int64
-	text string
+	// q is the box's text as typed (trimmed). A number-shaped q has digits
+	// (as typed: "007" stays "007"), the text a title or maker may hold, and
+	// names id — 0 when the number is no possible id ("#0", one too large):
+	// it still finds the titles that spell it. Any other q is text, folded.
+	q      string
+	id     int64
+	digits string
+	text   string
 	// waiting and by are the toggle and the maker chosen.
 	waiting bool
 	by      string
@@ -65,11 +73,12 @@ type pagesFilter struct {
 func parsePagesFilter(q url.Values) pagesFilter {
 	f := pagesFilter{q: truncateRunesTo(strings.TrimSpace(q.Get(pagesSearchParam)), pages.MaxTitleSearchRunes)}
 	if m := pageQueryID.FindStringSubmatch(f.q); m != nil {
+		f.digits = m[2]
 		if n, err := strconv.ParseInt(m[2], 10, 64); err == nil && n > 0 {
 			f.id = n
 		}
 	}
-	if f.id == 0 {
+	if f.digits == "" {
 		f.text = strings.ToLower(f.q)
 	}
 	f.waiting = q.Get(pagesWaitingParam) == "1"
@@ -84,7 +93,7 @@ func (f pagesFilter) on() bool { return f.q != "" || f.waiting || f.by != "" }
 // unanswered components unanswered.
 func (f pagesFilter) keep(p pages.Summary, maker string, unanswered int) bool {
 	switch {
-	case f.id > 0 && p.ID != f.id:
+	case f.digits != "" && !f.first(p) && !strings.Contains(p.Title, f.digits) && !strings.Contains(maker, f.digits):
 		return false
 	case f.text != "" && !strings.Contains(strings.ToLower(p.Title), f.text) && !strings.Contains(strings.ToLower(maker), f.text):
 		return false
@@ -94,6 +103,27 @@ func (f pagesFilter) keep(p pages.Summary, maker string, unanswered int) bool {
 		return false
 	}
 	return true
+}
+
+// first reports whether p is the page a number query names: listed before
+// every other match (keep decides the rest).
+func (f pagesFilter) first(p pages.Summary) bool { return f.id > 0 && p.ID == f.id }
+
+// ordered is kept (each a page keep kept) with the page a number names first,
+// the rest in their own order.
+func (f pagesFilter) ordered(kept []pages.Summary) []pages.Summary {
+	out := make([]pages.Summary, 0, len(kept))
+	for _, p := range kept {
+		if f.first(p) {
+			out = append(out, p)
+		}
+	}
+	for _, p := range kept {
+		if !f.first(p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // query is f as the list's address's query ("" for none).

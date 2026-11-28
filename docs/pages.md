@@ -643,10 +643,13 @@ Over the list, once there is a page, are a search box and two filters. All
 three narrow the list together, and each is in the address, so a filtered list
 is a link you can bookmark, a reload keeps it, and it works with no script:
 
-- **Search pages** (`?q=`). A number — `12`, `#12` or `page 12` — finds the page
-  with that number and nothing else: a page whose title happens to hold the
-  digits is not listed beside it. Anything else finds the pages whose title,
-  or whose maker's name as the row shows it, holds the words (any case).
+- **Search pages** (`?q=`). A number — `12`, `#12` or `page 12` — lists the
+  page with that number first, when there is one, then every page whose title
+  or maker's name holds the digits (`12`), in the list's own order. So a
+  number that is no page's number still finds the titles that spell it.
+  Anything else finds the pages whose title, or whose maker's name as the row
+  shows it, holds the words (any case). (The Asks search is different: there a
+  number finds that ask or draft only.)
 - **Waiting on you** (`?waiting=1`; the chip shows how many). The pages whose
   current version has a question, choice, form, upload, approval or gallery
   pick that nobody has answered at that version — not you, not a teammate, not

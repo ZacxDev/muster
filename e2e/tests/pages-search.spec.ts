@@ -14,7 +14,9 @@ import { startServer, Running } from '../lib/server';
 //   - each row shows its page's number, "#<id>";
 //   - typing filters the list in place (no navigation), and the address
 //     follows (?q=…);
-//   - "#<id>" lists that page only, never room, whose title holds the digits;
+//   - a number ("#<id>", a bare id) lists that page FIRST, then room, whose
+//     title holds the digits (operator decision: "ID first, then titles");
+//     a number that is no page's id lists ledger, whose title holds it;
 //   - "/" puts the cursor in the box when focus is not in a field, and types
 //     a "/" when it is;
 //   - "Waiting on you" lists venue and room (an unanswered question; one
@@ -27,11 +29,12 @@ import { startServer, Running } from '../lib/server';
 // Every value below is an obvious fake.
 //
 // NEW FEATURE: at the base the list has no box, no filters and no numbers, so
-// every test here is red there.
+// every test here is red there; at bab5ee17f a number was the id only, so the
+// number test is red there.
 
 const origin = `http://localhost:${pagesSearchPort}`;
 let server: Running | undefined;
-type Seeded = { venue: number; budget: number; notes: number; room: number };
+type Seeded = { venue: number; budget: number; notes: number; room: number; ledger: number; number: string };
 let ids: Seeded;
 
 const fix = (cmd: 'search' | 'search-clear') =>
@@ -65,6 +68,10 @@ async function listed(page: Page): Promise<number[]> {
   return got.sort((a, b) => a - b);
 }
 
+// inOrder is the page ids the list draws rows for, in the list's order.
+const inOrder = (page: Page) =>
+  page.locator('[data-pages-list-region] li[data-page-id]').evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page-id'))));
+
 // expectListed waits for the list to draw exactly want.
 async function expectListed(page: Page, want: number[], what: string) {
   await expect.poll(() => listed(page), { message: what, timeout: 10_000 }).toEqual(sorted(...want));
@@ -83,8 +90,8 @@ const stillHere = (page: Page) => page.evaluate(() => (window as unknown as { __
 
 test('each row shows its number, and typing filters the list in place', async ({ page }) => {
   await open(page);
-  await expectListed(page, [ids.venue, ids.budget, ids.notes, ids.room], 'CONTROL: the unfiltered list');
-  for (const id of [ids.venue, ids.budget, ids.notes, ids.room]) {
+  await expectListed(page, [ids.venue, ids.budget, ids.notes, ids.room, ids.ledger], 'CONTROL: the unfiltered list');
+  for (const id of [ids.venue, ids.budget, ids.notes, ids.room, ids.ledger]) {
     await expect(page.locator(`li[data-page-id="${id}"] [data-page-number]`), `page ${id}'s number`).toHaveText(`#${id}`);
   }
   await box(page).pressSequentially('budg', { delay: 30 });
@@ -97,14 +104,20 @@ test('each row shows its number, and typing filters the list in place', async ({
   await expectListed(page, [ids.budget, ids.room], 'a maker by name');
 });
 
-test('"#<id>" finds that page only, never a page whose title holds the digits', async ({ page }) => {
+test('a number lists its page first, then the titles that hold it', async ({ page }) => {
   await open(page);
   await expect(page.locator(`li[data-page-id="${ids.room}"] [data-page-title]`), 'CONTROL: room\'s title holds venue\'s number').toContainText(String(ids.venue));
+  const all = await inOrder(page);
+  expect(all.indexOf(ids.room), 'CONTROL: unfiltered, room is listed above venue').toBeLessThan(all.indexOf(ids.venue));
   await box(page).fill(`#${ids.venue}`);
-  await expectListed(page, [ids.venue], `#${ids.venue}`);
+  await expect.poll(() => inOrder(page), { message: `#${ids.venue}: venue first, then room` }).toEqual([ids.venue, ids.room]);
   await expect(page).toHaveURL(`${origin}/pages?q=%23${ids.venue}`);
   await box(page).fill(String(ids.venue));
-  await expectListed(page, [ids.venue], `a bare ${ids.venue}`);
+  await expect.poll(() => inOrder(page), { message: `a bare ${ids.venue}` }).toEqual([ids.venue, ids.room]);
+  // A number that is no page's id still finds the title that holds it.
+  await box(page).fill(ids.number);
+  await expectListed(page, [ids.ledger], `${ids.number}, no page's id`);
+  await expect(page.locator('[data-pages-none]')).toHaveCount(0);
 });
 
 test('"/" focuses the search box, unless focus is already in a field', async ({ page }) => {
@@ -147,7 +160,7 @@ test('Waiting on you and Made by filter, together, and a reload keeps them', asy
 
   // Made by alone.
   await page.goto(origin + '/pages?by=Release+helper');
-  await expectListed(page, [ids.venue, ids.notes], 'made by Release helper');
+  await expectListed(page, [ids.venue, ids.notes, ids.ledger], 'made by Release helper');
 });
 
 test('nothing matching says so, and Clear filters brings the whole list back', async ({ page }) => {
@@ -157,7 +170,7 @@ test('nothing matching says so, and Clear filters brings the whole list back', a
   await expectListed(page, [], 'nothing matches');
   await page.locator('[data-pages-clear]').click();
   await expect(page).toHaveURL(`${origin}/pages`);
-  await expectListed(page, [ids.venue, ids.budget, ids.notes, ids.room], 'cleared');
+  await expectListed(page, [ids.venue, ids.budget, ids.notes, ids.room, ids.ledger], 'cleared');
   await expect(box(page)).toHaveValue('');
 });
 
@@ -173,7 +186,7 @@ test.describe('no script', () => {
     await page.locator('[data-pages-waiting]').click();
     await page.locator('[data-pages-filter-apply]').click();
     await expect(page).toHaveURL(`${origin}/pages?q=&by=Release+helper`);
-    await expectListed(page, [ids.venue, ids.notes], 'made by Release helper, no script');
+    await expectListed(page, [ids.venue, ids.notes, ids.ledger], 'made by Release helper, no script');
   });
 });
 

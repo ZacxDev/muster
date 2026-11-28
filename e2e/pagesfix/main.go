@@ -17,7 +17,7 @@
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix feedback-clear <owner>
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled <owner> <title>   one plain page (palette-everything.spec.ts); prints its id
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled-clear <owner> <title>
-//	DATABASE_URL=…_e2e go run ./e2e/pagesfix search <owner>   the search pages (pages-search.spec.ts), {venue, budget, notes, room}
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix search <owner>   the search pages (pages-search.spec.ts), {venue, budget, notes, room, ledger, number}
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix search-clear <owner>
 //
 // phone and phone-clear touch only the page titled PhoneTitle; themed and
@@ -392,9 +392,12 @@ func feedbackPage(ctx context.Context, st *pages.PGStore) error {
 //   - room: "Room <venue's number> booking" by Design helper — its title holds
 //     venue's number, so a search by number that matched titles would list it —
 //     answered through a link at version 1 only, then given a version 2
-//     (waiting again).
+//     (waiting again);
+//   - ledger: "Ledger <number>" by Release helper, a markdown block only —
+//     number is ten copies of a digit venue's number lacks: no page's id, and
+//     a title that cannot hold venue's number.
 //
-// It prints {venue, budget, notes, room}.
+// It prints {venue, budget, notes, room, ledger, number}.
 func searchPages(ctx context.Context, st *pages.PGStore) error {
 	release := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-search-a", Label: "Release helper"}
 	design := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-search-b", Label: "Design helper"}
@@ -440,5 +443,12 @@ func searchPages(ctx context.Context, st *pages.PGStore) error {
 	if _, _, err := st.AddVersion(ctx, design, room.ID, room.Title, blocks, size); err != nil {
 		return err
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]int64{"venue": venue.ID, "budget": budget.ID, "notes": notes.ID, "room": room.ID})
+	vs := strconv.FormatInt(venue.ID, 10)
+	d := "0123456789"[strings.IndexFunc("0123456789", func(r rune) bool { return !strings.ContainsRune(vs, r) })]
+	number := strings.Repeat(string(d), 10)
+	ledger, err := create(release, "Ledger "+number, []pages.Block{{Type: pages.BlockMarkdown, Text: "# Ledger"}})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"venue": venue.ID, "budget": budget.ID, "notes": notes.ID, "room": room.ID, "ledger": ledger.ID, "number": number})
 }

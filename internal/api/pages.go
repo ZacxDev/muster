@@ -848,16 +848,21 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	// The list region: the rows the filter keeps, and — while a filter is on
 	// — how many, or that none matches, with the way back to the whole list.
 	var rows strings.Builder
-	kept, waiting := 0, 0
+	var keptPages []pages.Summary
+	waiting := 0
 	for _, p := range list {
-		maker := pageMakerName(p.Creator.Label, p.Creator.MirrorHost)
 		if unanswered[p.ID] > 0 {
 			waiting++
 		}
-		if !flt.keep(p, maker, unanswered[p.ID]) {
-			continue
+		if flt.keep(p, pageMakerName(p.Creator.Label, p.Creator.MirrorHost), unanswered[p.ID]) {
+			keptPages = append(keptPages, p)
 		}
-		kept++
+	}
+	// A number's own page first (pages_search.go).
+	keptPages = flt.ordered(keptPages)
+	kept := len(keptPages)
+	for _, p := range keptPages {
+		maker := pageMakerName(p.Creator.Label, p.Creator.MirrorHost)
 		v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: maker, Updated: p.UpdatedAt, Now: s.now(),
 			Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable(),
 			NoRevoke: !pageRevocable(ctx, p.Page)}
