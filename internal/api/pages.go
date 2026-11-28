@@ -806,14 +806,29 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	if serr != nil {
 		s.logger.Printf("pages: list: share links: %v", serr)
 	}
-	// The search and the filters (pages_search.go), and which pages wait on
-	// the reader (one query for the whole list).
+	// The search and the filters (pages_search.go). candidates is what the
+	// filter chooses from: the list, and — for a number whose page the list's
+	// cut (pages.ListLimit) left out — that page, read by id under the same
+	// row-level security, so "its page first" holds for every page.
 	flt := parsePagesFilter(r.URL.Query())
-	var unanswered map[int64]int
-	if len(list) > 0 {
-		var uerr error
-		if unanswered, uerr = s.ext.Pages.Unanswered(r.Context()); uerr != nil {
-			s.logger.Printf("pages: list: unanswered: %v", uerr)
+	candidates := list
+	if flt.id > 0 && len(list) > 0 && !slices.ContainsFunc(list, func(p pages.Summary) bool { return p.ID == flt.id }) {
+		if p, perr := s.ext.Pages.Summary(r.Context(), flt.id); perr == nil {
+			candidates = append(slices.Clone(list), p)
+		} else if !errors.Is(perr, pages.ErrNotFound) {
+			s.logger.Printf("pages: list: page %d: %v", flt.id, perr)
+		}
+	}
+	// Which of them wait on the reader: one query over their ids alone.
+	var waitingOn map[int64]bool
+	if len(candidates) > 0 {
+		ids := make([]int64, 0, len(candidates))
+		for _, p := range candidates {
+			ids = append(ids, p.ID)
+		}
+		var werr error
+		if waitingOn, werr = s.ext.Pages.Waiting(r.Context(), ids); werr != nil {
+			s.logger.Printf("pages: list: waiting: %v", werr)
 			if flt.waiting && problem == "" {
 				problem = "Which pages are waiting on you could not be read."
 			}
@@ -831,7 +846,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	// marked with its team's name.
 	var teamIDs []int64
 	seen := map[int64]bool{}
-	for _, p := range list {
+	for _, p := range candidates {
 		if memberOnTeamPage(ctx, p.Page) && !seen[p.OwnerID] {
 			seen[p.OwnerID] = true
 			teamIDs = append(teamIDs, p.OwnerID)
@@ -849,12 +864,15 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	// — how many, or that none matches, with the way back to the whole list.
 	var rows strings.Builder
 	var keptPages []pages.Summary
+	// The chip's number counts PAGES waiting, over the list as drawn.
 	waiting := 0
 	for _, p := range list {
-		if unanswered[p.ID] > 0 {
+		if waitingOn[p.ID] {
 			waiting++
 		}
-		if flt.keep(p, pageMakerName(p.Creator.Label, p.Creator.MirrorHost), unanswered[p.ID]) {
+	}
+	for _, p := range candidates {
+		if flt.keep(p, pageMakerName(p.Creator.Label, p.Creator.MirrorHost), waitingOn[p.ID]) {
 			keptPages = append(keptPages, p)
 		}
 	}

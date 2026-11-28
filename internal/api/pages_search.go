@@ -28,10 +28,10 @@ import (
 //     what a number matches is each caller's own.
 //     ANYTHING ELSE is a case-insensitive substring of the page's title or
 //     of its maker's name as its row shows it (pageMakerName).
-//   - ?waiting=1 — only the pages waiting on the reader: their current
-//     version has an answerable component nobody has answered at that version
-//     (pages.Store.Unanswered). A page whose only interactive content is an
-//     html block cannot be judged, and is never listed by it.
+//   - ?waiting=1 — only the pages waiting on the reader at their current
+//     version (pages.PGStore.Waiting's rule: a required part or an approval
+//     unanswered, or nothing answered at all). A page whose only interactive
+//     content is an html block cannot be judged, and is never listed by it.
 //   - ?by=<maker> — only the pages its row says were made "by <maker>".
 //
 // All three narrow the list the reader already reads (row-level security:
@@ -47,8 +47,8 @@ const (
 
 // pagesWaitingAbout is the list's ⓘ on "Waiting on you": what it lists, and
 // the pages it cannot judge.
-const pagesWaitingAbout = "Search finds a page by its title, its maker or its number (#12). Waiting on you lists the pages whose current version has a question, choice, form, upload, approval or gallery pick nobody has answered yet. " +
-	"A page that asks only through its own script can't be judged, so it is never listed there. Press / to search."
+const pagesWaitingAbout = "Search finds a page by its title, its maker or its number (#12). Waiting on you lists a page while an approval or a required part of it is unanswered, or while nothing on it has been answered yet; " +
+	"an answer to an older version does not count. A page that asks only through its own script can't be judged, so it is never listed there. Press / to search."
 
 // pageQueryID is an id-shaped page search: an optional "page", an optional
 // "#", then the number.
@@ -89,15 +89,15 @@ func parsePagesFilter(q url.Values) pagesFilter {
 // on reports whether any of the three is set.
 func (f pagesFilter) on() bool { return f.q != "" || f.waiting || f.by != "" }
 
-// keep reports whether f keeps page p, whose row names maker and which has
-// unanswered components unanswered.
-func (f pagesFilter) keep(p pages.Summary, maker string, unanswered int) bool {
+// keep reports whether f keeps page p, whose row names maker and which is
+// waiting on the reader or not.
+func (f pagesFilter) keep(p pages.Summary, maker string, waiting bool) bool {
 	switch {
 	case f.digits != "" && !f.first(p) && !strings.Contains(p.Title, f.digits) && !strings.Contains(maker, f.digits):
 		return false
 	case f.text != "" && !strings.Contains(strings.ToLower(p.Title), f.text) && !strings.Contains(strings.ToLower(maker), f.text):
 		return false
-	case f.waiting && unanswered == 0:
+	case f.waiting && !waiting:
 		return false
 	case f.by != "" && maker != f.by:
 		return false

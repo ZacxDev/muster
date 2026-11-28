@@ -646,14 +646,25 @@ is a link you can bookmark, a reload keeps it, and it works with no script:
 - **Search pages** (`?q=`). A number — `12`, `#12` or `page 12` — lists the
   page with that number first, when there is one, then every page whose title
   or maker's name holds the digits (`12`), in the list's own order. So a
-  number that is no page's number still finds the titles that spell it.
+  number that is no page's number still finds the titles that spell it. The
+  page with that number is found even when it is older than the pages the list
+  shows at once (the newest 500).
   Anything else finds the pages whose title, or whose maker's name as the row
   shows it, holds the words (any case). (The Asks search is different: there a
   number finds that ask or draft only.)
-- **Waiting on you** (`?waiting=1`; the chip shows how many). The pages whose
-  current version has a question, choice, form, upload, approval or gallery
-  pick that nobody has answered at that version — not you, not a teammate, not
-  anyone through a link. An answer sent to an older version does not count: a
+- **Waiting on you** (`?waiting=1`; the chip shows how many pages). A page is
+  waiting while, at its current version, either
+  - an **approval**, or a part marked **required** — a question or choice with
+    `required`, a form with a required field, a gallery whose `pick` is
+    `required` — has no answer (an upload has no required mark, so it is never
+    one); or
+  - it asks something (a question, choice, form, upload, approval or gallery
+    pick) and **nothing** on it has been answered yet.
+
+  So a page whose required parts and approvals are answered is done, whatever
+  optional parts are left, and an all-optional page is done once anyone
+  answers any part of it. Anyone's answer counts: yours, a teammate's, or one
+  sent through a link. An answer sent to an older version does not count: a
   new version asks again. A page that asks only through its own script (an
   `html` block) cannot be judged, so it is never listed here; the list's ⓘ
   says so.

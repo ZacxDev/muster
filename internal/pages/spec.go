@@ -241,7 +241,7 @@ func component(t string) bool {
 // answerableTypes are the built-in components a person ANSWERS: each records a
 // response under its own id when sent. A gallery is one only with a pick
 // (Block.Pick), so it is not listed here but asked of separately
-// (Store.Unanswered). A markdown block answers nothing, and an html block's
+// (Store.Waiting). A markdown block answers nothing, and an html block's
 // script may send anything or nothing (CustomComponent), so neither can be
 // said to be waiting.
 var answerableTypes = []string{BlockQuestion, BlockChoice, BlockForm, BlockUpload, BlockApproval}
