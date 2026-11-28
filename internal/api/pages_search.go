@@ -1,0 +1,167 @@
+package api
+
+import (
+	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/ZacxDev/muster/internal/pages"
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// ---------------------------------------------------------------------------
+// SEARCHING AND FILTERING THE PAGES LIST (operator decision: "basic filters
+// and search for pages … see the page ID on the page card … search by ID";
+// docs/pages.md "Finding a page"). The form over /pages (ui/page_search.go)
+// carries three parameters, so a filtered list is a link and works with no
+// script:
+//
+//   - ?q= — A NUMBER ("12", "#12", "page 12": idQueryPattern's shape) lists
+//     the page with that id FIRST, when there is one, then every page whose
+//     title or maker's name holds the digits ("12"), in the list's own order
+//     (operator decision: "ID first, then titles"). So a number that is no
+//     page's id still finds the pages that spell it. 🔴 THIS IS NOT THE ASKS
+//     SEARCH'S RULE: there an id is looked up by id only (parseAskQuery). The
+//     two share the SHAPE of a number query (idQueryPattern) and nothing else;
+//     what a number matches is each caller's own.
+//     ANYTHING ELSE is a case-insensitive substring of the page's title or
+//     of its maker's name as its row shows it (pageMakerName).
+//   - ?waiting=1 — only the pages waiting on the reader at their current
+//     version (pages.PGStore.Waiting's rule: a required part or an approval
+//     unanswered, or nothing answered at all). A page whose only interactive
+//     content is an html block cannot be judged, and is never listed by it.
+//   - ?by=<maker> — only the pages its row says were made "by <maker>".
+//
+// All three narrow the list the reader already reads (row-level security:
+// their own pages and their teams'); together they must all hold.
+// ---------------------------------------------------------------------------
+
+// The list's query parameters.
+const (
+	pagesSearchParam  = "q"
+	pagesWaitingParam = "waiting"
+	pagesByParam      = "by"
+)
+
+// pagesWaitingAbout is the list's ⓘ on "Waiting on you": what it lists, and
+// the pages it cannot judge.
+const pagesWaitingAbout = "Search finds a page by its title, its maker or its number (#12). Waiting on you lists a page while an approval or a required part of it is unanswered, or while nothing on it has been answered yet; " +
+	"an answer to an older version does not count. A page that asks only through its own script can't be judged, so it is never listed there. Press / to search."
+
+// pageQueryID is an id-shaped page search: an optional "page", an optional
+// "#", then the number.
+var pageQueryID = idQueryPattern("page")
+
+// pagesFilter is the list's filter as a request names it.
+type pagesFilter struct {
+	// q is the box's text as typed (trimmed). A number-shaped q has digits
+	// (as typed: "007" stays "007"), the text a title or maker may hold, and
+	// names id — 0 when the number is no possible id ("#0", one too large):
+	// it still finds the titles that spell it. Any other q is text, folded.
+	q      string
+	id     int64
+	digits string
+	text   string
+	// waiting and by are the toggle and the maker chosen.
+	waiting bool
+	by      string
+}
+
+// parsePagesFilter is the filter q names.
+func parsePagesFilter(q url.Values) pagesFilter {
+	f := pagesFilter{q: truncateRunesTo(strings.TrimSpace(q.Get(pagesSearchParam)), pages.MaxTitleSearchRunes)}
+	if m := pageQueryID.FindStringSubmatch(f.q); m != nil {
+		f.digits = m[2]
+		if n, err := strconv.ParseInt(m[2], 10, 64); err == nil && n > 0 {
+			f.id = n
+		}
+	}
+	if f.digits == "" {
+		f.text = strings.ToLower(f.q)
+	}
+	f.waiting = q.Get(pagesWaitingParam) == "1"
+	f.by = strings.TrimSpace(q.Get(pagesByParam))
+	return f
+}
+
+// on reports whether any of the three is set.
+func (f pagesFilter) on() bool { return f.q != "" || f.waiting || f.by != "" }
+
+// keep reports whether f keeps page p, whose row names maker and which is
+// waiting on the reader or not.
+func (f pagesFilter) keep(p pages.Summary, maker string, waiting bool) bool {
+	switch {
+	case f.digits != "" && !f.first(p) && !strings.Contains(p.Title, f.digits) && !strings.Contains(maker, f.digits):
+		return false
+	case f.text != "" && !strings.Contains(strings.ToLower(p.Title), f.text) && !strings.Contains(strings.ToLower(maker), f.text):
+		return false
+	case f.waiting && !waiting:
+		return false
+	case f.by != "" && maker != f.by:
+		return false
+	}
+	return true
+}
+
+// first reports whether p is the page a number query names: listed before
+// every other match (keep decides the rest).
+func (f pagesFilter) first(p pages.Summary) bool { return f.id > 0 && p.ID == f.id }
+
+// ordered is kept (each a page keep kept) with the page a number names first,
+// the rest in their own order.
+func (f pagesFilter) ordered(kept []pages.Summary) []pages.Summary {
+	out := make([]pages.Summary, 0, len(kept))
+	for _, p := range kept {
+		if f.first(p) {
+			out = append(out, p)
+		}
+	}
+	for _, p := range kept {
+		if !f.first(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// query is f as the list's address's query ("" for none).
+func (f pagesFilter) query() string {
+	v := url.Values{}
+	if f.q != "" {
+		v.Set(pagesSearchParam, f.q)
+	}
+	if f.waiting {
+		v.Set(pagesWaitingParam, "1")
+	}
+	if f.by != "" {
+		v.Set(pagesByParam, f.by)
+	}
+	return v.Encode()
+}
+
+// href is the list's address with f.
+func (f pagesFilter) href() string {
+	if q := f.query(); q != "" {
+		return pagesPath + "?" + q
+	}
+	return pagesPath
+}
+
+// pagesListLive reports whether r is the list form's own live request
+// (ui/page_search.go): the list region alone is answered.
+func pagesListLive(r *http.Request) bool { return hxTargets(r, ui.PagesListRegionID) }
+
+// pageMakers is the distinct makers of list, as their rows name them, sorted
+// case-folded (the "Made by" select's choices).
+func pageMakers(list []pages.Summary) []string {
+	var out []string
+	for _, p := range list {
+		if m := pageMakerName(p.Creator.Label, p.Creator.MirrorHost); m != "" && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
+	return out
+}

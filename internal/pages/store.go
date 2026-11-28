@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -49,6 +50,16 @@ type Store interface {
 	// TitleSearch is the caller's pages (those Pages lists) whose title holds
 	// text, newest activity first, at most limit.
 	TitleSearch(ctx context.Context, text string, limit int) ([]Page, error)
+	// Waiting is which of pages ids (those the caller reads; any other id
+	// is simply absent) are WAITING on the reader at their CURRENT version
+	// (PGStore.Waiting's rule): a component that must be answered has no response at
+	// that version, or none of its answerable components has any. A page
+	// whose only interactive content is an html block is never in it: its
+	// script's sends cannot be matched to a question it asked.
+	Waiting(ctx context.Context, ids []int64) (map[int64]bool, error)
+	// Summary is the caller's page id as Pages lists it (its counts), found
+	// by id whatever Pages' ListLimit cut.
+	Summary(ctx context.Context, id int64) (Summary, error)
 	// SessionPages is the caller's pages that session s CREATED, newest
 	// first (by when each was made). Nothing, and no query, for an s that
 	// names no session (SessionRef.Valid).
@@ -431,7 +442,7 @@ func (s *PGStore) summaries(ctx context.Context, where string, args ...any) ([]S
 // summariesOrdered is summaries in order (a constant ORDER BY list, never a
 // caller's words).
 func (s *PGStore) summariesOrdered(ctx context.Context, where, order string, args ...any) ([]Summary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY `+order+` LIMIT 500`, args...)
+	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY `+order+` LIMIT `+strconv.Itoa(ListLimit), args...)
 	if err != nil {
 		return nil, wrap("list", err)
 	}
@@ -447,6 +458,22 @@ func (s *PGStore) summariesOrdered(ctx context.Context, where, order string, arg
 		out = append(out, x)
 	}
 	return out, wrap("list", rows.Err())
+}
+
+// ListLimit bounds what one list (Pages, PagesFor, SessionPages) returns. A
+// var where a test lowers it.
+var ListLimit = 500
+
+// Summary reads the caller's page id with its counts.
+func (s *PGStore) Summary(ctx context.Context, id int64) (Summary, error) {
+	list, err := s.summaries(ctx, ` AND p.id = $1`, id)
+	if err != nil {
+		return Summary{}, err
+	}
+	if len(list) == 0 {
+		return Summary{}, ErrNotFound
+	}
+	return list[0], nil
 }
 
 // PagesFor lists c's pages.
@@ -489,6 +516,66 @@ func (s *PGStore) TitleSearch(ctx context.Context, text string, limit int) ([]Pa
 		out = append(out, p)
 	}
 	return out, wrap("title search", rows.Err())
+}
+
+// Waiting is what makes a page WAITING on its reader (operator decision),
+// read at its CURRENT version only — an answer sent to an older version
+// answered a question the page no longer asks as it was, so it does not count:
+//
+//	(a) a component that MUST be answered has no response at that version: an
+//	    approval; a question or choice marked required; a form with a
+//	    required field; a gallery whose pick is required. (An upload has no
+//	    required mark, so it is never one.) Or
+//	(b) the version has an answerable component (answerableTypes, or a
+//	    gallery with a pick) and NOTHING on the page — no component, no
+//	    script's send — has been answered at that version.
+//
+// So an all-optional page waits until anyone answers any of it, and a page
+// whose required parts are all answered is done, whatever optional parts are
+// left. Whoever answered — the owner, a member of its team, anyone through a
+// link — counts alike.
+//
+// It runs over pages ids in ONE query, under row-level
+// security (an id the caller cannot read is absent). Only those pages'
+// current versions are unpacked.
+func (s *PGStore) Waiting(ctx context.Context, ids []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `WITH cur AS (
+		  SELECT p.id, v.version, b.block, b.block->>'type' AS t, b.block->>'id' AS cid
+		  FROM pages p
+		  JOIN page_versions v ON v.page_id = p.id AND v.owner_id = p.owner_id AND v.version = p.current_version
+		  CROSS JOIN LATERAL jsonb_array_elements(v.blocks) AS b(block)
+		  WHERE p.id = ANY($1::bigint[])
+		), comp AS (
+		  SELECT id, version,
+		    (t = $2
+		     OR (t = ANY($3::text[]) AND block->>'required' = 'true')
+		     OR (t = $4 AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(block->'fields', '[]'::jsonb)) AS f(field) WHERE f.field->>'required' = 'true'))
+		     OR (t = $5 AND block->'pick'->>'required' = 'true')) AS must,
+		    EXISTS (SELECT 1 FROM page_responses r
+		      WHERE r.page_id = cur.id AND r.version = cur.version AND r.component = cur.cid AND r.kind IN ($6, $7)) AS answered
+		  FROM cur
+		  WHERE t = ANY($8::text[]) OR (t = $5 AND jsonb_typeof(block->'pick') = 'object')
+		)
+		SELECT id FROM comp GROUP BY id, version
+		HAVING bool_or(must AND NOT answered)
+		    OR NOT EXISTS (SELECT 1 FROM page_responses r WHERE r.page_id = comp.id AND r.version = comp.version AND r.kind IN ($6, $7))`,
+		ids, BlockApproval, []string{BlockQuestion, BlockChoice}, BlockForm, BlockGallery, string(KindSubmit), string(KindUpload), answerableTypes)
+	if err != nil {
+		return nil, wrap("waiting", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, wrap("waiting", err)
+		}
+		out[id] = true
+	}
+	return out, wrap("waiting", rows.Err())
 }
 
 // SessionPages lists the pages session x made, newest made first. Row-level

@@ -616,6 +616,9 @@ export const sessionWakeMirrorMCPPort = port + 495;
 export const chiefOpenRouterPort = port + 620;
 export const chiefOpenRouterConnectPort = port + 621;
 export const chiefOpenRouterCatalogPort = port + 622;
+// tests/pages-search.spec.ts: the Pages list's search and filters — its own
+// server (pages on). +625: clear of the blocks above.
+export const pagesSearchPort = port + 625;
 // tests/officer-page-redesign.spec.ts: an officer page's Instructions, spend
 // bar and answer box — its own password-mode server with a budgeted builtin
 // officer in MUSTER_OFFICERS, and the connect listener a pod officer needs.

@@ -242,6 +242,9 @@ func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 	// The search box's script (asks_search.go), written by the Asks page;
 	// internal/api's TestTheSearchBoxSearchesAsYouType pins that it does, once.
 	docs["asks page's search box (internal/api)"] = AsksSearchScriptHTML()
+	// The Pages list's search (page_search.go), written by the list;
+	// internal/api's TestThePagesListSearchesAndFilters pins that it does, once.
+	docs["pages list's search (internal/api)"] = PagesSearchScriptHTML()
 	for _, doc := range docs {
 		for _, m := range staticScriptTag.FindAllStringSubmatch(doc, -1) {
 			linked[m[1]] = true // ?v= is checked by expandStaticScripts / internal/api checkVersioned

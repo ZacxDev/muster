@@ -164,6 +164,25 @@ func TestThePagesScreensArePlain(t *testing.T) {
 			t.Errorf("page %d's badges: %q, want %q", id, got[id], want)
 		}
 	}
+	// 🔴 THE ONE ID THE TOP LAYER DRAWS, ON PURPOSE (operator decision: "see
+	// the page ID on the page card … and search by ID"): each row's number,
+	// "#<id>", exactly. The scans above READ it — each number is one of the
+	// top-layer texts they passed — and accept it because it is "#" and
+	// digits; an id said any other way ("page 12") is still theirs to refuse
+	// (pageJargon). So the acceptance is this shape on a row, not a wider scan.
+	texts := topLayerTexts(t, pagesSection(t, list, `data-testid="pages-page"`))
+	for _, id := range []int64{plan, notes, survey, budget} {
+		num := "#" + strconv.FormatInt(id, 10)
+		if !slices.Contains(texts, num) {
+			t.Errorf("page %d's number %q is not in the list's top layer (%q)", id, num, texts)
+		}
+		if !regexp.MustCompile(`(?s)<li data-page-id="` + strconv.FormatInt(id, 10) + `".*?<span data-page-number="" class="[^"]*">` + num + `</span>`).MatchString(list) {
+			t.Errorf("page %d's row does not draw its number as %q", id, num)
+		}
+	}
+	if pageJargonIn("page 12") == "" {
+		t.Errorf("CONTROL: the scan no longer refuses an id said as %q", "page 12")
+	}
 	for _, id := range []int64{plan, notes, survey, budget} {
 		sid := strconv.FormatInt(id, 10)
 		// The whole row opens the page's own view.

@@ -17,6 +17,8 @@
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix feedback-clear <owner>
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled <owner> <title>   one plain page (palette-everything.spec.ts); prints its id
 //	DATABASE_URL=…_e2e go run ./e2e/pagesfix titled-clear <owner> <title>
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix search <owner>   the search pages (pages-search.spec.ts), {venue, budget, notes, room, ledger, number}
+//	DATABASE_URL=…_e2e go run ./e2e/pagesfix search-clear <owner>
 //
 // phone and phone-clear touch only the page titled PhoneTitle; themed and
 // themed-clear only the page titled ThemedTitle; feedback and
@@ -34,7 +36,8 @@
 //   - a page whose long title must wrap whole words, ending in one unbroken
 //     string longer than a phone is wide: 1 version, nothing else.
 //
-// seed first deletes every page of the owner's (this e2e database's only).
+// seed first deletes every page of the owner's (this e2e database's only), and
+// so do search and search-clear (searchPages).
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check).
 package main
@@ -73,8 +76,8 @@ func run(args []string) error {
 	}
 	titled := len(args) == 3 && (args[0] == "titled" || args[0] == "titled-clear")
 	if !titled && (len(args) != 2 || (args[0] != "seed" && args[0] != "clear" && args[0] != "phone" && args[0] != "phone-clear" &&
-		args[0] != "themed" && args[0] != "themed-clear" && args[0] != "feedback" && args[0] != "feedback-clear")) {
-		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | themed <owner> | themed-clear <owner> | feedback <owner> | feedback-clear <owner> | titled <owner> <title> | titled-clear <owner> <title>")
+		args[0] != "themed" && args[0] != "themed-clear" && args[0] != "feedback" && args[0] != "feedback-clear" && args[0] != "search" && args[0] != "search-clear")) {
+		return fmt.Errorf("usage: pagesfix seed <owner> | clear <owner> | phone <owner> | phone-clear <owner> | themed <owner> | themed-clear <owner> | feedback <owner> | feedback-clear <owner> | titled <owner> <title> | titled-clear <owner> <title> | search <owner> | search-clear <owner>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -94,6 +97,12 @@ func run(args []string) error {
 	// AS the owner, never the system scope: row-level security confines the
 	// seed to that owner's rows.
 	as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
+	if strings.HasPrefix(args[0], "search") {
+		if _, err := pool.Exec(as, `DELETE FROM pages`); err != nil || args[0] == "search-clear" {
+			return err
+		}
+		return searchPages(as, pages.NewPG(pool))
+	}
 	if titled {
 		// Only the pages titled args[2]: every other page is left alone.
 		if _, err := pool.Exec(as, `DELETE FROM pages WHERE title = $1`, args[2]); err != nil || args[0] == "titled-clear" {
@@ -367,4 +376,79 @@ func feedbackPage(ctx context.Context, st *pages.PGStore) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"page": p.ID, "token": l.Token})
+}
+
+// searchPages is the Pages list's search fixture (pages-search.spec.ts): four
+// pages whose every property the search and the filters read is pairwise
+// distinct, by two makers (mirrored sessions "Release helper" and "Design
+// helper" on host "laptop"):
+//
+//   - venue: "Venue survey" by Release helper, its question unanswered
+//     (waiting on you);
+//   - budget: "Budget review" by Design helper, answered from the owner's
+//     view;
+//   - notes: "Launch notes" by Release helper, an html block only (never
+//     waiting: it cannot be judged);
+//   - room: "Room <venue's number> booking" by Design helper — its title holds
+//     venue's number, so a search by number that matched titles would list it —
+//     answered through a link at version 1 only, then given a version 2
+//     (waiting again);
+//   - ledger: "Ledger <number>" by Release helper, a markdown block only —
+//     number is ten copies of a digit venue's number lacks: no page's id, and
+//     a title that cannot hold venue's number.
+//
+// It prints {venue, budget, notes, room, ledger, number}.
+func searchPages(ctx context.Context, st *pages.PGStore) error {
+	release := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-search-a", Label: "Release helper"}
+	design := pages.Creator{MirrorHost: "laptop", MirrorSession: "pagesfix-search-b", Label: "Design helper"}
+	question := []pages.Block{{Type: pages.BlockMarkdown, Text: "# Plan"}, {Type: pages.BlockQuestion, ID: "q1", Label: "Which day suits you?"}}
+	create := func(c pages.Creator, title string, in []pages.Block) (pages.Page, error) {
+		blocks, size, err := pages.Validate(in)
+		if err != nil {
+			return pages.Page{}, err
+		}
+		p, _, err := st.Create(ctx, c, title, blocks, size)
+		return p, err
+	}
+	venue, err := create(release, "Venue survey", question)
+	if err != nil {
+		return err
+	}
+	budget, err := create(design, "Budget review", question)
+	if err != nil {
+		return err
+	}
+	if _, err := st.AddOwnerResponse(ctx, budget.ID, 1, "q1", pages.KindSubmit, []byte(`{"answer":"Monday"}`), ""); err != nil {
+		return err
+	}
+	notes, err := create(release, "Launch notes", []pages.Block{{Type: pages.BlockHTML, HTML: "<p>A custom page.</p>"}})
+	if err != nil {
+		return err
+	}
+	room, err := create(design, "Room "+strconv.FormatInt(venue.ID, 10)+" booking", question)
+	if err != nil {
+		return err
+	}
+	l, err := st.CreateLink(ctx, room.ID, pages.LinkLive, "you", false)
+	if err != nil {
+		return err
+	}
+	if _, err := st.AddResponse(ctx, l, 1, "q1", pages.KindSubmit, []byte(`{"answer":"Friday"}`), ""); err != nil {
+		return err
+	}
+	blocks, size, err := pages.Validate(question)
+	if err != nil {
+		return err
+	}
+	if _, _, err := st.AddVersion(ctx, design, room.ID, room.Title, blocks, size); err != nil {
+		return err
+	}
+	vs := strconv.FormatInt(venue.ID, 10)
+	d := "0123456789"[strings.IndexFunc("0123456789", func(r rune) bool { return !strings.ContainsRune(vs, r) })]
+	number := strings.Repeat(string(d), 10)
+	ledger, err := create(release, "Ledger "+number, []pages.Block{{Type: pages.BlockMarkdown, Text: "# Ledger"}})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"venue": venue.ID, "budget": budget.ID, "notes": notes.ID, "room": room.ID, "ledger": ledger.ID, "number": number})
 }

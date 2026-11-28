@@ -52,8 +52,11 @@ const sizes = [
 ] as const;
 
 // The word caps, a little above what each screen draws (measured on this
-// fixture at both sizes; the PR records the before and after counts).
-const CAPS = { list: 48, detail: 72, versions: 34, link: 2 } as const;
+// fixture at both sizes; the PR records the before and after counts). The
+// list's rose from 48 to 64 (60 drawn) when the operator asked for
+// its search, its filters and each page's number: "Search pages", "Waiting on
+// you" and its count, and "#<id> ·" on each of the five rows.
+const CAPS = { list: 64, detail: 72, versions: 34, link: 2 } as const;
 
 // WHEN is a time in words once the app script has run (internal/ui
 // plain_when.go): the day and the clock in the reader's own zone ("today at
@@ -163,10 +166,10 @@ for (const [size, viewport] of sizes) {
       expect(await badges(seeded.survey), 'Venue survey').toEqual(['Live', '2 waiting']);
       expect(await badges(seeded.budget), 'Budget review').toEqual(['v2', 'Live', '1 waiting', '1 reply']);
       expect(await badges(seeded.long), 'the long-titled page').toEqual([]);
-      // Who made it and when, in words in the reader's own zone.
+      // Its number, who made it and when, in words in the reader's own zone.
       const meta = page.locator(`li[data-page-id="${seeded.plan}"] [data-page-meta]`);
-      await expect(meta).toHaveText(when('by Release helper · '));
-      await expect(page.locator(`li[data-page-id="${seeded.budget}"] [data-page-meta]`)).toHaveText(when('by Release helper · '));
+      await expect(meta).toHaveText(when(`#${seeded.plan} · by Release helper · `));
+      await expect(page.locator(`li[data-page-id="${seeded.budget}"] [data-page-meta]`)).toHaveText(when(`#${seeded.budget} · by Release helper · `));
       await layout(page, 'main', 'the list');
       if (size === 'desktop') {
         const w = (await page.locator('[data-testid="pages"]').boundingBox())!.width;
