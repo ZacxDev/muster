@@ -1566,7 +1566,9 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 		Owner: &pages.OwnerChrome{PageID: id, Crumbs: crumbs, Updated: ui.PlainWhen(p.UpdatedAt, now), UpdatedMS: p.UpdatedAt.UnixMilli(),
 			Version: v.Version, Versions: list, DetailHref: pagePath(id),
 			SessionHref: sessHref, SessionLabel: sessLabel,
-			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))
+			ShareButton: share.String(), ShareScript: ui.PageShareScript(),
+			// The version shown, by its own blocks: no html block, no bar.
+			ScriptFree: !pages.HasHTML(v.Blocks)}}))
 }
 
 // handlePagePreview is GET /pages/{id}/preview[?v=N], the view's former

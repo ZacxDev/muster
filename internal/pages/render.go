@@ -196,6 +196,18 @@ func Content(v Version, o RenderOptions) string {
 	return b.String()
 }
 
+// keysHint is the hint drawn beside a built-in component's submit: the SDK
+// writes "⌘+Enter" in its place on a Mac (sdkScript), and CSS hides it on a
+// touch screen.
+const keysHint = `<span class="mp-kbd" aria-hidden="true" data-muster-keys>Ctrl+Enter</span>`
+
+// sendRow is a built-in component's submit button, named label, and the
+// keyboard hint beside it: Ctrl+Enter (⌘+Enter) anywhere in the component
+// presses it (sdkScript).
+func sendRow(label string) string {
+	return `<div class="mp-send"><button type="submit" aria-keyshortcuts="Control+Enter Meta+Enter">` + html.EscapeString(label) + `</button>` + keysHint + `</div>`
+}
+
 func submitLabel(b Block, def string) string {
 	if b.SubmitLabel != "" {
 		return b.SubmitLabel
@@ -224,7 +236,7 @@ func renderBlock(b Block, o RenderOptions) string {
 			input = `<textarea id="` + id + `-a" name="answer" rows="5" maxlength="4000"` + req(b.Required) + `></textarea>`
 		}
 		return open + `<form data-muster-form><label for="` + id + `-a">` + esc(b.Label) + `</label>` + input +
-			`<button type="submit">` + esc(submitLabel(b, "Send")) + `</button>` + status + `</form></section>`
+			sendRow(submitLabel(b, "Send")) + status + `</form></section>`
 	case BlockChoice:
 		typ := "radio"
 		if b.Multiple {
@@ -237,7 +249,7 @@ func renderBlock(b Block, o RenderOptions) string {
 				esc(opt) + `"> ` + esc(opt) + `</label>`)
 		}
 		return open + `<form data-muster-form><fieldset><legend>` + esc(b.Label) + `</legend>` + opts.String() + `</fieldset>` +
-			`<button type="submit">` + esc(submitLabel(b, "Send")) + `</button>` + status + `</form></section>`
+			sendRow(submitLabel(b, "Send")) + status + `</form></section>`
 	case BlockForm:
 		var fields strings.Builder
 		for _, f := range b.Fields {
@@ -248,7 +260,7 @@ func renderBlock(b Block, o RenderOptions) string {
 			legend = `<legend>` + esc(b.Label) + `</legend>`
 		}
 		return open + `<form data-muster-form><fieldset>` + legend + fields.String() + `</fieldset>` +
-			`<button type="submit">` + esc(submitLabel(b, "Send")) + `</button>` + status + `</form></section>`
+			sendRow(submitLabel(b, "Send")) + status + `</form></section>`
 	case BlockUpload:
 		multi := ""
 		if b.Multiple {
@@ -263,7 +275,7 @@ func renderBlock(b Block, o RenderOptions) string {
 				`-f" name="file" disabled><p class="mp-status" role="status" data-muster-status>` + esc(off) + `</p></form></section>`
 		}
 		return open + `<form data-muster-form><label for="` + id + `-f">` + esc(b.Label) + `</label><input type="file" id="` + id +
-			`-f" name="file" required` + multi + `><button type="submit">` + esc(submitLabel(b, "Upload")) + `</button>` + status + `</form></section>`
+			`-f" name="file" required` + multi + `>` + sendRow(submitLabel(b, "Upload")) + status + `</form></section>`
 	case BlockApproval:
 		comment := ""
 		if b.Comment {
@@ -348,7 +360,7 @@ func renderGallery(b Block) string {
 	}
 	if b.Pick != nil {
 		out.WriteString(`<div class="mp-gallery-bar"><span data-muster-picked>0 picked</span><span aria-hidden="true">·</span>` +
-			`<button type="button" data-muster-save>` + esc(submitLabel(Block{SubmitLabel: b.Pick.SubmitLabel}, "Save")) + `</button>` +
+			`<button type="button" data-muster-save aria-keyshortcuts="Control+Enter Meta+Enter">` + esc(submitLabel(Block{SubmitLabel: b.Pick.SubmitLabel}, "Save")) + `</button>` + keysHint +
 			`<p class="mp-status" role="status" data-muster-status></p></div>`)
 	}
 	out.WriteString(`</section>`)
@@ -601,7 +613,7 @@ var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p
  QSA=Document.prototype.querySelectorAll,SA=Element.prototype.setAttribute,RA=Element.prototype.removeAttribute,GA=Element.prototype.getAttribute,ML=HTMLMediaElement.prototype.load,
  gTag=gd(Element.prototype,"tagName"),gPar=gd(Node.prototype,"parentNode"),
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
- gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
+ gTarget=gd(Event.prototype,"target"),gFocus=gd(Document.prototype,"activeElement"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
  BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,PH=` + jsString(assetPlaceholder) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 // onBack is what the shell's "back" closes (a gallery's open viewer), null
@@ -640,7 +652,7 @@ function show(){
  ASSETS.forEach(function(a){BLOCKS=BLOCKS.split("asset:"+a).join(ph(a));});
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
  ASSETS.forEach(function(a){if(urls[a])fill(a);else mark(a,"loading");});
- gal();
+ gal();keyHints();
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
@@ -716,10 +728,97 @@ R(AEL,D,["submit",function(ev){
  // Every file goes in one send (the owner confirms them together; the shell
  // sends them in turn and stops at the first refusal).
  send(kind==="upload"?"upload":"submit",id,value,function(ok,x){
-  if(ok){say("Sent. Thank you.");form.reset();}else say(x||"It could not be sent.",true);
   btns.forEach(function(b){b.disabled=false;});
+  if(ok){say("Sent. Thank you.");form.reset();next(sec);}else say(x||"It could not be sent.",true);
  });
 }]);
+// THE KEYBOARD (docs/pages.md "Answering by keyboard"). Tab walks every
+// control of the built-in components in document order (native elements:
+// each option's input, Approve and Decline, the fields, a gallery's Pick
+// buttons, the submit), Space picks or presses what has focus (natively), and
+// Ctrl+Enter (⌘+Enter) anywhere in a component presses ITS submit, as a click
+// of it would: a trusted keydown only, never a repeat. An approval has no one
+// submit: Ctrl+Enter on Approve or Decline is that decision, anywhere else in
+// it asks for one. A repeating Enter in a component (other than in a
+// multi-line answer, where it is a new line) does nothing: a held key never
+// sends twice, nor sends the component focus moved on to (next).
+R(AEL,D,["keydown",function(ev){
+ if(ev.isTrusted!==true||ev.key!=="Enter")return;
+ var t=R(gTarget,ev,[]),sec=t&&t.closest?t.closest("section[data-muster-component]"):null;if(!sec)return;
+ if(ev.repeat){if(t.tagName!=="TEXTAREA"||ev.ctrlKey||ev.metaKey)ev.preventDefault();return;}
+ if(!(ev.ctrlKey||ev.metaKey)||ev.shiftKey||ev.altKey)return;
+ ev.preventDefault();
+ var kind=sec.getAttribute("data-muster-kind");
+ if(kind==="gallery"){var sb=sec.querySelector("[data-muster-save]");if(sb&&!sb.disabled)sb.click();return;}
+ var form=sec.querySelector("form[data-muster-form]");if(!form)return;
+ var sub=kind==="approval"?(t.getAttribute("name")==="decision"&&t.type==="submit"?t:null):form.querySelector('button[type="submit"]');
+ if(!sub){
+  if(kind==="approval"){var st=form.querySelector("[data-muster-status]");if(st){st.textContent="Choose Approve or Decline.";st.className="mp-status mp-bad";}}
+  return;
+ }
+ if(!sub.disabled)form.requestSubmit(sub);
+}]);
+// keyHints writes the submit hints as a Mac spells the shortcut.
+function keyHints(){
+ if(!/Mac|iPhone|iPad|iPod/.test(W.navigator.platform||""))return;
+ var l=D.querySelectorAll("[data-muster-keys]");for(var i=0;i<l.length;i++)l[i].textContent="⌘+Enter";
+}
+// next moves on after sec was sent: the first component AFTER it, in
+// document order, that can still be answered and has not been sent in this
+// view, is scrolled into view and its first control focused. None: nothing.
+// (The frame does not know what was answered before it loaded.)
+var sentHere=[];
+function answerable(s){
+ if(s.getAttribute("data-muster-kind")==="gallery")return !!s.querySelector("[data-muster-save]");
+ return !!s.querySelector('form[data-muster-form] button[type="submit"]');
+}
+function next(sec){
+ if(sentHere.indexOf(sec)<0)sentHere.push(sec);
+ var l=D.querySelectorAll("section[data-muster-component]"),after=false;
+ for(var i=0;i<l.length;i++){
+  var s=l[i];if(s===sec){after=true;continue;}
+  if(!after||sentHere.indexOf(s)>=0||!answerable(s))continue;
+  var c=s.querySelector(s.getAttribute("data-muster-kind")==="gallery"?".mp-gallery-pick,[data-muster-save]":
+   'input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),button:not([disabled])');
+  if(!c)continue;
+  try{s.scrollIntoView({block:"center"});}catch(e){}
+  landEl=c;landAt=Date.now();
+  c.focus({preventScroll:true});return;
+ }
+}
+// THE LANDING WINDOW (audit round 1, 🟡-1): for landMs after next() moved
+// focus to a control, THAT control is not pressed and sends nothing — a
+// second press of the key (or tap) that sent the last ask must not answer
+// this one too (an approval's Approve takes focus). A trusted keydown or
+// press on it inside the window starts it again, as the shell's bar does.
+// Tab still moves, and typing that changes it (a text box's input) ends the
+// window: only Enter
+// or Space on it, or an Enter that would send from it, is held back; a click
+// on it, and a submit it makes (its press, an implicit submission, a
+// Ctrl+Enter while it has focus), is cancelled. Every other control is as it
+// always is.
+var landEl=null,landAt=0;
+function landing(t){
+ if(!landEl||!t||t!==landEl)return false;
+ if(Date.now()-landAt>=` + landMs + `){landEl=null;return false;}
+ return true;
+}
+function texty(t){var n=t.tagName;return n==="TEXTAREA"||(n==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image)$/.test(t.type));}
+R(AEL,W,["keydown",function(ev){
+ var t=R(gTarget,ev,[]);if(ev.isTrusted!==true||!landing(t))return;
+ // In a text box every key but an Enter that would send types as ever (a
+ // new line in a multi-line one included); what ends the window is the box
+ // CHANGING (its input event, below), never a bare Ctrl, Shift, Meta or Alt
+ // — so a second Ctrl+Enter still lands in the window (audit round 2, 🟡-A).
+ if(texty(t)&&(ev.key!=="Enter"||(t.tagName==="TEXTAREA"&&!(ev.ctrlKey||ev.metaKey))))return;
+ landAt=Date.now();
+ if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();R(SIP,ev,[]);}
+},true]);
+R(AEL,W,["keyup",function(ev){var t=R(gTarget,ev,[]);if(ev.key===" "&&landing(t)&&!texty(t)){ev.preventDefault();R(SIP,ev,[]);}},true]);
+R(AEL,W,["input",function(ev){if(ev.isTrusted===true&&landEl&&R(gTarget,ev,[])===landEl)landEl=null;},true]);
+R(AEL,W,["pointerdown",function(ev){if(ev.isTrusted===true&&landing(R(gTarget,ev,[])))landAt=Date.now();},true]);
+R(AEL,W,["click",function(ev){if(landing(R(gTarget,ev,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
+R(AEL,W,["submit",function(ev){if(landing(ev.submitter)||landing(R(gFocus,D,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
 ` + galleryJS(v) + `
 })();`
 }
@@ -798,6 +897,11 @@ button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mp-option:has(input:focus-visible),.mp-check:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.mp-send{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px}
+.mp-kbd{font:12px/1.5 ui-monospace,monospace;color:var(--fg2);padding:0 5px;border:1px solid var(--line);border-radius:4px}
+@media (hover:none) and (pointer:coarse){.mp-kbd{display:none}}
 [data-muster-asset]{display:block;width:100%;aspect-ratio:16/9;background:var(--line);border-radius:8px;object-fit:contain;max-height:80vh}`
 
 // The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
@@ -817,6 +921,9 @@ const (
 	// confirmGuardMs is the owner's confirm's quiet window: a press of the bar
 	// inside it does nothing and starts it again (ShellScript).
 	confirmGuardMs = "500"
+	// landMs is the content frame's landing window: how long after a send
+	// moved focus to the next component nothing in it is pressed (sdkScript).
+	landMs = "500"
 	// confirmWaitMs is how long the owner's confirm waits before it answers
 	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
 	// answer — longer, so the page is never told "No answer came back"
@@ -916,6 +1023,16 @@ type OwnerChrome struct {
 	// a page's words.
 	ShareButton string
 	ShareScript string
+	// ScriptFree is the SERVER's word that the version shown holds no html
+	// block (!HasHTML of its blocks, set where the shell is rendered): its
+	// content document then runs no script but muster's own, so a send from
+	// it is the reader's own press of a built-in component. The shell then
+	// posts a send at once, without the "Send as you?" bar (the operator's
+	// decision; docs/design/pages.md "The owner's confirm").
+	//
+	// 🔴 ITS ZERO VALUE KEEPS THE BAR, and nothing the frame says sets it:
+	// only the route that knows the version's blocks may.
+	ScriptFree bool
 }
 
 // Crumb is one breadcrumb of the owner's header: its words, and where a tap
@@ -1002,7 +1119,9 @@ background:transparent;color:inherit;font:inherit;text-align:left;text-decoratio
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
 .confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:var(--s1);
 padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
-@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid var(--line)}}
+@media (min-width:640px){.confirm{left:50%;right:auto;bottom:16px;transform:translateX(-50%);width:26rem;max-width:calc(100vw - 32px);border-radius:12px;border:1px solid var(--line)}}
+.confirm kbd{margin-left:8px;padding:0 5px;border:1px solid currentColor;border-radius:4px;font:12px/1.5 ui-monospace,monospace;opacity:.75}
+@media (hover:none) and (pointer:coarse){.confirm kbd{display:none}}
 .confirm[hidden]{display:none}.confirm:focus{outline:none}
 .confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:var(--fg2);font-size:14px}
 .confirm .cs{margin:0 0 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
@@ -1080,7 +1199,10 @@ func Shell(v ShellView) string {
 	b.WriteString(`</header>
 <iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
 `)
-	script := ShellScript(v.Base, o != nil, v.Keeps...)
+	// The bar is kept for every owner's view but one whose version the
+	// server said holds no html block (OwnerChrome.ScriptFree).
+	confirm := o != nil && !o.ScriptFree
+	script := ShellScript(v.Base, o != nil, confirm, v.Keeps...)
 	if v.Feedback != nil {
 		// The Feedback pill (feedback.go): muster's own markup in the shell,
 		// where the page's script cannot reach.
@@ -1127,10 +1249,14 @@ func Shell(v ShellView) string {
 <p class="ft" data-page-about-title>` + esc(v.Title) + `</p><p class="meta" data-page-about-meta>` + meta + `</p>` +
 			`<button type="button" data-copy-page-id="` + pid + `">Copy ID</button></div>
 <div id="action-toasts" aria-live="polite"></div>
-<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
-<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
-<div class="cb"><button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button></div></div>
 `)
+		if confirm {
+			b.WriteString(`<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
+<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
+<div class="cb"><button type="button" data-send-cancel aria-keyshortcuts="Escape">Cancel<kbd aria-hidden="true">Esc</kbd></button>` +
+				`<button type="button" class="go" data-send-go aria-keyshortcuts="Enter">Send<kbd aria-hidden="true">Enter</kbd></button></div></div>
+`)
+		}
 		script += "\n" + ownerScript + "\n" + o.ShareScript
 	}
 	b.WriteString(`<script nonce="` + esc(v.Nonce) + `">` + script + `</script>
@@ -1156,8 +1282,8 @@ func Shell(v ShellView) string {
 // A link's shell posts it at once, with credentials omitted (the link in base
 // is the credential), as it always has.
 //
-// 🔴 THE OWNER'S SHELL (owner) POSTS NOTHING THE OWNER HAS NOT CONFIRMED HERE,
-// in muster's own realm, where the page's script cannot reach (another
+// 🔴 THE OWNER'S SHELL (owner) OF A VERSION WITH AN HTML BLOCK (confirm,
+// below) POSTS NOTHING THE OWNER HAS NOT CONFIRMED HERE, in muster's own realm, where the page's script cannot reach (another
 // origin, a sandboxed frame): a send opens the shell's "Send as you?" bar —
 // the component and EVERY field, one per line, name and value as JSON with
 // control, invisible and direction-changing characters escaped (show), so a
@@ -1172,7 +1298,8 @@ func Shell(v ShellView) string {
 // Send is not focused when the bar opens (the bar itself is). A press of the
 // bar within confirmGuardMs does nothing and starts the window again, so a
 // burst of taps that opened the bar never reaches Send; Send then takes a
-// press that begins on it after the window. One send waits at a time:
+// press that begins on it after the window, or a fresh Enter after it (confirm,
+// below). One send waits at a time:
 // another while the bar is open is answered "Another send is waiting for
 // your answer." and dropped.
 //
@@ -1205,17 +1332,35 @@ func Shell(v ShellView) string {
 //
 // keeps are the gallery keys the relay keeps picks under (KeepKeys of the
 // shown version): a keep or recall of any other key is refused.
-func ShellScript(base string, owner bool, keeps ...string) string {
-	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
+//
+// confirm (owner only; Shell passes owner && !OwnerChrome.ScriptFree) keeps
+// the bar. 🔴 THE OPERATOR'S DECISION: in the owner's view of a version with
+// NO html block — so no script in the frame but muster's own, and every send
+// is the owner's own press of a built-in component — a send is posted at
+// once, by the same route, with the same session, checks, normalisation and
+// size cap, and no bar. The server decides it when it renders the shell; the
+// frame cannot. A version with an html block keeps the bar and every
+// guarantee above, and its keyboard: while it is open and the keyboard is IN
+// THE BAR, a plain Enter (no modifier) sends — only a trusted, non-repeating
+// keydown after the quiet window; any other keydown in the bar (a letter, a
+// modified Enter, a repeat) starts the window again, so a held Enter or the
+// burst that opened the bar never sends, and an Enter elsewhere in the shell
+// (Feedback, the chip) never confirms — and Escape cancels. An Enter on
+// Cancel is Cancel's own.
+func ShellScript(base string, owner, confirm bool, keeps ...string) string {
+	creds, refpol, gate, ask := `"omit"`, `"no-referrer"`, "false", "false"
 	if owner {
 		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
+		if confirm {
+			ask = "true"
+		}
 	}
 	if keeps == nil {
 		keeps = []string{}
 	}
 	keepJSON, _ := json.Marshal(keeps)
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null,KEEPS=` + string(keepJSON) + `;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,CONFIRM=` + ask + `,port=null,KEEPS=` + string(keepJSON) + `;
 var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,floorY=0,quiet=0,cap=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
 function hidden(){return !!hdr&&hdr.hasAttribute("data-hidden");}
 function setHidden(h){
@@ -1273,7 +1418,12 @@ function ask(what,summary,cb){
  asking=cb;
  box.querySelector("[data-send-what]").textContent=what;
  box.querySelector("[data-send-summary]").textContent=summary;
- box.hidden=false;guard();box.focus();
+ box.hidden=false;guard();
+ // The bar takes the keyboard — unless the owner is typing in the shell's own
+ // part of the screen (Feedback): then the keyboard stays there, and its keys
+ // never reach the bar (audit round 2, 🟡-B). Send and Tab still reach it.
+ var ae=document.querySelector(":focus");
+ if(!(ae&&(ae.isContentEditable||ae.tagName==="TEXTAREA"||(ae.tagName==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image|range|color)$/.test(ae.type)))))box.focus();
  giveUp=setTimeout(function(){decide(false);},` + confirmWaitMs + `);
  return true;
 }
@@ -1296,6 +1446,25 @@ if(box){
  box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
 }
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
+// The bar's keyboard (audit round 1, 🔴-1). ONLY A KEY WHOSE TARGET IS IN
+// THE BAR counts (the bar takes focus on opening): an Enter in the Feedback
+// box, on the version chip or anywhere else in the shell never confirms.
+// In the bar, a plain Enter (no Shift, Ctrl, Meta or Alt), trusted, not a
+// repeat, after the quiet window confirms; EVERY other keydown that reaches
+// the bar starts the window again — so typing that lands in it, a modified
+// Enter or a held one never confirms — except a plain Enter or Space on
+// Cancel (Cancel's own click) and a plain Space on Send after the window (Send's
+// own press, armed by its listener below).
+document.addEventListener("keydown",function(e){
+ if(!asking||!e.isTrusted||e.key==="Escape")return;
+ var t=e.target;if(!t||!box.contains(t))return;
+ var plain=!(e.shiftKey||e.ctrlKey||e.metaKey||e.altKey);
+ if(plain&&!e.repeat&&(e.key==="Enter"||e.key===" ")&&t.closest&&t.closest("[data-send-cancel]"))return;
+ if(plain&&!e.repeat&&e.key===" "&&t===go&&settled())return;
+ if(plain&&!e.repeat&&e.key==="Enter"&&settled()){e.preventDefault();decide(true);return;}
+ if(e.key==="Enter"||e.key===" ")e.preventDefault();
+ guard();
+},true);
 // THE VIEWER'S HISTORY ENTRY (gallery.go): a gallery's full-size viewer is
 // in the frame, Back is this window's. When the frame says it opened, the
 // shell pushes ONE entry, its state marked musterViewer and carrying a token
@@ -1399,6 +1568,9 @@ function relay(d){
   };
  }else return reply(false,"unknown request");
  if(!OWNER)return run(reply);
+ // A version with no html block (the server's word, CONFIRM): no script
+ // but muster's own runs in the frame, so this is the owner's own press.
+ if(!CONFIRM)return run(reply);
  if(!box)return reply(false,"nothing can be sent from here");
  // Everything, or nothing: a summary too long to show whole is refused,
  // never shown in part.

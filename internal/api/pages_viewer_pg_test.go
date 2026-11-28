@@ -131,6 +131,46 @@ func TestTheOwnersSubmitAndUploadFromTheirViewAreRecordedAsTheirs(t *testing.T) 
 	}
 }
 
+// TestTheOwnersViewKeepsTheBarOnlyForAVersionWithAnHTMLBlock (the operator's
+// decision): the route that renders the owner's shell decides, from the
+// blocks of the VERSION SHOWN, whether a send waits for "Send as you?" — a
+// version with an html block keeps the bar, one without posts at once. One
+// page, two versions, so the decision cannot come from the page as a whole,
+// nor from its current version for an older one shown.
+func TestTheOwnersViewKeepsTheBarOnlyForAVersionWithAnHTMLBlock(t *testing.T) {
+	f := newPageFixture(t)
+	id := f.create(t, f.agent, "Bar", `[{"type":"question","id":"q1","label":"Pick"},{"type":"html","html":"<p>script lives here</p>"}]`)
+	sid := strconv.FormatInt(id, 10)
+	f.tool(t, f.agent, pageUpdateTool, map[string]any{"page_id": id, "blocks": json.RawMessage(`[{"type":"question","id":"q1","label":"Pick"},{"type":"approval","id":"a1","label":"Ship it?"}]`)})
+	type state struct{ confirm, bar bool }
+	read := func(path string) state {
+		t.Helper()
+		w := f.get(t, path, f.ownerHdr())
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d", path, w.Code)
+		}
+		body := w.Body.String()
+		i := strings.Index(body, "<script nonce=")
+		if i < 0 {
+			t.Fatalf("%s: no shell script", path)
+		}
+		on, off := strings.Contains(body[i:], ",CONFIRM=true,"), strings.Contains(body[i:], ",CONFIRM=false,")
+		if on == off {
+			t.Fatalf("%s: the relay states CONFIRM neither or both ways", path)
+		}
+		return state{confirm: on, bar: strings.Contains(body[:i], "data-send-confirm")}
+	}
+	if got := read("/pages/" + sid + "/view"); got != (state{confirm: false, bar: false}) {
+		t.Errorf("the current version (no html block): %+v, want no bar", got)
+	}
+	if got := read("/pages/" + sid + "/view?v=1"); got != (state{confirm: true, bar: true}) {
+		t.Errorf("version 1 (an html block): %+v, want the bar", got)
+	}
+	if got := read("/pages/" + sid + "/view?v=2&embed=1"); got != (state{confirm: false, bar: false}) {
+		t.Errorf("version 2 embedded: %+v, want no bar", got)
+	}
+}
+
 // TestALinksResponseIsStillTheLinks (regression): a viewer's response through
 // a link is recorded as the link's — its link_id, not by_owner — beside the
 // owner's own, on the page's screen and in page_responses, and still pushes

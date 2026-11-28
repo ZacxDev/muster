@@ -269,7 +269,7 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 // its own frame's first hello, answered with the port; a send is relayed
 // only from the port, and answered there.
 func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false)
+	js := ShellScript("/s/TOKEN", false, false)
 	for _, want := range []string{
 		`if(!f||port||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;`,
@@ -290,7 +290,7 @@ func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
 // 20 {file: Blob, name} pairs — and that ONE copy is what is summarised and
 // what is posted (the submit's body is stringified once, before the confirm).
 func TestTheShellChecksASendsOwnCopy(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false)
+	js := ShellScript("/s/TOKEN", false, false)
 	for _, want := range []string{
 		`if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");`,
 		// Round 3's 🟡-3: normalised by a JSON round-trip FIRST, for a link's
@@ -327,7 +327,7 @@ func TestTheShellChecksASendsOwnCopy(t *testing.T) {
 // TestTheShellRelayOfALinkOmitsCredentials: a link's shell posts at once,
 // with credentials omitted — no confirm (it has none to show).
 func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false)
+	js := ShellScript("/s/TOKEN", false, false)
 	for _, want := range []string{`credentials:"omit"`, `referrerPolicy:"no-referrer"`, `OWNER=false`, `if(!OWNER)return run(reply);`, `base="/s/TOKEN"`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the relay lacks %q", want)
@@ -344,10 +344,67 @@ func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 // trusted click in the shell's realm; Cancel answers "Not sent"; Send is
 // never focused on opening and a press within 500 ms is ignored; one send
 // waits at a time.
+func TestTheOwnersBarIsKeptUnlessTheServerSaysTheVersionIsScriptFree(t *testing.T) {
+	// The operator's decision: a version with no html block runs no script
+	// but muster's own, so its owner's sends post at once. The flag is the
+	// SERVER's (OwnerChrome.ScriptFree); its zero value keeps the bar.
+	const bar = `<div class="confirm" role="dialog"`
+	shell := func(o *OwnerChrome) (markup, script string) {
+		out := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/pages/7/versions/2", Nonce: "N", Owner: o})
+		i := strings.Index(out, "<script nonce=")
+		return out[:i], out[i:]
+	}
+	for _, c := range []struct {
+		name      string
+		owner     *OwnerChrome
+		confirm   string
+		drawsBar  bool
+		ownerFlag string
+	}{
+		{"an owner's view of a version with html (the zero value)", &OwnerChrome{Version: 2}, `,CONFIRM=true,`, true, `OWNER=true`},
+		{"an owner's view of a script-free version", &OwnerChrome{Version: 2, ScriptFree: true}, `,CONFIRM=false,`, false, `OWNER=true`},
+		{"a link's viewer", nil, `,CONFIRM=false,`, false, `OWNER=false`},
+	} {
+		markup, script := shell(c.owner)
+		if !strings.Contains(script, c.confirm) || !strings.Contains(script, c.ownerFlag) {
+			t.Errorf("%s: the relay lacks %q / %q", c.name, c.confirm, c.ownerFlag)
+		}
+		if got := strings.Contains(markup, bar) && strings.Contains(markup, "data-send-confirm"); got != c.drawsBar {
+			t.Errorf("%s: draws the bar = %v, want %v", c.name, got, c.drawsBar)
+		}
+	}
+	// What the flag gates: the owner's relay posts at once only when it is off.
+	_, script := shell(&OwnerChrome{Version: 2, ScriptFree: true})
+	if !strings.Contains(script, "if(!OWNER)return run(reply);\n") || !strings.Contains(script, "if(!CONFIRM)return run(reply);\n if(!box)") {
+		t.Error("the relay's CONFIRM gate is not where a send is posted")
+	}
+	// The bar's keyboard: Enter only trusted, not repeated, after the quiet
+	// window (one inside it, or a repeat, restarts it); Enter on Cancel is Cancel's.
+	_, script = shell(&OwnerChrome{Version: 2})
+	for _, want := range []string{
+		// Audit round 1 🔴-1: only a key whose target is IN the bar; only a
+		// plain Enter confirms; every other keydown in the bar restarts it.
+		` if(!asking||!e.isTrusted||e.key==="Escape")return;
+ var t=e.target;if(!t||!box.contains(t))return;
+ var plain=!(e.shiftKey||e.ctrlKey||e.metaKey||e.altKey);`,
+		` if(plain&&!e.repeat&&e.key==="Enter"&&settled()){e.preventDefault();decide(true);return;}
+ if(e.key==="Enter"||e.key===" ")e.preventDefault();
+ guard();
+},true);`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the bar's keyboard lacks %q", want)
+		}
+	}
+}
+
 func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
-	js := ShellScript("/pages/7/versions/2", true)
+	js := ShellScript("/pages/7/versions/2", true, true)
 	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `OWNER=true`,
 		`if(!OWNER)return run(reply);
+ // A version with no html block (the server's word, CONFIRM): no script
+ // but muster's own runs in the frame, so this is the owner's own press.
+ if(!CONFIRM)return run(reply);
  if(!box)return reply(false,"nothing can be sent from here");
  // Everything, or nothing: a summary too long to show whole is refused,
  // never shown in part.
@@ -355,7 +412,10 @@ func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
  if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
   return reply(false,"Another send is waiting for your answer.");`,
 		`if(asking)return false;`,
-		`box.hidden=false;guard();box.focus();`,
+		`box.hidden=false;guard();`,
+		// Audit round 2 🟡-B: it takes focus unless the owner is typing in
+		// the shell (Feedback).
+		`if(!(ae&&(ae.isContentEditable||ae.tagName==="TEXTAREA"||(ae.tagName==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image|range|color)$/.test(ae.type)))))box.focus();`,
 		// Round 3's 🟡-1: every press inside the window restarts it; Send
 		// needs a press that starts on it after a quiet window.
 		`function guard(){openAt=Date.now();armed=false;}
@@ -380,7 +440,8 @@ function settled(){return Date.now()-openAt>=500;}`,
 		`<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>`,
 		`<pre class="cs" id="send-confirm-summary" data-send-summary></pre>`,
 		`<p class="ch" id="send-confirm-h">Send as you?</p>`,
-		`<button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button>`,
+		`<button type="button" data-send-cancel aria-keyshortcuts="Escape">Cancel<kbd aria-hidden="true">Esc</kbd></button>` +
+			`<button type="button" class="go" data-send-go aria-keyshortcuts="Enter">Send<kbd aria-hidden="true">Enter</kbd></button>`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the owner's shell lacks %q", want)
@@ -401,7 +462,7 @@ function settled(){return Date.now()-openAt>=500;}`,
 // the top, on a scroll up, or with the popover open it shows; it hides only
 // on a scroll down past its own height; focus inside it shows it (CSS).
 func TestTheShellHidesItsHeaderOnlyByTheRules(t *testing.T) {
-	js := ShellScript("/s/TOKEN", false)
+	js := ShellScript("/s/TOKEN", false, false)
 	for _, want := range []string{
 		`if(typeof y!=="number"||!isFinite(y)||y<0)return;`,
 		`var prev=lastY,down=y>prev;lastY=y;
@@ -602,7 +663,7 @@ func TestOneHeaderPopoverIsOpenAtATime(t *testing.T) {
 			t.Errorf("the owner script lacks %q", want)
 		}
 	}
-	if want := `function popOpen(){return !!document.querySelector('header [aria-haspopup="dialog"][aria-expanded="true"]');}`; !strings.Contains(ShellScript("/b", true), want) {
+	if want := `function popOpen(){return !!document.querySelector('header [aria-haspopup="dialog"][aria-expanded="true"]');}`; !strings.Contains(ShellScript("/b", true, true), want) {
 		t.Errorf("the shell's popOpen does not read every header popover: lacks %q", want)
 	}
 }
