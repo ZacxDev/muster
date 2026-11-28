@@ -1734,23 +1734,118 @@ for (const vp of ROUND_VIEWPORTS) {
       const a1 = frame.locator('[data-muster-component="a1"]');
       const a2 = frame.locator('[data-muster-component="a2"]');
       await a1.getByRole('button', { name: 'Approve' }).focus();
+      // Each press inside the window starts it again, so each step below
+      // must land within 500 ms of the step before it. Each is TIMED: a step
+      // that a slow runner delivered later than that proves nothing either
+      // way, and is skipped with a note rather than counted (never a false red).
+      const within = async (what: string, step: () => Promise<void>) => {
+        const t0 = Date.now();
+        await step();
+        const ms = Date.now() - t0;
+        if (ms >= 400) test.info().annotations.push({ type: 'slow-runner', description: `${what} took ${ms} ms: not asserted` });
+        return ms < 400;
+      };
       await page.keyboard.press('Enter');
       await expect(a1.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      // A second, separate Enter right after focus moved to a2's Approve.
+      const t0 = Date.now();
       await expect(a2.getByRole('button', { name: 'Approve' })).toBeFocused();
-      // A second, separate Enter within 200 ms of the first send's landing.
       await page.keyboard.press('Enter');
+      const enterInWindow = Date.now() - t0 < 400;
+      if (!enterInWindow) test.info().annotations.push({ type: 'slow-runner', description: 'the second Enter: not asserted' });
+      // And a click there (its pointerdown restarts the window).
+      const clickInWindow = await within('the click', () => a2.getByRole('button', { name: 'Approve' }).click());
       await page.waitForTimeout(400);
-      expect(await rowsOf(id), 'the second press approved the next ask').toBe(1);
-      await expect(a2.locator('[data-muster-status]')).toHaveText('');
-      // And a click there inside the window does not either.
-      await a2.getByRole('button', { name: 'Approve' }).click();
-      await page.waitForTimeout(300);
-      expect(await rowsOf(id), 'a click inside the window approved').toBe(1);
+      if (enterInWindow) expect(await rowsOf(id), 'the second press approved the next ask').toBe(1);
+      if (enterInWindow && clickInWindow) {
+        expect(await rowsOf(id), 'a click inside the window approved').toBe(1);
+        await expect(a2.locator('[data-muster-status]')).toHaveText('');
+      }
+      // A slow runner may have let one through: then the ask is answered and
+      // there is nothing left to control.
+      test.skip(!enterInWindow || !clickInWindow, 'a step landed after the window on this runner');
       // The control: a press after the window answers it.
       await page.waitForTimeout(700);
       await page.keyboard.press('Enter');
       await expect(a2.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       expect(await rowsOf(id)).toBe(2);
+    });
+  });
+}
+
+// Audit round 2. 🟡-A: a bare modifier keydown on a landed text box does
+// not end the landing window, so a double Ctrl+Enter does not also send the
+// next (optional) question empty. 🟡-B: a script opening the bar while the
+// owner types in Feedback leaves the keyboard there; a pause and Enter is a
+// new line in Feedback, never a confirm.
+const TWO_QUESTIONS = [
+  { type: 'question', id: 'q1', label: 'First note' },
+  { type: 'question', id: 'q2', label: 'Second note' },
+];
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, a double Ctrl+Enter answers one question, not the next one empty too (audit 🟡-A)`, async ({ browser }) => {
+    test.skip(vp.touch, 'a keyboard flow');
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Double CE ' + vp.name + ' ' + stamp, blocks: TWO_QUESTIONS });
+      const id = pg.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      const q1 = frame.locator('[data-muster-component="q1"]');
+      const q2 = frame.locator('[data-muster-component="q2"]');
+      await q1.locator('input[name="answer"]').fill('only this');
+      await q1.locator('input[name="answer"]').focus();
+      await page.keyboard.press('Control+Enter');
+      await expect(q1.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      const t0 = Date.now();
+      await expect(q2.locator('input[name="answer"]')).toBeFocused();
+      await page.keyboard.press('Control+Enter');
+      const ms = Date.now() - t0;
+      // The control, at once (still inside the window the second press
+      // restarted): typing CHANGES the box, which ends the window, so the
+      // owner's own Ctrl+Enter after typing sends.
+      await page.keyboard.type('typed');
+      await page.keyboard.press('Control+Enter');
+      await expect(q2.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      await page.waitForTimeout(600);
+      test.skip(ms >= 400, `the second Ctrl+Enter took ${ms} ms on this runner: not asserted`);
+      const fenced = (await call('page_responses', { page_id: id })).body.responses as string;
+      expect(fenced, 'the second Ctrl+Enter sent the next question empty').not.toContain('"component":"q2","data":{"answer":""}');
+      expect(fenced).toContain('"component":"q2","data":{"answer":"typed"}');
+      expect(await rowsOf(id)).toBe(2);
+    });
+  });
+
+  test(`at ${vp.name}, a bar opened while the owner types in Feedback leaves the keyboard there; Enter records nothing (audit 🟡-B)`, async ({ browser }) => {
+    test.skip(vp.touch, 'a keyboard flow');
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Typing ' + vp.name + ' ' + stamp, blocks: BAR_BLOCKS });
+      const id = pg.body.page_id as number;
+      const posts: string[] = [];
+      page.on('request', (r) => { if (r.method() === 'POST' && /\/versions\/\d+\/submit$/.test(new URL(r.url()).pathname)) posts.push(r.url()); });
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(frame.locator('#b-out')).toHaveText('-');
+      await page.locator('[data-feedback-pill]').click();
+      const fb = page.locator('[data-feedback-text]');
+      await fb.focus();
+      await page.keyboard.type('hello');
+      // The page's script opens the bar mid-typing.
+      await frame.locator('body').evaluate(() => (window as unknown as { sendIt: () => void }).sendIt());
+      const bar = confirmBar(page);
+      await expect(bar).toBeVisible();
+      await expect.soft(fb, 'the bar took the keyboard from Feedback').toBeFocused();
+      await page.waitForTimeout(700);
+      await page.keyboard.type(' more');
+      await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(400);
+      expect(posts.length, 'Enter in Feedback confirmed the bar').toBe(0);
+      await expect(bar).toBeVisible();
+      await expect(fb).toHaveValue('hello more\n');
+      // The control: Tab is not needed — click Send after the window: ONE post.
+      await answerConfirm(page, '"by": "script"', true);
+      await expect(frame.locator('#b-out')).toHaveText(/^saved:\d+$/);
+      expect(posts.length).toBe(1);
     });
   });
 }

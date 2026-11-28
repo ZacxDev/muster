@@ -547,8 +547,10 @@ nothing was sent.*). The data is shown after muster has turned it into JSON
 records exactly what you read. **Cancel** records nothing, and the page is
 told *Not sent*; so does **Escape** while the keyboard is in muster's part
 of the screen (if it is in the page, muster cannot see the key: tap Cancel).
-**Enter** sends while the keyboard is in the bar (it takes the keyboard when
-it opens): only a plain, fresh press after the bar's first half second. Any
+**Enter** sends while the keyboard is in the bar — it takes the keyboard when
+it opens, unless you are typing in a box of muster's own (the Feedback box):
+then the keyboard stays where you are typing, and you click **Send** or Tab
+to it. Only a plain, fresh press after the bar's first half second sends. Any
 other key in the bar — a letter, Shift, Ctrl, a held Enter — starts the half
 second again, and an Enter anywhere else on the screen (the Feedback box,
 the version button) never sends, so the press that opened the bar, or typing
@@ -582,8 +584,8 @@ muster's own components can be answered without the mouse, on any page:
   once. **Shift+Enter** in a multi-line answer is a new line.
 - After a send, the keyboard moves on to the next component below that you
   have not sent from this view, scrolled into sight. For half a second its
-  first control ignores a press (a double press or double tap never answers
-  two asks); typing in it starts at once. On a page without an
+  first control ignores a press (a double press, double tap or double
+  Ctrl+Enter never answers two asks); typing in it starts at once. On a page without an
   `html` block that is the whole loop: Space, Ctrl+Enter, the next ask. On a
   page with one, Ctrl+Enter opens **Send as you?**, and a fresh **Enter**
   after its half second sends.

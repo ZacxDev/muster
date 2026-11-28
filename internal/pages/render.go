@@ -791,7 +791,8 @@ function next(sec){
 // second press of the key (or tap) that sent the last ask must not answer
 // this one too (an approval's Approve takes focus). A trusted keydown or
 // press on it inside the window starts it again, as the shell's bar does.
-// Tab still moves, and typing in it (a text box) ends the window: only Enter
+// Tab still moves, and typing that changes it (a text box's input) ends the
+// window: only Enter
 // or Space on it, or an Enter that would send from it, is held back; a click
 // on it, and a submit it makes (its press, an implicit submission, a
 // Ctrl+Enter while it has focus), is cancelled. Every other control is as it
@@ -805,13 +806,16 @@ function landing(t){
 function texty(t){var n=t.tagName;return n==="TEXTAREA"||(n==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image)$/.test(t.type));}
 R(AEL,W,["keydown",function(ev){
  var t=R(gTarget,ev,[]);if(ev.isTrusted!==true||!landing(t))return;
- // Typing in a text box (a new line in a multi-line one included) is the
- // reader at work: the window ends. An Enter that would send from it does not.
- if(texty(t)&&(ev.key!=="Enter"||(t.tagName==="TEXTAREA"&&!(ev.ctrlKey||ev.metaKey)))){landEl=null;return;}
+ // In a text box every key but an Enter that would send types as ever (a
+ // new line in a multi-line one included); what ends the window is the box
+ // CHANGING (its input event, below), never a bare Ctrl, Shift, Meta or Alt
+ // — so a second Ctrl+Enter still lands in the window (audit round 2, 🟡-A).
+ if(texty(t)&&(ev.key!=="Enter"||(t.tagName==="TEXTAREA"&&!(ev.ctrlKey||ev.metaKey))))return;
  landAt=Date.now();
  if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();R(SIP,ev,[]);}
 },true]);
 R(AEL,W,["keyup",function(ev){var t=R(gTarget,ev,[]);if(ev.key===" "&&landing(t)&&!texty(t)){ev.preventDefault();R(SIP,ev,[]);}},true]);
+R(AEL,W,["input",function(ev){if(ev.isTrusted===true&&landEl&&R(gTarget,ev,[])===landEl)landEl=null;},true]);
 R(AEL,W,["pointerdown",function(ev){if(ev.isTrusted===true&&landing(R(gTarget,ev,[])))landAt=Date.now();},true]);
 R(AEL,W,["click",function(ev){if(landing(R(gTarget,ev,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
 R(AEL,W,["submit",function(ev){if(landing(ev.submitter)||landing(R(gFocus,D,[]))){ev.preventDefault();R(SIP,ev,[]);}},true]);
@@ -1414,7 +1418,12 @@ function ask(what,summary,cb){
  asking=cb;
  box.querySelector("[data-send-what]").textContent=what;
  box.querySelector("[data-send-summary]").textContent=summary;
- box.hidden=false;guard();box.focus();
+ box.hidden=false;guard();
+ // The bar takes the keyboard — unless the owner is typing in the shell's own
+ // part of the screen (Feedback): then the keyboard stays there, and its keys
+ // never reach the bar (audit round 2, 🟡-B). Send and Tab still reach it.
+ var ae=document.querySelector(":focus");
+ if(!(ae&&(ae.isContentEditable||ae.tagName==="TEXTAREA"||(ae.tagName==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image|range|color)$/.test(ae.type)))))box.focus();
  giveUp=setTimeout(function(){decide(false);},` + confirmWaitMs + `);
  return true;
 }

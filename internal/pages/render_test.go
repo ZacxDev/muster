@@ -412,7 +412,10 @@ func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
  if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
   return reply(false,"Another send is waiting for your answer.");`,
 		`if(asking)return false;`,
-		`box.hidden=false;guard();box.focus();`,
+		`box.hidden=false;guard();`,
+		// Audit round 2 🟡-B: it takes focus unless the owner is typing in
+		// the shell (Feedback).
+		`if(!(ae&&(ae.isContentEditable||ae.tagName==="TEXTAREA"||(ae.tagName==="INPUT"&&!/^(checkbox|radio|button|submit|reset|file|image|range|color)$/.test(ae.type)))))box.focus();`,
 		// Round 3's 🟡-1: every press inside the window restarts it; Send
 		// needs a press that starts on it after a quiet window.
 		`function guard(){openAt=Date.now();armed=false;}
